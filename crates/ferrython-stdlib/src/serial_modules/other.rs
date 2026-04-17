@@ -3599,7 +3599,7 @@ pub fn create_marshal_module() -> PyObjectRef {
                         let k = marshal_decode(data, pos)?;
                         let v = marshal_decode(data, pos)?;
                         let key = match &k.payload {
-                            PyObjectPayload::Str(s) => HashableKey::str_key((**s).clone()),
+                            PyObjectPayload::Str(s) => HashableKey::str_key(s.to_compact_string()),
                             PyObjectPayload::Int(n) => HashableKey::Int(n.clone()),
                             PyObjectPayload::Bool(b) => HashableKey::Bool(*b),
                             _ => HashableKey::str_key(CompactString::from(k.py_to_string())),

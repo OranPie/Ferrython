@@ -152,6 +152,254 @@ pub fn next_class_version() -> u64 {
 // Target: ≤24 bytes (down from 32). All variants must have data ≤ 16 bytes.
 const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 24);
 
+// ── StrRepr: inline short strings to eliminate Box<CompactString> allocation ──
+// Strings ≤ 15 bytes are stored directly in the PyObjectPayload (no heap alloc).
+// Strings > 15 bytes use a Box<CompactString> from the str_box freelist.
+// This saves 1 freelist alloc + 1 freelist dealloc per short string.
+
+const INLINE_STR_MAX: usize = 15;
+const HEAP_SENTINEL: u8 = 0xFF;
+
+/// Compact string representation: 16 bytes.
+/// Inline: tag = length (0..=15), data[0..len] = UTF-8 bytes.
+/// Heap:   tag = 0xFF, ptr = Box<CompactString> (at offset 8, 8-byte aligned).
+#[repr(C)]
+pub struct StrRepr {
+    tag: u8,              // inline length or HEAP_SENTINEL
+    inline_data: [u8; 7], // first 7 bytes of inline data (or padding for heap)
+    rest: u64,            // inline bytes 7-14 packed as u64, or heap pointer
+}
+
+const _STR_REPR_SIZE_CHECK: () = assert!(std::mem::size_of::<StrRepr>() == 16);
+const _STR_REPR_ALIGN_CHECK: () = assert!(std::mem::align_of::<StrRepr>() == 8);
+
+impl StrRepr {
+    /// Create from a byte slice (must be valid UTF-8).
+    #[inline(always)]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let len = bytes.len();
+        if len <= INLINE_STR_MAX {
+            let mut inline_data = [0u8; 7];
+            let mut rest_bytes = [0u8; 8];
+            if len <= 7 {
+                inline_data[..len].copy_from_slice(bytes);
+            } else {
+                inline_data.copy_from_slice(&bytes[..7]);
+                rest_bytes[..len - 7].copy_from_slice(&bytes[7..]);
+            }
+            StrRepr {
+                tag: len as u8,
+                inline_data,
+                rest: u64::from_ne_bytes(rest_bytes),
+            }
+        } else {
+            Self::from_compact(CompactString::from(
+                unsafe { std::str::from_utf8_unchecked(bytes) }
+            ))
+        }
+    }
+
+    /// Create from a CompactString (may inline if short enough).
+    #[inline(always)]
+    pub fn from_compact(s: CompactString) -> Self {
+        let len = s.len();
+        if len <= INLINE_STR_MAX {
+            let bytes = s.as_bytes();
+            let mut inline_data = [0u8; 7];
+            let mut rest_bytes = [0u8; 8];
+            if len <= 7 {
+                inline_data[..len].copy_from_slice(bytes);
+            } else {
+                inline_data.copy_from_slice(&bytes[..7]);
+                rest_bytes[..len - 7].copy_from_slice(&bytes[7..]);
+            }
+            // s is dropped here (no heap alloc for short strings in CompactString either)
+            StrRepr {
+                tag: len as u8,
+                inline_data,
+                rest: u64::from_ne_bytes(rest_bytes),
+            }
+        } else {
+            let b = super::constructors::alloc_str_box(s);
+            let ptr = Box::into_raw(b);
+            StrRepr {
+                tag: HEAP_SENTINEL,
+                inline_data: [0; 7],
+                rest: ptr as u64,
+            }
+        }
+    }
+
+    /// Create from a pre-allocated Box<CompactString> (always heap).
+    #[inline(always)]
+    pub fn from_box(b: Box<CompactString>) -> Self {
+        let ptr = Box::into_raw(b);
+        StrRepr {
+            tag: HEAP_SENTINEL,
+            inline_data: [0; 7],
+            rest: ptr as u64,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_inline(&self) -> bool {
+        self.tag != HEAP_SENTINEL
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        if self.is_inline() {
+            self.tag as usize
+        } else {
+            unsafe { &*self.heap_ptr() }.len()
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_str(&self) -> &str {
+        if self.is_inline() {
+            let len = self.tag as usize;
+            unsafe {
+                let base = &self.tag as *const u8;
+                // Data starts at offset 1 (after tag byte)
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(base.add(1), len))
+            }
+        } else {
+            unsafe { &*self.heap_ptr() }.as_str()
+        }
+    }
+
+    /// Get the inline bytes as a slice (only valid for inline strings).
+    #[inline(always)]
+    fn inline_bytes(&self) -> &[u8] {
+        let len = self.tag as usize;
+        unsafe {
+            let base = &self.tag as *const u8;
+            std::slice::from_raw_parts(base.add(1), len)
+        }
+    }
+
+    /// Get the heap pointer (only valid when tag == HEAP_SENTINEL).
+    #[inline(always)]
+    unsafe fn heap_ptr(&self) -> *mut CompactString {
+        self.rest as *mut CompactString
+    }
+
+    /// Convert to CompactString (clones for inline, clones inner for heap).
+    #[inline]
+    pub fn to_compact_string(&self) -> CompactString {
+        if self.is_inline() {
+            CompactString::from(self.as_str())
+        } else {
+            unsafe { &*self.heap_ptr() }.clone()
+        }
+    }
+
+    /// In-place append. Converts inline→heap if needed.
+    #[inline]
+    pub fn push_str(&mut self, suffix: &str) {
+        if self.is_inline() {
+            let cur_len = self.tag as usize;
+            let new_len = cur_len + suffix.len();
+            if new_len <= 15 {
+                // Fast path: still fits inline
+                unsafe {
+                    let base = &self.tag as *const u8 as *mut u8;
+                    std::ptr::copy_nonoverlapping(suffix.as_ptr(), base.add(1 + cur_len), suffix.len());
+                }
+                self.tag = new_len as u8;
+            } else {
+                // Inline → heap transition
+                let mut cs = CompactString::with_capacity(new_len);
+                cs.push_str(self.as_str());
+                cs.push_str(suffix);
+                let boxed = Box::new(cs);
+                self.tag = 0xFF;
+                self.inline_data = [0u8; 7];
+                self.rest = Box::into_raw(boxed) as u64;
+            }
+        } else {
+            // Already heap — mutate CompactString in place (no realloc if capacity suffices)
+            unsafe { &mut *self.heap_ptr() }.push_str(suffix);
+        }
+    }
+}
+
+impl Clone for StrRepr {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        if self.is_inline() {
+            StrRepr {
+                tag: self.tag,
+                inline_data: self.inline_data,
+                rest: self.rest,
+            }
+        } else {
+            // Clone the heap CompactString into a new StrRepr
+            let s = unsafe { &*self.heap_ptr() };
+            StrRepr::from_compact(s.clone())
+        }
+    }
+}
+
+impl Drop for StrRepr {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if !self.is_inline() {
+            let b = unsafe { Box::from_raw(self.heap_ptr()) };
+            super::constructors::recycle_str_box(b);
+        }
+    }
+}
+
+impl fmt::Debug for StrRepr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StrRepr({:?})", self.as_str())
+    }
+}
+
+impl std::hash::Hash for StrRepr {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq for StrRepr {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for StrRepr {}
+
+impl PartialOrd for StrRepr {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.as_str().cmp(other.as_str()))
+    }
+}
+
+impl Ord for StrRepr {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::ops::Deref for StrRepr {
+    type Target = str;
+    #[inline(always)]
+    fn deref(&self) -> &str { self.as_str() }
+}
+
+impl fmt::Display for StrRepr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ── PyObject Freelist Allocator ──
 // Replaces Rc<PyObject> with a custom ref-counted pointer backed by a
 // thread-local freelist. Eliminates malloc/free for hot object creation
@@ -682,8 +930,9 @@ pub enum PyObjectPayload {
     Int(PyInt),
     Float(f64),
     Complex { real: f64, imag: f64 },
-    /// Boxed to keep PyObjectPayload at 24 bytes (CompactString is 24 bytes).
-    Str(Box<CompactString>),
+    /// Short strings (≤15 bytes) stored inline; longer strings use Box<CompactString>.
+    /// Eliminates 1 freelist alloc + 1 dealloc per short string (covers most identifiers/split parts).
+    Str(StrRepr),
     /// Boxed to keep PyObjectPayload at 24 bytes (Vec is 24 bytes).
     Bytes(Box<Vec<u8>>),
     ByteArray(Box<Vec<u8>>),
@@ -792,17 +1041,15 @@ impl Drop for PyObjectPayload {
                 super::constructors::recycle_instance_box(taken);
             }
             // Recycle boxed allocations to typed freelists — avoids malloc/free
-            // for the hottest allocation paths (str_split creates 6+ Boxes per call).
+            // for the hottest allocation paths.
             // std::mem::replace swaps variant to None so compiler's drop-glue is no-op.
             // ptr::read extracts the inner Box; forget prevents old's Drop from running.
-            PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::List(_)
+            // Note: Str uses StrRepr with its own Drop (recycles heap Box, no-op for inline).
+            PyObjectPayload::Tuple(_) | PyObjectPayload::List(_)
             | PyObjectPayload::BuiltinBoundMethod(_) => {
                 let old = std::mem::replace(self, PyObjectPayload::None);
                 unsafe {
                     match &old {
-                        PyObjectPayload::Str(b) => {
-                            super::constructors::recycle_str_box(std::ptr::read(b as *const _));
-                        }
                         PyObjectPayload::Tuple(b) => {
                             super::constructors::recycle_tuple_box(std::ptr::read(b as *const _));
                         }
@@ -1049,7 +1296,7 @@ impl ClassData {
                 }
                 PyObjectPayload::Str(s) => {
                     // Single string slot: __slots__ = "x"
-                    Some(vec![(**s).clone()])
+                    Some(vec![s.to_compact_string()])
                 }
                 _ => None,
             }

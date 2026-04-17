@@ -419,7 +419,7 @@ static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_
 
 // ── Empty collection singletons ──
 static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Tuple(Box::new(vec![])) }));
-static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(Box::new(CompactString::const_new(""))) }));
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(b"")) }));
 static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(Box::new(vec![])) }));
 
 // ── Single-character ASCII string cache (like CPython's unicode_latin1) ──
@@ -427,8 +427,7 @@ static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_im
 // str_val() checks this cache to avoid per-char allocation in split/etc.
 static CHAR_CACHE: LazyLock<[PyObjectRef; 128]> = LazyLock::new(|| {
     std::array::from_fn(|i| {
-        let c = CompactString::from(std::str::from_utf8(&[i as u8]).unwrap());
-        PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(Box::new(c)) })
+        PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(&[i as u8])) })
     })
 });
 
@@ -682,7 +681,7 @@ impl PyObject {
                 return CHAR_CACHE[b as usize].clone();
             }
         }
-        Self::wrap_leaf(PyObjectPayload::Str(alloc_str_box(v)))
+        Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_compact(v)))
     }
     /// Return cached single-char string for ASCII byte, or create new.
     #[inline(always)]
@@ -698,9 +697,8 @@ impl PyObject {
             0 => EMPTY_STR.clone(),
             1 if bytes[0] < 128 => CHAR_CACHE[bytes[0] as usize].clone(),
             _ => {
-                // Skip str_val's redundant empty/1-char checks — we already handled those
-                let cs = CompactString::from(unsafe { std::str::from_utf8_unchecked(bytes) });
-                Self::wrap_leaf(PyObjectPayload::Str(alloc_str_box(cs)))
+                // Use StrRepr::from_bytes to inline short strings (≤15 bytes)
+                Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_bytes(bytes)))
             }
         }
     }

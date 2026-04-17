@@ -168,7 +168,7 @@ use ferrython_core::object::{ new_fx_hashkey_map, PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, VecIterData,
     lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
-    alloc_tuple_box_empty,
+    alloc_tuple_box_empty, StrRepr,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -227,7 +227,7 @@ define_interned!(N_CLOSE, "close");
 #[inline(always)]
 fn init_interned<'a>(lock: &'a OnceLock<PyObjectRef>, name: &str) -> &'a PyObjectRef {
     lock.get_or_init(|| PyObjectRef::new_immortal(PyObject {
-        payload: PyObjectPayload::Str(Box::new(CompactString::from(name)))
+        payload: PyObjectPayload::Str(StrRepr::from_bytes(name.as_bytes()))
     }))
 }
 
@@ -920,7 +920,7 @@ impl VirtualMachine {
                                 }
                                 (PyObjectPayload::Str(_), PyObjectPayload::Str(rhs)) => {
                                     // String concat in-place: s = s + "a" (like CPython)
-                                    let rhs_clone: CompactString = (**rhs).clone();
+                                    let rhs_clone: CompactString = rhs.to_compact_string();
                                     // NLL: a, c borrows are dead after the clone above
                                     if local_idx == dest {
                                         let locals_ptr = frame.locals.as_mut_ptr();
@@ -2232,7 +2232,7 @@ impl VirtualMachine {
                             // refcount 2 (one on stack, one in a local) and the next
                             // instruction is STORE_FAST, clear the local to get refcount 1,
                             // then do push_str in place — avoids allocation per concat.
-                            let rhs: CompactString = (**y).clone(); // cheap for small strings (inline)
+                            let rhs: CompactString = y.to_compact_string(); // cheap for small strings (inline)
                             let len = frame.stack.len();
                             unsafe {
                                 let _b_arc = std::ptr::read(frame.stack.as_ptr().add(len - 1));
@@ -2501,7 +2501,7 @@ impl VirtualMachine {
                         PyObjectPayload::Set(items) => {
                             let r = unsafe { &*items.data_ptr() };
                             match &needle.payload {
-                                PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key((**s).clone()))),
+                                PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key(s.to_compact_string()))),
                                 PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n)))),
                                 PyObjectPayload::Bool(b) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64)))),
                                 _ => {
@@ -2985,7 +2985,7 @@ impl VirtualMachine {
                         let val = speek!(frame);
                         // Format value to string fragment (without allocating PyObject yet)
                         let fast_str = match &val.payload {
-                            PyObjectPayload::Str(s) => Some((**s).clone()),
+                            PyObjectPayload::Str(s) => Some(s.to_compact_string()),
                             PyObjectPayload::Int(PyInt::Small(n)) => {
                                 let mut buf = itoa::Buffer::new();
                                 Some(CompactString::from(buf.format(*n)))
@@ -3672,7 +3672,7 @@ impl VirtualMachine {
                         let kind = *kind;
                         let msg: CompactString = if arg_count >= 1 {
                             if let PyObjectPayload::Str(s) = &sget!(frame, func_idx + 1).payload {
-                                (**s).clone()
+                                s.to_compact_string()
                             } else {
                                 CompactString::from(sget!(frame, func_idx + 1).py_to_string())
                             }
@@ -4947,7 +4947,7 @@ impl VirtualMachine {
                                     { let _ = spop!(frame); } // name
                                     if let PyObjectPayload::Set(set) = &receiver.payload {
                                         let hk = match &item.payload {
-                                            PyObjectPayload::Str(s) => Some(HashableKey::str_key((**s).clone())),
+                                            PyObjectPayload::Str(s) => Some(HashableKey::str_key(s.to_compact_string())),
                                             PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
                                             PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
                                             _ => None,
@@ -5368,7 +5368,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::str_key((**s).clone());
+                                let hk = HashableKey::str_key(s.to_compact_string());
                                 let map_ptr = map.data_ptr();
                                 unsafe {
                                     let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
@@ -5430,7 +5430,7 @@ impl VirtualMachine {
                             Some(HashableKey::Int(PyInt::Small(*n)))
                         }
                         PyObjectPayload::Str(s) => {
-                            Some(HashableKey::str_key((**s).clone()))
+                            Some(HashableKey::str_key(s.to_compact_string()))
                         }
                         PyObjectPayload::Bool(b) => {
                             Some(HashableKey::Int(PyInt::Small(*b as i64)))
@@ -5472,7 +5472,7 @@ impl VirtualMachine {
                             Some(HashableKey::Int(PyInt::Small(*n)))
                         }
                         PyObjectPayload::Str(s) => {
-                            Some(HashableKey::str_key((**s).clone()))
+                            Some(HashableKey::str_key(s.to_compact_string()))
                         }
                         PyObjectPayload::Bool(b) => {
                             Some(HashableKey::Int(PyInt::Small(*b as i64)))
@@ -6141,7 +6141,7 @@ impl VirtualMachine {
                             }
                             (PyObjectPayload::Str(s), PyObjectPayload::Set(items)) => {
                                 let r = unsafe { &*items.data_ptr() };
-                                Some(r.contains_key(&HashableKey::str_key((**s).clone())))
+                                Some(r.contains_key(&HashableKey::str_key(s.to_compact_string())))
                             }
                             (PyObjectPayload::Int(PyInt::Small(n)), PyObjectPayload::Set(items)) => {
                                 let r = unsafe { &*items.data_ptr() };
@@ -6387,7 +6387,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::str_key((**s).clone());
+                                let hk = HashableKey::str_key(s.to_compact_string());
                                 unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
                                 true
                             }
@@ -6447,7 +6447,7 @@ impl VirtualMachine {
                                 let r = unsafe { &*items.data_ptr() };
                                 match &needle.payload {
                                     PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n)))),
-                                    PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key((**s).clone()))),
+                                    PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key(s.to_compact_string()))),
                                     PyObjectPayload::Bool(b) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64)))),
                                     _ => None,
                                 }

@@ -111,7 +111,7 @@ impl VirtualMachine {
 
         let body_func = args[0].clone();
         let class_name = match &args[1].payload {
-            PyObjectPayload::Str(s) => (**s).clone(),
+            PyObjectPayload::Str(s) => s.to_compact_string(),
             _ => CompactString::from(args[1].py_to_string()),
         };
 
@@ -693,7 +693,7 @@ impl VirtualMachine {
         }
         let body_func = args[0].clone();
         let class_name = match &args[1].payload {
-            PyObjectPayload::Str(s) => (**s).clone(),
+            PyObjectPayload::Str(s) => s.to_compact_string(),
             _ => CompactString::from(args[1].py_to_string()),
         };
         let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);

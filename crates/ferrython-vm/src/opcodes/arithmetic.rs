@@ -181,7 +181,7 @@ impl VirtualMachine {
                 fast_int_op!(a, b, checked_add, +);
                 // Also fast-path str + str
                 if let (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) = (&a.payload, &b.payload) {
-                    let mut s = (**x).clone();
+                    let mut s = x.to_compact_string();
                     s.push_str(y);
                     self.vm_push(PyObject::str_val(s));
                     return Ok(None);

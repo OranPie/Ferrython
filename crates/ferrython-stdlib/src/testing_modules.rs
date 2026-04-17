@@ -1756,7 +1756,7 @@ pub fn create_unittest_module() -> PyObjectRef {
             }
             let exc_type_name = match &args[0].payload {
                 PyObjectPayload::Class(cd) => cd.name.clone(),
-                PyObjectPayload::Str(s) => (**s).clone(),
+                PyObjectPayload::Str(s) => s.to_compact_string(),
                 _ => CompactString::from(args[0].py_to_string()),
             };
             // Build a context-manager object with __enter__ / __exit__
@@ -2280,7 +2280,7 @@ pub fn create_unittest_module() -> PyObjectRef {
             }
             let exc_type_name = match &args[0].payload {
                 PyObjectPayload::Class(cd) => cd.name.clone(),
-                PyObjectPayload::Str(s) => (**s).clone(),
+                PyObjectPayload::Str(s) => s.to_compact_string(),
                 _ => CompactString::from(args[0].py_to_string()),
             };
             let pattern = args[1].py_to_string();

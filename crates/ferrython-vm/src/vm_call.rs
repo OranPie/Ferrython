@@ -704,7 +704,7 @@ impl VirtualMachine {
                     if !members.is_empty() {
                         let mut ns = IndexMap::new();
                         ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
-                        let new_cls = PyObject::class((**name_str).clone(), vec![cls.clone()], ns);
+                        let new_cls = PyObject::class(name_str.to_compact_string(), vec![cls.clone()], ns);
                         if let PyObjectPayload::Class(ref new_cd) = new_cls.payload {
                             let mut new_ns = new_cd.namespace.write();
                             for (member_name, member_value) in &members {
@@ -3476,7 +3476,7 @@ impl VirtualMachine {
                 let msg: CompactString = if args.is_empty() {
                     CompactString::default()
                 } else if let PyObjectPayload::Str(s) = &args[0].payload {
-                    (**s).clone()
+                    s.to_compact_string()
                 } else {
                     CompactString::from(args[0].py_to_string())
                 };

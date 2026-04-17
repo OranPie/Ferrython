@@ -715,7 +715,7 @@ fn match_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Str(name) = &args[1].payload {
             if let Some(groupindex) = self_obj.get_attr("_groupindex") {
                 if let PyObjectPayload::Dict(d) = &groupindex.payload {
-                    let key = HashableKey::str_key((**name).clone());
+                    let key = HashableKey::str_key(name.to_compact_string());
                     if let Some(idx_obj) = d.read().get(&key).cloned() {
                         let idx = idx_obj.to_int().unwrap_or(0);
                         if idx == 0 {

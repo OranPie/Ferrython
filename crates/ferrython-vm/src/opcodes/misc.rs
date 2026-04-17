@@ -51,7 +51,7 @@ impl VirtualMachine {
                 if !has_fmt_spec && (conversion == 0 || conversion == 1) {
                     let val = frame.peek();
                     let fast_str = match &val.payload {
-                        PyObjectPayload::Str(s) => Some((**s).clone()),
+                        PyObjectPayload::Str(s) => Some(s.to_compact_string()),
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             let mut buf = itoa::Buffer::new();
                             Some(CompactString::from(buf.format(*n)))
