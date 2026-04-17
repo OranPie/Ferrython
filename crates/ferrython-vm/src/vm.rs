@@ -1319,7 +1319,7 @@ impl VirtualMachine {
                     let obj = speek!(frame);
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => hot_ok!(profiling, self.profiler, instr.op),
-                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
+                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_) | PyObjectPayload::DictValues(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
                             });
@@ -1383,9 +1383,43 @@ impl VirtualMachine {
                             PyObjectPayload::DictItems(cell) => {
                                 let map = unsafe { &*cell.data_ptr() };
                                 if idx < map.len() {
-                                    let (k, v) = map.get_index(idx).unwrap();
-                                    Some(PyObject::tuple(vec![k.to_object(), v.clone()]))
-                                } else { None }
+                                    let (hk, v) = map.get_index(idx).unwrap();
+                                    let key_obj = hk.to_object();
+                                    let val = v.clone();
+                                    index.set(idx + 1);
+                                    // Full fusion: ForIter+UnpackSequence+2×StoreFast → store k/v to locals
+                                    let nip = frame.ip;
+                                    if nip + 2 < instr_count {
+                                        let i0 = unsafe { *instr_base.add(nip) };
+                                        if i0.op == Opcode::UnpackSequence && i0.arg == 2 {
+                                            let i1 = unsafe { *instr_base.add(nip + 1) };
+                                            let i2 = unsafe { *instr_base.add(nip + 2) };
+                                            if i1.op == Opcode::StoreFast {
+                                                if i2.op == Opcode::StoreFast {
+                                                    sset_local!(frame, i1.arg as usize, key_obj);
+                                                    sset_local!(frame, i2.arg as usize, val);
+                                                    frame.ip = nip + 3;
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                } else if i2.op == Opcode::StoreFastJumpAbsolute {
+                                                    sset_local!(frame, i1.arg as usize, key_obj);
+                                                    sset_local!(frame, (i2.arg >> 16) as usize, val);
+                                                    frame.ip = (i2.arg & 0xFFFF) as usize;
+                                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                                }
+                                            }
+                                            // Partial fusion: skip tuple, push k/v to stack
+                                            spush!(frame, val);
+                                            spush!(frame, key_obj);
+                                            frame.ip = nip + 1;
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                    }
+                                    spush!(frame, PyObject::tuple(vec![key_obj, val]));
+                                } else {
+                                    drop(spop!(frame));
+                                    frame.ip = instr.arg as usize;
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             _ => None,
                         };

@@ -29,3 +29,4 @@ sha1 = { workspace = true }
 digest = { workspace = true }
 itoa = "1"
 ryu = "1"
+memchr = "2"

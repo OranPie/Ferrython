@@ -656,6 +656,7 @@ dependencies = [
  "indexmap",
  "itoa",
  "md-5",
+ "memchr",
  "num-bigint",
  "num-traits",
  "parking_lot",

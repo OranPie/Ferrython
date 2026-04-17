@@ -190,26 +190,26 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                 None => match maxsplit {
                     Some(n) => s.splitn(n + 1, char::is_whitespace)
                         .filter(|p| !p.is_empty())
-                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
                         .collect(),
                     None => s.split_whitespace()
-                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
                         .collect(),
                 },
                 Some(a) if matches!(&a.payload, PyObjectPayload::None) => match maxsplit {
                     Some(n) => s.splitn(n + 1, char::is_whitespace)
                         .filter(|p| !p.is_empty())
-                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
                         .collect(),
                     None => s.split_whitespace()
-                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
                         .collect(),
                 },
                 Some(a) => {
                     let sep = a.as_str().ok_or_else(|| PyException::type_error("split() argument must be str or None"))?;
                     match maxsplit {
                         Some(n) => s.splitn(n + 1, sep)
-                            .map(|p| PyObject::str_val(CompactString::from(p)))
+                            .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
                             .collect(),
                         None => {
                             if sep.is_empty() {
@@ -217,32 +217,42 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             }
                             let sep_len = sep.len();
                             if sep_len == 1 {
-                                // Single-byte separator: direct byte scan in one pass.
-                                // Avoids the two-pass count+split approach.
+                                // Single-byte separator: memchr-accelerated scan
                                 let sep_byte = sep.as_bytes()[0];
                                 let bytes = s.as_bytes();
                                 let len = bytes.len();
-                                // Heuristic capacity: most splits produce few parts
                                 let mut parts = Vec::with_capacity(8);
                                 let mut start = 0;
-                                for i in 0..len {
-                                    if unsafe { *bytes.get_unchecked(i) } == sep_byte {
-                                        parts.push(PyObject::str_val(CompactString::from(unsafe {
-                                            std::str::from_utf8_unchecked(&bytes[start..i])
-                                        })));
-                                        start = i + 1;
+                                while start <= len {
+                                    match memchr::memchr(sep_byte, &bytes[start..]) {
+                                        Some(i) => {
+                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..start + i]));
+                                            start = start + i + 1;
+                                        }
+                                        None => {
+                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..len]));
+                                            break;
+                                        }
                                     }
                                 }
-                                // Push final segment
-                                parts.push(PyObject::str_val(CompactString::from(unsafe {
-                                    std::str::from_utf8_unchecked(&bytes[start..len])
-                                })));
                                 parts
                             } else {
-                                // Multi-byte separator: use Rust's split with heuristic capacity
+                                // Multi-byte separator: memchr-accelerated search
+                                let sep_b = sep.as_bytes();
+                                let bytes = s.as_bytes();
                                 let mut parts = Vec::with_capacity(8);
-                                for p in s.split(sep) {
-                                    parts.push(PyObject::str_val(CompactString::from(p)));
+                                let mut start = 0;
+                                loop {
+                                    match fast_find(bytes, start, sep_b) {
+                                        Some(pos) => {
+                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..pos]));
+                                            start = pos + sep_len;
+                                        }
+                                        None => {
+                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..]));
+                                            break;
+                                        }
+                                    }
                                 }
                                 parts
                             }
@@ -338,8 +348,14 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("find() argument must be str"))?;
             let start = if args.len() >= 2 { args[1].as_int().unwrap_or(0).max(0) as usize } else { 0 };
             let end = if args.len() >= 3 { args[2].as_int().unwrap_or(s.len() as i64).max(0) as usize } else { s.len() };
-            let search_area = &s[start.min(s.len())..end.min(s.len())];
-            Ok(PyObject::int(search_area.find(sub).map(|i| (i + start) as i64).unwrap_or(-1)))
+            let area_start = start.min(s.len());
+            let area_end = end.min(s.len());
+            let search_area = s[area_start..area_end].as_bytes();
+            Ok(PyObject::int(
+                fast_find(search_area, 0, sub.as_bytes())
+                    .map(|i| (i + area_start) as i64)
+                    .unwrap_or(-1)
+            ))
         }
         "rfind" => {
             check_args_min("rfind", args, 1)?;
@@ -352,7 +368,7 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         "index" => {
             check_args_min("index", args, 1)?;
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("index() argument must be str"))?;
-            match s.find(sub) {
+            match fast_find(s.as_bytes(), 0, sub.as_bytes()) {
                 Some(i) => Ok(PyObject::int(i as i64)),
                 None => Err(PyException::value_error("substring not found")),
             }
@@ -360,11 +376,27 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         "count" => {
             check_args_min("count", args, 1)?;
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("count() argument must be str"))?;
+            if sub.is_empty() {
+                // CPython: "".count("") == 1, "abc".count("") == 4
+                let len = s.chars().count() as i64;
+                let start = if args.len() >= 2 { normalize_index(args[1].as_int().unwrap_or(0), len) } else { 0usize };
+                let end = if args.len() >= 3 { normalize_index(args[2].as_int().unwrap_or(len), len) } else { len as usize };
+                return Ok(PyObject::int((end.saturating_sub(start) + 1) as i64));
+            }
             let len = s.chars().count() as i64;
             let start = if args.len() >= 2 { normalize_index(args[1].as_int().unwrap_or(0), len) } else { 0usize };
             let end = if args.len() >= 3 { normalize_index(args[2].as_int().unwrap_or(len), len) } else { len as usize };
-            let slice: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
-            Ok(PyObject::int(slice.matches(sub).count() as i64))
+            // For ASCII strings (common case), byte positions == char positions
+            let (byte_start, byte_end) = if s.is_ascii() {
+                (start.min(s.len()), end.min(s.len()))
+            } else {
+                // Slow path for non-ASCII
+                let bs = s.char_indices().nth(start).map_or(s.len(), |(i, _)| i);
+                let be = s.char_indices().nth(end).map_or(s.len(), |(i, _)| i);
+                (bs, be)
+            };
+            let slice = &s.as_bytes()[byte_start..byte_end];
+            Ok(PyObject::int(fast_count(slice, sub.as_bytes(), usize::MAX) as i64))
         }
         "startswith" => {
             check_args_min("startswith", args, 1)?;
@@ -1208,12 +1240,64 @@ pub fn punycode_decode_bytes(bytes: &[u8]) -> PyResult<PyObjectRef> {
 }
 
 /// Replace occurrences of `old` with `new` in `s`, writing directly into a CompactString.
+/// memchr-accelerated substring search: find `needle` in `haystack[start..]`.
+/// Returns byte offset relative to `haystack` start.
+/// For single-byte needles, uses memchr directly.
+/// For multi-byte, uses memchr on first byte + memcmp verification.
+#[inline]
+fn fast_find(haystack: &[u8], start: usize, needle: &[u8]) -> Option<usize> {
+    let nlen = needle.len();
+    if nlen == 0 { return Some(start); }
+    let hay = &haystack[start..];
+    if hay.len() < nlen { return None; }
+    let first = needle[0];
+    if nlen == 1 {
+        return memchr::memchr(first, hay).map(|i| i + start);
+    }
+    let mut offset = 0;
+    while offset + nlen <= hay.len() {
+        match memchr::memchr(first, &hay[offset..]) {
+            None => return None,
+            Some(i) => {
+                let pos = offset + i;
+                if pos + nlen > hay.len() { return None; }
+                if &hay[pos..pos + nlen] == needle {
+                    return Some(pos + start);
+                }
+                offset = pos + 1;
+            }
+        }
+    }
+    None
+}
+
+/// Count occurrences of `needle` in `haystack` (non-overlapping), up to `limit`.
+#[inline]
+fn fast_count(haystack: &[u8], needle: &[u8], limit: usize) -> usize {
+    let nlen = needle.len();
+    if nlen == 0 || limit == 0 { return 0; }
+    let mut count = 0usize;
+    let mut start = 0usize;
+    while count < limit {
+        match fast_find(haystack, start, needle) {
+            Some(pos) => {
+                count += 1;
+                start = pos + nlen;
+            }
+            None => break,
+        }
+    }
+    count
+}
+
 /// Avoids the intermediate String allocation that `str::replace()` creates.
+/// Uses memchr-accelerated search and exact-size pre-allocation.
 fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>) -> CompactString {
     if old.is_empty() {
         let char_count = s.chars().count();
         let limit = max_count.unwrap_or(char_count + 1);
-        let mut result = CompactString::with_capacity(s.len() + new.len() * limit.min(char_count + 1));
+        let actual = limit.min(char_count + 1);
+        let mut result = CompactString::with_capacity(s.len() + new.len() * actual);
         let mut count = 0;
         for ch in s.chars() {
             if count < limit {
@@ -1227,69 +1311,67 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         }
         return result;
     }
-    let old_len = old.len();
-    let limit = max_count.unwrap_or(usize::MAX);
-    let new_len = new.len();
 
-    // Same-length replacement: use match_indices for SIMD-accelerated search,
-    // then overwrite matched positions in a byte copy (no realloc, no push_str)
+    let sb = s.as_bytes();
+    let old_b = old.as_bytes();
+    let new_b = new.as_bytes();
+    let old_len = old_b.len();
+    let new_len = new_b.len();
+    let limit = max_count.unwrap_or(usize::MAX);
+
+    // Pre-count occurrences (memchr-accelerated)
+    let occ = fast_count(sb, old_b, limit);
+    if occ == 0 { return CompactString::from(s); }
+
+    // Same-length: in-place overwrite (no realloc)
     if old_len == new_len {
-        let new_bytes = new.as_bytes();
-        let mut bytes = Vec::from(s.as_bytes());
-        let mut replaced = 0usize;
-        for (pos, _) in s.match_indices(old) {
-            if replaced >= limit { break; }
-            bytes[pos..pos + old_len].copy_from_slice(new_bytes);
-            replaced += 1;
+        let mut bytes = Vec::from(sb);
+        let mut start = 0usize;
+        for _ in 0..occ {
+            if let Some(pos) = fast_find(sb, start, old_b) {
+                bytes[pos..pos + old_len].copy_from_slice(new_b);
+                start = pos + old_len;
+            }
         }
-        if replaced == 0 { return CompactString::from(s); }
-        // SAFETY: replaced same-length valid UTF-8 substrings with valid UTF-8 replacements
         return unsafe { CompactString::from(String::from_utf8_unchecked(bytes)) };
     }
 
-    let growth_per_replace = new_len as isize - old_len as isize;
-    if growth_per_replace < 0 || s.len() <= 23 {
-        // Shrink case: pre-allocate to source length (result ≤ source)
-        let mut result = CompactString::with_capacity(s.len());
-        let mut remainder = s;
-        let mut replaced = 0usize;
-        while replaced < limit {
-            if let Some(pos) = remainder.find(old) {
-                result.push_str(&remainder[..pos]);
-                result.push_str(new);
-                remainder = &remainder[pos + old_len..];
-                replaced += 1;
-            } else {
-                break;
+    // Exact-size allocation: avoids over-alloc for shrink (may keep CompactString inline ≤23)
+    let result_len = s.len() + occ * new_len - occ * old_len;
+    let mut out = Vec::with_capacity(result_len);
+    let mut src_pos = 0usize;
+    let out_ptr: *mut u8 = out.as_mut_ptr();
+    let mut dst = 0usize;
+
+    unsafe {
+        for _ in 0..occ {
+            if let Some(pos) = fast_find(sb, src_pos, old_b) {
+                let prefix_len = pos - src_pos;
+                if prefix_len > 0 {
+                    std::ptr::copy_nonoverlapping(
+                        sb.as_ptr().add(src_pos), out_ptr.add(dst), prefix_len
+                    );
+                    dst += prefix_len;
+                }
+                if new_len > 0 {
+                    std::ptr::copy_nonoverlapping(
+                        new_b.as_ptr(), out_ptr.add(dst), new_len
+                    );
+                    dst += new_len;
+                }
+                src_pos = pos + old_len;
             }
         }
-        if replaced == 0 { return CompactString::from(s); }
-        result.push_str(remainder);
-        result
-    } else {
-        // Growth case: pre-count to allocate exact capacity
-        let occurrence_count = if limit == usize::MAX {
-            s.matches(old).count()
-        } else {
-            s.matches(old).take(limit).count()
-        };
-        if occurrence_count == 0 { return CompactString::from(s); }
-        let result_len = s.len() + occurrence_count * new_len - occurrence_count * old_len;
-        let mut result = CompactString::with_capacity(result_len);
-        let mut remainder = s;
-        let mut replaced = 0usize;
-        while replaced < limit {
-            if let Some(pos) = remainder.find(old) {
-                result.push_str(&remainder[..pos]);
-                result.push_str(new);
-                remainder = &remainder[pos + old_len..];
-                replaced += 1;
-            } else {
-                break;
-            }
+        // Copy remainder
+        let rem = sb.len() - src_pos;
+        if rem > 0 {
+            std::ptr::copy_nonoverlapping(
+                sb.as_ptr().add(src_pos), out_ptr.add(dst), rem
+            );
+            dst += rem;
         }
-        result.push_str(remainder);
-        result
+        out.set_len(dst);
+        CompactString::from(String::from_utf8_unchecked(out))
     }
 }
 /// Avoids cloning the list/tuple just to iterate.

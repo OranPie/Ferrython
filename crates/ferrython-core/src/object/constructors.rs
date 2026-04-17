@@ -402,6 +402,16 @@ static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_im
 static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(Box::new(CompactString::const_new(""))) }));
 static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(Box::new(vec![])) }));
 
+// ── Single-character ASCII string cache (like CPython's unicode_latin1) ──
+// Pre-allocates all 128 ASCII single-char strings as immortal objects.
+// str_val() checks this cache to avoid per-char allocation in split/etc.
+static CHAR_CACHE: LazyLock<[PyObjectRef; 128]> = LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        let c = CompactString::from(std::str::from_utf8(&[i as u8]).unwrap());
+        PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(Box::new(c)) })
+    })
+});
+
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 // Static UnsafeCell: no TLS overhead — single-threaded GIL interpreter.
 struct TrackedHolder(std::cell::UnsafeCell<Vec<PyWeakRef>>);
@@ -641,7 +651,30 @@ impl PyObject {
     #[inline]
     pub fn str_val(v: CompactString) -> PyObjectRef {
         if v.is_empty() { return EMPTY_STR.clone(); }
+        // Single-char ASCII cache (like CPython's unicode_latin1)
+        if v.len() == 1 {
+            let b = v.as_bytes()[0];
+            if b < 128 {
+                return CHAR_CACHE[b as usize].clone();
+            }
+        }
         Self::wrap_leaf(PyObjectPayload::Str(alloc_str_box(v)))
+    }
+    /// Return cached single-char string for ASCII byte, or create new.
+    #[inline(always)]
+    pub fn str_char(b: u8) -> PyObjectRef {
+        if b < 128 { CHAR_CACHE[b as usize].clone() }
+        else { Self::str_val(CompactString::from(std::str::from_utf8(&[b]).unwrap())) }
+    }
+    /// Create a string PyObject from a byte slice (must be valid UTF-8).
+    /// Uses char cache for single-byte ASCII slices, avoids intermediate CompactString.
+    #[inline(always)]
+    pub fn str_from_utf8_slice(bytes: &[u8]) -> PyObjectRef {
+        match bytes.len() {
+            0 => EMPTY_STR.clone(),
+            1 if bytes[0] < 128 => CHAR_CACHE[bytes[0] as usize].clone(),
+            _ => Self::str_val(CompactString::from(unsafe { std::str::from_utf8_unchecked(bytes) })),
+        }
     }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef {
         if v.is_empty() { return EMPTY_BYTES.clone(); }

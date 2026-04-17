@@ -97,6 +97,7 @@ impl PyInt {
     pub fn to_f64(&self) -> f64 {
         match self { PyInt::Small(n) => *n as f64, PyInt::Big(n) => n.to_f64().unwrap_or(f64::INFINITY) }
     }
+    #[inline(always)]
     pub fn to_object(&self) -> PyObjectRef {
         match self { PyInt::Small(n) => PyObject::int(*n), PyInt::Big(n) => PyObject::big_int(n.as_ref().clone()) }
     }
