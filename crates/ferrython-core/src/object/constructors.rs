@@ -106,6 +106,21 @@ pub fn alloc_tuple_box(items: Vec<PyObjectRef>) -> Box<Vec<PyObjectRef>> {
     }
 }
 
+/// Allocate an empty Box<Vec<PyObjectRef>> from the tuple freelist.
+/// The returned Vec has retained capacity from previous use (no allocation needed
+/// when pushing elements that fit within the retained capacity).
+#[inline(always)]
+pub fn alloc_tuple_box_empty() -> Box<Vec<PyObjectRef>> {
+    unsafe {
+        let list = &mut *TUPLE_BOX_FREELIST.0.get();
+        if let Some(b) = list.pop() {
+            b
+        } else {
+            Box::new(Vec::new())
+        }
+    }
+}
+
 /// Return a Box<Vec<PyObjectRef>> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_tuple_box(mut b: Box<Vec<PyObjectRef>>) {
@@ -135,6 +150,20 @@ pub fn alloc_list_box(items: Vec<PyObjectRef>) -> Box<PyCell<Vec<PyObjectRef>>> 
             b
         } else {
             Box::new(PyCell::new(items))
+        }
+    }
+}
+
+/// Allocate an empty Box<PyCell<Vec<PyObjectRef>>> from the list freelist.
+/// The returned Vec has retained capacity from previous use (no allocation needed).
+#[inline(always)]
+pub fn alloc_list_box_empty() -> Box<PyCell<Vec<PyObjectRef>>> {
+    unsafe {
+        let list = &mut *LIST_BOX_FREELIST.0.get();
+        if let Some(b) = list.pop() {
+            b
+        } else {
+            Box::new(PyCell::new(Vec::new()))
         }
     }
 }

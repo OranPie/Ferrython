@@ -18,3 +18,5 @@ pub use methods_attr::{lookup_in_class_mro, is_data_descriptor, has_descriptor_g
 pub use helpers::*;
 pub use constructors::init_gc;
 pub use constructors::alloc_map_inner;
+pub use constructors::alloc_tuple_box_empty;
+pub use constructors::alloc_list_box_empty;

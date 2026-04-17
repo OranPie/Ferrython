@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args_min,
+    check_args_min, alloc_list_box_empty,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
@@ -186,28 +186,31 @@ pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                 extract_kwarg(args, "maxsplit").and_then(|v| v.as_int().map(|n| n as usize))
             };
             let sep_arg = pos.first();
-            let parts: Vec<PyObjectRef> = match sep_arg {
-                None => split_whitespace_fast(s.as_bytes(), maxsplit),
-                Some(a) if matches!(&a.payload, PyObjectPayload::None) => split_whitespace_fast(s.as_bytes(), maxsplit),
+            // Allocate list box directly from freelist — reuses retained capacity,
+            // avoids creating + dropping an intermediate Vec.
+            let list_box = alloc_list_box_empty();
+            let parts = unsafe { &mut *list_box.data_ptr() };
+            match sep_arg {
+                None => split_whitespace_into(s.as_bytes(), maxsplit, parts),
+                Some(a) if matches!(&a.payload, PyObjectPayload::None) => split_whitespace_into(s.as_bytes(), maxsplit, parts),
                 Some(a) => {
                     let sep = a.as_str().ok_or_else(|| PyException::type_error("split() argument must be str or None"))?;
                     match maxsplit {
-                        Some(n) => s.splitn(n + 1, sep)
-                            .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
-                            .collect(),
+                        Some(n) => {
+                            for p in s.splitn(n + 1, sep) {
+                                parts.push(PyObject::str_from_utf8_slice(p.as_bytes()));
+                            }
+                        }
                         None => {
                             if sep.is_empty() {
                                 return Err(PyException::value_error("empty separator"));
                             }
                             let sep_len = sep.len();
                             if sep_len == 1 {
-                                split_single_byte(s.as_bytes(), sep.as_bytes()[0])
+                                split_single_byte_into(s.as_bytes(), sep.as_bytes()[0], parts);
                             } else {
-                                // Multi-byte separator: memchr-accelerated search, pre-counted
                                 let sep_b = sep.as_bytes();
                                 let bytes = s.as_bytes();
-                                let count = fast_count(bytes, sep_b, usize::MAX);
-                                let mut parts = Vec::with_capacity(count + 1);
                                 let mut start = 0;
                                 loop {
                                     match fast_find(bytes, start, sep_b) {
@@ -221,14 +224,12 @@ pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                         }
                                     }
                                 }
-                                parts
                             }
                         }
                     }
                 }
             };
-            // Result list contains only strings (leaf types) — skip GC tracking
-            Ok(PyObject::list_leaf(parts))
+            Ok(PyObject::wrap_leaf(PyObjectPayload::List(list_box)))
         }
         "rsplit" => {
             let pos = positional_args(args);
@@ -1264,6 +1265,58 @@ fn split_single_byte(bytes: &[u8], sep: u8) -> Vec<PyObjectRef> {
     }
     parts.push(PyObject::str_from_utf8_slice(&bytes[start..]));
     parts
+}
+
+/// Fast whitespace split that pushes directly into an existing Vec.
+/// Avoids creating an intermediate Vec allocation.
+#[inline]
+fn split_whitespace_into(bytes: &[u8], maxsplit: Option<usize>, parts: &mut Vec<PyObjectRef>) {
+    let len = bytes.len();
+    if len == 0 { return; }
+    let max = maxsplit.unwrap_or(usize::MAX);
+    let mut splits = 0usize;
+    let mut i = 0;
+    while i < len {
+        let b = unsafe { *bytes.get_unchecked(i) };
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0b || b == 0x0c {
+            i += 1;
+            continue;
+        }
+        if splits >= max {
+            parts.push(PyObject::str_from_utf8_slice(&bytes[i..]));
+            return;
+        }
+        let start = i;
+        i += 1;
+        while i < len {
+            let b = unsafe { *bytes.get_unchecked(i) };
+            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0b || b == 0x0c { break; }
+            i += 1;
+        }
+        parts.push(PyObject::str_from_utf8_slice(&bytes[start..i]));
+        splits += 1;
+    }
+}
+
+/// Fast single-byte separator split that pushes directly into an existing Vec.
+#[inline]
+fn split_single_byte_into(bytes: &[u8], sep: u8, parts: &mut Vec<PyObjectRef>) {
+    let len = bytes.len();
+    let mut start = 0;
+    if len <= 256 {
+        for i in 0..len {
+            if unsafe { *bytes.get_unchecked(i) } == sep {
+                parts.push(PyObject::str_from_utf8_slice(&bytes[start..i]));
+                start = i + 1;
+            }
+        }
+    } else {
+        for pos in memchr::memchr_iter(sep, bytes) {
+            parts.push(PyObject::str_from_utf8_slice(&bytes[start..pos]));
+            start = pos + 1;
+        }
+    }
+    parts.push(PyObject::str_from_utf8_slice(&bytes[start..]));
 }
 
 /// Replace occurrences of `old` with `new` in `s`, writing directly into a CompactString.

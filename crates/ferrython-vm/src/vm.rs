@@ -168,6 +168,7 @@ use ferrython_core::object::{ new_fx_hashkey_map, PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, VecIterData,
     lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
+    alloc_tuple_box_empty,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -2922,20 +2923,29 @@ impl VirtualMachine {
                         }
                         1 => {
                             let a = spop!(frame);
-                            unsafe { frame.push_unchecked(PyObject::tuple(vec![a])) };
+                            let mut tb = alloc_tuple_box_empty();
+                            tb.push(a);
+                            unsafe { frame.push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb))) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         2 => {
                             let b = spop!(frame);
                             let a = spop!(frame);
-                            unsafe { frame.push_unchecked(PyObject::tuple(vec![a, b])) };
+                            let mut tb = alloc_tuple_box_empty();
+                            tb.push(a);
+                            tb.push(b);
+                            unsafe { frame.push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb))) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         3 => {
                             let c = spop!(frame);
                             let b = spop!(frame);
                             let a = spop!(frame);
-                            unsafe { frame.push_unchecked(PyObject::tuple(vec![a, b, c])) };
+                            let mut tb = alloc_tuple_box_empty();
+                            tb.push(a);
+                            tb.push(b);
+                            tb.push(c);
+                            unsafe { frame.push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb))) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => {

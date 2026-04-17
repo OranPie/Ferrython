@@ -896,7 +896,8 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "add" => {
             check_args_min("add", args, 1)?;
             let hk = args[0].to_hashable_key()?;
-            m.write().insert(hk, args[0].clone());
+            // Use entry API to avoid Rc::clone when key already exists
+            m.write().entry(hk).or_insert_with(|| args[0].clone());
             Ok(PyObject::none())
         }
         "remove" => {
