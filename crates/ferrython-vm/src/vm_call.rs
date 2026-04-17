@@ -2843,6 +2843,25 @@ impl VirtualMachine {
                 self.call_object(method.clone(), bound_args)
             }
             PyObjectPayload::BuiltinBoundMethod(bbm) => {
+                // Fast path: common receiver types (Str, List, Dict, Tuple, Set, Int, Float, Bool, Bytes)
+                // go directly to builtins::call_method, skipping 15+ special-case checks for
+                // Generator, Iterator, Range, Class, Property, Instance, BuiltinType, etc.
+                match &bbm.receiver.payload {
+                    PyObjectPayload::Str(_)
+                    | PyObjectPayload::List(_)
+                    | PyObjectPayload::Dict(_)
+                    | PyObjectPayload::Tuple(_)
+                    | PyObjectPayload::Set(_)
+                    | PyObjectPayload::Int(_)
+                    | PyObjectPayload::Float(_)
+                    | PyObjectPayload::Bool(_)
+                    | PyObjectPayload::Bytes(_)
+                    | PyObjectPayload::ByteArray(_)
+                    | PyObjectPayload::FrozenSet(_) => {
+                        return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
+                    }
+                    _ => {}
+                }
                 // ── Generator / Coroutine / AsyncGenerator dispatch ──
                 // Extract gen_arc and discriminate the bbm.receiver kind for proper protocol.
                 let gen_kind = match &bbm.receiver.payload {
