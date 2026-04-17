@@ -613,10 +613,13 @@ fn break_cycles(payload: &PyObjectPayload) {
     }
 }
 
-fn track_object(obj: &PyObjectRef) {
-    unsafe {
-        (*TRACKED_OBJECTS.0.get()).push(PyObjectRef::downgrade(obj));
-    }
+/// Track object for GC cycle collection.
+/// Currently a no-op: GC never auto-triggers (notify_alloc return value is ignored),
+/// so tracking adds ~7ns overhead (Weak::new + Vec::push) with no benefit.
+/// Re-enable when GC auto-collection is implemented.
+#[inline(always)]
+fn track_object(_obj: &PyObjectRef) {
+    // unsafe { (*TRACKED_OBJECTS.0.get()).push(PyObjectRef::downgrade(obj)); }
 }
 
 // ── PyObject constructors ──
@@ -625,7 +628,8 @@ impl PyObject {
     #[inline]
     
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
-        ferrython_gc::notify_alloc();
+        // GC notify_alloc skipped: return value is ignored (GC never auto-triggers).
+        // Re-enable when GC auto-collection is implemented.
         PyObjectRef::new(PyObject { payload })
     }
     /// Like `wrap` but skips GC allocation tracking.
