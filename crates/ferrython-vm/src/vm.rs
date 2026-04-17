@@ -1536,30 +1536,37 @@ impl VirtualMachine {
                                     Some(Some(val)) => {
                                         *index = idx + 1;
                                         let idx_obj = PyObject::int(idx);
-                                        // CPython-style tuple reuse: mutate cached tuple in-place
-                                        let tuple = if let Some(ref mut cached) = cached_tuple {
-                                            if let Some(obj) = PyObjectRef::get_mut(cached) {
-                                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
-                                                    items[0] = idx_obj;
-                                                    items[1] = val;
-                                                    cached.clone()
-                                                } else {
-                                                    let t = PyObject::tuple(vec![idx_obj, val]);
-                                                    *cached = t.clone();
-                                                    t
-                                                }
-                                            } else {
-                                                let t = PyObject::tuple(vec![idx_obj, val]);
-                                                *cached = t.clone();
-                                                t
-                                            }
-                                        } else {
-                                            let t = PyObject::tuple(vec![idx_obj, val]);
-                                            *cached_tuple = Some(t.clone());
-                                            t
-                                        };
                                         drop(data);
-                                        spush!(frame, tuple);
+                                        // Look-ahead: fuse with UnpackSequence+StoreFast to
+                                        // avoid tuple creation entirely.
+                                        let nip = frame.ip;
+                                        if nip + 2 < instr_count {
+                                            let i0 = unsafe { *instr_base.add(nip) };
+                                            if i0.op == Opcode::UnpackSequence && i0.arg == 2 {
+                                                let i1 = unsafe { *instr_base.add(nip + 1) };
+                                                let i2 = unsafe { *instr_base.add(nip + 2) };
+                                                if i1.op == Opcode::StoreFast {
+                                                    if i2.op == Opcode::StoreFast {
+                                                        sset_local!(frame, i1.arg as usize, idx_obj);
+                                                        sset_local!(frame, i2.arg as usize, val);
+                                                        frame.ip = nip + 3;
+                                                        hot_ok!(profiling, self.profiler, instr.op)
+                                                    } else if i2.op == Opcode::StoreFastJumpAbsolute {
+                                                        sset_local!(frame, i1.arg as usize, idx_obj);
+                                                        sset_local!(frame, (i2.arg >> 16) as usize, val);
+                                                        frame.ip = (i2.arg & 0xFFFF) as usize;
+                                                        hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                                    }
+                                                }
+                                                // Partial fusion: skip tuple, push reversed
+                                                spush!(frame, val);
+                                                spush!(frame, idx_obj);
+                                                frame.ip = nip + 1;
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                        }
+                                        // Fallback: create tuple
+                                        spush!(frame, PyObject::tuple(vec![idx_obj, val]));
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                     Some(None) => {
@@ -1574,29 +1581,34 @@ impl VirtualMachine {
                                             Some(Some(val)) => {
                                                 *index = idx + 1;
                                                 let idx_obj = PyObject::int(idx);
-                                                let tuple = if let Some(ref mut cached) = cached_tuple {
-                                                    if let Some(obj) = PyObjectRef::get_mut(cached) {
-                                                        if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
-                                                            items[0] = idx_obj;
-                                                            items[1] = val;
-                                                            cached.clone()
-                                                        } else {
-                                                            let t = PyObject::tuple(vec![idx_obj, val]);
-                                                            *cached = t.clone();
-                                                            t
-                                                        }
-                                                    } else {
-                                                        let t = PyObject::tuple(vec![idx_obj, val]);
-                                                        *cached = t.clone();
-                                                        t
-                                                    }
-                                                } else {
-                                                    let t = PyObject::tuple(vec![idx_obj, val]);
-                                                    *cached_tuple = Some(t.clone());
-                                                    t
-                                                };
                                                 drop(data);
-                                                spush!(frame, tuple);
+                                                // Same look-ahead fusion as above
+                                                let nip = frame.ip;
+                                                if nip + 2 < instr_count {
+                                                    let i0 = unsafe { *instr_base.add(nip) };
+                                                    if i0.op == Opcode::UnpackSequence && i0.arg == 2 {
+                                                        let i1 = unsafe { *instr_base.add(nip + 1) };
+                                                        let i2 = unsafe { *instr_base.add(nip + 2) };
+                                                        if i1.op == Opcode::StoreFast {
+                                                            if i2.op == Opcode::StoreFast {
+                                                                sset_local!(frame, i1.arg as usize, idx_obj);
+                                                                sset_local!(frame, i2.arg as usize, val);
+                                                                frame.ip = nip + 3;
+                                                                hot_ok!(profiling, self.profiler, instr.op)
+                                                            } else if i2.op == Opcode::StoreFastJumpAbsolute {
+                                                                sset_local!(frame, i1.arg as usize, idx_obj);
+                                                                sset_local!(frame, (i2.arg >> 16) as usize, val);
+                                                                frame.ip = (i2.arg & 0xFFFF) as usize;
+                                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                                            }
+                                                        }
+                                                        spush!(frame, val);
+                                                        spush!(frame, idx_obj);
+                                                        frame.ip = nip + 1;
+                                                        hot_ok!(profiling, self.profiler, instr.op)
+                                                    }
+                                                }
+                                                spush!(frame, PyObject::tuple(vec![idx_obj, val]));
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
                                             Some(None) => {
