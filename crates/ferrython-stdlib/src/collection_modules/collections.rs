@@ -1619,52 +1619,89 @@ fn install_string_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
     });
     str_method!(attrs, "split", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         let parts: Vec<PyObjectRef> = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
-            s.split_whitespace().map(|p| PyObject::str_val(CompactString::from(p))).collect()
+            s.split_whitespace().map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
+        } else if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.split(sr.as_str()).map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
         } else {
             let sep = args[0].py_to_string();
-            s.split(&*sep).map(|p| PyObject::str_val(CompactString::from(p))).collect()
+            s.split(&*sep).map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
         };
         Ok(PyObject::list(parts))
     });
     str_method!(attrs, "rsplit", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         let parts: Vec<PyObjectRef> = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
-            s.split_whitespace().rev().map(|p| PyObject::str_val(CompactString::from(p))).collect()
+            s.split_whitespace().rev().map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
+        } else if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.rsplit(sr.as_str()).map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
         } else {
             let sep = args[0].py_to_string();
-            s.rsplit(&*sep).map(|p| PyObject::str_val(CompactString::from(p))).collect()
+            s.rsplit(&*sep).map(|p| PyObject::str_from_utf8_slice(p.as_bytes())).collect()
         };
         Ok(PyObject::list(parts))
     });
     str_method!(attrs, "replace", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.len() < 2 { return Err(PyException::type_error("replace() requires at least 2 arguments")); }
-        let old = args[0].py_to_string();
-        let new = args[1].py_to_string();
-        Ok(PyObject::str_val(CompactString::from(s.replace(&*old, &*new))))
+        let result = match (&args[0].payload, &args[1].payload) {
+            (PyObjectPayload::Str(old_s), PyObjectPayload::Str(new_s)) => {
+                s.replace(old_s.as_str(), new_s.as_str())
+            }
+            _ => {
+                let old = args[0].py_to_string();
+                let new = args[1].py_to_string();
+                s.replace(&*old, &*new)
+            }
+        };
+        Ok(PyObject::str_val(CompactString::from(result)))
     });
     str_method!(attrs, "find", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("find() requires 1 argument")); }
-        let sub = args[0].py_to_string();
-        Ok(PyObject::int(s.find(&*sub).map_or(-1, |i| i as i64)))
+        let idx = if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.find(sr.as_str())
+        } else {
+            let sub = args[0].py_to_string();
+            s.find(&*sub)
+        };
+        Ok(PyObject::int(idx.map_or(-1, |i| i as i64)))
     });
     str_method!(attrs, "rfind", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("rfind() requires 1 argument")); }
-        let sub = args[0].py_to_string();
-        Ok(PyObject::int(s.rfind(&*sub).map_or(-1, |i| i as i64)))
+        let idx = if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.rfind(sr.as_str())
+        } else {
+            let sub = args[0].py_to_string();
+            s.rfind(&*sub)
+        };
+        Ok(PyObject::int(idx.map_or(-1, |i| i as i64)))
     });
     str_method!(attrs, "count", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("count() requires 1 argument")); }
-        let sub = args[0].py_to_string();
-        Ok(PyObject::int(s.matches(&*sub).count() as i64))
+        let n = if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.matches(sr.as_str()).count()
+        } else {
+            let sub = args[0].py_to_string();
+            s.matches(&*sub).count()
+        };
+        Ok(PyObject::int(n as i64))
     });
     str_method!(attrs, "startswith", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("startswith() requires 1 argument")); }
-        let prefix = args[0].py_to_string();
-        Ok(PyObject::bool_val(s.starts_with(&*prefix)))
+        let result = if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.starts_with(sr.as_str())
+        } else {
+            let prefix = args[0].py_to_string();
+            s.starts_with(&*prefix)
+        };
+        Ok(PyObject::bool_val(result))
     });
     str_method!(attrs, "endswith", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("endswith() requires 1 argument")); }
-        let suffix = args[0].py_to_string();
-        Ok(PyObject::bool_val(s.ends_with(&*suffix)))
+        let result = if let PyObjectPayload::Str(sr) = &args[0].payload {
+            s.ends_with(sr.as_str())
+        } else {
+            let suffix = args[0].py_to_string();
+            s.ends_with(&*suffix)
+        };
+        Ok(PyObject::bool_val(result))
     });
     str_method!(attrs, "join", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("join() requires 1 argument")); }
