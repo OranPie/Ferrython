@@ -24,6 +24,10 @@ pub(crate) use core_fns::unwrap_abstract_fget;
 pub(crate) use type_methods::partial_cmp_for_sort;
 pub use instance_methods::resolve_type_class_method;
 
+// Direct type-method dispatchers — bypasses call_method's __sizeof__ check + type re-match
+pub(crate) use string_methods::call_str_method;
+pub(crate) use type_methods::{call_list_method, call_dict_method, call_set_method, call_tuple_method};
+
 // ── Builtin registry ──
 
 type BuiltinFn = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;

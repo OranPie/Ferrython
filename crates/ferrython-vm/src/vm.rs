@@ -1397,7 +1397,13 @@ impl VirtualMachine {
                             PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
                                 let map = unsafe { &*cell.data_ptr() };
                                 if idx < map.len() {
-                                    Some(map.get_index(idx).unwrap().0.to_object())
+                                    let (hk, _) = map.get_index(idx).unwrap();
+                                    // Inline int key conversion (avoids nested match in to_object)
+                                    Some(match hk {
+                                        HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
+                                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                                        _ => hk.to_object(),
+                                    })
                                 } else { None }
                             }
                             PyObjectPayload::DictValues(cell) => {
@@ -1943,7 +1949,12 @@ impl VirtualMachine {
                             PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
                                 let map = unsafe { &*cell.data_ptr() };
                                 if idx < map.len() {
-                                    Some(map.get_index(idx).unwrap().0.to_object())
+                                    let (hk, _) = map.get_index(idx).unwrap();
+                                    Some(match hk {
+                                        HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
+                                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                                        _ => hk.to_object(),
+                                    })
                                 } else { None }
                             }
                             PyObjectPayload::DictValues(cell) => {
@@ -2690,8 +2701,8 @@ impl VirtualMachine {
                         PyObjectPayload::ExceptionInstance(ei) => {
                             let kind = ei.kind;
                             let msg = ei.message.clone();
-                            let orig = tos.clone();
-                            frame.pop();
+                            // Pop takes ownership of Rc — avoids extra tos.clone()
+                            let orig = spop!(frame);
                             Err(PyException::with_original(kind, msg, orig))
                         }
                         PyObjectPayload::ExceptionType(kind) => {
@@ -3646,6 +3657,28 @@ impl VirtualMachine {
                             } else {
                                 self.execute_one(instr)
                             }
+                        } else if let PyObjectPayload::ExceptionType(kind) = &sget!(frame, func_idx).payload {
+                        // Inline ExceptionType instantiation — avoids exec_call_ops Vec alloc + call_object dispatch
+                        let kind = *kind;
+                        let msg: CompactString = if arg_count >= 1 {
+                            if let PyObjectPayload::Str(s) = &sget!(frame, func_idx + 1).payload {
+                                (**s).clone()
+                            } else {
+                                CompactString::from(sget!(frame, func_idx + 1).py_to_string())
+                            }
+                        } else {
+                            CompactString::default()
+                        };
+                        // Collect args (most exceptions have 0-1 args)
+                        let args: Vec<PyObjectRef> = if arg_count > 0 {
+                            (0..arg_count).map(|i| sget!(frame, func_idx + 1 + i).clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        unsafe { frame.stack.set_len(func_idx); }
+                        let inst = PyObject::exception_instance_with_args(kind, msg, args);
+                        spush!(frame, inst);
+                        hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                         // Fast path for common builtins: len(x), range(n)
                         let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &sget!(frame, func_idx).payload {
@@ -4910,7 +4943,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(k) = hk {
-                                            set.write().insert(k, item);
+                                            unsafe { &mut *set.data_ptr() }.insert(k, item);
                                             chain_pop_none!(frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                                         } else {
                                             // Non-hashable: use general dispatch
@@ -4938,7 +4971,10 @@ impl VirtualMachine {
                                         }
                                     }
                                 } else {
-                                    // General builtin method dispatch — avoid Vec for 1-2 args
+                                    // General builtin method dispatch — direct type dispatch
+                                    // (bypasses call_method's __sizeof__ check + type re-match)
+                                    // __sizeof__ is a universal method handled only in call_method;
+                                    // gate on first byte to cheaply skip direct dispatch for dunders.
                                     if arg_count == 1 {
                                         let a0 = spop!(frame);
                                         let receiver = spop!(frame);
@@ -4964,7 +5000,22 @@ impl VirtualMachine {
                                                     _ => Ok(a0),
                                                 }
                                             } else { Ok(a0) };
-                                            match a0_result.and_then(|a0| crate::builtins::call_method(&receiver, name.as_str(), &[a0])) {
+                                            let result = a0_result.and_then(|a0| {
+                                                let n = name.as_str();
+                                                // Dunder methods (start with '_') go through call_method for __sizeof__ etc.
+                                                if n.as_bytes().first() == Some(&b'_') {
+                                                    return crate::builtins::call_method(&receiver, n, &[a0]);
+                                                }
+                                                match &receiver.payload {
+                                                    PyObjectPayload::Str(s) => crate::builtins::call_str_method(s.as_str(), n, &[a0]),
+                                                    PyObjectPayload::List(items) => crate::builtins::call_list_method(items, n, &[a0]),
+                                                    PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => crate::builtins::call_dict_method(map, n, &[a0]),
+                                                    PyObjectPayload::Set(m) => crate::builtins::call_set_method(m, n, &[a0]),
+                                                    PyObjectPayload::Tuple(items) => crate::builtins::call_tuple_method(items, n, &[a0]),
+                                                    _ => crate::builtins::call_method(&receiver, n, &[a0]),
+                                                }
+                                            });
+                                            match result {
                                                 Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
                                                 Err(e) => Err(e)
                                             }
@@ -4975,7 +5026,17 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            match crate::builtins::call_method(&receiver, name.as_str(), &[a0, a1]) {
+                                            let n = name.as_str();
+                                            let result = if n.as_bytes().first() == Some(&b'_') {
+                                                crate::builtins::call_method(&receiver, n, &[a0, a1])
+                                            } else { match &receiver.payload {
+                                                PyObjectPayload::Str(s) => crate::builtins::call_str_method(s.as_str(), n, &[a0, a1]),
+                                                PyObjectPayload::List(items) => crate::builtins::call_list_method(items, n, &[a0, a1]),
+                                                PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => crate::builtins::call_dict_method(map, n, &[a0, a1]),
+                                                PyObjectPayload::Set(m) => crate::builtins::call_set_method(m, n, &[a0, a1]),
+                                                _ => crate::builtins::call_method(&receiver, n, &[a0, a1]),
+                                            } };
+                                            match result {
                                                 Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
                                                 Err(e) => Err(e)
                                             }
@@ -4984,7 +5045,17 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            match crate::builtins::call_method(&receiver, name.as_str(), &[]) {
+                                            let n = name.as_str();
+                                            let result = if n.as_bytes().first() == Some(&b'_') {
+                                                crate::builtins::call_method(&receiver, n, &[])
+                                            } else { match &receiver.payload {
+                                                PyObjectPayload::Str(s) => crate::builtins::call_str_method(s.as_str(), n, &[]),
+                                                PyObjectPayload::List(items) => crate::builtins::call_list_method(items, n, &[]),
+                                                PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => crate::builtins::call_dict_method(map, n, &[]),
+                                                PyObjectPayload::Set(m) => crate::builtins::call_set_method(m, n, &[]),
+                                                _ => crate::builtins::call_method(&receiver, n, &[]),
+                                            } };
+                                            match result {
                                                 Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
                                                 Err(e) => Err(e)
                                             }

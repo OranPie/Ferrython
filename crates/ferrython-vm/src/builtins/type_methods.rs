@@ -69,7 +69,7 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     None
 }
 
-pub(super) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::list(items.read().to_vec())),
         "count" => {
@@ -401,7 +401,7 @@ pub(super) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
     }
 }
 
-pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
             Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone())))
@@ -698,7 +698,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
     }
 }
 
-pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "count" => {
             check_args_min("count", args, 1)?;
@@ -807,7 +807,7 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
     }
 }
 
-pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
         "union" | "__or__" => {

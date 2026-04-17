@@ -144,7 +144,7 @@ fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
     result
 }
 
-pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "upper" => Ok(PyObject::str_val(CompactString::from(s.to_uppercase()))),
         "lower" => Ok(PyObject::str_val(CompactString::from(s.to_lowercase()))),
@@ -1363,8 +1363,39 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         return unsafe { CompactString::from(String::from_utf8_unchecked(bytes)) };
     }
 
-    // Exact-size allocation: avoids over-alloc for shrink (may keep CompactString inline ≤23)
+    // Exact-size allocation: for small results, use stack buffer to avoid Vec heap alloc
     let result_len = s.len() + occ * new_len - occ * old_len;
+
+    // Stack buffer path: avoids Vec heap allocation for results ≤128 bytes
+    if result_len <= 128 {
+        let mut stack_buf = [0u8; 128];
+        let out_ptr = stack_buf.as_mut_ptr();
+        let mut src_pos = 0usize;
+        let mut dst = 0usize;
+        unsafe {
+            for _ in 0..occ {
+                if let Some(pos) = fast_find(sb, src_pos, old_b) {
+                    let prefix_len = pos - src_pos;
+                    if prefix_len > 0 {
+                        std::ptr::copy_nonoverlapping(sb.as_ptr().add(src_pos), out_ptr.add(dst), prefix_len);
+                        dst += prefix_len;
+                    }
+                    if new_len > 0 {
+                        std::ptr::copy_nonoverlapping(new_b.as_ptr(), out_ptr.add(dst), new_len);
+                        dst += new_len;
+                    }
+                    src_pos = pos + old_len;
+                }
+            }
+            let rem = sb.len() - src_pos;
+            if rem > 0 {
+                std::ptr::copy_nonoverlapping(sb.as_ptr().add(src_pos), out_ptr.add(dst), rem);
+                dst += rem;
+            }
+            return CompactString::from(std::str::from_utf8_unchecked(&stack_buf[..dst]));
+        }
+    }
+
     let mut out = Vec::with_capacity(result_len);
     let mut src_pos = 0usize;
     let out_ptr: *mut u8 = out.as_mut_ptr();
