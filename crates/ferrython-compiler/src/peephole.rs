@@ -1329,8 +1329,9 @@ fn compute_max_stack_size(code: &mut CodeObject) {
     for instr in &code.instructions {
         depth += instr.op.stack_effect(instr.arg);
         if depth > max_depth { max_depth = depth; }
-        if depth < 0 { depth = 0; } // safety: branches may converge
+        if depth < 0 { depth = 0; } // safety: branches may converge at different depths
     }
-    // Add margin for temporary values (fused ops, exception handling)
+    // Small margin for exception-handler entry (+3 values pushed: type/value/traceback)
+    // and for any other stack effects not captured by the linear simulation.
     code.max_stack_size = (max_depth as u32).saturating_add(8);
 }

@@ -343,7 +343,9 @@ impl Opcode {
             | Self::LoadClassderef | Self::LoadClosure => 1,
             Self::StoreName | Self::StoreGlobal | Self::StoreFast | Self::StoreDeref => -1,
             Self::DeleteName | Self::DeleteGlobal | Self::DeleteFast | Self::DeleteDeref => 0,
-            Self::LoadAttr | Self::LoadMethod => 0,
+            Self::LoadAttr => 0,
+            // LoadMethod pops the object and pushes 2 items (method + receiver), net +1
+            Self::LoadMethod => 1,
             Self::StoreAttr => -2,
             Self::DeleteAttr => -1,
             Self::BuildTuple | Self::BuildList | Self::BuildSet => -(arg as i32) + 1,

@@ -29,9 +29,9 @@ impl std::ops::Deref for SharedBuiltins {
     }
 }
 
-/// Thread-local global version counter — incremented on every StoreGlobal/DeleteGlobal.
-/// LoadGlobal checks this to invalidate its per-frame cache.
-/// Using Cell instead of AtomicU64 since we run under GIL (single-threaded execution).
+// Thread-local global version counter — incremented on every StoreGlobal/DeleteGlobal.
+// LoadGlobal checks this to invalidate its per-frame cache.
+// Using Cell instead of AtomicU64 since we run under GIL (single-threaded execution).
 thread_local! {
     static GLOBALS_VERSION: Cell<u64> = const { Cell::new(0) };
 }
@@ -234,12 +234,13 @@ impl Frame {
     ) -> Self {
         let nl = code.varnames.len();
         let nc = code.cellvars.len() + code.freevars.len();
+        let stack_cap = (code.max_stack_size as usize).max(8);
         let cells: Vec<CellRef> = if nc > 0 {
             (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
         } else { Vec::new() };
         Self {
             code, ip: 0,
-            stack: Vec::with_capacity(32),
+            stack: Vec::with_capacity(stack_cap),
             block_stack: BlockStack::new(),
             locals: vec![None; nl],
             local_names: None,
@@ -277,7 +278,9 @@ impl Frame {
         stack.clear();
         let needed = (code.max_stack_size as usize).max(8);
         if stack.capacity() < needed {
-            stack.reserve(needed - stack.capacity());
+            // After clear(), len=0. reserve(needed) guarantees capacity >= needed.
+            // (reserve(needed - old_capacity) would only guarantee capacity >= needed - old_capacity.)
+            stack.reserve(needed);
         }
 
         // Reuse a pooled locals vector or allocate new
@@ -333,7 +336,7 @@ impl Frame {
         stack.clear();
         let needed = (code.max_stack_size as usize).max(8);
         if stack.capacity() < needed {
-            stack.reserve(needed - stack.capacity());
+            stack.reserve(needed);
         }
 
         let mut locals = pool.take_locals();
@@ -393,6 +396,10 @@ impl Frame {
 
         let mut stack = pool.take_stack();
         stack.clear();
+        let needed = (parent.code.max_stack_size as usize).max(8);
+        if stack.capacity() < needed {
+            stack.reserve(needed);
+        }
 
         let mut locals = pool.take_locals();
         // Fast path: if pooled locals already has the right length and all None
@@ -445,7 +452,7 @@ impl Frame {
         stack.clear();
         let needed = (func.code.max_stack_size as usize).max(8);
         if stack.capacity() < needed {
-            stack.reserve(needed - stack.capacity());
+            stack.reserve(needed);
         }
 
         let mut locals = pool.take_locals();

@@ -1108,6 +1108,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TMPFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Shared write buffers for NamedTemporaryFile instances, keyed by path.
+#[allow(dead_code)]
 static TMPFILE_BUFFERS: std::sync::LazyLock<Mutex<IndexMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
 
@@ -2728,11 +2729,12 @@ fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             (CompactString::from("output"), PyObject::none()),
             (CompactString::from("stderr"), PyObject::none()),
         ]);
-        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(std::mem::ManuallyDrop::new(Box::new(ExceptionInstanceData {
-            kind: ExceptionKind::CalledProcessError,
-            message: msg.into(),            args: vec![PyObject::int(rc)],
-            attrs: Some(to_shared_fx(exc_attrs)),
-        })))));
+        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(std::mem::ManuallyDrop::new(Box::new(ExceptionInstanceData::new_attrs(
+            ExceptionKind::CalledProcessError,
+            msg.into(),
+            vec![PyObject::int(rc)],
+            Some(to_shared_fx(exc_attrs)),
+        ))))));
         return Err(ex);
     }
     Ok(PyObject::int(rc))

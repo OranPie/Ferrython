@@ -3004,7 +3004,22 @@ impl VirtualMachine {
                 // Fast path: common receiver types (Str, List, Dict, Tuple, Set, Int, Float, Bool, Bytes)
                 // go directly to builtins::call_method, skipping 15+ special-case checks for
                 // Generator, Iterator, Range, Class, Property, Instance, BuiltinType, etc.
+                // Exception: list.extend with a generator/lazy iterator must go through
+                // collect_iterable first (builtins::call_method can't drive a generator).
                 match &bbm.receiver.payload {
+                    PyObjectPayload::List(_)
+                        if bbm.method_name.as_str() == "extend" && !args.is_empty()
+                            && (matches!(args[0].payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_))
+                                || matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
+                                    let data = d.read();
+                                    matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                        | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                                        | IteratorData::Sentinel { .. })
+                                })) =>
+                    {
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::call_method(&bbm.receiver, "extend", &[PyObject::list(items)]);
+                    }
                     PyObjectPayload::Str(_)
                     | PyObjectPayload::List(_)
                     | PyObjectPayload::Dict(_)

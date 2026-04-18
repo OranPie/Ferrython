@@ -132,8 +132,8 @@ pub fn new_shared_fx() -> SharedFxAttrMap {
     Rc::new(PyCell::new(FxAttrMap::default()))
 }
 
-/// Thread-local monotonic counter for class versioning. Incremented each time a
-/// ClassData is created or mutated. Used by inline caches to detect staleness.
+// Thread-local monotonic counter for class versioning. Incremented each time a
+// ClassData is created or mutated. Used by inline caches to detect staleness.
 thread_local! {
     static CLASS_VERSION_COUNTER: Cell<u64> = const { Cell::new(1) };
 }
@@ -270,6 +270,7 @@ impl StrRepr {
     }
 
     /// Get the inline bytes as a slice (only valid for inline strings).
+    #[allow(dead_code)]
     #[inline(always)]
     fn inline_bytes(&self) -> &[u8] {
         let len = self.tag as usize;
@@ -818,30 +819,54 @@ unsafe impl Send for PyObjectPayload {}
 unsafe impl Sync for PyObjectPayload {}
 
 /// Boxed exception instance data (moved out of enum to reduce PyObjectPayload size)
-#[derive(Clone, Debug)]
 pub struct ExceptionInstanceData {
     pub kind: ExceptionKind,
     pub message: CompactString,
     pub args: Vec<PyObjectRef>,
     /// Lazy attrs — None until first write. Saves 1 Rc allocation per exception
     /// for the common case where exceptions are raised and caught without attr access.
-    pub attrs: Option<SharedFxAttrMap>,
+    /// Wrapped in UnsafeCell for interior mutability (safe under GIL).
+    pub attrs: UnsafeCell<Option<SharedFxAttrMap>>,
+}
+
+impl Clone for ExceptionInstanceData {
+    fn clone(&self) -> Self {
+        Self::new_attrs(self.kind, self.message.clone(), self.args.clone(), self.get_attrs().cloned())
+    }
+}
+
+impl std::fmt::Debug for ExceptionInstanceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExceptionInstanceData")
+            .field("kind", &self.kind)
+            .field("message", &self.message)
+            .field("args", &self.args)
+            .finish()
+    }
 }
 
 impl ExceptionInstanceData {
+    /// Build with an initial attrs value (None for most exceptions).
+    #[inline]
+    pub fn new_attrs(kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef>, attrs: Option<SharedFxAttrMap>) -> Self {
+        Self { kind, message, args, attrs: UnsafeCell::new(attrs) }
+    }
+
     /// Get attrs for reading. Returns None if no attrs have been set.
     #[inline]
     pub fn get_attrs(&self) -> Option<&SharedFxAttrMap> {
-        self.attrs.as_ref()
+        // SAFETY: Single-threaded under GIL.
+        unsafe { &*self.attrs.get() }.as_ref()
     }
 
     /// Get or create attrs for writing. Uses interior mutability (safe under GIL).
     #[inline]
     pub fn ensure_attrs(&self) -> &SharedFxAttrMap {
-        // SAFETY: Single-threaded under GIL. No concurrent access possible.
-        let attrs_ptr = &self.attrs as *const Option<SharedFxAttrMap> as *mut Option<SharedFxAttrMap>;
+        // SAFETY: Single-threaded under GIL. UnsafeCell provides the interior-mutability
+        // contract that &self here does not promise immutability.
+        let ptr = self.attrs.get();
         unsafe {
-            (*attrs_ptr).get_or_insert_with(|| Rc::new(PyCell::new(FxAttrMap::default())))
+            (*ptr).get_or_insert_with(|| Rc::new(PyCell::new(FxAttrMap::default())))
         }
     }
 }
@@ -1407,16 +1432,6 @@ impl ClassData {
             }
         };
         let has_own_abstract = namespace.values().any(|val| is_abstract_marker(val));
-        let has_inherited_abstract = !has_own_abstract && mro.iter().any(|base| {
-            if let PyObjectPayload::Class(bcd) = &base.payload {
-                let bns = bcd.namespace.read();
-                bns.values().any(|val| {
-                    if !is_abstract_marker(val) { return false; }
-                    // Check if overridden in our namespace
-                    false // conservative: if base has abstract, check if we override
-                })
-            } else { false }
-        });
         // Simpler: check if any MRO base has unoverridden abstract methods
         let has_abstract = has_own_abstract || {
             let mut found = false;

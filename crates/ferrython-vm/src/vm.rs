@@ -4,6 +4,7 @@
 /// SAFETY: caller guarantees stack has capacity (stack pre-allocated to max_stack_size).
 macro_rules! spush {
     ($frame:expr, $val:expr) => {
+        #[allow(unused_unsafe)]
         unsafe {
             let stack = &mut $frame.stack;
             let len = stack.len();
@@ -70,6 +71,7 @@ macro_rules! chain_jump {
     ($frame:expr, $instr_base:expr, $instr_count:expr) => {
         let next_ip = $frame.ip;
         if next_ip < $instr_count {
+            #[allow(unused_unsafe)]
             let next = unsafe { *$instr_base.add(next_ip) };
             if next.op == Opcode::JumpAbsolute {
                 $frame.ip = next.arg as usize;
@@ -165,7 +167,7 @@ use ferrython_bytecode::code::{CodeObject, CodeFlags, ConstantValue};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, VecIterData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
     alloc_tuple_box_empty, StrRepr,
@@ -478,6 +480,7 @@ impl VirtualMachine {
     }
 
     /// Cold helper: generate NameError for unresolved names.
+    #[allow(dead_code)]
     #[cold]
     #[inline(never)]
     fn err_name_not_found(name: &str) -> Result<Option<PyObjectRef>, PyException> {
@@ -485,6 +488,7 @@ impl VirtualMachine {
     }
 
     /// Cold helper: generate NameError with a custom message.
+    #[allow(dead_code)]
     #[cold]
     #[inline(never)]
     fn err_name_error_msg(msg: String) -> Result<Option<PyObjectRef>, PyException> {
@@ -1507,7 +1511,7 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            IteratorData::Enumerate { source, index, cached_tuple } => {
+                            IteratorData::Enumerate { source, index, cached_tuple: _ } => {
                                 let idx = *index;
                                 // Direct RefIter+List/Tuple advance (avoids advance_source_inline overhead)
                                 let val_opt: Option<Option<PyObjectRef>> = if let PyObjectPayload::RefIter { source: ref src, index: ref src_idx } = source.payload {
@@ -4992,6 +4996,7 @@ impl VirtualMachine {
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                             // str.join with generator/lazy iter: collect via VM first
+                                            // list.extend with generator/lazy iter/instance: collect via VM first
                                             let a0_result: Result<PyObjectRef, PyException> = if name.as_str() == "join" && matches!(&receiver.payload, PyObjectPayload::Str(_)) {
                                                 match &a0.payload {
                                                     PyObjectPayload::Generator(_) => {
@@ -5003,6 +5008,23 @@ impl VirtualMachine {
                                                             | IteratorData::Map { .. } | IteratorData::Filter { .. }
                                                             | IteratorData::Chain { .. } | IteratorData::Starmap { .. }
                                                             | IteratorData::TakeWhile { .. } | IteratorData::DropWhile { .. }
+                                                        );
+                                                        if needs_vm {
+                                                            self.collect_iterable(&a0).map(PyObject::list)
+                                                        } else { Ok(a0) }
+                                                    }
+                                                    _ => Ok(a0),
+                                                }
+                                            } else if name.as_str() == "extend" && matches!(&receiver.payload, PyObjectPayload::List(_)) {
+                                                match &a0.payload {
+                                                    PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_) => {
+                                                        self.collect_iterable(&a0).map(PyObject::list)
+                                                    }
+                                                    PyObjectPayload::Iterator(iter_data) => {
+                                                        let needs_vm = matches!(&*iter_data.read(),
+                                                            IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                                            | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                                                            | IteratorData::Sentinel { .. }
                                                         );
                                                         if needs_vm {
                                                             self.collect_iterable(&a0).map(PyObject::list)
@@ -5179,7 +5201,17 @@ impl VirtualMachine {
                                 let receiver = spop!(frame);
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    crate::builtins::call_method(&receiver, name.as_str(), &[a0])
+                                    let n = name.as_str();
+                                    // list.extend with generator/instance: collect via VM first
+                                    if n == "extend"
+                                        && matches!(&receiver.payload, PyObjectPayload::List(_))
+                                        && matches!(&a0.payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_))
+                                    {
+                                        self.collect_iterable(&a0)
+                                            .and_then(|items| crate::builtins::call_method(&receiver, "extend", &[PyObject::list(items)]))
+                                    } else {
+                                        crate::builtins::call_method(&receiver, n, &[a0])
+                                    }
                                 } else { Ok(PyObject::none()) }
                             } else if arg_count == 0 {
                                 let receiver = spop!(frame);
@@ -5526,7 +5558,7 @@ impl VirtualMachine {
                                         _ => Some(v.clone()),
                                     }
                                 } else {
-                                    drop(attrs);
+                                    let _ = attrs;
                                     // Instance dict miss — check vtable for class-level data attrs
                                     if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
                                         if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -5594,7 +5626,7 @@ impl VirtualMachine {
                                             _ => Some(v.clone()),
                                         }
                                     } else {
-                                        drop(attrs);
+                                        let _ = attrs;
                                         // Instance dict miss — check vtable for class-level attrs
                                         let vt = unsafe { &*cd.method_vtable.data_ptr() };
                                         if !vt.is_empty() {
@@ -5677,7 +5709,7 @@ impl VirtualMachine {
                                             let method_hit = if !vt.is_empty() {
                                                 vt.get(name.as_str()).cloned()
                                             } else {
-                                                drop(vt);
+                                                let _ = vt;
                                                 unsafe { &*cd.namespace.data_ptr() }.get(name.as_str()).cloned()
                                             };
                                             if let Some(class_val) = method_hit {
@@ -6189,7 +6221,7 @@ impl VirtualMachine {
                         }
                     }
                     // Fallback: decompose to individual ops
-                    spush!(frame, unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone());
+                    spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
                     if let Some(v) = slocal!(frame, fast_idx) {
                         spush!(frame, v.clone());
                     } else {
@@ -6294,7 +6326,7 @@ impl VirtualMachine {
                         Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
                         unreachable!();
                     }
-                    spush!(frame, unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone());
+                    spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
                     let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
                     self.execute_one(subscr_instr)?;
                     let frame = self.call_stack.last_mut().unwrap();
@@ -6695,6 +6727,7 @@ impl VirtualMachine {
     /// Build a Python-level traceback object chain (CPython-compatible).
     /// The returned object is the outermost frame, with tb_next pointing towards
     /// the innermost frame (matching CPython's `sys.exc_info()[2]` chain order).
+    #[allow(dead_code)]
     fn build_traceback_object(entries: &[ferrython_core::error::TracebackEntry]) -> PyObjectRef {
         if entries.is_empty() {
             return PyObject::none();

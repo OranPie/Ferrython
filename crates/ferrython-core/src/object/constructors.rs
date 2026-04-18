@@ -40,6 +40,7 @@ static INSTANCE_FREELIST: InstanceFreelistHolder = InstanceFreelistHolder(Unsafe
 
 // ── Attr map freelist ──
 // Recycle Rc<PyCell<FxAttrMap>> for instance attrs.
+#[allow(dead_code)]
 const ATTR_FREELIST_MAX: usize = 80;
 struct AttrFreelistHolder(UnsafeCell<Vec<SharedFxAttrMap>>);
 unsafe impl Sync for AttrFreelistHolder {}
@@ -225,15 +226,10 @@ pub fn alloc_exception_box(
             data.kind = kind;
             data.message = message;
             data.args = args;
-            data.attrs = None;
+            data.attrs = UnsafeCell::new(None);
             data
         } else {
-            Box::new(ExceptionInstanceData {
-                kind,
-                message,
-                args,
-                attrs: None,
-            })
+            Box::new(ExceptionInstanceData::new_attrs(kind, message, args, None))
         }
     }
 }
@@ -245,7 +241,7 @@ pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
     // Clear inner references BEFORE accessing the freelist.
     // Dropping PyObjectRefs can cascade into more exception drops.
     data.args.clear();
-    data.attrs = None;
+    data.attrs = UnsafeCell::new(None);
     data.message = CompactString::default();
     unsafe {
         let list = &mut *EXCEPTION_FREELIST.0.get();
@@ -343,6 +339,7 @@ fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
 }
 
 /// Try to recycle an attr map back to the freelist (if uniquely owned).
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
     if Rc::strong_count(rc) == 1 {
