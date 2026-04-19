@@ -390,7 +390,8 @@ impl VirtualMachine {
                     loop {
                         match crate::builtins::iter_advance(&iterator)? {
                             Some((_iter, item)) => {
-                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                // Identity check first (NaN: nan is nan → True)
+                                if PyObjectRef::ptr_eq(&item, &a) || item.compare(&a, CompareOp::Eq)?.is_truthy() {
                                     found = true;
                                     break;
                                 }
@@ -410,7 +411,8 @@ impl VirtualMachine {
                         let getitem = b.get_attr("__getitem__").unwrap();
                         match self.call_object(getitem, vec![PyObject::int(idx)]) {
                             Ok(item) => {
-                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                // Identity check first (NaN: nan is nan → True)
+                                if PyObjectRef::ptr_eq(&item, &a) || item.compare(&a, CompareOp::Eq)?.is_truthy() {
                                     found = true;
                                     break;
                                 }

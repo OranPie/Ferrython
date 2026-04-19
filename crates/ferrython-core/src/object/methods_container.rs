@@ -239,10 +239,10 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
         match &obj.payload {
             PyObjectPayload::List(v) => {
                 let v = v.read();
-                Ok(v.iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+                Ok(v.iter().any(|x| PyObjectRef::ptr_eq(x, item) || partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
             }
             PyObjectPayload::Tuple(v) => {
-                Ok(v.iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+                Ok(v.iter().any(|x| PyObjectRef::ptr_eq(x, item) || partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
             }
             PyObjectPayload::Str(haystack) => {
                 if let Some(needle) = item.as_str() { Ok(haystack.contains(needle)) }

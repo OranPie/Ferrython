@@ -747,6 +747,47 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )))
         }
     ));
+
+    // __eq__ — element-wise comparison with identity check
+    let d_eq = data.clone();
+    cls_ns.insert(CompactString::from("__eq__"), PyObject::native_closure(
+        "deque.__eq__", move |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+            let other = &args[1];
+            // Other must also be a deque (Instance with __deque__ marker)
+            if let PyObjectPayload::Instance(other_inst) = &other.payload {
+                if !other_inst.attrs.read().contains_key("__deque__") {
+                    return Ok(PyObject::not_implemented());
+                }
+            } else {
+                return Ok(PyObject::not_implemented());
+            }
+            // Get other's internal data via closure capture? No, we need to read from the other deque.
+            // Read the other deque's _data from its attrs or use its class __iter__
+            let other_data_list = if let PyObjectPayload::Instance(other_inst) = &other.payload {
+                other_inst.attrs.read().get("_data").cloned()
+            } else { None };
+            // Use closure-captured data for self
+            let self_data = d_eq.read();
+            // Get other data elements
+            let other_elems: Vec<PyObjectRef> = if let Some(ref od) = other_data_list {
+                if let PyObjectPayload::List(list) = &od.payload {
+                    list.read().clone()
+                } else { return Ok(PyObject::bool_val(false)); }
+            } else { return Ok(PyObject::bool_val(false)); };
+            if self_data.len() != other_elems.len() {
+                return Ok(PyObject::bool_val(false));
+            }
+            for (x, y) in self_data.iter().zip(other_elems.iter()) {
+                // Identity check first (CPython: PyObject_RichCompareBool)
+                if PyObjectRef::ptr_eq(x, y) { continue; }
+                if !x.compare(y, CompareOp::Eq).map_or(false, |r| r.is_truthy()) {
+                    return Ok(PyObject::bool_val(false));
+                }
+            }
+            Ok(PyObject::bool_val(true))
+        }
+    ));
     
     // __contains__(x) - needed for 'in' operator
     let d = data.clone();
@@ -756,6 +797,10 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let target = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else { return Ok(PyObject::bool_val(false)); };
             let r = d.read();
             for item in r.iter() {
+                // Identity check first (needed for NaN: nan is nan → True, nan == nan → False)
+                if PyObjectRef::ptr_eq(item, target) {
+                    return Ok(PyObject::bool_val(true));
+                }
                 if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) {
                     return Ok(PyObject::bool_val(true));
                 }

@@ -212,6 +212,8 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read(); let b = b.read();
             for (x, y) in a.iter().zip(b.iter()) {
+                // Identity check first (CPython: PyObject_RichCompareBool checks identity)
+                if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
                     other => return other,
@@ -221,6 +223,8 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
             for (x, y) in a.iter().zip(b.iter()) {
+                // Identity check first (CPython: PyObject_RichCompareBool checks identity)
+                if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
                     other => return other,

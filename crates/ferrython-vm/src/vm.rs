@@ -408,16 +408,9 @@ impl VirtualMachine {
                 g.insert(CompactString::from("__builtins__"), builtins_mod);
             }
         }
-        // Register __main__ in sys.modules so that sys.modules["__main__"] works
-        let main_attrs = {
-            let g = globals.read();
-            let mut attrs = IndexMap::new();
-            for (k, v) in g.iter() {
-                attrs.insert(k.clone(), v.clone());
-            }
-            attrs
-        };
-        let main_mod = PyObject::module_with_attrs(CompactString::from("__main__"), main_attrs);
+        // Register __main__ in sys.modules so that sys.modules["__main__"] works.
+        // Use shared globals so dir(module) and module.__dict__ see live variables.
+        let main_mod = PyObject::module_with_shared_globals(CompactString::from("__main__"), globals.clone());
         self.modules.insert(CompactString::from("__main__"), main_mod.clone());
         // If sys_modules_dict is already initialized, update it too
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
@@ -2441,7 +2434,9 @@ impl VirtualMachine {
                     let a = sget!(frame, len - 2);
                     let b = sget!(frame, len - 1);
                     // Arc pointer equality fast-path: same object → equal
-                    if (instr.arg == 2 || instr.arg == 3) && PyObjectRef::ptr_eq(a, b) {
+                    // Exclude float NaN — NaN == NaN must be False per IEEE 754
+                    if (instr.arg == 2 || instr.arg == 3) && PyObjectRef::ptr_eq(a, b)
+                        && !matches!(&a.payload, PyObjectPayload::Float(f) if f.is_nan()) {
                         let result = instr.arg == 2; // Eq=true, Ne=false
                         cmp_jump_lookahead!(result, frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                     } else {
@@ -2526,7 +2521,7 @@ impl VirtualMachine {
                         PyObjectPayload::List(items) => {
                             let items = unsafe { &*items.data_ptr() };
                             Some(items.iter().any(|x| {
-                                match (&x.payload, &needle.payload) {
+                                PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
                                     (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
@@ -2543,7 +2538,7 @@ impl VirtualMachine {
                         }
                         PyObjectPayload::Tuple(items) => {
                             Some(items.iter().any(|x| {
-                                match (&x.payload, &needle.payload) {
+                                PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
                                     (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,

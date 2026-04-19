@@ -1874,10 +1874,12 @@ pub fn create_html_module() -> PyObjectRef {
             if c == '&' && chars.peek() == Some(&'#') {
                 chars.next(); // consume '#'
                 let mut num_str = String::new();
-                let is_hex = chars.peek() == Some(&'x') || chars.peek() == Some(&'X');
+                let hex_char = chars.peek().copied();
+                let is_hex = hex_char == Some('x') || hex_char == Some('X');
                 if is_hex { chars.next(); }
+                let mut found_semi = false;
                 for nc in chars.by_ref() {
-                    if nc == ';' { break; }
+                    if nc == ';' { found_semi = true; break; }
                     num_str.push(nc);
                 }
                 let code = if is_hex {
@@ -1890,9 +1892,9 @@ pub fn create_html_module() -> PyObjectRef {
                 } else {
                     result.push('&');
                     result.push('#');
-                    if is_hex { result.push('x'); }
+                    if is_hex { result.push(hex_char.unwrap()); }
                     result.push_str(&num_str);
-                    result.push(';');
+                    if found_semi { result.push(';'); }
                 }
             } else {
                 result.push(c);

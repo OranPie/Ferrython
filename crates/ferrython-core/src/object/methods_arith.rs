@@ -461,6 +461,16 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 if *b == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
                 Ok(PyObject::float(python_fmod(*a, *b)))
             }
+            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+                if *b == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
+                let af = a.to_f64();
+                Ok(PyObject::float(python_fmod(af, *b)))
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+                let bf = b.to_f64();
+                if bf == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
+                Ok(PyObject::float(python_fmod(*a, bf)))
+            }
             (PyObjectPayload::Str(fmt_str), _) => {
                 // printf-style string formatting: "Hello %s" % "world"
                 // Also supports dict-keyed format: "%(name)s" % {"name": "Bob"}

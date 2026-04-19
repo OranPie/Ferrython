@@ -540,11 +540,13 @@ impl PartialEq for HashableKey {
             (HashableKey::Identity(a, _), HashableKey::Identity(b, _)) => a == b,
             // Custom
             (HashableKey::Custom { hash_value: ha, object: oa }, HashableKey::Custom { hash_value: hb, object: ob }) => {
+                // Identity check first (CPython: same object is always "equal" as dict key)
+                if PyObjectRef::ptr_eq(oa, ob) { return true; }
                 if ha != hb { return false; }
                 if let Some(result) = call_eq_dispatch(oa, ob) {
                     return result;
                 }
-                PyObjectRef::ptr_eq(oa, ob)
+                false
             }
             _ => false,
         }

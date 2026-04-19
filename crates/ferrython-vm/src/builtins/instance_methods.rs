@@ -9,6 +9,7 @@ use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     NativeFunctionData, CompareOp, check_args_min, SharedFxAttrMap,
+    partial_cmp_objects,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -398,8 +399,10 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let v = list.read();
-                let target = args[0].py_to_string();
-                return Ok(PyObject::bool_val(v.iter().any(|x| x.py_to_string() == target)));
+                let needle = &args[0];
+                return Ok(PyObject::bool_val(v.iter().any(|x| {
+                    PyObjectRef::ptr_eq(x, needle) || partial_cmp_objects(x, needle) == Some(std::cmp::Ordering::Equal)
+                })));
             }
             Ok(PyObject::bool_val(false))
         }

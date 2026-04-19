@@ -658,7 +658,9 @@ class TestLoader:
         obj = module
         for part in parts:
             obj = getattr(obj, part)
-        if isinstance(obj, type) and issubclass(obj, TestCase):
+        if type(obj).__name__ == 'module':
+            return self.loadTestsFromModule(obj)
+        elif isinstance(obj, type) and issubclass(obj, TestCase):
             return self.loadTestsFromTestCase(obj)
         elif callable(obj):
             suite = TestSuite()

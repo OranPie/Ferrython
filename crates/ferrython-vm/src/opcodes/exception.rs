@@ -215,16 +215,21 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let exit_result = frame.pop();
                 let exc_or_none = frame.pop();
-                if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy() {
-                    // Exception was suppressed: clean up exception info (value, tb)
-                    frame.pop(); // value
-                    frame.pop(); // tb
-                    frame.push(PyObject::none());
-                } else if !matches!(exc_or_none.payload, PyObjectPayload::None) {
-                    // Exception NOT suppressed: push type back, leave (tb, value) for EndFinally
-                    frame.push(exc_or_none);
+                if !matches!(exc_or_none.payload, PyObjectPayload::None) {
+                    let is_truthy = self.vm_is_truthy(&exit_result)?;
+                    let frame = self.vm_frame();
+                    if is_truthy {
+                        // Exception was suppressed: clean up exception info (value, tb)
+                        frame.pop(); // value
+                        frame.pop(); // tb
+                        frame.push(PyObject::none());
+                    } else {
+                        // Exception NOT suppressed: push type back, leave (tb, value) for EndFinally
+                        frame.push(exc_or_none);
+                    }
                 } else {
                     // No exception
+                    let frame = self.vm_frame();
                     frame.push(exc_or_none);
                 }
             }
@@ -412,6 +417,9 @@ impl VirtualMachine {
             frame.push_block(BlockKind::With, arg as usize);
             frame.push(enter_result);
         } else {
+            // CPython checks __enter__ first
+            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                PyException::attribute_error("__enter__"))?;
             let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
                 PyException::attribute_error("__exit__"))?;
             // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
@@ -426,8 +434,6 @@ impl VirtualMachine {
                 })
             };
             self.vm_push(exit_method);
-            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                PyException::attribute_error("__enter__"))?;
             let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                 (enter_raw, vec![])
             } else {
