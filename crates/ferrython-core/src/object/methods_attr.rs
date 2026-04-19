@@ -3,7 +3,7 @@
 use std::rc::Rc;
 use crate::error::{PyException, ExceptionKind};
 use crate::intern::{self, intern_or_new};
-use crate::types::{DictKey, PyInt};
+use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 
@@ -732,7 +732,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     let attrs = m.attrs.read();
                     let mut map = new_fx_hashkey_map();
                     for (k, v) in attrs.iter() {
-                        map.insert(DictKey::str_key(k.clone()), v.clone());
+                        map.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                     Some(PyObject::dict(map))
                 } else {
@@ -841,11 +841,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     }),
                                 );
                             }
-                            map.insert(DictKey::str_key(CompactString::from("__dict__")), desc);
-                            map.insert(DictKey::str_key(CompactString::from("__doc__")), PyObject::none());
-                            map.insert(DictKey::str_key(CompactString::from("__repr__")), 
+                            map.insert(HashableKey::str_key(CompactString::from("__dict__")), desc);
+                            map.insert(HashableKey::str_key(CompactString::from("__doc__")), PyObject::none());
+                            map.insert(HashableKey::str_key(CompactString::from("__repr__")), 
                                 PyObject::builtin_type(CompactString::from("wrapper_descriptor")));
-                            map.insert(DictKey::str_key(CompactString::from("__subclasshook__")),
+                            map.insert(HashableKey::str_key(CompactString::from("__subclasshook__")),
                                 PyObject::builtin_type(CompactString::from("method_descriptor")));
                         }
                         Some(PyObject::wrap(PyObjectPayload::MappingProxy(
@@ -883,7 +883,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             let value = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
                             let mut map = new_fx_hashkey_map();
                             for k in keys {
-                                let dk = DictKey::try_new(&k)?;
+                                let dk = HashableKey::from_object(&k)?;
                                 map.insert(dk, value.clone());
                             }
                             Ok(PyObject::dict(map))
@@ -896,26 +896,26 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             if args.len() == 1 {
                                 if let PyObjectPayload::Dict(map) = &args[0].payload {
                                     for (k, v) in map.read().iter() {
-                                        let key = if let Some(n) = k.as_int() {
-                                            n.clone()
-                                        } else if let Some(s) = k.as_str() {
-                                            if let Some(c) = s.chars().next() { PyInt::Small(c as i64) } else { continue; }
-                                        } else {
-                                            continue;
+                                        let key = match k {
+                                            HashableKey::Int(n) => n.clone(),
+                                            HashableKey::Str(s) => {
+                                                if let Some(c) = s.chars().next() { PyInt::Small(c as i64) } else { continue; }
+                                            }
+                                            _ => continue,
                                         };
-                                        result_map.insert(DictKey(key.to_object()), v.clone());
+                                        result_map.insert(HashableKey::Int(key), v.clone());
                                     }
                                 }
                             } else {
                                 let x = args[0].py_to_string();
                                 let y = args[1].py_to_string();
                                 for (cx, cy) in x.chars().zip(y.chars()) {
-                                    result_map.insert(DictKey(PyObject::int(cx as i64)), PyObject::int(cy as i64));
+                                    result_map.insert(HashableKey::Int(PyInt::Small(cx as i64)), PyObject::int(cy as i64));
                                 }
                                 if args.len() > 2 {
                                     let z = args[2].py_to_string();
                                     for cz in z.chars() {
-                                        result_map.insert(DictKey(PyObject::int(cz as i64)), PyObject::none());
+                                        result_map.insert(HashableKey::Int(PyInt::Small(cz as i64)), PyObject::none());
                                     }
                                 }
                             }
@@ -1147,7 +1147,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "keywords" => {
                         let mut map = new_fx_hashkey_map();
                         for (k, v) in &pd.kwargs {
-                            map.insert(DictKey::str_key(k.clone()), v.clone());
+                            map.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                         Some(PyObject::dict(map))
                     }

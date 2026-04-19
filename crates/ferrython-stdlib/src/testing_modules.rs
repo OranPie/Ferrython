@@ -23,8 +23,8 @@ static DISABLE_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI6
 
 use std::collections::HashMap;
 
-/// Global logger registry: maps logger names to their PyObjectRef.
-/// Thread-local so each test / interpreter session gets its own registry.
+// Global logger registry: maps logger names to their PyObjectRef.
+// Thread-local so each test / interpreter session gets its own registry.
 thread_local! {
     static LOGGER_REGISTRY: std::cell::RefCell<HashMap<String, PyObjectRef>> =
         std::cell::RefCell::new(HashMap::new());

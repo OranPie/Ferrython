@@ -12,9 +12,23 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+#[cfg(target_os = "linux")]
+#[inline]
+unsafe fn errno_ptr() -> *mut i32 { libc::__errno_location() }
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))]
+#[inline]
+unsafe fn errno_ptr() -> *mut i32 { libc::__error() }
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))))]
+#[inline]
+unsafe fn errno_ptr() -> *mut i32 {
+    static mut DUMMY: i32 = 0;
+    &mut DUMMY as *mut i32
+}
+
 // ── contextlib module ──
 
 
+#[allow(dead_code)]
 pub fn create_contextlib_module() -> PyObjectRef {
     // suppress(*exceptions) — context manager that suppresses specified exceptions
     let suppress_fn = make_builtin(|args: &[PyObjectRef]| {
@@ -463,6 +477,7 @@ pub fn create_contextlib_module() -> PyObjectRef {
     ])
 }
 
+#[allow(dead_code)]
 fn contextlib_contextmanager(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // contextmanager decorator — returns the function unchanged.
     // The function is a generator function. When called, it returns a Generator.
@@ -1215,6 +1230,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     }
 }
 
+#[allow(dead_code)]
 fn deep_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     let mut memo = std::collections::HashMap::new();
     deep_copy_with_memo(obj, &mut memo)
@@ -3409,7 +3425,7 @@ pub fn create_ctypes_module() -> PyObjectRef {
         ("get_errno", make_builtin(|_| {
             #[cfg(unix)]
             {
-                let e = unsafe { *libc::__errno_location() };
+                let e = unsafe { *errno_ptr() };
                 Ok(PyObject::int(e as i64))
             }
             #[cfg(not(unix))]
@@ -3419,8 +3435,8 @@ pub fn create_ctypes_module() -> PyObjectRef {
             let new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
             #[cfg(unix)]
             {
-                let old = unsafe { *libc::__errno_location() };
-                unsafe { *libc::__errno_location() = new_val as i32; }
+                let old = unsafe { *errno_ptr() };
+                unsafe { *errno_ptr() = new_val as i32; }
                 Ok(PyObject::int(old as i64))
             }
             #[cfg(not(unix))]

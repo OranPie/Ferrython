@@ -10,7 +10,6 @@ use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::PyInt;
-use indexmap::IndexMap;
 
 // ── Misc ops ─────────────────────────────────────────────────────────
 impl VirtualMachine {

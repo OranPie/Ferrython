@@ -4,7 +4,6 @@ use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::HashableKey;
 use compact_str::CompactString;
-use indexmap::IndexMap;
 use std::rc::Rc;
 
 use super::payload::*;

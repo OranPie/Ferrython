@@ -3,7 +3,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    InstanceData, PartialData, PropertyData,
+    InstanceData, PartialData,
     make_module, make_builtin,
     new_shared_fx,
 };

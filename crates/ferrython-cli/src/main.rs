@@ -69,17 +69,84 @@ fn main_inner() {
     // Must happen before any module is imported so sys.path reflects them.
     ferrython_import::init();
     
-    let args: Vec<String> = env::args().collect();
+    let raw_args: Vec<String> = env::args().collect();
 
     // Check for --compat flag or FERRYTHON_COMPAT env var: disable superinstructions
     // to emit only standard CPython 3.8 opcodes for fair performance comparison.
-    let compat_mode = args.iter().any(|a| a == "--compat")
+    let compat_mode = raw_args.iter().any(|a| a == "--compat")
         || env::var("FERRYTHON_COMPAT").map(|v| v == "1" || v == "true").unwrap_or(false);
     if compat_mode {
         ferrython_compiler::set_superinstructions_enabled(false);
     }
-    // Filter out --compat from args for downstream processing
-    let args: Vec<String> = args.into_iter().filter(|a| a != "--compat").collect();
+
+    // Parse interpreter flags (CPython-compatible single-letter flags).
+    // These may appear before the script/command, e.g. `ferrython -u -W ignore script.py`.
+    let mut inspect_after = env::var("PYTHONINSPECT").is_ok();
+    let mut skip_first_line = false;
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Rebuild args: strip --compat and consume single-letter flags, stop at first
+    // non-flag token (script path, -c, -m, special keyword, or --).
+    let mut args: Vec<String> = Vec::new();
+    args.push(raw_args[0].clone()); // binary name
+    let mut iter = raw_args[1..].iter().peekable();
+    while let Some(a) = iter.peek() {
+        // Stop consuming flags once we hit -c, -m, --, or a non-flag token.
+        if *a == "--" || *a == "-c" || *a == "-m" || !a.starts_with('-') || a.len() < 2 {
+            break;
+        }
+        let flag = iter.next().unwrap();
+        if flag == "--compat" {
+            continue; // already handled above
+        }
+        // Multi-char flags: handle as-is; they'll be dispatched below
+        if flag.starts_with("--") {
+            args.push(flag.clone());
+            continue;
+        }
+        // Single-letter flags (may be bundled, e.g. -uW)
+        let chars: Vec<char> = flag[1..].chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                'i' => inspect_after = true,
+                'x' => skip_first_line = true,
+                'u' | 'B' | 'O' | 's' | 'S' | 'd' | 'q' => {} // accepted, no-op
+                'W' => {
+                    // -W FILTER or -WFILTER
+                    if i + 1 < chars.len() {
+                        // Rest of this flag token is the filter
+                        let filter: String = chars[i + 1..].iter().collect();
+                        warnings.push(filter);
+                        i = chars.len();
+                        continue;
+                    } else if let Some(next) = iter.peek() {
+                        if !next.starts_with('-') {
+                            warnings.push(iter.next().unwrap().clone());
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown flag — pass through so the dispatcher can error
+                    let remaining: String = std::iter::once('-').chain(chars[i..].iter().cloned()).collect();
+                    args.push(remaining);
+                    i = chars.len();
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    // Append everything remaining (including -- and the rest)
+    let mut double_dash = false;
+    for a in iter {
+        if a == "--" && !double_dash {
+            double_dash = true;
+            // Don't add "--" itself to args; everything after goes to sys.argv directly
+            continue;
+        }
+        args.push(a.clone());
+    }
 
     if args.len() < 2 {
         // If stdin is not a terminal, read from stdin as a script
@@ -95,6 +162,18 @@ fn main_inner() {
         return;
     }
 
+    // "-" means read from stdin as a script
+    if args[1] == "-" {
+        let mut source = String::new();
+        io::stdin().read_to_string(&mut source).unwrap_or_default();
+        let mut argv = vec![String::from("-")];
+        argv.extend_from_slice(&args[2..]);
+        ferrython_stdlib::set_argv(argv);
+        run_string_with_opts(&source, "<stdin>", skip_first_line);
+        if inspect_after { ferrython_repl::run_repl(); }
+        return;
+    }
+
     if args[1] == "-c" {
         if args.len() < 3 {
             eprintln!("Argument expected for the -c option");
@@ -104,7 +183,8 @@ fn main_inner() {
         let mut argv = vec![String::from("-c")];
         argv.extend_from_slice(&args[3..]);
         ferrython_stdlib::set_argv(argv);
-        run_string(&args[2], "<string>");
+        run_string_with_opts(&args[2], "<string>", skip_first_line);
+        if inspect_after { ferrython_repl::run_repl(); }
         return;
     }
 
@@ -121,7 +201,7 @@ fn main_inner() {
     }
 
     if args[1] == "--version" || args[1] == "-V" {
-        println!("Ferrython 0.1.0 (Python 3.8 compatible)");
+        println!("Ferrython {} (Python 3.8 compatible)", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -180,17 +260,28 @@ fn main_inner() {
     }
 
     if args[1] == "--help" || args[1] == "-h" {
-        println!("Usage: ferrython [options] [script.py]");
+        let version = env!("CARGO_PKG_VERSION");
+        println!("Ferrython {} — Python 3.8 interpreter", version);
+        println!();
+        println!("Usage: ferrython [options] [-c cmd | -m mod | script | -] [args ...]");
         println!();
         println!("Options:");
-        println!("  -c CMD          Execute CMD as a string");
-        println!("  -m MODULE       Run library module as a script");
-        println!("  -V, --version   Show version");
+        println!("  -c CMD          Execute CMD as a Python string");
+        println!("  -m MODULE       Run library module as a script (-m module args...)");
+        println!("  -               Read program from stdin");
+        println!("  -i              Inspect interactively after running script");
+        println!("  -u              Unbuffered binary stdout/stderr (accepted, no-op)");
+        println!("  -O              Optimize (accepted, no-op)");
+        println!("  -B              Don't write .pyc bytecode files (accepted, no-op)");
+        println!("  -W FILTER       Warning control (accepted, no-op)");
+        println!("  -x              Skip first line of script");
+        println!("  -V, --version   Print version and exit");
+        println!("  --compat        CPython-compatible mode (disable superinstructions)");
         println!("  --dis FILE      Disassemble bytecode to stderr, then execute");
         println!("  --profile FILE  Run with execution profiling");
         println!("  --stats FILE    Show bytecode statistics");
-        println!("  --compat        CPython-compatible mode (no superinstructions)");
         println!("  -h, --help      Show this help");
+        println!("  --              Treat remaining arguments as script args");
         println!();
         println!("Project commands:");
         println!("  new NAME        Create a new project with pyproject.toml");
@@ -198,6 +289,13 @@ fn main_inner() {
         println!("  run [SCRIPT]    Run project entry point or a script in venv context");
         println!("  build           Build project (create wheel/sdist)");
         println!("  test [ARGS]     Run project tests (discovers test_*.py files)");
+        println!();
+        println!("Environment variables:");
+        println!("  PYTHONPATH           Colon-separated list of directories to add to sys.path");
+        println!("  PYTHONSTARTUP        File executed on interactive startup");
+        println!("  PYTHONINSPECT        If set, behave as if -i was given");
+        println!("  PYTHONDONTWRITEBYTECODE  If set, don't write .pyc files");
+        println!("  FERRYTHON_COMPAT     If '1' or 'true', equivalent to --compat");
         return;
     }
 
@@ -240,7 +338,10 @@ fn main_inner() {
         ferrython_import::prepend_search_path(parent.to_path_buf());
     }
     match fs::read_to_string(filename) {
-        Ok(source) => run_string(&source, filename),
+        Ok(source) => {
+            run_string_with_opts(&source, filename, skip_first_line);
+            if inspect_after { ferrython_repl::run_repl(); }
+        }
         Err(e) => {
             eprintln!("ferrython: can't open file '{}': {}", filename, e);
             process::exit(2);
@@ -265,9 +366,21 @@ fn run_string(source: &str, filename: &str) {
         if let PipelineError::Runtime(ref exc) = e {
             // Handle SystemExit specially — exit with the code, don't print traceback
             if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
-                let code = exc.value.as_ref()
-                    .map(|v| v.to_int().unwrap_or(1) as i32)
-                    .unwrap_or(0);
+                let code = match exc.value.as_ref() {
+                    None => 0,
+                    Some(v) => match &v.payload {
+                        ferrython_core::object::PyObjectPayload::None => 0,
+                        ferrython_core::object::PyObjectPayload::Int(_)
+                        | ferrython_core::object::PyObjectPayload::Bool(_) => {
+                            v.to_int().unwrap_or(1) as i32
+                        }
+                        _ => {
+                            // Non-integer: print to stderr (CPython behaviour), exit 1
+                            eprintln!("{}", v.py_to_string());
+                            1
+                        }
+                    },
+                };
                 process::exit(code);
             }
             // Try sys.excepthook before default traceback display
@@ -279,6 +392,16 @@ fn run_string(source: &str, filename: &str) {
         }
         e.report(filename);
         process::exit(1);
+    }
+}
+
+/// Like run_string but applies the -x (skip first line) flag before parsing.
+fn run_string_with_opts(source: &str, filename: &str, skip_first_line: bool) {
+    if skip_first_line {
+        let source = source.splitn(2, '\n').nth(1).unwrap_or("");
+        run_string(source, filename);
+    } else {
+        run_string(source, filename);
     }
 }
 

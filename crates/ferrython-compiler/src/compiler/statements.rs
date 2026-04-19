@@ -1888,7 +1888,6 @@ impl Compiler {
                 let post_star_count = star_pos.map_or(0, |sp| patterns.len() - sp - 1);
                 let mut elem_idx = 0u32;
                 let mut past_star = false;
-                let mut after_star_i = 0usize;
                 for pat in patterns {
                     if let Pattern::MatchStar { name } = pat {
                         // Bind star capture: rest = subject[pre_count : len(subject) - post_count]
@@ -1922,9 +1921,7 @@ impl Compiler {
                     let elem_temp_idx = self.varname_index(&elem_temp);
                     self.compile_pattern_bindings(pat, elem_temp_idx)?;
                     elem_idx += 1;
-                    if past_star {
-                        after_star_i += 1;
-                    }
+                    let _ = past_star;
                 }
             }
             Pattern::MatchMapping { keys: _, patterns, rest } => {

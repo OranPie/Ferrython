@@ -6,14 +6,12 @@ mod type_methods;
 mod file_io;
 mod instance_methods;
 
-use std::rc::Rc;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, is_hidden_dict_key};
 use indexmap::IndexMap;
 
 use core_fns::*;
-use string_methods::*;
 use type_methods::*;
 use file_io::*;
 use instance_methods::*;

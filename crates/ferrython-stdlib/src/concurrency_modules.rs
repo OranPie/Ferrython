@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::{
-    FxHashKeyMap, new_fx_hashkey_map,PyCell,
+    PyCell,
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods, PyWeakRef,
     make_module, make_builtin, check_args_min,
 };
@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 /// SAFETY: GIL semantics — only one thread runs Python at a time.
 /// This wrapper lets us move Rc-based values into thread::spawn closures.
+#[allow(dead_code)]
 struct UnsafeSend<T>(T);
 unsafe impl<T> Send for UnsafeSend<T> {}
 unsafe impl<T> Sync for UnsafeSend<T> {}
@@ -89,7 +90,7 @@ pub fn create_threading_module() -> PyObjectRef {
                 // For native functions, spawn a real OS thread for true parallelism
                 match &target.payload {
                     PyObjectPayload::NativeFunction(nf) => {
-                        let f = nf.func;
+                        let _ = nf.func;
                         let alive_attrs = inst.attrs.clone();
                         let call_args_owned = call_args;
                         let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));

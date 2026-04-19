@@ -290,7 +290,7 @@ fn get_object_dir(obj: &PyObjectRef) -> Option<Vec<String>> {
 /// Run the interactive REPL.
 pub fn run_repl() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("Ferrython {} (Python 3.12 compatible)", version);
+    println!("Ferrython {} (Python 3.8 compatible)", version);
     println!("Type \"help()\" for help, \"exit()\" or Ctrl+D to exit.");
 
     let mut vm = ferrython_vm::VirtualMachine::new();

@@ -273,6 +273,7 @@ fn create_traceback_exception_class() -> PyObjectRef {
 }
 
 /// Legacy function form kept for direct calls (no longer in module table)
+#[allow(dead_code)]
 fn traceback_exception_cls(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("TracebackException", args, 1)?;
     let (kind_str, msg) = extract_exc_type_msg(args);

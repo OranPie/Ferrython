@@ -1209,6 +1209,7 @@ pub fn punycode_decode_bytes(bytes: &[u8]) -> PyResult<PyObjectRef> {
 
 /// Fast whitespace split — single byte-scan pass, no iterator/filter overhead.
 /// Matches Python semantics: strips leading/trailing whitespace, splits on runs of whitespace.
+#[allow(dead_code)]
 #[inline]
 fn split_whitespace_fast(bytes: &[u8], maxsplit: Option<usize>) -> Vec<PyObjectRef> {
     let len = bytes.len();
@@ -1244,6 +1245,7 @@ fn split_whitespace_fast(bytes: &[u8], maxsplit: Option<usize>) -> Vec<PyObjectR
 
 /// Fast single-byte separator split — single pass, no pre-count.
 /// Uses PREALLOC=12 (matches CPython's PREALLOC_SIZE) to avoid reallocation for typical cases.
+#[allow(dead_code)]
 #[inline]
 fn split_single_byte(bytes: &[u8], sep: u8) -> Vec<PyObjectRef> {
     let len = bytes.len();

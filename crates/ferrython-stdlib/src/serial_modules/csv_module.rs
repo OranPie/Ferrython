@@ -747,6 +747,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 /// Escape a CSV field: quote if contains comma, quote, or newline.
+#[allow(dead_code)]
 fn csv_escape_field(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))

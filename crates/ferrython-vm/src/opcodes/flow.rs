@@ -493,7 +493,7 @@ impl VirtualMachine {
                 let stop = frame.pop();
                 let start = frame.pop();
                 // Drop frame borrow so we can call __index__ via self
-                drop(frame);
+                let _ = frame;
                 // Resolve __index__ for non-int, non-None slice components
                 let start = if !matches!(start.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) {
                     self.try_call_dunder(&start, "__index__", vec![])?.unwrap_or(start)

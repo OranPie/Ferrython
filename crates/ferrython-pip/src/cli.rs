@@ -18,6 +18,26 @@ struct Cli {
     /// Verbose mode — show detailed output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Base URL of the Python Package Index (default: https://pypi.org/simple)
+    #[arg(long, global = true)]
+    index_url: Option<String>,
+
+    /// Extra URLs of package indexes to use in addition to --index-url
+    #[arg(long, global = true)]
+    extra_index_url: Vec<String>,
+
+    /// Mark a host as trusted (TLS verification skipped, accepted, no-op)
+    #[arg(long, global = true)]
+    trusted_host: Vec<String>,
+
+    /// Disable the cache
+    #[arg(long, global = true)]
+    no_cache_dir: bool,
+
+    /// Base timeout in seconds for network operations (default: 15)
+    #[arg(long, global = true, default_value = "15")]
+    timeout: u64,
 }
 
 #[derive(Subcommand)]
@@ -55,6 +75,10 @@ enum Commands {
         #[arg(short = 't', long = "install-target")]
         install_target: Option<String>,
 
+        /// Install to user site-packages (~/.local/lib/ferrython/site-packages)
+        #[arg(long)]
+        user: bool,
+
         /// Don't use the wheel cache
         #[arg(long)]
         no_cache_dir: bool,
@@ -79,6 +103,10 @@ enum Commands {
         /// Skip confirmation
         #[arg(short, long)]
         yes: bool,
+
+        /// Uninstall from user site-packages instead of system site-packages
+        #[arg(long)]
+        user: bool,
     },
 
     /// List installed packages
@@ -191,6 +219,9 @@ enum Commands {
         #[arg(short, long)]
         requirement: Option<String>,
     },
+
+    /// Show environment and configuration debug information
+    Debug,
 }
 
 #[derive(Subcommand)]
@@ -216,14 +247,18 @@ pub fn run() {
     let verbose = cli.verbose;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _, dry_run, force_reinstall, verify } => {
-            let effective_site = install_target.as_deref().unwrap_or(&site_packages);
+        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, user, no_cache_dir: _, dry_run, force_reinstall, verify } => {
+            let effective_site = if user {
+                user_site_packages()
+            } else {
+                install_target.as_deref().unwrap_or(&site_packages).to_string()
+            };
             let effective_upgrade = upgrade || force_reinstall;
             if dry_run {
                 dry_run_install(&packages, &requirement, quiet)
             } else if let Some(editable_path) = editable {
                 let proj_path = editable_path.unwrap_or_else(|| ".".to_string());
-                install_editable(&proj_path, effective_site, quiet)
+                install_editable(&proj_path, &effective_site, quiet)
             } else if !requirement.is_empty() {
                 // Collect all requirements from all -r files, then add CLI packages
                 let mut reqs: Vec<String> = Vec::new();
@@ -231,9 +266,9 @@ pub fn run() {
                     reqs.extend(parse_requirements_file(req_file));
                 }
                 reqs.extend(packages.iter().cloned());
-                let result = install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                let result = install_packages(&reqs, &effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
                 if verify && result.is_ok() {
-                    verify_all_installed(effective_site, &reqs, quiet);
+                    verify_all_installed(&effective_site, &reqs, quiet);
                 }
                 result
             } else if packages.is_empty() {
@@ -241,15 +276,16 @@ pub fn run() {
                            (see 'ferryip install --help')");
                 std::process::exit(1);
             } else {
-                let result = install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                let result = install_packages(&packages, &effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
                 if verify && result.is_ok() {
-                    verify_all_installed(effective_site, &packages, quiet);
+                    verify_all_installed(&effective_site, &packages, quiet);
                 }
                 result
             }
         }
-        Commands::Uninstall { packages, yes } => {
-            uninstall_packages(&packages, &site_packages, yes, quiet)
+        Commands::Uninstall { packages, yes, user } => {
+            let effective_site = if user { user_site_packages() } else { site_packages.clone() };
+            uninstall_packages(&packages, &effective_site, yes, quiet)
         }
         Commands::List { outdated, format, not_required, exclude_editable } => {
             list_packages(&site_packages, outdated, &format, not_required, exclude_editable)
@@ -307,6 +343,9 @@ pub fn run() {
         Commands::Lock { output, requirement } => {
             generate_lock_file(&site_packages, &output, requirement.as_deref())
         }
+        Commands::Debug => {
+            show_debug(&site_packages)
+        }
     };
 
     if let Err(e) = result {
@@ -324,6 +363,37 @@ fn default_site_packages() -> String {
         let _ = std::fs::create_dir_all(&site);
     }
     site.to_string_lossy().to_string()
+}
+
+fn user_site_packages() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let site = std::path::Path::new(&home)
+        .join(".local")
+        .join("lib")
+        .join("ferrython")
+        .join("site-packages");
+    if !site.exists() {
+        let _ = std::fs::create_dir_all(&site);
+    }
+    site.to_string_lossy().to_string()
+}
+
+fn show_debug(site_packages: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().unwrap_or_default();
+    println!("ferryip {}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("  executable: {}", exe.display());
+    println!("  site-packages: {}", site_packages);
+    println!("  user-site-packages: {}", user_site_packages());
+    println!();
+    println!("Environment:");
+    for var in &["FERRYTHON_COMPAT", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE"] {
+        match std::env::var(var) {
+            Ok(val) => println!("  {}={}", var, val),
+            Err(_)  => println!("  {} (unset)", var),
+        }
+    }
+    Ok(())
 }
 
 /// Parse a requirements file supporting:
