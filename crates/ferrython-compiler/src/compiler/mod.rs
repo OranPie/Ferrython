@@ -375,6 +375,20 @@ impl Compiler {
                 if Self::has_annotations(body) {
                     self.emit_op(Opcode::SetupAnnotations);
                 }
+                // Extract docstring from first statement if it's a string literal
+                if let Some(first) = body.first() {
+                    if let StatementKind::Expr { value } = &first.node {
+                        if let ExpressionKind::Constant {
+                            value: Constant::Str(doc),
+                        } = &value.node
+                        {
+                            let doc_idx =
+                                self.add_const(ConstantValue::Str(doc.clone()));
+                            self.emit_arg(Opcode::LoadConst, doc_idx);
+                            self.store_name("__doc__");
+                        }
+                    }
+                }
                 self.compile_body(body)?;
             }
             Module::Expression { body } => {

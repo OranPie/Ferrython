@@ -170,6 +170,23 @@ pub fn create_typing_module() -> PyObjectRef {
         PyObject::class(CompactString::from(display_name), vec![], ns)
     };
 
+    // Helper to create a simple TypeVar instance
+    let make_typevar = |name: &str| -> PyObjectRef {
+        let n = CompactString::from(name);
+        let mut tv_attrs = IndexMap::new();
+        tv_attrs.insert(CompactString::from("__name__"), PyObject::str_val(n.clone()));
+        tv_attrs.insert(CompactString::from("__constraints__"), PyObject::tuple(vec![]));
+        tv_attrs.insert(CompactString::from("__bound__"), PyObject::none());
+        tv_attrs.insert(CompactString::from("__covariant__"), PyObject::bool_val(false));
+        tv_attrs.insert(CompactString::from("__contravariant__"), PyObject::bool_val(false));
+        let repr_name = n.clone();
+        tv_attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "__repr__",
+            move |_args| Ok(PyObject::str_val(CompactString::from(format!("~{}", repr_name).as_str()))),
+        ));
+        PyObject::instance_with_attrs(typevar_cls_ref.clone(), tv_attrs)
+    };
+
     let mut attrs: Vec<(&str, PyObjectRef)> = vec![
         ("Any", PyObject::builtin_type(CompactString::from("Any"))),
         ("Union", make_typing_alias("Union")),
@@ -188,6 +205,13 @@ pub fn create_typing_module() -> PyObjectRef {
         ("MutableMapping", make_typing_alias("MutableMapping")),
         ("Iterable", make_typing_alias("Iterable")),
         ("TypeVar", typevar_class),
+        ("T", make_typevar("T")),
+        ("T_co", make_typevar("T_co")),
+        ("T_contra", make_typevar("T_contra")),
+        ("KT", make_typevar("KT")),
+        ("VT", make_typevar("VT")),
+        ("VT_co", make_typevar("VT_co")),
+        ("AnyStr", make_typevar("AnyStr")),
         ("Generic", generic_class),
         ("Protocol", protocol_class),
         ("ClassVar", make_typing_alias("ClassVar")),
@@ -230,6 +254,12 @@ pub fn create_typing_module() -> PyObjectRef {
             Ok(args[0].clone())
         })),
         ("no_type_check", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+        ("no_type_check_decorator", make_builtin(|args: &[PyObjectRef]| {
+            // no_type_check_decorator is a decorator factory that returns a decorator
+            // which applies no_type_check to functions decorated with it
             if args.is_empty() { return Ok(PyObject::none()); }
             Ok(args[0].clone())
         })),

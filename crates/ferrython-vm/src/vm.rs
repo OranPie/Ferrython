@@ -3239,6 +3239,10 @@ impl VirtualMachine {
                 Opcode::CallFunction => {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
+                    if stack_len <= arg_count {
+                        // Stack too small — fall through to slow path
+                        self.execute_one(instr)
+                    } else {
                     let func_idx = stack_len - 1 - arg_count;
                     // Single payload check: determine both is_simple and is_recursive
                     // call_kind: 0=slow, 1=simple, 2=recursive, 3=trivial, 4=closure
@@ -4070,6 +4074,7 @@ impl VirtualMachine {
                         }
                     } // close else for BuiltinFunction checks
                     } // close else for Class check
+                    } // close stack guard
                 }
                 // Inline LoadGlobal + CallFunction fused: load global, then call
                 // arg = (name_idx << 16) | arg_count

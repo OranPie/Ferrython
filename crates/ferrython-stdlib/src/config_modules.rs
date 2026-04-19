@@ -360,7 +360,9 @@ fn argparse_parse_args(
     let ns_inst = PyObject::instance(ns_cls);
     let defs = arg_defs.read();
 
-    let arg_strings: Vec<String> = if !call_args.is_empty() {
+    let arg_strings: Vec<String> = if !call_args.is_empty()
+        && !matches!(&call_args[0].payload, PyObjectPayload::None)
+    {
         match &call_args[0].payload {
             PyObjectPayload::List(items) => items.read().iter().map(|a| a.py_to_string()).collect(),
             PyObjectPayload::Tuple(items) => items.iter().map(|a| a.py_to_string()).collect(),
@@ -374,7 +376,10 @@ fn argparse_parse_args(
             }
             _ => vec![],
         }
-    } else { vec![] };
+    } else {
+        // Default to sys.argv[1:] like CPython
+        crate::get_argv().into_iter().skip(1).collect()
+    };
 
     // Classify defs into positional and optional
     let mut positional_defs: Vec<(String, &IndexMap<CompactString, PyObjectRef>)> = Vec::new();

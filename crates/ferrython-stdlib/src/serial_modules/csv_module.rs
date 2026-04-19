@@ -54,6 +54,49 @@ pub fn create_csv_module() -> PyObjectRef {
         ("QUOTE_MINIMAL", PyObject::int(0)),
         ("QUOTE_NONNUMERIC", PyObject::int(2)),
         ("QUOTE_NONE", PyObject::int(3)),
+        ("Dialect", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("delimiter"), PyObject::str_val(CompactString::from(",")));
+            ns.insert(CompactString::from("quotechar"), PyObject::str_val(CompactString::from("\"")));
+            ns.insert(CompactString::from("doublequote"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("skipinitialspace"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("lineterminator"), PyObject::str_val(CompactString::from("\r\n")));
+            ns.insert(CompactString::from("quoting"), PyObject::int(0));
+            PyObject::class(CompactString::from("Dialect"), vec![], ns)
+        }),
+        ("excel", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("delimiter"), PyObject::str_val(CompactString::from(",")));
+            ns.insert(CompactString::from("quotechar"), PyObject::str_val(CompactString::from("\"")));
+            ns.insert(CompactString::from("doublequote"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("skipinitialspace"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("lineterminator"), PyObject::str_val(CompactString::from("\r\n")));
+            ns.insert(CompactString::from("quoting"), PyObject::int(0));
+            let cls = PyObject::class(CompactString::from("excel"), vec![], ns);
+            PyObject::instance(cls)
+        }),
+        ("excel_tab", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("delimiter"), PyObject::str_val(CompactString::from("\t")));
+            ns.insert(CompactString::from("quotechar"), PyObject::str_val(CompactString::from("\"")));
+            ns.insert(CompactString::from("doublequote"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("skipinitialspace"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("lineterminator"), PyObject::str_val(CompactString::from("\r\n")));
+            ns.insert(CompactString::from("quoting"), PyObject::int(0));
+            let cls = PyObject::class(CompactString::from("excel_tab"), vec![], ns);
+            PyObject::instance(cls)
+        }),
+        ("unix_dialect", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("delimiter"), PyObject::str_val(CompactString::from(",")));
+            ns.insert(CompactString::from("quotechar"), PyObject::str_val(CompactString::from("\"")));
+            ns.insert(CompactString::from("doublequote"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("skipinitialspace"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("lineterminator"), PyObject::str_val(CompactString::from("\n")));
+            ns.insert(CompactString::from("quoting"), PyObject::int(1));
+            let cls = PyObject::class(CompactString::from("unix_dialect"), vec![], ns);
+            PyObject::instance(cls)
+        }),
     ])
 }
 

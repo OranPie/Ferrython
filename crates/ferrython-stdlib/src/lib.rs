@@ -33,6 +33,7 @@ pub use sys_modules::{get_trace_func, set_trace_func, get_profile_func, set_prof
 pub use sys_modules::{is_trace_active, is_profile_active};
 pub use sys_modules::{set_current_frame, get_current_frame};
 pub use sys_modules::set_argv;
+pub use sys_modules::get_argv;
 pub use concurrency_modules::drain_deferred_calls;
 pub use ferrython_async::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};

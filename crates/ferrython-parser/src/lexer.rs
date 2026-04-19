@@ -163,6 +163,11 @@ impl<'src> Lexer<'src> {
                     indent = 0;
                     continue;
                 }
+                '\x0c' => {
+                    // Form feed — treated as whitespace, resets indent (CPython behavior)
+                    indent = 0;
+                    self.advance();
+                }
                 '#' => {
                     // Comment-only line — skip
                     self.skip_comment();
@@ -258,8 +263,8 @@ impl<'src> Lexer<'src> {
 
         let is_float = !self.is_at_end()
             && (self.peek_char() == '.'
-                || self.peek_char() == 'e'
-                || self.peek_char() == 'E');
+                || ((self.peek_char() == 'e' || self.peek_char() == 'E')
+                    && matches!(self.peek_char_at(1), Some('0'..='9') | Some('+') | Some('-'))));
 
         if !self.is_at_end() && self.peek_char() == '.' {
             // Check it's not ellipsis
@@ -274,14 +279,18 @@ impl<'src> Lexer<'src> {
         }
 
         if !self.is_at_end() && matches!(self.peek_char(), 'e' | 'E') {
-            num_str.push('e');
-            self.advance();
-            if !self.is_at_end() && matches!(self.peek_char(), '+' | '-') {
-                num_str.push(self.peek_char());
+            // Only treat as exponent if followed by digit, +, or -
+            let next_after_e = self.peek_char_at(1);
+            if matches!(next_after_e, Some('0'..='9') | Some('+') | Some('-')) {
+                num_str.push('e');
                 self.advance();
+                if !self.is_at_end() && matches!(self.peek_char(), '+' | '-') {
+                    num_str.push(self.peek_char());
+                    self.advance();
+                }
+                self.collect_digits(&mut num_str);
+                return self.make_float_or_complex(num_str, start);
             }
-            self.collect_digits(&mut num_str);
-            return self.make_float_or_complex(num_str, start);
         }
 
         if is_float || num_str.contains('.') {
@@ -962,7 +971,7 @@ impl<'src> Lexer<'src> {
     }
 
     fn skip_spaces(&mut self) {
-        while !self.is_at_end() && (self.peek_char() == ' ' || self.peek_char() == '\t') {
+        while !self.is_at_end() && matches!(self.peek_char(), ' ' | '\t' | '\x0c') {
             self.advance();
         }
     }

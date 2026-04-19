@@ -31,6 +31,11 @@ pub fn set_argv(args: Vec<String>) {
     *SYS_ARGV.write() = args;
 }
 
+/// Get the current sys.argv values.
+pub fn get_argv() -> Vec<String> {
+    SYS_ARGV.read().clone()
+}
+
 /// Check if any trace function is active (atomic load — ~1ns vs ~15ns for thread-local).
 #[inline(always)]
 pub fn is_trace_active() -> bool {

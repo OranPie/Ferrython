@@ -271,6 +271,7 @@ pub fn create_re_module() -> PyObjectRef {
         ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
         ("Pattern", PyObject::class(CompactString::from("Pattern"), vec![], IndexMap::new())),
         ("Match", PyObject::class(CompactString::from("Match"), vec![], IndexMap::new())),
+        ("Scanner", PyObject::class(CompactString::from("Scanner"), vec![], IndexMap::new())),
     ])
 }
 
@@ -1770,6 +1771,61 @@ pub fn create_fnmatch_module() -> PyObjectRef {
                 .filter(|n| glob_match(&pattern, &n.py_to_string()))
                 .cloned().collect();
             Ok(PyObject::list(filtered))
+        })),
+        ("translate", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("translate requires a pattern")); }
+            let pat = args[0].py_to_string();
+            let mut res = String::from("(?s:");
+            let chars: Vec<char> = pat.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let c = chars[i];
+                match c {
+                    '*' => res.push_str(".*"),
+                    '?' => res.push('.'),
+                    '[' => {
+                        let mut j = i + 1;
+                        if j < chars.len() && chars[j] == '!' {
+                            j += 1;
+                        }
+                        if j < chars.len() && chars[j] == ']' {
+                            j += 1;
+                        }
+                        while j < chars.len() && chars[j] != ']' {
+                            j += 1;
+                        }
+                        if j >= chars.len() {
+                            res.push_str("\\[");
+                        } else {
+                            let mut stuff = String::new();
+                            for &ch in &chars[i+1..j] {
+                                stuff.push(ch);
+                            }
+                            stuff = stuff.replace("\\", "\\\\");
+                            let mut bracket = String::from("[");
+                            if stuff.starts_with('!') {
+                                bracket.push('^');
+                                bracket.push_str(&stuff[1..]);
+                            } else {
+                                bracket.push_str(&stuff);
+                            }
+                            bracket.push(']');
+                            res.push_str(&bracket);
+                            i = j;
+                        }
+                    }
+                    _ => {
+                        // Escape regex special characters
+                        if "(){}+.^$|\\".contains(c) {
+                            res.push('\\');
+                        }
+                        res.push(c);
+                    }
+                }
+                i += 1;
+            }
+            res.push_str(r")\Z");
+            Ok(PyObject::str_val(CompactString::from(res)))
         })),
     ])
 }
