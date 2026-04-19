@@ -134,8 +134,19 @@ impl VirtualMachine {
         idunder: &str, dunder: &str,
     ) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &a.payload {
-            let method = lookup_in_class_mro(&inst.class, idunder)
-                .or_else(|| lookup_in_class_mro(&inst.class, dunder));
+            // Try in-place dunder first; if it's explicitly None, skip it (CPython slot blocker)
+            let imethod = lookup_in_class_mro(&inst.class, idunder);
+            let method = match imethod {
+                Some(ref m) if matches!(m.payload, PyObjectPayload::None) => {
+                    // __iadd__ = None blocks in-place AND fallback to __add__
+                    return Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for +=: '{}' and '{}'",
+                        a.type_name(), b.type_name()
+                    )));
+                }
+                Some(m) => Some(m),
+                None => lookup_in_class_mro(&inst.class, dunder),
+            };
             if let Some(m) = method {
                 let bound = self.bind_method(a, m);
                 return Ok(Some(self.call_object(bound, vec![b.clone()])?));
@@ -355,7 +366,7 @@ impl VirtualMachine {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__ifloordiv__", "__floordiv__")? { r }
                 else { with_enum_fallback!(a, b, floor_div) }
             }
-            Opcode::BinaryModulo | Opcode::InplaceModulo => {
+            Opcode::BinaryModulo => {
                 // str % val → Python printf-style formatting
                 if let PyObjectPayload::Str(fmt_str) = &a.payload {
                     self.vm_string_percent_format(fmt_str, &b)?
@@ -364,16 +375,32 @@ impl VirtualMachine {
                 } else if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
                 else { with_enum_fallback!(a, b, modulo) }
             }
-            Opcode::BinaryPower | Opcode::InplacePower => {
+            Opcode::InplaceModulo => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imod__", "__mod__")? { r }
+                else { with_enum_fallback!(a, b, modulo) }
+            }
+            Opcode::BinaryPower => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__pow__", Some("__rpow__"))? { r }
                 else { with_enum_fallback!(a, b, power) }
             }
-            Opcode::BinaryLshift | Opcode::InplaceLshift => {
+            Opcode::InplacePower => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ipow__", "__pow__")? { r }
+                else { with_enum_fallback!(a, b, power) }
+            }
+            Opcode::BinaryLshift => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))? { r }
                 else { with_enum_fallback!(a, b, lshift) }
             }
-            Opcode::BinaryRshift | Opcode::InplaceRshift => {
+            Opcode::InplaceLshift => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ilshift__", "__lshift__")? { r }
+                else { with_enum_fallback!(a, b, lshift) }
+            }
+            Opcode::BinaryRshift => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))? { r }
+                else { with_enum_fallback!(a, b, rshift) }
+            }
+            Opcode::InplaceRshift => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__irshift__", "__rshift__")? { r }
                 else { with_enum_fallback!(a, b, rshift) }
             }
             Opcode::BinaryAnd => {
@@ -437,11 +464,20 @@ impl VirtualMachine {
                 }
                 else { with_enum_fallback!(a, b, bit_xor) }
             }
-            Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
+            Opcode::BinaryMatrixMultiply => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))? { r }
                 else {
                     return Err(PyException::type_error(format!(
                         "unsupported operand type(s) for @: '{}' and '{}'",
+                        a.type_name(), b.type_name()
+                    )));
+                }
+            }
+            Opcode::InplaceMatrixMultiply => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imatmul__", "__matmul__")? { r }
+                else {
+                    return Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for @=: '{}' and '{}'",
                         a.type_name(), b.type_name()
                     )));
                 }

@@ -764,9 +764,9 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             && !jump_targets[i + 4] && !is_nop[i + 4]
             && !jump_targets[i + 5] && !is_nop[i + 5]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply)
             && code.instructions[i + 3].op == Opcode::LoadConst
-            && matches!(code.instructions[i + 4].op, Opcode::BinaryModulo | Opcode::InplaceModulo)
+            && matches!(code.instructions[i + 4].op, Opcode::BinaryModulo)
             && code.instructions[i + 5].op == Opcode::StoreFast
             && a.arg <= 0xFF && b.arg <= 0xFF
             && code.instructions[i + 3].arg <= 0xFF && code.instructions[i + 5].arg <= 0xFF
@@ -784,11 +784,12 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
-        // 4-way fusion: LoadFast + LoadConst + BinaryAdd/InplaceAdd + StoreFast → LoadFastLoadConstBinaryAddStoreFast
+        // 4-way fusion: LoadFast + LoadConst + BinaryAdd + StoreFast → LoadFastLoadConstBinaryAddStoreFast
+        // NOTE: We only fuse BinaryAdd, NOT InplaceAdd, because InplaceAdd needs __iadd__ dispatch
         if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && !jump_targets[i + 3] && !is_nop[i + 3]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
+            && code.instructions[i + 2].op == Opcode::BinaryAdd
             && code.instructions[i + 3].op == Opcode::StoreFast
             && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
         {
@@ -802,11 +803,11 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
-        // 4-way fusion: LoadFast + LoadConst + BinaryMultiply/InplaceMultiply + StoreFast → LoadFastLoadConstBinaryMulStoreFast
+        // 4-way fusion: LoadFast + LoadConst + BinaryMultiply + StoreFast → LoadFastLoadConstBinaryMulStoreFast
         if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && !jump_targets[i + 3] && !is_nop[i + 3]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+            && code.instructions[i + 2].op == Opcode::BinaryMultiply
             && code.instructions[i + 3].op == Opcode::StoreFast
             && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
         {
@@ -820,11 +821,11 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
-        // 4-way fusion: LoadFast + LoadConst + BinarySubtract/InplaceSubtract + StoreFast → LoadFastLoadConstBinarySubStoreFast
+        // 4-way fusion: LoadFast + LoadConst + BinarySubtract + StoreFast → LoadFastLoadConstBinarySubStoreFast
         if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && !jump_targets[i + 3] && !is_nop[i + 3]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinarySubtract | Opcode::InplaceSubtract)
+            && code.instructions[i + 2].op == Opcode::BinarySubtract
             && code.instructions[i + 3].op == Opcode::StoreFast
             && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
         {
@@ -866,12 +867,12 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
-        // 4-way fusion: LoadFast + LoadFast + BinaryAdd/InplaceAdd + StoreFast → LoadFastLoadFastBinaryAddStoreFast
+        // 4-way fusion: LoadFast + LoadFast + BinaryAdd + StoreFast → LoadFastLoadFastBinaryAddStoreFast
         // Hot accumulator pattern: x = x + i
         if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && !jump_targets[i + 3] && !is_nop[i + 3]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
+            && code.instructions[i + 2].op == Opcode::BinaryAdd
             && code.instructions[i + 3].op == Opcode::StoreFast
             && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
         {
@@ -885,10 +886,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
-        // 3-way fusion: LoadFast + LoadFast + BinaryAdd/InplaceAdd → LoadFastLoadFastBinaryAdd
+        // 3-way fusion: LoadFast + LoadFast + BinaryAdd → LoadFastLoadFastBinaryAdd
         if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
+            && code.instructions[i + 2].op == Opcode::BinaryAdd
             && a.arg <= 0xFFFF && b.arg <= 0xFFFF
         {
             let packed_arg = (a.arg << 16) | b.arg;
