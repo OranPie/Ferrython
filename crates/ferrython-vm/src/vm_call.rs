@@ -1785,14 +1785,14 @@ impl VirtualMachine {
                             }
                         }
                         // itertools.groupby with key function
-                        if nf_data.name.as_str() == "itertools.groupby" {
+                        if nf_data.name.as_str() == "itertools.groupby" && !pos_args.is_empty() {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone())
                                 .or_else(|| if pos_args.len() >= 2 { Some(pos_args[1].clone()) } else { None });
                             let iterable = vec![pos_args[0].clone()];
                             return self.vm_itertools_groupby(&iterable, key_fn);
                         }
                         // itertools.accumulate with initial kwarg
-                        if nf_data.name.as_str() == "itertools.accumulate" && !kwargs.is_empty() {
+                        if nf_data.name.as_str() == "itertools.accumulate" && !kwargs.is_empty() && !pos_args.is_empty() {
                             let initial = kwargs.iter().find(|(k, _)| k.as_str() == "initial").map(|(_, v)| v.clone());
                             let func_arg = if pos_args.len() >= 2 && !matches!(&pos_args[1].payload, PyObjectPayload::None) {
                                 Some(pos_args[1].clone())

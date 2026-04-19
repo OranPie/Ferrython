@@ -566,6 +566,12 @@ impl VirtualMachine {
                 let arg_count = instr.arg as usize;
                 // Drain args directly in forward order (avoids pop+reverse)
                 let stack_len = frame.stack.len();
+                if stack_len < arg_count + 1 {
+                    return Err(PyException::runtime_error(
+                        format!("internal error: not enough values on the stack for call (need {}, have {})",
+                                arg_count + 1, stack_len)
+                    ));
+                }
                 let args_start = stack_len - arg_count;
                 let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                 let func = frame.pop();
@@ -580,6 +586,12 @@ impl VirtualMachine {
                 let arg_count = instr.arg as usize;
                 // Drain args directly in forward order (avoids pop+reverse)
                 let stack_len = frame.stack.len();
+                if stack_len < arg_count + 1 {
+                    return Err(PyException::runtime_error(
+                        format!("internal error: not enough values on the stack for call (need {}, have {})",
+                                arg_count + 1, stack_len)
+                    ));
+                }
                 let args_start = stack_len - arg_count;
                 let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                 let func = frame.pop();

@@ -359,7 +359,7 @@ impl Compiler {
             self.future_annotations = Self::has_future_annotations(body);
         }
 
-        let symtable = symbol_table::analyze(module);
+        let symtable = symbol_table::analyze(module)?;
         let unit = CompileUnit::new(
             "<module>",
             &self.filename,

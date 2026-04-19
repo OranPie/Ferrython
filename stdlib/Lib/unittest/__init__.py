@@ -76,9 +76,11 @@ class TestCase:
     def tearDown(self):
         pass
 
+    @classmethod
     def setUpClass(cls):
         pass
 
+    @classmethod
     def tearDownClass(cls):
         pass
 
@@ -688,6 +690,17 @@ class TextTestRunner:
         result = self.resultclass()
         test.run(result)
         if self.verbosity > 0:
+            if result.failures or result.errors:
+                for test_case, traceback_str in result.failures:
+                    print("=" * 70)
+                    print("FAIL:", test_case)
+                    print("-" * 70)
+                    print(traceback_str)
+                for test_case, traceback_str in result.errors:
+                    print("=" * 70)
+                    print("ERROR:", test_case)
+                    print("-" * 70)
+                    print(traceback_str)
             if result.wasSuccessful():
                 print("OK (%d tests)" % result.testsRun)
             else:

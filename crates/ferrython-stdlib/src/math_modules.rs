@@ -769,6 +769,84 @@ pub fn create_decimal_module() -> PyObjectRef {
     static DECIMAL_PREC: AtomicU32 = AtomicU32::new(28);
     static DECIMAL_CLASS: OnceLock<PyObjectRef> = OnceLock::new();
 
+    // Signal names used by decimal module
+    const SIGNAL_NAMES: &[&str] = &[
+        "Clamped", "InvalidOperation", "DivisionByZero", "Inexact",
+        "Rounded", "Subnormal", "Underflow", "Overflow", "FloatOperation",
+    ];
+
+    fn make_signal_types() -> Vec<(CompactString, PyObjectRef)> {
+        SIGNAL_NAMES.iter().map(|&name| {
+            let kind = match name {
+                "DivisionByZero" => ferrython_core::error::ExceptionKind::ZeroDivisionError,
+                "Overflow" => ferrython_core::error::ExceptionKind::OverflowError,
+                _ => ferrython_core::error::ExceptionKind::ArithmeticError,
+            };
+            (CompactString::from(name), PyObject::exception_type(kind))
+        }).collect()
+    }
+
+    fn make_decimal_flags_dict(signals: &[(CompactString, PyObjectRef)]) -> PyObjectRef {
+        let mut map = IndexMap::new();
+        for (_, sig_obj) in signals {
+            let key = HashableKey::from_object(sig_obj).unwrap();
+            map.insert(key, PyObject::bool_val(false));
+        }
+        PyObject::dict(map)
+    }
+
+    fn add_context_flags_and_methods(ctx_ns: &mut IndexMap<CompactString, PyObjectRef>, signals: &[(CompactString, PyObjectRef)]) {
+        ctx_ns.insert(CompactString::from("flags"), make_decimal_flags_dict(signals));
+        ctx_ns.insert(CompactString::from("traps"), make_decimal_flags_dict(signals));
+        let sigs_for_clear = signals.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>();
+        ctx_ns.insert(CompactString::from("clear_flags"), PyObject::native_closure(
+            "clear_flags", move |args: &[PyObjectRef]| {
+                if let Some(self_obj) = args.first() {
+                    if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                        let mut new_flags = IndexMap::new();
+                        for sig in &sigs_for_clear {
+                            let key = HashableKey::from_object(sig).unwrap();
+                            new_flags.insert(key, PyObject::bool_val(false));
+                        }
+                        inst.attrs.write().insert(CompactString::from("flags"), PyObject::dict(new_flags));
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+        let sigs_for_clear2 = signals.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>();
+        ctx_ns.insert(CompactString::from("clear_traps"), PyObject::native_closure(
+            "clear_traps", move |args: &[PyObjectRef]| {
+                if let Some(self_obj) = args.first() {
+                    if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                        let mut new_traps = IndexMap::new();
+                        for sig in &sigs_for_clear2 {
+                            let key = HashableKey::from_object(sig).unwrap();
+                            new_traps.insert(key, PyObject::bool_val(false));
+                        }
+                        inst.attrs.write().insert(CompactString::from("traps"), PyObject::dict(new_traps));
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+        ctx_ns.insert(CompactString::from("copy"), make_builtin(|args| {
+            if let Some(self_obj) = args.first() {
+                if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                    let attrs = inst.attrs.read().clone();
+                    let new_inst = InstanceData {
+                        class: inst.class.clone(),
+                        attrs: to_shared_fx(attrs.into_iter().collect()),
+                        is_special: true, dict_storage: None,
+                        class_flags: inst.class_flags,
+                    };
+                    return Ok(PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(new_inst)))));
+                }
+            }
+            Ok(PyObject::none())
+        }));
+    }
+
     fn get_prec() -> u32 {
         DECIMAL_PREC.load(Ordering::Relaxed)
     }
@@ -1625,7 +1703,14 @@ pub fn create_decimal_module() -> PyObjectRef {
         }
     }
 
-    make_module("decimal", vec![
+    // Pre-create signal types so they're shared across module exports and context flags
+    let signals = make_signal_types();
+    let signals_for_getctx = signals.clone();
+    let signals_for_basic = signals.clone();
+    let signals_for_ext = signals.clone();
+    let signals_for_ctor = signals.clone();
+
+    let mut module_entries: Vec<(&str, PyObjectRef)> = vec![
         ("Decimal", get_decimal_class()),
         ("ROUND_HALF_UP", PyObject::str_val(CompactString::from("ROUND_HALF_UP"))),
         ("ROUND_HALF_DOWN", PyObject::str_val(CompactString::from("ROUND_HALF_DOWN"))),
@@ -1635,7 +1720,7 @@ pub fn create_decimal_module() -> PyObjectRef {
         ("ROUND_DOWN", PyObject::str_val(CompactString::from("ROUND_DOWN"))),
         ("ROUND_UP", PyObject::str_val(CompactString::from("ROUND_UP"))),
         ("ROUND_05UP", PyObject::str_val(CompactString::from("ROUND_05UP"))),
-        ("getcontext", make_builtin(|_| {
+        ("getcontext", PyObject::native_closure("getcontext", move |_| {
             use std::sync::atomic::Ordering;
             let current_prec = DECIMAL_PREC.load(Ordering::Relaxed);
             let mut ctx_ns = IndexMap::new();
@@ -1645,6 +1730,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
             ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
             ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
+            add_context_flags_and_methods(&mut ctx_ns, &signals_for_getctx);
             // Add __setattr__ to intercept prec assignment
             let cls_ns = {
                 let mut ns = IndexMap::new();
@@ -1655,7 +1741,6 @@ pub fn create_decimal_module() -> PyObjectRef {
                     if attr_name == "prec" {
                         let new_prec = args[2].to_int()? as u32;
                         DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
-                        // Also update the instance attribute
                         if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                             inst.attrs.write().insert(CompactString::from("prec"), PyObject::int(new_prec as i64));
                         }
@@ -1751,21 +1836,23 @@ pub fn create_decimal_module() -> PyObjectRef {
             }
             Ok(inst)
         })),
-        ("InvalidOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("DivisionByZero", PyObject::exception_type(ferrython_core::error::ExceptionKind::ZeroDivisionError)),
-        ("Overflow", PyObject::exception_type(ferrython_core::error::ExceptionKind::OverflowError)),
-        ("Underflow", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("Inexact", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("Rounded", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("Subnormal", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("FloatOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
-        ("DecimalException", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+    ];
+
+    // Add signal types from the pre-created set (share same objects with flags dicts)
+    for (name, obj) in &signals {
+        let static_name = SIGNAL_NAMES.iter().find(|&&s| s == name.as_str()).unwrap();
+        module_entries.push((static_name, obj.clone()));
+    }
+    module_entries.push(("DecimalException", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)));
+
+    module_entries.extend(vec![
         ("BasicContext", {
             let mut ns = IndexMap::new();
             ns.insert(CompactString::from("prec"), PyObject::int(9));
             ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_UP")));
             ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
             ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            add_context_flags_and_methods(&mut ns, &signals_for_basic);
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             let class_flags = InstanceData::compute_flags(&cls);
             PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
@@ -1781,6 +1868,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
             ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
             ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            add_context_flags_and_methods(&mut ns, &signals_for_ext);
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             let class_flags = InstanceData::compute_flags(&cls);
             PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
@@ -1790,7 +1878,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 class_flags,
             }))))
         }),
-        ("Context", make_builtin(|args| {
+        ("Context", PyObject::native_closure("Context", move |args: &[PyObjectRef]| {
             // Context(prec=28, rounding=ROUND_HALF_EVEN, ...)
             let mut ctx_ns = IndexMap::new();
             let prec = args.first()
@@ -1806,6 +1894,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
             ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
             ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
+            add_context_flags_and_methods(&mut ctx_ns, &signals_for_ctor);
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             let class_flags = InstanceData::compute_flags(&cls);
             Ok(PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
@@ -1815,7 +1904,9 @@ pub fn create_decimal_module() -> PyObjectRef {
                 class_flags,
             })))))
         })),
-    ])
+    ]);
+
+    make_module("decimal", module_entries)
 }
 
 

@@ -448,6 +448,11 @@ impl HashableKey {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
+            // ExceptionType: hash by identity
+            PyObjectPayload::ExceptionType(_) => {
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                Ok(HashableKey::Identity(ptr, obj.clone()))
+            }
             // BuiltinType: hash by type name so type(42) matches int as dict key
             PyObjectPayload::BuiltinType(name) => {
                 Ok(HashableKey::str_key(CompactString::from(format!("<type:{}>", name))))

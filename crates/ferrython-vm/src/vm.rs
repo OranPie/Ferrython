@@ -1,30 +1,27 @@
 //! The main virtual machine — executes bytecode instructions.
 
-/// Unchecked push to frame.stack — only borrows stack field, not entire Frame.
-/// SAFETY: caller guarantees stack has capacity (stack pre-allocated to max_stack_size).
+/// Push to frame.stack — grows the stack if capacity is reached.
 macro_rules! spush {
     ($frame:expr, $val:expr) => {
         #[allow(unused_unsafe)]
         unsafe {
             let stack = &mut $frame.stack;
-            let len = stack.len();
-            debug_assert!(len < stack.capacity());
-            std::ptr::write(stack.as_mut_ptr().add(len), $val);
-            stack.set_len(len + 1);
+            let val = $val;
+            if stack.len() < stack.capacity() {
+                let len = stack.len();
+                std::ptr::write(stack.as_mut_ptr().add(len), val);
+                stack.set_len(len + 1);
+            } else {
+                stack.push(val);
+            }
         }
     };
 }
 
-/// Unchecked pop from frame.stack — only borrows stack field, not entire Frame.
-/// SAFETY: caller guarantees stack is non-empty.
+/// Pop from frame.stack — panics if empty.
 macro_rules! spop {
     ($frame:expr) => {
-        unsafe {
-            let stack = &mut $frame.stack;
-            let new_len = stack.len() - 1;
-            stack.set_len(new_len);
-            std::ptr::read(stack.as_ptr().add(new_len))
-        }
+        $frame.stack.pop().expect("stack underflow")
     };
 }
 

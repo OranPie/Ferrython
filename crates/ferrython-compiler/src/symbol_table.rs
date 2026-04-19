@@ -6,6 +6,7 @@
 use ferrython_ast::*;
 use indexmap::IndexMap;
 use rustc_hash::FxHashSet;
+use crate::error::CompileError;
 
 /// The kind of scope a symbol table entry represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,13 +171,16 @@ pub struct SymbolTable {
 }
 
 /// Analyze a module and produce a symbol table.
-pub fn analyze(module: &Module) -> SymbolTable {
+pub fn analyze(module: &Module) -> Result<SymbolTable, CompileError> {
     let mut analyzer = Analyzer::new();
     analyzer.analyze_module(module);
+    if !analyzer.errors.is_empty() {
+        return Err(analyzer.errors.remove(0));
+    }
     let mut top = analyzer.finish();
     // Post-analysis: resolve cell/free variables by walking scope tree
     resolve_free_vars(&mut top);
-    SymbolTable { top }
+    Ok(SymbolTable { top })
 }
 
 /// Resolve cell/free variables by walking the scope tree bottom-up.
@@ -284,12 +288,14 @@ fn resolve_bottom_up(scope: &mut Scope) {
 
 struct Analyzer {
     scope_stack: Vec<Scope>,
+    errors: Vec<CompileError>,
 }
 
 impl Analyzer {
     fn new() -> Self {
         Self {
             scope_stack: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -582,6 +588,17 @@ impl Analyzer {
 
             StatementKind::Global { names } => {
                 for name in names {
+                    // Check if name was already used before the global declaration
+                    if self.current_scope().scope_type == ScopeType::Function {
+                        if let Some(sym) = self.current_scope().symbols.get(name.as_str()) {
+                            if sym.is_assigned || sym.is_referenced {
+                                self.errors.push(CompileError::syntax(
+                                    format!("name '{}' is used prior to global declaration", name),
+                                    stmt.location,
+                                ));
+                            }
+                        }
+                    }
                     self.current_scope()
                         .add_symbol(name, SymbolScope::Global);
                 }
@@ -589,6 +606,16 @@ impl Analyzer {
 
             StatementKind::Nonlocal { names } => {
                 for name in names {
+                    if self.current_scope().scope_type == ScopeType::Function {
+                        if let Some(sym) = self.current_scope().symbols.get(name.as_str()) {
+                            if sym.is_assigned || sym.is_referenced {
+                                self.errors.push(CompileError::syntax(
+                                    format!("name '{}' is used prior to nonlocal declaration", name),
+                                    stmt.location,
+                                ));
+                            }
+                        }
+                    }
                     self.current_scope()
                         .add_symbol(name, SymbolScope::Nonlocal);
                 }

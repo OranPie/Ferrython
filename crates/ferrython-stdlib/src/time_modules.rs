@@ -1933,7 +1933,13 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
         w.insert(CompactString::from("seconds"), PyObject::int(seconds));
         w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
         w.insert(CompactString::from("_total_seconds"), PyObject::float(total_secs));
-        w.insert(CompactString::from("_total_us"), PyObject::int(days * 86_400_000_000 + seconds * 1_000_000 + microseconds));
+        let total_us_128 = days as i128 * 86_400_000_000i128 + seconds as i128 * 1_000_000i128 + microseconds as i128;
+        let total_us_obj = if total_us_128 >= i64::MIN as i128 && total_us_128 <= i64::MAX as i128 {
+            PyObject::int(total_us_128 as i64)
+        } else {
+            PyObject::big_int(num_bigint::BigInt::from(total_us_128))
+        };
+        w.insert(CompactString::from("_total_us"), total_us_obj);
         // total_seconds() as a callable method
         let ts = total_secs;
         w.insert(CompactString::from("total_seconds"), PyObject::native_closure(
