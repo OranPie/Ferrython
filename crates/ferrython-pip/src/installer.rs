@@ -453,6 +453,32 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         }
     }
 
+    // Create __init__.py in package subdirectories that lack one.
+    // Some packages use implicit namespace packages (PEP 420) which Ferrython
+    // doesn't support — we synthesize __init__.py files to make them importable.
+    {
+        let mut pkg_dirs: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+        for f in &installed_files {
+            let p = site.join(f);
+            if let Some(parent) = p.parent() {
+                // Only consider directories inside the package (not dist-info/data)
+                if !f.contains(".dist-info") && !f.contains(".data") {
+                    let mut dir = parent.to_path_buf();
+                    while dir.starts_with(site) && dir != site {
+                        pkg_dirs.insert(dir.clone());
+                        if !dir.pop() { break; }
+                    }
+                }
+            }
+        }
+        for dir in &pkg_dirs {
+            let init = dir.join("__init__.py");
+            if !init.exists() && dir.is_dir() {
+                let _ = fs::write(&init, "# auto-generated for implicit namespace package\n");
+            }
+        }
+    }
+
     // Write RECORD and metadata files, preserving original wheel RECORD entries when available
     write_record(site, &actual_dist_info_dir, name, version, &installed_files, &wheel_record_entries, None)?;
 
