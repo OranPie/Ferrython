@@ -2540,7 +2540,7 @@ impl VirtualMachine {
                                             ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
                                         })
                                     }
-                                    _ => PyObjectRef::ptr_eq(x, needle),
+                                    _ => x.is_same(needle),
                                 }
                             }))
                         }
@@ -2557,7 +2557,7 @@ impl VirtualMachine {
                                             ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
                                         })
                                     }
-                                    _ => PyObjectRef::ptr_eq(x, needle),
+                                    _ => x.is_same(needle),
                                 }
                             }))
                         }
@@ -3777,6 +3777,13 @@ impl VirtualMachine {
                                                 (PyObjectPayload::Bytes(_), "bytes") => true,
                                                 (PyObjectPayload::ByteArray(_), "bytearray") => true,
                                                 (PyObjectPayload::None, "NoneType") => true,
+                                                (PyObjectPayload::Generator(_), "generator") => true,
+                                                (PyObjectPayload::Coroutine(_), "coroutine") => true,
+                                                (PyObjectPayload::AsyncGenerator(_), "async_generator") => true,
+                                                (PyObjectPayload::FrozenSet(_), "frozenset") => true,
+                                                (PyObjectPayload::Range(_), "range") => true,
+                                                (PyObjectPayload::BuiltinType(_), "type") => true,
+                                                (PyObjectPayload::Class(_), "type") => true,
                                                 (_, "object") => true,
                                                 _ => false,
                                             };
@@ -4434,6 +4441,13 @@ impl VirtualMachine {
                                             "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
                                             "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
                                             "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+                                            "NoneType" => Some(matches!(&obj.payload, PyObjectPayload::None)),
+                                            "generator" => Some(matches!(&obj.payload, PyObjectPayload::Generator(_))),
+                                            "coroutine" => Some(matches!(&obj.payload, PyObjectPayload::Coroutine(_))),
+                                            "async_generator" => Some(matches!(&obj.payload, PyObjectPayload::AsyncGenerator(_))),
+                                            "frozenset" => Some(matches!(&obj.payload, PyObjectPayload::FrozenSet(_))),
+                                            "range" => Some(matches!(&obj.payload, PyObjectPayload::Range(_))),
+                                            "type" => Some(matches!(&obj.payload, PyObjectPayload::BuiltinType(_) | PyObjectPayload::Class(_))),
                                             "object" => Some(true),
                                             _ => None,
                                         }
@@ -4660,6 +4674,14 @@ impl VirtualMachine {
                                                                 "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
                                                                 "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
                                                                 "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+                                                                "NoneType" => Some(matches!(&obj.payload, PyObjectPayload::None)),
+                                                                "generator" => Some(matches!(&obj.payload, PyObjectPayload::Generator(_))),
+                                                                "coroutine" => Some(matches!(&obj.payload, PyObjectPayload::Coroutine(_))),
+                                                                "async_generator" => Some(matches!(&obj.payload, PyObjectPayload::AsyncGenerator(_))),
+                                                                "frozenset" => Some(matches!(&obj.payload, PyObjectPayload::FrozenSet(_))),
+                                                                "range" => Some(matches!(&obj.payload, PyObjectPayload::Range(_))),
+                                                                "type" => Some(matches!(&obj.payload, PyObjectPayload::BuiltinType(_) | PyObjectPayload::Class(_))),
+                                                                "object" => Some(true),
                                                                 _ => None,
                                                             }
                                                         }
@@ -6529,7 +6551,7 @@ impl VirtualMachine {
                                     match (&x.payload, &needle.payload) {
                                         (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                        _ => PyObjectRef::ptr_eq(x, needle),
+                                        _ => x.is_same(needle),
                                     }
                                 }))
                             }
@@ -6538,7 +6560,7 @@ impl VirtualMachine {
                                     match (&x.payload, &needle.payload) {
                                         (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                        _ => PyObjectRef::ptr_eq(x, needle),
+                                        _ => x.is_same(needle),
                                     }
                                 }))
                             }
@@ -6665,6 +6687,10 @@ impl VirtualMachine {
                     // Iterative exception unwind: try current frame, then parents
                     loop {
                         if let Some(handler_ip) = self.unwind_except() {
+                            // Attach traceback from call stack if not already present
+                            if exc.traceback.is_empty() {
+                                self.attach_traceback(&mut exc);
+                            }
                             // Extract exc_value and exc_type, reusing original when available
                             let exc_kind = exc.kind;
                             let (exc_value, exc_type) = if let Some(orig) = &exc.original {
@@ -6713,10 +6739,18 @@ impl VirtualMachine {
                                 };
                                 Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                             }
-                            // sys.exc_info() reads lazily through active_exception pointer
-                            // (registered at run_frame start) — no TLS write needed here
+                            // Build traceback object and attach to exception value
+                            let tb_obj = if !exc.traceback.is_empty() {
+                                Self::build_traceback_object(&exc.traceback)
+                            } else {
+                                PyObject::none()
+                            };
+                            Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
+                            // Ensure exc.original points to the same exc_value so that
+                            // sys.exc_info() can retrieve __traceback__ later.
+                            exc.original = Some(exc_value.clone());
                             let frame = self.call_stack.last_mut().unwrap();
-                            frame.push(PyObject::none());         // traceback (lazy)
+                            frame.push(tb_obj);
                             frame.push(exc_value);            // value
                             frame.push(exc_type);             // type
                             frame.ip = handler_ip;
@@ -6769,7 +6803,6 @@ impl VirtualMachine {
     /// Build a Python-level traceback object chain (CPython-compatible).
     /// The returned object is the outermost frame, with tb_next pointing towards
     /// the innermost frame (matching CPython's `sys.exc_info()[2]` chain order).
-    #[allow(dead_code)]
     fn build_traceback_object(entries: &[ferrython_core::error::TracebackEntry]) -> PyObjectRef {
         if entries.is_empty() {
             return PyObject::none();

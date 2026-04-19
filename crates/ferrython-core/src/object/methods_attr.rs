@@ -1865,6 +1865,17 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 None
             }
+            PyObjectPayload::None => {
+                match name {
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("NoneType"))),
+                    "__bool__" | "__repr__" | "__str__" | "__hash__" | "__eq__" | "__ne__" => {
+                        Some(PyObjectRef::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
+                        }))
+                    }
+                    _ => None,
+                }
+            }
             PyObjectPayload::Generator(_) => {
                 match name {
                     // Generator protocol: send, throw, close, __next__, __iter__

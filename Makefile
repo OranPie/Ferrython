@@ -1,16 +1,17 @@
 # Ferrython build targets
 # Usage:
-#   make release       - Standard release build (fast compile)
-#   make pgo           - PGO-optimized build (slow compile, ~15% faster runtime)
-#   make bench         - Run benchmark suite
-#   make clean         - Clean build artifacts
+#   make release        - Standard release build (fast compile)
+#   make pgo            - PGO-optimized build (slow compile, ~15% faster runtime)
+#   make bench          - Run benchmark suite
+#   make cpython-test   - Run CPython official regression tests
+#   make clean          - Clean build artifacts
 
 LLVM_PROFDATA := $(shell find $$(rustc --print sysroot) -name llvm-profdata 2>/dev/null | head -1)
 PGO_DIR := /tmp/ferrython-pgo-data
 BENCH := tests/benchmarks/bench_suite.py
 BIN := ./target/release/ferrython
 
-.PHONY: release pgo bench clean
+.PHONY: release pgo bench cpython-test cpython-test-verbose clean
 
 release:
 	cargo build --release
@@ -34,6 +35,14 @@ bench:
 	python3 $(BENCH)
 	@echo "--- Ferrython ---"
 	$(BIN) $(BENCH)
+
+cpython-test: release
+	@echo "=== CPython Compatibility Test Suite ==="
+	$(BIN) tools/run_cpython_tests.py
+
+cpython-test-verbose: release
+	@echo "=== CPython Compatibility Test Suite (verbose) ==="
+	$(BIN) tools/run_cpython_tests.py --verbose
 
 clean:
 	cargo clean

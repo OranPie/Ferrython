@@ -76,14 +76,18 @@ pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObj
         _ => {}
     }
     // Slow path: delegate to VM for Python functions, classes, etc.
-    VM_CALL_DISPATCH.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        if let Some(dispatch) = borrow.as_mut() {
-            dispatch(func.clone(), args.to_vec())
-        } else {
-            Err(PyException::type_error("not a callable (no VM dispatch registered)"))
-        }
-    })
+    // Take the dispatch fn out of the cell to avoid holding the borrow during
+    // the call — the dispatched code may re-enter call_callable.
+    let dispatch_fn = VM_CALL_DISPATCH.with(|cell| cell.borrow_mut().take());
+    if let Some(mut dispatch) = dispatch_fn {
+        let result = dispatch(func.clone(), args.to_vec());
+        VM_CALL_DISPATCH.with(|cell| {
+            *cell.borrow_mut() = Some(dispatch);
+        });
+        result
+    } else {
+        Err(PyException::type_error("not a callable (no VM dispatch registered)"))
+    }
 }
 
 // ── Recursive repr guard ──

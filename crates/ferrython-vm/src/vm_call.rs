@@ -823,7 +823,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 "list" => {
-                                    Some(PyObject::list(pos_args[0].to_list().unwrap_or_default()))
+                                    Some(PyObject::list(self.collect_iterable(&pos_args[0]).unwrap_or_default()))
                                 }
                                 "tuple" => {
                                     // Namedtuple: multiple positional args → store as tuple
@@ -831,7 +831,7 @@ impl VirtualMachine {
                                     if pos_args.len() > 1 {
                                         Some(PyObject::tuple(pos_args.clone()))
                                     } else {
-                                        let items = pos_args[0].to_list().unwrap_or_default();
+                                        let items = self.collect_iterable(&pos_args[0]).unwrap_or_default();
                                         Some(PyObject::tuple(items))
                                     }
                                 }
@@ -919,13 +919,13 @@ impl VirtualMachine {
                                     Some(PyObject::str_val(CompactString::from(s)))
                                 }
                                 "list" => {
-                                    Some(PyObject::list(pos_args[0].to_list().unwrap_or_default()))
+                                    Some(PyObject::list(self.collect_iterable(&pos_args[0]).unwrap_or_default()))
                                 }
                                 "tuple" => {
                                     if pos_args.len() > 1 {
                                         Some(PyObject::tuple(pos_args.clone()))
                                     } else {
-                                        let items = pos_args[0].to_list().unwrap_or_default();
+                                        let items = self.collect_iterable(&pos_args[0]).unwrap_or_default();
                                         Some(PyObject::tuple(items))
                                     }
                                 }
