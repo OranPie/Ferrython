@@ -88,6 +88,22 @@ def spec_from_file_location(name, location=None, *, loader=None,
     return spec
 
 
+def spec_from_loader(name, loader, *, origin=None, is_package=None):
+    """Return a module spec based on a loader.
+
+    If is_package is not set, the loader's is_package() method is used
+    (when available).
+    """
+    if is_package is None:
+        if hasattr(loader, 'is_package'):
+            try:
+                is_package = loader.is_package(name)
+            except ImportError:
+                is_package = None
+    spec = ModuleSpec(name, loader, origin=origin, is_package=is_package)
+    return spec
+
+
 def find_spec(name, package=None):
     """Find the spec for a module, optionally relative to a package."""
     if name.startswith('.'):
