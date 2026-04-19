@@ -100,6 +100,10 @@ fn main_inner() {
             eprintln!("Argument expected for the -c option");
             process::exit(2);
         }
+        // sys.argv[0] = "-c", remaining args follow the code string
+        let mut argv = vec![String::from("-c")];
+        argv.extend_from_slice(&args[3..]);
+        ferrython_stdlib::set_argv(argv);
         run_string(&args[2], "<string>");
         return;
     }
@@ -110,7 +114,7 @@ fn main_inner() {
             process::exit(2);
         }
         let module_name = &args[2];
-        // Pass remaining args as sys.argv
+        // sys.argv is set inside run_module once the module file path is known
         let module_args: Vec<String> = args[2..].to_vec();
         run_module(module_name, &module_args);
         return;
@@ -228,6 +232,10 @@ fn main_inner() {
     }
 
     let filename = &args[1];
+    // sys.argv[0] = script path, remaining args follow
+    let mut argv = vec![filename.clone()];
+    argv.extend_from_slice(&args[2..]);
+    ferrython_stdlib::set_argv(argv);
     if let Some(parent) = std::path::Path::new(filename).parent() {
         ferrython_import::prepend_search_path(parent.to_path_buf());
     }
@@ -407,11 +415,19 @@ fn run_module(module_name: &str, _module_args: &[String]) {
                         // It's a package — look for __main__.py
                         let main_py = file.replace("__init__.py", "__main__.py");
                         if std::path::Path::new(&main_py).exists() {
+                            // sys.argv[0] = path to __main__.py, rest = module args[1..]
+                            let mut argv = vec![main_py.clone()];
+                            argv.extend(_module_args.iter().skip(1).cloned());
+                            ferrython_stdlib::set_argv(argv);
                             let source = std::fs::read_to_string(&main_py).unwrap_or_default();
                             run_string(&source, &main_py);
                             return;
                         }
                     }
+                    // sys.argv[0] = module file path, rest = module args[1..]
+                    let mut argv = vec![file.to_string()];
+                    argv.extend(_module_args.iter().skip(1).cloned());
+                    ferrython_stdlib::set_argv(argv);
                     // Execute the module directly
                     let mut vm = ferrython_vm::VirtualMachine::new();
                     if let Err(e) = vm.execute((*code).clone()) {

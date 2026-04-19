@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::rc::Rc;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
+    PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
@@ -19,6 +19,17 @@ static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(3000);
 /// The VM reads these instead of doing thread-local RefCell access per frame.
 static TRACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static PROFILE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The argv to expose as sys.argv when the sys module is first loaded.
+/// Set by the CLI before execution via `ferrython_stdlib::set_argv()`.
+static SYS_ARGV: std::sync::LazyLock<parking_lot::RwLock<Vec<String>>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(vec![String::new()]));
+
+/// Set the process argv that will be exposed as `sys.argv`.
+/// Must be called before the first `import sys`.
+pub fn set_argv(args: Vec<String>) {
+    *SYS_ARGV.write() = args;
+}
 
 /// Check if any trace function is active (atomic load — ~1ns vs ~15ns for thread-local).
 #[inline(always)]
@@ -249,7 +260,14 @@ pub fn create_sys_module() -> PyObjectRef {
         }),
         ("platform", PyObject::str_val(CompactString::from(std::env::consts::OS))),
         ("executable", PyObject::str_val(CompactString::from("ferrython"))),
-        ("argv", PyObject::list(vec![PyObject::str_val(CompactString::from(""))])),
+        ("argv", {
+            let argv_strs = SYS_ARGV.read();
+            PyObject::list(
+                argv_strs.iter()
+                    .map(|s| PyObject::str_val(CompactString::from(s.as_str())))
+                    .collect()
+            )
+        }),
         ("path", {
             // Build sys.path from PYTHONPATH env + import search paths + cwd
             let mut path_items: Vec<PyObjectRef> = Vec::new();
@@ -3369,7 +3387,11 @@ pub fn create_resource_module() -> PyObjectRef {
         #[cfg(unix)]
         {
             let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
-            let ret = unsafe { libc::getrlimit(resource as libc::__rlimit_resource_t, &mut rlim) };
+            #[cfg(target_os = "linux")]
+            let resource_arg = resource as libc::__rlimit_resource_t;
+            #[cfg(not(target_os = "linux"))]
+            let resource_arg = resource as libc::c_int;
+            let ret = unsafe { libc::getrlimit(resource_arg, &mut rlim) };
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(PyException::os_error(format!("getrlimit: {}", err)));
@@ -3402,7 +3424,11 @@ pub fn create_resource_module() -> PyObjectRef {
                 rlim_cur: if soft < 0 { libc::RLIM_INFINITY } else { soft as libc::rlim_t },
                 rlim_max: if hard < 0 { libc::RLIM_INFINITY } else { hard as libc::rlim_t },
             };
-            let ret = unsafe { libc::setrlimit(resource as libc::__rlimit_resource_t, &rlim) };
+            #[cfg(target_os = "linux")]
+            let resource_arg = resource as libc::__rlimit_resource_t;
+            #[cfg(not(target_os = "linux"))]
+            let resource_arg = resource as libc::c_int;
+            let ret = unsafe { libc::setrlimit(resource_arg, &rlim) };
             if ret != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(PyException::os_error(format!("setrlimit: {}", err)));
