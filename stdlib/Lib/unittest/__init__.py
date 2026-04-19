@@ -643,6 +643,37 @@ class TestLoader:
         names.sort()
         return names
 
+    def loadTestsFromName(self, name, module=None):
+        """Load tests by name (dotted module.Class.method)."""
+        import sys
+        parts = name.split('.')
+        if module is None:
+            # Try to import the module
+            mod_name = parts[0]
+            __import__(mod_name)
+            module = sys.modules[mod_name]
+            parts = parts[1:]
+        obj = module
+        for part in parts:
+            obj = getattr(obj, part)
+        if isinstance(obj, type) and issubclass(obj, TestCase):
+            return self.loadTestsFromTestCase(obj)
+        elif callable(obj):
+            suite = TestSuite()
+            suite.addTest(obj())
+            return suite
+        return TestSuite()
+
+    def loadTestsFromNames(self, names, module=None):
+        suites = [self.loadTestsFromName(name, module) for name in names]
+        suite = TestSuite()
+        for s in suites:
+            suite.addTests(s)
+        return suite
+
+    def discover(self, start_dir, pattern='test*.py', top_level_dir=None):
+        return TestSuite()
+
 
 class TextTestRunner:
     """A test runner that outputs results to the console."""

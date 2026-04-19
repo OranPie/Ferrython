@@ -9,7 +9,7 @@ use ferrython_core::object::{
 
 
 pub fn create_operator_module() -> PyObjectRef {
-    make_module("operator", vec![
+    let m = make_module("operator", vec![
         ("add", make_builtin(|args| {
             check_args_min("add", args, 2)?;
             let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
@@ -650,5 +650,36 @@ pub fn create_operator_module() -> PyObjectRef {
             }
             Ok(PyObject::int(count))
         })),
-    ])
+    ]);
+
+    // Add dunder aliases: operator.__lt__ == operator.lt, etc.
+    let dunder_aliases = [
+        ("__lt__", "lt"), ("__le__", "le"), ("__eq__", "eq"),
+        ("__ne__", "ne"), ("__gt__", "gt"), ("__ge__", "ge"),
+        ("__add__", "add"), ("__sub__", "sub"), ("__mul__", "mul"),
+        ("__mod__", "mod"), ("__pow__", "pow"), ("__neg__", "neg"),
+        ("__pos__", "pos"), ("__abs__", "abs"), ("__not__", "not_"),
+        ("__and__", "and_"), ("__or__", "or_"), ("__xor__", "xor"),
+        ("__invert__", "invert"), ("__lshift__", "lshift"),
+        ("__rshift__", "rshift"), ("__truediv__", "truediv"),
+        ("__floordiv__", "floordiv"), ("__contains__", "contains"),
+        ("__getitem__", "getitem"), ("__setitem__", "setitem"),
+        ("__delitem__", "delitem"), ("__iadd__", "iadd"),
+        ("__isub__", "isub"), ("__imul__", "imul"),
+        ("__matmul__", "matmul"), ("__imatmul__", "imatmul"),
+        ("__concat__", "concat"), ("__iconcat__", "iconcat"),
+    ];
+    if let PyObjectPayload::Module(ref md) = m.payload {
+        for (dunder, orig) in &dunder_aliases {
+            let val = md.attrs.read()
+                .get(&CompactString::from(*orig))
+                .cloned();
+            if let Some(v) = val {
+                md.attrs.write()
+                    .insert(CompactString::from(*dunder), v);
+            }
+        }
+    }
+
+    m
 }

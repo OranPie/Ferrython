@@ -4352,3 +4352,156 @@ pub fn create_encodings_codec_module(module_name: &str) -> PyObjectRef {
         ("name", PyObject::str_val(CompactString::from(codec_name))),
     ])
 }
+
+/// _string module — C accelerator for str.format_map internals
+pub fn create_string_internal_module() -> PyObjectRef {
+    make_module("_string", vec![
+        ("formatter_field_name_split", make_builtin(|args| {
+            // formatter_field_name_split(field_name) → (first, rest_iterator)
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "formatter_field_name_split requires 1 argument",
+                ));
+            }
+            let s = args[0].py_to_string();
+            // Split on first '.' or '['
+            let first_end = s.find(|c: char| c == '.' || c == '[').unwrap_or(s.len());
+            let first = &s[..first_end];
+            let first_val = if first.chars().all(|c| c.is_ascii_digit()) && !first.is_empty() {
+                PyObject::int(first.parse::<i64>().unwrap_or(0))
+            } else {
+                PyObject::str_val(CompactString::from(first))
+            };
+            // Rest as list of (is_attr, value) tuples
+            let mut rest = Vec::new();
+            let mut pos = first_end;
+            let chars: Vec<char> = s.chars().collect();
+            while pos < chars.len() {
+                if chars[pos] == '.' {
+                    pos += 1;
+                    let start = pos;
+                    while pos < chars.len() && chars[pos] != '.' && chars[pos] != '[' {
+                        pos += 1;
+                    }
+                    let attr_name: String = chars[start..pos].iter().collect();
+                    rest.push(PyObject::tuple(vec![
+                        PyObject::bool_val(true),
+                        PyObject::str_val(CompactString::from(attr_name)),
+                    ]));
+                } else if chars[pos] == '[' {
+                    pos += 1;
+                    let start = pos;
+                    while pos < chars.len() && chars[pos] != ']' {
+                        pos += 1;
+                    }
+                    let idx_str: String = chars[start..pos].iter().collect();
+                    let idx_val = if idx_str.chars().all(|c| c.is_ascii_digit())
+                        && !idx_str.is_empty()
+                    {
+                        PyObject::int(idx_str.parse::<i64>().unwrap_or(0))
+                    } else {
+                        PyObject::str_val(CompactString::from(idx_str))
+                    };
+                    rest.push(PyObject::tuple(vec![
+                        PyObject::bool_val(false),
+                        idx_val,
+                    ]));
+                    if pos < chars.len() {
+                        pos += 1; // skip ']'
+                    }
+                } else {
+                    pos += 1;
+                }
+            }
+            let rest_iter = PyObject::list(rest);
+            Ok(PyObject::tuple(vec![first_val, rest_iter]))
+        })),
+        ("formatter_parser", make_builtin(|args| {
+            // formatter_parser(format_string) → iterator of
+            //   (literal_text, field_name, format_spec, conversion) tuples
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "formatter_parser requires 1 argument",
+                ));
+            }
+            let s = args[0].py_to_string();
+            let mut result = Vec::new();
+            let mut pos = 0;
+            let chars: Vec<char> = s.chars().collect();
+            while pos < chars.len() {
+                if chars[pos] == '{' {
+                    if pos + 1 < chars.len() && chars[pos + 1] == '{' {
+                        result.push(PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from("{")),
+                            PyObject::none(),
+                            PyObject::none(),
+                            PyObject::none(),
+                        ]));
+                        pos += 2;
+                        continue;
+                    }
+                    let start = pos + 1;
+                    let mut depth = 1;
+                    pos += 1;
+                    while pos < chars.len() && depth > 0 {
+                        if chars[pos] == '{' { depth += 1; }
+                        if chars[pos] == '}' { depth -= 1; }
+                        if depth > 0 { pos += 1; }
+                    }
+                    let field: String = chars[start..pos].iter().collect();
+                    pos += 1; // skip '}'
+                    // Parse field_name!conversion:format_spec
+                    let (field_name, conversion, format_spec) = {
+                        let mut fname = field.as_str();
+                        let mut conv = PyObject::none();
+                        let mut fspec = CompactString::from("");
+                        if let Some(i) = fname.find(':') {
+                            fspec = CompactString::from(&fname[i + 1..]);
+                            fname = &fname[..i];
+                        }
+                        // re-check fname for !conversion
+                        let fname_str;
+                        if let Some(i) = fname.find('!') {
+                            conv = PyObject::str_val(CompactString::from(&fname[i + 1..]));
+                            fname_str = fname[..i].to_string();
+                        } else {
+                            fname_str = fname.to_string();
+                        }
+                        (fname_str, conv, fspec)
+                    };
+                    result.push(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("")),
+                        PyObject::str_val(CompactString::from(field_name)),
+                        PyObject::str_val(format_spec),
+                        conversion,
+                    ]));
+                } else if chars[pos] == '}' && pos + 1 < chars.len()
+                    && chars[pos + 1] == '}'
+                {
+                    result.push(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("}")),
+                        PyObject::none(),
+                        PyObject::none(),
+                        PyObject::none(),
+                    ]));
+                    pos += 2;
+                } else {
+                    let start = pos;
+                    while pos < chars.len() && chars[pos] != '{' && chars[pos] != '}' {
+                        pos += 1;
+                    }
+                    let literal: String = chars[start..pos].iter().collect();
+                    if !literal.is_empty() {
+                        result.push(PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(literal)),
+                            PyObject::none(),
+                            PyObject::none(),
+                            PyObject::none(),
+                        ]));
+                    }
+                }
+            }
+            Ok(PyObject::list(result))
+        })),
+    ])
+}

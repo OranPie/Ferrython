@@ -62,6 +62,8 @@ pub fn create_collections_module() -> PyObjectRef {
         ("counter_total", make_builtin(counter_total)),
         ("counter_copy", make_builtin(counter_copy)),
         ("counter_clear", make_builtin(counter_clear)),
+        // _count_elements(mapping, iterable) — C accelerator for Counter
+        ("_count_elements", make_builtin(count_elements)),
     ])
 }
 
@@ -1770,4 +1772,33 @@ fn get_user_data(obj: &PyObjectRef, attr: &str) -> PyResult<PyObjectRef> {
         }
     }
     Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", obj.type_name(), attr)))
+}
+
+/// _count_elements(mapping, iterable) — C accelerator for Counter.__init__
+fn count_elements(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("_count_elements requires 2 arguments"));
+    }
+    let mapping = &args[0];
+    let iterable = &args[1];
+    let items = iterable.to_list()?;
+    for item in items {
+        let key_str = item.py_to_string();
+        let key = HashableKey::str_key(CompactString::from(key_str.as_str()));
+        if let PyObjectPayload::Dict(map) = &mapping.payload {
+            let current = {
+                let r = map.read();
+                r.get(&key).cloned()
+            };
+            let new_val = match current {
+                Some(v) => {
+                    let n = v.to_int().unwrap_or(0) + 1;
+                    PyObject::int(n)
+                }
+                None => PyObject::int(1),
+            };
+            map.write().insert(key, new_val);
+        }
+    }
+    Ok(PyObject::none())
 }

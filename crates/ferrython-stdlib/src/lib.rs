@@ -249,6 +249,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_collections" => Some(collection_modules::create_collections_module()),
         "_multibytecodec" => Some(text_modules::create_multibytecodec_module()),
         "_codecs" => Some(serial_modules::create_codecs_module()),
+        "_string" => Some(text_modules::create_string_internal_module()),
+        "_strptime" => Some(time_modules::create_strptime_module()),
         // Compatibility
         "__future__" => Some(misc_modules::create_future_module()),
         "builtins" => Some(misc_modules::create_builtins_module()),
@@ -283,6 +285,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "faulthandler" => Some(testing_modules::create_faulthandler_module()),
         "tracemalloc" => Some(testing_modules::create_tracemalloc_module()),
         "pydoc" => Some(testing_modules::create_pydoc_module()),
+        "_testcapi" => Some(ferrython_core::object::make_module("_testcapi", vec![])),
+        "pickletools" => Some(testing_modules::create_pickletools_module()),
         // Introspection (extended)
         "tokenize" => Some(introspection_modules::create_tokenize_module()),
         "symtable" => Some(introspection_modules::create_symtable_module()),

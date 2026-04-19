@@ -1071,36 +1071,46 @@ impl Parser {
 
     fn parse_subscript(&mut self) -> Result<Expression, ParseError> {
         let loc = self.current_location();
+        let first = self.parse_subscript_element()?;
+
+        // Multi-dimensional subscript: a[1:2, 3:4] → a[(slice(1,2), slice(3,4))]
+        if self.check(TokenKind::Comma) {
+            let mut elements = vec![first];
+            while self.check(TokenKind::Comma) {
+                self.advance();
+                if self.check(TokenKind::RightBracket) { break; }
+                elements.push(self.parse_subscript_element()?);
+            }
+            return Ok(Expression::new(
+                ExpressionKind::Tuple { elts: elements, ctx: ExprContext::Load },
+                loc,
+            ));
+        }
+        Ok(first)
+    }
+
+    fn parse_subscript_element(&mut self) -> Result<Expression, ParseError> {
+        let loc = self.current_location();
         let lower = if self.check(TokenKind::Colon) {
             None
         } else {
             Some(Box::new(self.parse_test()?))
         };
         if !self.check(TokenKind::Colon) {
-            // Check for tuple subscript: a[1, 2] → a[(1, 2)]
-            if self.check(TokenKind::Comma) {
-                let mut elements = vec![*lower.unwrap()];
-                while self.check(TokenKind::Comma) {
-                    self.advance();
-                    if self.check(TokenKind::RightBracket) { break; }
-                    elements.push(self.parse_test()?);
-                }
-                return Ok(Expression::new(
-                    ExpressionKind::Tuple { elts: elements, ctx: ExprContext::Load },
-                    loc,
-                ));
-            }
             return Ok(*lower.unwrap());
         }
         self.advance(); // skip ':'
-        let upper = if !self.check(TokenKind::Colon) && !self.check(TokenKind::RightBracket) {
+        let upper = if !self.check(TokenKind::Colon)
+            && !self.check(TokenKind::RightBracket)
+            && !self.check(TokenKind::Comma)
+        {
             Some(Box::new(self.parse_test()?))
         } else {
             None
         };
         let step = if self.check(TokenKind::Colon) {
             self.advance();
-            if !self.check(TokenKind::RightBracket) {
+            if !self.check(TokenKind::RightBracket) && !self.check(TokenKind::Comma) {
                 Some(Box::new(self.parse_test()?))
             } else {
                 None

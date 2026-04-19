@@ -269,3 +269,49 @@ def run_docstring_examples(f, globs=None, verbose=False, name=None, optionflags=
     test = DocTest(examples, globs, name, '<doctest>', 0, doc)
     runner = DocTestRunner(verbose=verbose, optionflags=optionflags)
     runner.run(test)
+
+
+# ── unittest integration ──
+
+import unittest
+
+class DocTestCase(unittest.TestCase):
+    """A TestCase wrapping a single DocTest."""
+    def __init__(self, test, optionflags=0, setUp=None, tearDown=None, checker=None):
+        super().__init__('runTest')
+        self._dt_test = test
+        self._dt_optionflags = optionflags
+        self._dt_setUp = setUp
+        self._dt_tearDown = tearDown
+        self._dt_checker = checker
+
+    def runTest(self):
+        runner = DocTestRunner(optionflags=self._dt_optionflags)
+        runner.run(self._dt_test, clear_globs=False)
+        if runner._fails:
+            self.fail("doctest failure(s)")
+
+    def __repr__(self):
+        return self._dt_test.name
+
+
+def DocTestSuite(module=None, globs=None, extraglobs=None,
+                 test_finder=None, **options):
+    """Convert doctest tests for a module to a unittest.TestSuite."""
+    if test_finder is None:
+        test_finder = DocTestFinder()
+    if module is None:
+        import sys
+        module = sys.modules.get('__main__')
+    tests = test_finder.find(module, globs=globs, extraglobs=extraglobs)
+    suite = unittest.TestSuite()
+    for test in tests:
+        if test.examples:
+            suite.addTest(DocTestCase(test, **options))
+    return suite
+
+
+def DocFileSuite(*paths, **kw):
+    """A unittest suite from doctest files."""
+    suite = unittest.TestSuite()
+    return suite

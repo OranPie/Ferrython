@@ -2028,6 +2028,9 @@ pub fn create_pickle_module() -> PyObjectRef {
         ("loads", make_builtin(pickle_loads)),
         ("dump", make_builtin(pickle_dump)),
         ("load", make_builtin(pickle_load)),
+        ("_dumps", make_builtin(pickle_dumps)),
+        ("_loads", make_builtin(pickle_loads)),
+        ("_dump", make_builtin(pickle_dump)),
         ("Pickler", pickler_cls),
         ("Unpickler", unpickler_cls),
         ("HIGHEST_PROTOCOL", PyObject::int(5)),
@@ -2035,6 +2038,10 @@ pub fn create_pickle_module() -> PyObjectRef {
         ("PicklingError", pickling_error),
         ("UnpicklingError", unpickling_error),
         ("PickleError", PyObject::class(CompactString::from("PickleError"), vec![], IndexMap::new())),
+        ("bytes_types", PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("bytes")),
+            PyObject::str_val(CompactString::from("bytearray")),
+        ])),
     ])
 }
 

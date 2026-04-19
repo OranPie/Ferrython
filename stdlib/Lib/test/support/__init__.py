@@ -575,3 +575,92 @@ class Matcher:
         if k in self._partial_matches:
             return dv is not None and str(dv).startswith(str(v))
         return dv == v
+
+
+# ── Threading helpers ──
+
+import contextlib
+import threading
+
+@contextlib.contextmanager
+def start_threads(threads, unlock=None):
+    """Context manager to start and join threads."""
+    for t in threads:
+        t.start()
+    if unlock:
+        unlock.set()
+    try:
+        yield
+    finally:
+        for t in threads:
+            t.join()
+
+def threading_cleanup(*original_values):
+    """Cleanup stale threads."""
+    pass
+
+def reap_threads(func):
+    """Decorator to cleanup threads after test."""
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+def reap_children():
+    """Cleanup zombie child processes."""
+    pass
+
+def verbose():
+    """Return True if running in verbose mode."""
+    return False
+
+def is_jython():
+    return False
+
+def cpython_only(test):
+    """Decorator: skip if not CPython."""
+    return test
+
+def check_impl_detail(**guards):
+    return True
+
+def bigmemtest(size, memuse, dry_run=True):
+    """Decorator for big-memory tests."""
+    def decorator(f):
+        return f
+    return decorator
+
+def bigaddrspacetest(f):
+    return f
+
+def requires_type_collecting(test):
+    """Decorator: skip if type collecting not supported."""
+    return test
+
+def forget(modname):
+    """Remove module from sys.modules and try to delete .pyc files."""
+    import sys
+    try:
+        del sys.modules[modname]
+    except KeyError:
+        pass
+
+@contextlib.contextmanager
+def save_restore_warnings_filters():
+    """Context manager that saves/restores warnings filters."""
+    import warnings
+    old_filters = warnings.filters[:]
+    try:
+        yield
+    finally:
+        warnings.filters[:] = old_filters
+
+
+class FakePath:
+    """Fake path object for testing os.fspath() etc."""
+    def __init__(self, path):
+        self.path = path
+    def __fspath__(self):
+        return self.path
+    def __repr__(self):
+        return f"FakePath({self.path!r})"

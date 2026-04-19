@@ -388,6 +388,14 @@ fn unicode_name_to_char(name: &str) -> Option<char> {
         "BROKEN BAR" => Some('\u{00A6}'),
         "FEMININE ORDINAL INDICATOR" => Some('\u{00AA}'),
         "MASCULINE ORDINAL INDICATOR" => Some('\u{00BA}'),
+        // Set/math symbols
+        "EMPTY SET" => Some('\u{2205}'),
+        "SQUARE ROOT" => Some('\u{221A}'),
+        "ELEMENT OF" => Some('\u{2208}'),
+        "SUBSET OF" => Some('\u{2282}'),
+        "SUPERSET OF" => Some('\u{2283}'),
+        "UNION" => Some('\u{222A}'),
+        "INTERSECTION" => Some('\u{2229}'),
         _ => None,
     }
 }
