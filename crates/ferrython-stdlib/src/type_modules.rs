@@ -80,6 +80,7 @@ pub fn create_typing_module() -> PyObjectRef {
             CompactString::from("__new__"),
             typevar_new,
         );
+        data.invalidate_cache();
     }
 
     // Generic — placeholder class

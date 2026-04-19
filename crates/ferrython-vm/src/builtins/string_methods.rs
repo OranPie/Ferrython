@@ -466,7 +466,9 @@ pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             let len = s.chars().count();
             if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
             let pad = width - len;
-            let left = pad / 2;
+            // CPython formula: left = marg//2 + (marg & width & 1)
+            // When padding is odd, left gets the extra character (same as CPython)
+            let left = pad / 2 + (pad & width & 1);
             let right = pad - left;
             let result = format!("{}{}{}", fillchar.to_string().repeat(left), s, fillchar.to_string().repeat(right));
             Ok(PyObject::str_val(CompactString::from(result)))

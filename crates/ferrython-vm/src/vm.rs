@@ -169,6 +169,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
+    has_descriptor_get,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
     alloc_tuple_box_empty, StrRepr,
 };
@@ -547,11 +548,21 @@ impl VirtualMachine {
         }
 
         loop {
-            // Only check trace/profile state when trace might be active, to avoid
-            // even the counter decrement overhead in the common non-tracing case.
+            // Re-check trace/profile state periodically.
+            // When already active, check every 64 opcodes.
+            // When inactive, check less frequently (every 256 opcodes) to detect
+            // late-set trace functions (e.g. sys.settrace called during execution).
             if has_trace || has_profile {
                 if trace_check_counter == 0 {
                     trace_check_counter = 63;
+                    has_trace = ferrython_stdlib::is_trace_active();
+                    has_profile = ferrython_stdlib::is_profile_active();
+                } else {
+                    trace_check_counter -= 1;
+                }
+            } else {
+                if trace_check_counter == 0 {
+                    trace_check_counter = 255;
                     has_trace = ferrython_stdlib::is_trace_active();
                     has_profile = ferrython_stdlib::is_profile_active();
                 } else {
@@ -3252,7 +3263,9 @@ impl VirtualMachine {
                         { 4u8 } // closure or cell function — fast path with cell setup
                         else { 0 }
                     } else { 0 };
-                    if call_kind == 3 {
+                    // Skip all mini-interpreter fast paths when tracing/profiling is active
+                    let trace_active_now = ferrython_stdlib::is_trace_active() || ferrython_stdlib::is_profile_active();
+                    if call_kind == 3 && !trace_active_now {
                         // Trivial function: inline the return constant
                         let const_idx = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                             pf.code.instructions[0].arg as usize
@@ -3469,7 +3482,7 @@ impl VirtualMachine {
                                 }
                             }
                         }
-                        if let Some(ret_val) = mini_result {
+                        if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
                             // Base case resolved without frame creation
                             unsafe {
                                 let base = frame.stack.as_ptr();
@@ -3560,6 +3573,9 @@ impl VirtualMachine {
                             }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
+                            // Re-check trace/profile on every call (function calls are already expensive)
+                            has_trace = ferrython_stdlib::is_trace_active();
+                            has_profile = ferrython_stdlib::is_profile_active();
                             if has_trace {
                                 let frame_obj = self.make_trace_frame();
                                 ferrython_stdlib::set_current_frame(Some(frame_obj));
@@ -3739,25 +3755,31 @@ impl VirtualMachine {
                                 let fast_result = match &cls.payload {
                                     PyObjectPayload::BuiltinType(bt) => {
                                         let bt_str = bt.as_str();
-                                        let matches = match (&obj.payload, bt_str) {
-                                            (PyObjectPayload::Int(_), "int") => true,
-                                            (PyObjectPayload::Bool(_), "int") => true, // bool is subclass of int
-                                            (PyObjectPayload::Bool(_), "bool") => true,
-                                            (PyObjectPayload::Float(_), "float") => true,
-                                            (PyObjectPayload::Str(_), "str") => true,
-                                            (PyObjectPayload::List(_), "list") => true,
-                                            (PyObjectPayload::Tuple(_), "tuple") => true,
-                                            (PyObjectPayload::Dict(_), "dict") => true,
-                                            (PyObjectPayload::InstanceDict(_), "dict") => true,
-                                            (PyObjectPayload::MappingProxy(_), "dict") => true,
-                                            (PyObjectPayload::Set(_), "set") => true,
-                                            (PyObjectPayload::Bytes(_), "bytes") => true,
-                                            (PyObjectPayload::ByteArray(_), "bytearray") => true,
-                                            (PyObjectPayload::None, "NoneType") => true,
-                                            (_, "object") => true, // everything is an instance of object
-                                            _ => false,
-                                        };
-                                        Some(matches)
+                                        // Instance payloads must fall through to full isinstance
+                                        // to handle dict/list subclasses correctly.
+                                        if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                                            None
+                                        } else {
+                                            let matches = match (&obj.payload, bt_str) {
+                                                (PyObjectPayload::Int(_), "int") => true,
+                                                (PyObjectPayload::Bool(_), "int") => true,
+                                                (PyObjectPayload::Bool(_), "bool") => true,
+                                                (PyObjectPayload::Float(_), "float") => true,
+                                                (PyObjectPayload::Str(_), "str") => true,
+                                                (PyObjectPayload::List(_), "list") => true,
+                                                (PyObjectPayload::Tuple(_), "tuple") => true,
+                                                (PyObjectPayload::Dict(_), "dict") => true,
+                                                (PyObjectPayload::InstanceDict(_), "dict") => true,
+                                                (PyObjectPayload::MappingProxy(_), "dict") => true,
+                                                (PyObjectPayload::Set(_), "set") => true,
+                                                (PyObjectPayload::Bytes(_), "bytes") => true,
+                                                (PyObjectPayload::ByteArray(_), "bytearray") => true,
+                                                (PyObjectPayload::None, "NoneType") => true,
+                                                (_, "object") => true,
+                                                _ => false,
+                                            };
+                                            Some(matches)
+                                        }
                                     }
                                     PyObjectPayload::Class(cd) => {
                                         if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -4068,7 +4090,9 @@ impl VirtualMachine {
                                 else if Rc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                             } else { 0 }
                         } else { 0 };
-                        if call_kind == 3 {
+                        // Skip all mini-interpreter fast paths when tracing/profiling is active
+                        let trace_active_now = ferrython_stdlib::is_trace_active() || ferrython_stdlib::is_profile_active();
+                        if call_kind == 3 && !trace_active_now {
                             // Trivial function: inline the return constant
                             let ret_val = if let PyObjectPayload::Function(pf) = &func_obj.payload {
                                 let ci = pf.code.instructions[0].arg as usize;
@@ -4256,7 +4280,7 @@ impl VirtualMachine {
                                     }
                                 }
                             }
-                            if let Some(ret_val) = mini_result {
+                            if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
                                 // Base case resolved without frame creation
                                 frame.stack.truncate(args_start);
                                 spush!(frame, ret_val);
@@ -4305,6 +4329,8 @@ impl VirtualMachine {
                                 }
                                 Err(PyException::recursion_error("maximum recursion depth exceeded"))
                             } else {
+                                has_trace = ferrython_stdlib::is_trace_active();
+                                has_profile = ferrython_stdlib::is_profile_active();
                                 if has_trace {
                                     let frame_obj = self.make_trace_frame();
                                     ferrython_stdlib::set_current_frame(Some(frame_obj));
@@ -4389,7 +4415,12 @@ impl VirtualMachine {
                                     let slen = frame.stack.len();
                                     let obj = sget!(frame, slen - 2);
                                     let cls = sget!(frame, slen - 1);
-                                    let result = if let PyObjectPayload::BuiltinType(bt) = &cls.payload {
+                                    // Instance objects may be subclasses of builtins; always
+                                    // fall through to the full isinstance for them.
+                                    let is_plain_instance = matches!(&obj.payload, PyObjectPayload::Instance(_));
+                                    let result = if is_plain_instance {
+                                        None
+                                    } else if let PyObjectPayload::BuiltinType(bt) = &cls.payload {
                                         match bt.as_str() {
                                             "int" => Some(matches!(&obj.payload, PyObjectPayload::Int(_) | PyObjectPayload::Bool(_))),
                                             "float" => Some(matches!(&obj.payload, PyObjectPayload::Float(_))),
@@ -4835,6 +4866,8 @@ impl VirtualMachine {
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
                             // Iterative: continue loop with child frame (no recursive call)
+                            has_trace = ferrython_stdlib::is_trace_active();
+                            has_profile = ferrython_stdlib::is_profile_active();
                             if has_trace {
                                 let frame_obj = self.make_trace_frame();
                                 ferrython_stdlib::set_current_frame(Some(frame_obj));
@@ -5790,6 +5823,8 @@ impl VirtualMachine {
                                 match &v.payload {
                                     PyObjectPayload::Function(_)
                                     | PyObjectPayload::Property(_) => None,
+                                    // Data descriptors in class take priority over instance dict
+                                    _ if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0 => None,
                                     _ => Some(v.clone()),
                                 }
                             } else if name.as_str() == "__class__" {
@@ -5810,6 +5845,8 @@ impl VirtualMachine {
                                                 | PyObjectPayload::StaticMethod(_) => None,
                                                 // cached_property descriptor — must invoke, not return raw
                                                 PyObjectPayload::Instance(cp_inst) if cp_inst.attrs.read().contains_key("__cached_property_func__") => None,
+                                                // Custom descriptor with __get__ — must invoke, not return raw
+                                                _ if has_descriptor_get(class_val) => None,
                                                 _ => Some(class_val.clone()),
                                             }
                                         } else { None }
@@ -6555,6 +6592,9 @@ impl VirtualMachine {
                     // we're returning from a child frame pushed by inline
                     // CallFunction/CallMethod — pop it and push result to parent.
                     if self.call_stack.len() > initial_depth {
+                        // Re-check trace/profile on return (detects late-set functions)
+                        has_trace = ferrython_stdlib::is_trace_active();
+                        has_profile = ferrython_stdlib::is_profile_active();
                         if has_trace {
                             self.fire_trace_event("return", ret.clone());
                         }

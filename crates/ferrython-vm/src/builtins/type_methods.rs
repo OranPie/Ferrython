@@ -6,6 +6,7 @@ use ferrython_core::object::{ FxHashKeyMap, FxHashKeyFlatMap, new_fx_hashkey_map
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::object::helpers::is_hidden_dict_key;
 use ferrython_core::object::IteratorData;
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -564,10 +565,30 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                 true
             };
             let mut w = map.write();
+            // Skip hidden internal marker keys (__ordered_dict__, __move_to_end_fn__, etc.)
+            let len = w.len();
             let entry = if last {
-                w.pop()
+                let mut result = None;
+                for i in (0..len).rev() {
+                    if let Some((k, _)) = w.get_index(i) {
+                        if !is_hidden_dict_key(k) {
+                            result = w.shift_remove_index(i);
+                            break;
+                        }
+                    }
+                }
+                result
             } else {
-                w.shift_remove_index(0).map(|(k, v)| (k, v))
+                let mut result = None;
+                for i in 0..len {
+                    if let Some((k, _)) = w.get_index(i) {
+                        if !is_hidden_dict_key(k) {
+                            result = w.shift_remove_index(i);
+                            break;
+                        }
+                    }
+                }
+                result
             };
             match entry {
                 Some((k, v)) => Ok(PyObject::tuple(vec![k.to_object(), v])),

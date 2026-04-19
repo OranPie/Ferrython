@@ -3775,9 +3775,11 @@ pub fn create_grp_module() -> PyObjectRef {
                 let gid = (*grp).gr_gid;
                 let mut members = Vec::new();
                 let mut p = (*grp).gr_mem;
-                while !(*p).is_null() {
-                    members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
-                    p = p.add(1);
+                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                    while !(*p).is_null() {
+                        members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
+                        p = p.add(1);
+                    }
                 }
                 Ok(make_grp_struct(&gr_name, &gr_passwd, gid, members))
             }
@@ -3803,9 +3805,11 @@ pub fn create_grp_module() -> PyObjectRef {
                 let gid = (*grp).gr_gid;
                 let mut members = Vec::new();
                 let mut p = (*grp).gr_mem;
-                while !(*p).is_null() {
-                    members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
-                    p = p.add(1);
+                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                    while !(*p).is_null() {
+                        members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
+                        p = p.add(1);
+                    }
                 }
                 Ok(make_grp_struct(&gr_name, &gr_passwd, gid, members))
             }
@@ -3831,9 +3835,11 @@ pub fn create_grp_module() -> PyObjectRef {
                     let gid = (*grp).gr_gid;
                     let mut members = Vec::new();
                     let mut p = (*grp).gr_mem;
-                    while !(*p).is_null() {
-                        members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
-                        p = p.add(1);
+                    if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                        while !(*p).is_null() {
+                            members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
+                            p = p.add(1);
+                        }
                     }
                     groups.push(make_grp_struct(&gr_name, &gr_passwd, gid, members));
                 }
