@@ -119,6 +119,16 @@ impl VirtualMachine {
         Ok(None)
     }
 
+    /// Python-aware addition: dispatches `__add__`/`__radd__` for Instance types,
+    /// falls back to Rust-level `py_add` for primitives. Used by `sum()` and other
+    /// builtins that need to support non-numeric `__add__`.
+    pub(crate) fn vm_add(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+        if let Some(result) = self.try_binary_dunder(a, b, "__add__", Some("__radd__"))? {
+            return Ok(result);
+        }
+        a.add(b)
+    }
+
     fn try_inplace_dunder(
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         idunder: &str, dunder: &str,

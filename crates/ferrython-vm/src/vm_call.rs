@@ -2171,21 +2171,21 @@ impl VirtualMachine {
                                             acc = acc.wrapping_add(*n);
                                         } else {
                                             total = PyObject::int(acc);
-                                            total = total.add(item)?;
+                                            total = self.vm_add(&total, item)?;
                                             fallback_idx = i + 1;
                                             break;
                                         }
                                     }
                                     if fallback_idx < items.len() {
                                         for item in &items[fallback_idx..] {
-                                            total = total.add(item)?;
+                                            total = self.vm_add(&total, item)?;
                                         }
                                     } else {
                                         total = PyObject::int(acc);
                                     }
                                 } else {
                                     for item in items.iter() {
-                                        total = total.add(item)?;
+                                        total = self.vm_add(&total, item)?;
                                     }
                                 }
                             }
@@ -2198,21 +2198,21 @@ impl VirtualMachine {
                                             acc = acc.wrapping_add(*n);
                                         } else {
                                             total = PyObject::int(acc);
-                                            total = total.add(item)?;
+                                            total = self.vm_add(&total, item)?;
                                             fallback_idx = i + 1;
                                             break;
                                         }
                                     }
                                     if fallback_idx < items.len() {
                                         for item in &items[fallback_idx..] {
-                                            total = total.add(item)?;
+                                            total = self.vm_add(&total, item)?;
                                         }
                                     } else {
                                         total = PyObject::int(acc);
                                     }
                                 } else {
                                     for item in items.iter() {
-                                        total = total.add(item)?;
+                                        total = self.vm_add(&total, item)?;
                                     }
                                 }
                             }
@@ -2229,7 +2229,7 @@ impl VirtualMachine {
                                     let range_sum = n.wrapping_mul(s).wrapping_add(
                                         st.wrapping_mul(n).wrapping_mul(n - 1) / 2
                                     );
-                                    total = total.add(&PyObject::int(range_sum))?;
+                                    total = self.vm_add(&total, &PyObject::int(range_sum))?;
                                 }
                             }
                             PyObjectPayload::RangeIter(ri) => {
@@ -2246,7 +2246,7 @@ impl VirtualMachine {
                                     let range_sum = n.wrapping_mul(c).wrapping_add(
                                         st.wrapping_mul(n).wrapping_mul(n - 1) / 2
                                     );
-                                    total = total.add(&PyObject::int(range_sum))?;
+                                    total = self.vm_add(&total, &PyObject::int(range_sum))?;
                                     ri.current.set(c + st * n); // advance iterator to exhaustion
                                 }
                             }
@@ -2261,21 +2261,21 @@ impl VirtualMachine {
                                             acc = acc.wrapping_add(*n);
                                         } else {
                                             total = PyObject::int(acc);
-                                            total = total.add(&item)?;
+                                            total = self.vm_add(&total, &item)?;
                                             fallback_idx = i + 1;
                                             break;
                                         }
                                     }
                                     if fallback_idx < items.len() {
                                         for item in &items[fallback_idx..] {
-                                            total = total.add(&item)?;
+                                            total = self.vm_add(&total, &item)?;
                                         }
                                     } else {
                                         total = PyObject::int(acc);
                                     }
                                 } else {
                                     for item in items {
-                                        total = total.add(&item)?;
+                                        total = self.vm_add(&total, &item)?;
                                     }
                                 }
                             }
@@ -2293,7 +2293,7 @@ impl VirtualMachine {
                                                 } else {
                                                     // Switch to generic accumulation
                                                     total = PyObject::int(acc);
-                                                    total = total.add(&item)?;
+                                                    total = self.vm_add(&total, &item)?;
                                                     use_native = false;
                                                     break;
                                                 }
@@ -2308,7 +2308,7 @@ impl VirtualMachine {
                                     // Fell through — continue with generic total
                                     loop {
                                         match self.resume_generator_for_iter(&gen_arc) {
-                                            Ok(Some(item)) => { total = total.add(&item)?; }
+                                            Ok(Some(item)) => { total = self.vm_add(&total, &item)?; }
                                             Ok(None) => break,
                                             Err(e) => return Err(e),
                                         }
@@ -2316,7 +2316,7 @@ impl VirtualMachine {
                                 } else {
                                     loop {
                                         match self.resume_generator_for_iter(&gen_arc) {
-                                            Ok(Some(item)) => { total = total.add(&item)?; }
+                                            Ok(Some(item)) => { total = self.vm_add(&total, &item)?; }
                                             Ok(None) => break,
                                             Err(e) => return Err(e),
                                         }
@@ -2326,7 +2326,7 @@ impl VirtualMachine {
                             _ => {
                                 let items = self.collect_iterable(&args[0])?;
                                 for item in items {
-                                    total = total.add(&item)?;
+                                    total = self.vm_add(&total, &item)?;
                                 }
                             }
                         }
