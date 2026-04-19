@@ -859,7 +859,7 @@ fn run_project_tests(extra_args: &[String]) {
     ferrython_import::prepend_search_path(cwd.join("src"));
     ferrython_import::prepend_search_path(cwd.clone());
 
-    // If explicit test file given, run it
+    // If explicit test file given, run it directly (no capture)
     if !extra_args.is_empty() && !extra_args[0].starts_with('-') {
         let filename = &extra_args[0];
         match fs::read_to_string(filename) {
@@ -892,34 +892,144 @@ fn run_project_tests(extra_args: &[String]) {
 
     test_files.sort();
     test_files.dedup();
-    println!("Discovered {} test file(s):", test_files.len());
 
-    let mut passed = 0;
-    let mut failed = 0;
+    let use_color = atty::is(atty::Stream::Stdout);
+    let (green, red, yellow, bold, reset, dim) = if use_color {
+        ("\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[1m", "\x1b[0m", "\x1b[2m")
+    } else {
+        ("", "", "", "", "", "")
+    };
+
+    let total = test_files.len();
+    let w: usize = 66;
+
+    // Helper: compute display width (handles emojis and CJK properly)
+    fn display_width(s: &str) -> usize {
+        s.chars().map(|c| {
+            if c.is_ascii() { 1 }
+            else if c >= '\u{1F000}' { 2 }  // Supplementary plane emojis (🧪📊🎉)
+            else if c >= '\u{1100}' && c <= '\u{115F}' { 2 }  // Korean Jamo
+            else if c >= '\u{2E80}' && c <= '\u{A4CF}' { 2 }  // CJK
+            else if c >= '\u{AC00}' && c <= '\u{D7AF}' { 2 }  // Korean syllables
+            else if c >= '\u{FF01}' && c <= '\u{FF60}' { 2 }  // Fullwidth
+            else { 1 }  // BMP symbols (✔✘⏱⚠═║─) are single-width
+        }).sum()
+    }
+    fn pad_to(s: &str, target: usize) -> String {
+        let dw = display_width(s);
+        let pad = target.saturating_sub(dw);
+        format!("{}{}", s, " ".repeat(pad))
+    }
+
+    // Header
+    println!("{}╔{}╗{}", bold, "═".repeat(w), reset);
+    let title = format!("  🧪 Ferrython Test Suite — {} test files", total);
+    println!("{}║{}║{}", bold, pad_to(&title, w), reset);
+    println!("{}╚{}╝{}", bold, "═".repeat(w), reset);
+    println!();
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("ferrython"));
+    let start = std::time::Instant::now();
+
+    let mut passed: usize = 0;
+    let mut failed: usize = 0;
+    let mut warned: usize = 0;
+    let mut failed_names: Vec<String> = Vec::new();
+
     for test_file in &test_files {
         let rel = test_file.strip_prefix(&cwd).unwrap_or(test_file);
-        print!("  {} ... ", rel.display());
-        match fs::read_to_string(test_file) {
-            Ok(source) => {
-                let fname = test_file.to_string_lossy().to_string();
-                match execute_pipeline(&source, &fname) {
-                    Ok(()) => { println!("ok"); passed += 1; }
-                    Err((e, _vm)) => {
-                        println!("FAIL");
-                        e.report(&fname);
-                        failed += 1;
+        let rel_str = rel.display().to_string();
+
+        // Run each test as a subprocess for clean capture and crash isolation
+        let result = std::process::Command::new(&exe)
+            .arg(test_file)
+            .current_dir(&cwd)
+            .output();
+
+        match result {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let combined = if stderr.is_empty() {
+                    stdout.to_string()
+                } else {
+                    format!("{}{}", stdout, stderr)
+                };
+
+                if out.status.success() {
+                    // Check for internal "FAIL:" markers in test output
+                    let fail_lines: Vec<&str> = combined.lines()
+                        .filter(|l| l.starts_with("FAIL:") || l.starts_with("  FAIL:"))
+                        .collect();
+                    if fail_lines.is_empty() {
+                        println!("  {}{} OK{}  {}", green, bold, reset, rel_str);
+                        passed += 1;
+                    } else {
+                        println!("  {}{}\u{26a0} WARN{}  {}  {}({} internal failure(s)){}", yellow, bold, reset, rel_str, dim, fail_lines.len(), reset);
+                        for line in &fail_lines {
+                            println!("         {}{}{}", dim, line.trim(), reset);
+                        }
+                        passed += 1;
+                        warned += 1;
+                    }
+                } else {
+                    println!("  {}{}\u{2718} FAIL{}  {}", red, bold, reset, rel_str);
+                    failed += 1;
+                    failed_names.push(rel_str.clone());
+                    // Show output in bordered box
+                    let lines: Vec<&str> = combined.lines().collect();
+                    if !lines.is_empty() {
+                        let max_len = lines.iter()
+                            .map(|l| display_width(&l.chars().take(74).collect::<String>()))
+                            .max().unwrap_or(0)
+                            .min(76);
+                        let box_w = max_len + 2;
+                        println!("     {}┌{}┐{}", dim, "─".repeat(box_w), reset);
+                        for line in &lines {
+                            let display: String = line.chars().take(74).collect();
+                            let dw = display_width(&display);
+                            let pad = max_len.saturating_sub(dw);
+                            println!("     {}│ {}{} │{}", dim, display, " ".repeat(pad), reset);
+                        }
+                        println!("     {}└{}┘{}", dim, "─".repeat(box_w), reset);
                     }
                 }
             }
             Err(e) => {
-                println!("ERROR ({})", e);
+                println!("  {}{}\u{2718} FAIL{}  {} — {}", red, bold, reset, rel_str, e);
                 failed += 1;
+                failed_names.push(rel_str);
             }
         }
     }
 
+    let elapsed = start.elapsed();
     println!();
-    println!("{} passed, {} failed", passed, failed);
+    println!("{}╔{}╗{}", bold, "═".repeat(w), reset);
+    if failed == 0 {
+        let msg = format!("  🎉 All {} tests passed!", total);
+        println!("{}║{}{}{}║{}", bold, green, pad_to(&msg, w), reset, bold);
+    } else {
+        let msg = format!("  📊 {} ✔ passed   {} ✘ failed   ({} total)",
+            passed, failed, passed + failed);
+        println!("{}║{}║{}", bold, pad_to(&msg, w), reset);
+    }
+    let time_msg = format!("  ⏱  {:.1}s elapsed", elapsed.as_secs_f64());
+    println!("{}║{}║{}", bold, pad_to(&time_msg, w), reset);
+    if warned > 0 {
+        let warn_msg = format!("  ⚠  {} test(s) with internal failures", warned);
+        println!("{}║{}{}{}║{}", bold, yellow, pad_to(&warn_msg, w), reset, bold);
+    }
+    println!("{}╚{}╝{}", bold, "═".repeat(w), reset);
+
+    if !failed_names.is_empty() {
+        println!();
+        println!("{}Failed tests:{}", red, reset);
+        for name in &failed_names {
+            println!("  {} {}", "\u{2718}", name);
+        }
+    }
+
     if failed > 0 { process::exit(1); }
 }
 
@@ -959,7 +1069,14 @@ fn discover_test_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>)
         if path.is_dir() {
             // Recurse into subdirectories (but skip hidden dirs, __pycache__, etc.)
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if !name.starts_with('.') && name != "__pycache__" && name != "node_modules" {
+                if !name.starts_with('.')
+                    && name != "__pycache__"
+                    && name != "node_modules"
+                    && name != "site-packages"
+                    && name != "target"
+                    && name != "venv"
+                    && name != ".venv"
+                {
                     discover_test_files(&path, out);
                 }
             }
