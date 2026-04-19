@@ -177,6 +177,54 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                 }
             ));
 
+            // ── set_defaults(**kwargs) ──
+            // Stores parser-level defaults that override per-argument defaults
+            // but are themselves overridden by actual command-line values.
+            let sd_inst = inst.clone();
+            attrs.insert(CompactString::from("set_defaults"), PyObject::native_closure(
+                "set_defaults", move |sd_args: &[PyObjectRef]| {
+                    if let Some(last) = sd_args.last() {
+                        if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                            if let PyObjectPayload::Instance(ref id) = sd_inst.payload {
+                                let mut wa = id.attrs.write();
+                                let defaults_obj = wa.entry(CompactString::from("__defaults__"))
+                                    .or_insert_with(|| PyObject::dict(IndexMap::new()))
+                                    .clone();
+                                if let PyObjectPayload::Dict(dd) = &defaults_obj.payload {
+                                    let mut d = dd.write();
+                                    let r = kw_map.read();
+                                    for (k, v) in r.iter() {
+                                        d.insert(k.clone(), v.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+
+            // ── get_default(dest) ──
+            let gd_inst = inst.clone();
+            attrs.insert(CompactString::from("get_default"), PyObject::native_closure(
+                "get_default", move |gd_args: &[PyObjectRef]| {
+                    if gd_args.is_empty() { return Ok(PyObject::none()); }
+                    let key = gd_args[0].py_to_string();
+                    if let PyObjectPayload::Instance(ref id) = gd_inst.payload {
+                        let ra = id.attrs.read();
+                        if let Some(defaults_obj) = ra.get("__defaults__") {
+                            if let PyObjectPayload::Dict(dd) = &defaults_obj.payload {
+                                let dr = dd.read();
+                                if let Some(v) = dr.get(&HashableKey::str_key(CompactString::from(key.as_str()))) {
+                                    return Ok(v.clone());
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+
             // ── add_mutually_exclusive_group(required=False) ──
             let ad3 = arg_defs.clone();
             let meg_inst_ref = inst.clone();
@@ -349,11 +397,11 @@ fn argparse_parse_args(
 
     // Set defaults
     if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
-        for (_, kwargs) in &positional_defs {
-            if let Some(def) = kwargs.get("default") {
-                // Will be overwritten if arg provided
-                let _ = def;
-            }
+        // Positional args: set defaults (None unless explicitly specified)
+        // This ensures optional positionals (nargs="?", "*") have the attribute in namespace.
+        for (dest, kwargs) in &positional_defs {
+            let default = kwargs.get("default").cloned().unwrap_or_else(PyObject::none);
+            nd.attrs.write().insert(CompactString::from(dest.as_str()), default);
         }
         for (_, dest, kwargs) in &optional_defs {
             let action = kwargs.get("action").map(|a| a.py_to_string());
@@ -368,6 +416,55 @@ fn argparse_parse_args(
             };
             nd.attrs.write().insert(CompactString::from(dest.as_str()), default);
         }
+    }
+
+    // Apply set_defaults() values — these override per-argument defaults
+    // but will themselves be overridden by actual command-line values below.
+    if let Some(pinst) = parser_inst {
+        if let PyObjectPayload::Instance(ref pid) = pinst.payload {
+            // Pre-populate the subparser dest with None so it's always present
+            // even when no subcommand is given.
+            if let Some(sp_dest) = pid.attrs.read().get("__subparsers_dest__").cloned() {
+                let dest_str = sp_dest.py_to_string();
+                if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                    let mut wa = nd.attrs.write();
+                    wa.entry(CompactString::from(dest_str.as_str())).or_insert_with(PyObject::none);
+                }
+            }
+            if let Some(defaults_obj) = pid.attrs.read().get("__defaults__").cloned() {
+                if let PyObjectPayload::Dict(dd) = &defaults_obj.payload {
+                    let dr = dd.read();
+                    if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                        let mut wa = nd.attrs.write();
+                        for (k, v) in dr.iter() {
+                            if let HashableKey::Str(ks) = k {
+                                wa.insert(ks.as_ref().clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle -h / --help: print help and exit.
+    // Only at this parser level if --help appears before any subcommand.
+    let first_help_pos = arg_strings.iter().position(|a| a == "-h" || a == "--help");
+    let first_positional_pos = arg_strings.iter().position(|a| !a.starts_with('-'));
+    let help_at_this_level = first_help_pos.map(|hp| {
+        first_positional_pos.map_or(true, |pp| hp <= pp)
+    }).unwrap_or(false);
+    if help_at_this_level {
+        if let Some(pinst) = parser_inst {
+            if let Some(ph_fn) = pinst.get_attr("print_help") {
+                let _ = match &ph_fn.payload {
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]),
+                    _ => Ok(PyObject::none()),
+                };
+            }
+        }
+        return Err(PyException::system_exit(PyObject::int(0)));
     }
 
     fn convert_value(val_str: &str, kwargs: &IndexMap<CompactString, PyObjectRef>) -> PyResult<PyObjectRef> {

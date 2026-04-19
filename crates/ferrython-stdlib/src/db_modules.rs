@@ -7,7 +7,14 @@ use ferrython_core::object::{
     make_module, make_builtin,
 };
 use indexmap::IndexMap;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, LazyLock};
+
+/// Global registry: canonical DB path → shared Database.
+/// Multiple sqlite3.connect() calls to the same path reuse the same in-memory DB.
+/// The special path ":memory:" always gets a fresh database.
+static DB_REGISTRY: LazyLock<Mutex<HashMap<String, Arc<Mutex<Database>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ── Database storage ───────────────────────────────────────────────────
 
@@ -355,6 +362,9 @@ fn execute_sql(db: &mut Database, sql: &str, params: &[PyObjectRef]) -> PyResult
         execute_delete(db, &sql)
     } else if upper.starts_with("DROP TABLE") {
         execute_drop_table(db, &sql)
+    } else if upper.starts_with("CREATE INDEX") || upper.starts_with("CREATE UNIQUE INDEX") {
+        // Indexes are not needed for our in-memory engine; accept and no-op.
+        Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
     } else if upper.starts_with("BEGIN") || upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
         Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
     } else if upper.starts_with("PRAGMA") {
@@ -1407,7 +1417,14 @@ fn sqlite3_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("connect() requires 1 argument: database"));
     }
     let path = args[0].py_to_string();
-    let db = Arc::new(Mutex::new(Database::new(&path)));
+    let db = if path == ":memory:" {
+        Arc::new(Mutex::new(Database::new(&path)))
+    } else {
+        let mut registry = DB_REGISTRY.lock().unwrap();
+        registry.entry(path.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(Database::new(&path))))
+            .clone()
+    };
     Ok(build_connection_object(db))
 }
 
