@@ -356,6 +356,29 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
                 if has_in_class_mro(&inst.class, name) {
                     return true;
                 }
+                // 2b. Builtin base type methods
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    if let Some(ref bt_name) = cd.builtin_base_name {
+                        if super::helpers::resolve_builtin_type_method(bt_name.as_str(), name).is_some() {
+                            return true;
+                        }
+                        let known = match bt_name.as_str() {
+                            "list" => matches!(name, "append" | "extend" | "insert" | "remove"
+                                | "pop" | "clear" | "reverse" | "sort" | "copy" | "count"
+                                | "index"),
+                            "dict" => matches!(name, "keys" | "values" | "items" | "get"
+                                | "pop" | "update" | "setdefault" | "clear" | "copy" | "popitem"),
+                            "set" => matches!(name, "add" | "remove" | "discard" | "pop"
+                                | "clear" | "copy" | "update" | "union" | "intersection"
+                                | "difference" | "symmetric_difference" | "issubset" | "issuperset"),
+                            "str" => matches!(name, "upper" | "lower" | "strip" | "lstrip"
+                                | "rstrip" | "split" | "join" | "replace" | "startswith"
+                                | "endswith" | "find" | "count" | "format" | "encode"),
+                            _ => false,
+                        };
+                        if known { return true; }
+                    }
+                }
                 // 3. Builtin instance methods
                 if inst.is_special {
                     if instance_builtin_method(obj, inst, name).is_some() {
@@ -402,6 +425,41 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     // 2. Class + MRO via vtable/cache (methods & class attrs)
                     if let Some(v) = lookup_in_class_mro(&inst.class, name) {
                         return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    }
+                    // 2b. Builtin base type methods (list.append, tuple.__len__, etc.)
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        if let Some(ref bt_name) = cd.builtin_base_name {
+                            if let Some(resolved) = super::helpers::resolve_builtin_type_method(bt_name.as_str(), name) {
+                                return Some(PyObjectRef::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj.clone(),
+                                        method: resolved,
+                                    }
+                                }));
+                            }
+                            // Known builtin methods dispatched via __builtin_value__
+                            let known = match bt_name.as_str() {
+                                "list" => matches!(name, "append" | "extend" | "insert" | "remove"
+                                    | "pop" | "clear" | "reverse" | "sort" | "copy" | "count"
+                                    | "index"),
+                                "dict" => matches!(name, "keys" | "values" | "items" | "get"
+                                    | "pop" | "update" | "setdefault" | "clear" | "copy" | "popitem"),
+                                "set" => matches!(name, "add" | "remove" | "discard" | "pop"
+                                    | "clear" | "copy" | "update" | "union" | "intersection"
+                                    | "difference" | "symmetric_difference" | "issubset" | "issuperset"),
+                                "str" => matches!(name, "upper" | "lower" | "strip" | "lstrip"
+                                    | "rstrip" | "split" | "join" | "replace" | "startswith"
+                                    | "endswith" | "find" | "count" | "format" | "encode"),
+                                _ => false,
+                            };
+                            if known {
+                                return Some(PyObjectRef::new(PyObject {
+                                    payload: PyObjectPayload::BuiltinBoundMethod(
+                                        super::constructors::alloc_bbm_box(
+                                            obj.clone(), CompactString::from(name)))
+                                }));
+                            }
+                        }
                     }
                     // 3. Builtin instance methods (only for special instances)
                     if inst.is_special {

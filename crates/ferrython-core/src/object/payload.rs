@@ -1299,6 +1299,10 @@ pub struct ClassData {
     /// Cached flag: true if __new__ is defined in this class's namespace.
     /// Pre-computed at class creation, invalidated on mutation.
     pub has_custom_new: Cell<bool>,
+    /// Cached builtin base type name (e.g. "tuple", "list", "int") if this class
+    /// inherits from a builtin type. None if no builtin type in MRO.
+    /// Used by fast instantiation paths to store __builtin_value__.
+    pub builtin_base_name: Option<CompactString>,
 }
 
 impl ClassData {
@@ -1412,6 +1416,9 @@ impl ClassData {
         // Detect dict subclass (cache once instead of per-instance traversal)
         let is_dict_subclass = Self::check_dict_subclass(&bases);
 
+        // Detect builtin base type (tuple, list, int, etc.) for __builtin_value__ storage
+        let builtin_base_name = super::helpers::get_builtin_base_type_name_from_bases(&bases);
+
         let expected_attrs = attr_shape.len();
 
         // A class is "simple" if instantiation needs no special dispatch:
@@ -1501,6 +1508,7 @@ impl ClassData {
             cached_init: PyCell::new(None),
             cached_init_inline: PyCell::new(None),
             has_custom_new: Cell::new(has_custom_new),
+            builtin_base_name,
         }
     }
 

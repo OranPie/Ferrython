@@ -496,6 +496,7 @@ impl VirtualMachine {
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.is_simple_class.get() && kwargs.is_empty()
                 && !cd.has_custom_new.get()
+                && cd.builtin_base_name.is_none()
             {
                 let instance = PyObject::instance(cls.clone());
                 // Use cached __init__ — unsafe data_ptr avoids RefCell borrow overhead
@@ -871,6 +872,76 @@ impl VirtualMachine {
         } else {
             PyObject::instance(cls.clone())
         };
+
+        // Ensure builtin type subclass instances have __builtin_value__ set.
+        // The synthesized __new__ creates a plain Instance; we must store the builtin
+        // value so len/iter/indexing work on subclasses of tuple, list, int, etc.
+        if let PyObjectPayload::Instance(ref inst_data) = instance.payload {
+            if !inst_data.attrs.read().contains_key("__builtin_value__") {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    if let Some(ref base_type) = cd.builtin_base_name {
+                        let value = if pos_args.is_empty() {
+                            match base_type.as_str() {
+                                "list" => Some(PyObject::list(vec![])),
+                                "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
+                                "set" => Some(PyObject::set(new_fx_hashkey_map())),
+                                "tuple" => Some(PyObject::tuple(vec![])),
+                                "int" => Some(PyObject::int(0)),
+                                "float" => Some(PyObject::float(0.0)),
+                                "str" => Some(PyObject::str_val(CompactString::from(""))),
+                                "bytes" => Some(PyObject::bytes(vec![])),
+                                "bytearray" => Some(PyObject::bytes(vec![])),
+                                _ => None,
+                            }
+                        } else {
+                            match base_type.as_str() {
+                                "int" => {
+                                    let arg = &pos_args[0];
+                                    match &arg.payload {
+                                        PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => Some(arg.clone()),
+                                        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+                                        PyObjectPayload::Str(s) => s.trim().parse::<i64>().ok().map(PyObject::int),
+                                        _ => None,
+                                    }
+                                }
+                                "float" => {
+                                    let arg = &pos_args[0];
+                                    match &arg.payload {
+                                        PyObjectPayload::Float(_) => Some(arg.clone()),
+                                        PyObjectPayload::Int(n) => Some(PyObject::float(n.to_f64())),
+                                        PyObjectPayload::Bool(b) => Some(PyObject::float(if *b { 1.0 } else { 0.0 })),
+                                        PyObjectPayload::Str(s) => s.trim().parse::<f64>().ok().map(PyObject::float),
+                                        _ => None,
+                                    }
+                                }
+                                "str" => {
+                                    let s = pos_args[0].py_to_string();
+                                    Some(PyObject::str_val(CompactString::from(s)))
+                                }
+                                "list" => {
+                                    Some(PyObject::list(pos_args[0].to_list().unwrap_or_default()))
+                                }
+                                "tuple" => {
+                                    if pos_args.len() > 1 {
+                                        Some(PyObject::tuple(pos_args.clone()))
+                                    } else {
+                                        let items = pos_args[0].to_list().unwrap_or_default();
+                                        Some(PyObject::tuple(items))
+                                    }
+                                }
+                                "set" | "bytes" | "bytearray" => Some(pos_args[0].clone()),
+                                _ => None,
+                            }
+                        };
+                        if let Some(val) = value {
+                            inst_data.attrs.write().insert(
+                                intern_or_new("__builtin_value__"), val,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Check markers in class namespace directly, not via get_attr,
         // because BuiltinType get_attr can return false positives.

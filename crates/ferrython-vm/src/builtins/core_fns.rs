@@ -145,6 +145,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         cached_init: PyCell::new(None),
                         cached_init_inline: PyCell::new(None),
                         has_custom_new: Cell::new(cd.has_custom_new.get()),
+                        builtin_base_name: cd.builtin_base_name.clone(),
                     }))));
                 }
             }

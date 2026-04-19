@@ -121,22 +121,28 @@ pub fn repr_leave(ptr: usize) {
 /// and return the builtin type name if so.
 pub fn get_builtin_base_type_name(class: &PyObjectRef) -> Option<CompactString> {
     if let PyObjectPayload::Class(cd) = &class.payload {
-        for base in &cd.bases {
-            match &base.payload {
-                PyObjectPayload::BuiltinType(name) => {
-                    if matches!(name.as_str(), "int" | "str" | "float" | "list" | "tuple"
-                        | "set" | "frozenset" | "bytes" | "bytearray")
-                    {
-                        return Some((**name).clone());
-                    }
+        return get_builtin_base_type_name_from_bases(&cd.bases);
+    }
+    None
+}
+
+/// Check bases list directly for a builtin type ancestor.
+pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<CompactString> {
+    for base in bases {
+        match &base.payload {
+            PyObjectPayload::BuiltinType(name) => {
+                if matches!(name.as_str(), "int" | "str" | "float" | "list" | "tuple"
+                    | "set" | "frozenset" | "bytes" | "bytearray")
+                {
+                    return Some((**name).clone());
                 }
-                PyObjectPayload::Class(_) => {
-                    if let Some(name) = get_builtin_base_type_name(base) {
-                        return Some(name);
-                    }
-                }
-                _ => {}
             }
+            PyObjectPayload::Class(cd) => {
+                if let Some(name) = get_builtin_base_type_name_from_bases(&cd.bases) {
+                    return Some(name);
+                }
+            }
+            _ => {}
         }
     }
     None
