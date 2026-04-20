@@ -751,9 +751,13 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("dict.fromkeys"),
             func: builtin_dict_fromkeys,
         })))),
-        ("int", "from_bytes") | ("bool", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
+        ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("int.from_bytes"),
             func: builtin_int_from_bytes,
+        })))),
+        ("bool", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
+            name: CompactString::from("bool.from_bytes"),
+            func: builtin_bool_from_bytes,
         })))),
         ("str", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("str.maketrans"),
@@ -907,6 +911,12 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
         }
     }
     Ok(PyObject::int(result))
+}
+
+pub(super) fn builtin_bool_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let v = builtin_int_from_bytes(args)?;
+    let truthy = v.is_truthy();
+    Ok(PyObject::bool_val(truthy))
 }
 
 pub(super) fn builtin_str_maketrans(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
