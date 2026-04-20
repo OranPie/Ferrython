@@ -81,7 +81,11 @@ fn synthesize_object_method(name: &str) -> Option<PyObjectRef> {
     match name {
         "__eq__" => Some(PyObject::native_function("__eq__", |args| {
             if args.len() < 2 { return Ok(PyObject::not_implemented()); }
-            Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
+            if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                Ok(PyObject::bool_val(true))
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         })),
         "__ne__" => Some(PyObject::native_function("__ne__", |args| {
             if args.len() < 2 { return Ok(PyObject::not_implemented()); }
@@ -109,7 +113,13 @@ fn synthesize_object_method(name: &str) -> Option<PyObjectRef> {
                     return Ok(PyObject::bool_val(!result.is_truthy()));
                 }
             }
-            Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
+            // No custom __eq__ found → behave like object.__eq__ was called:
+            // identical → False (eq returns True, negated), otherwise → NotImplemented
+            if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                Ok(PyObject::bool_val(false))
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         })),
         "__hash__" => Some(PyObject::native_function("__hash__", |args| {
             if args.is_empty() { return Err(PyException::type_error("__hash__ requires 1 argument")); }
@@ -910,7 +920,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if args.len() < 2 {
                             return Ok(PyObject::not_implemented());
                         }
-                        Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
+                        if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                            Ok(PyObject::bool_val(true))
+                        } else {
+                            Ok(PyObject::not_implemented())
+                        }
                     }));
                 }
                 if name == "__ne__" {
@@ -942,7 +956,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 return Ok(PyObject::bool_val(!result.is_truthy()));
                             }
                         }
-                        Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
+                        if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                            Ok(PyObject::bool_val(false))
+                        } else {
+                            Ok(PyObject::not_implemented())
+                        }
                     }));
                 }
                 None
@@ -2417,14 +2435,18 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 Ok(PyObject::none())
                             }));
                         }
-                        // Builtin __eq__: object.__eq__ is identity comparison
+                        // Builtin __eq__: object.__eq__ returns NotImplemented for non-identity
                         if name == "__eq__" {
                             let inst = instance.clone();
                             return Some(PyObject::native_closure("__eq__", move |args: &[PyObjectRef]| {
                                 if args.is_empty() {
-                                    return Err(PyException::type_error("__eq__ requires an argument"));
+                                    return Ok(PyObject::not_implemented());
                                 }
-                                Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&inst, &args[0])))
+                                if PyObjectRef::ptr_eq(&inst, &args[0]) {
+                                    Ok(PyObject::bool_val(true))
+                                } else {
+                                    Ok(PyObject::not_implemented())
+                                }
                             }));
                         }
                         // Builtin __ne__: object.__ne__ calls __eq__ and negates
@@ -2458,7 +2480,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                         return Ok(PyObject::bool_val(!result.is_truthy()));
                                     }
                                 }
-                                Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&inst, &args[0])))
+                                if PyObjectRef::ptr_eq(&inst, &args[0]) {
+                                    Ok(PyObject::bool_val(false))
+                                } else {
+                                    Ok(PyObject::not_implemented())
+                                }
                             }));
                         }
                         // Builtin __repr__ / __str__: default object repr

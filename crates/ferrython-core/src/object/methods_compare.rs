@@ -75,42 +75,6 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 CompareOp::Gt => "__gt__",
                 CompareOp::Ge => "__ge__",
             };
-            if let PyObjectPayload::Instance(inst) = &a.payload {
-                // Check instance attrs first, then class MRO
-                let method = inst.attrs.read().get(dunder).cloned()
-                    .or_else(|| {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            let ns = cd.namespace.read();
-                            if let Some(f) = ns.get(dunder) { return Some(f.clone()); }
-                            for base in &cd.mro {
-                                if let PyObjectPayload::Class(bcd) = &base.payload {
-                                    let bns = bcd.namespace.read();
-                                    if let Some(f) = bns.get(dunder) { return Some(f.clone()); }
-                                }
-                            }
-                        }
-                        None
-                    });
-                if let Some(method) = method {
-                    match &method.payload {
-                        PyObjectPayload::NativeClosure(nc) => {
-                            return (nc.func)(&[a.clone(), b.clone()]);
-                        }
-                        PyObjectPayload::NativeFunction(nf) => {
-                            return (nf.func)(&[a.clone(), b.clone()]);
-                        }
-                        _ => {
-                            // Python function — dispatch through VM
-                            let result = super::helpers::call_callable(&method, &[a.clone(), b.clone()])?;
-                            // If result is NotImplemented, fall through
-                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                return Ok(result);
-                            }
-                        }
-                    }
-                }
-            }
-            // Also check RHS for reflected comparison (e.g., 2 == Cmp(2.0) → Cmp.__eq__(Cmp(2.0), 2))
             let rdunder = match op {
                 CompareOp::Eq => "__eq__",
                 CompareOp::Ne => "__ne__",
@@ -119,36 +83,87 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 CompareOp::Gt => "__lt__",
                 CompareOp::Ge => "__le__",
             };
-            if let PyObjectPayload::Instance(inst) = &b.payload {
-                let method = inst.attrs.read().get(rdunder).cloned()
-                    .or_else(|| {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            let ns = cd.namespace.read();
-                            if let Some(f) = ns.get(rdunder) { return Some(f.clone()); }
-                            for base in &cd.mro {
-                                if let PyObjectPayload::Class(bcd) = &base.payload {
-                                    let bns = bcd.namespace.read();
-                                    if let Some(f) = bns.get(rdunder) { return Some(f.clone()); }
+
+            // Helper: find a dunder method on an instance (attrs, then class MRO)
+            let find_method = |obj: &PyObjectRef, name: &str| -> Option<PyObjectRef> {
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    inst.attrs.read().get(name).cloned()
+                        .or_else(|| {
+                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                let ns = cd.namespace.read();
+                                if let Some(f) = ns.get(name) { return Some(f.clone()); }
+                                for base in &cd.mro {
+                                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                                        let bns = bcd.namespace.read();
+                                        if let Some(f) = bns.get(name) { return Some(f.clone()); }
+                                    }
                                 }
                             }
-                        }
-                        None
-                    });
-                if let Some(method) = method {
-                    match &method.payload {
-                        PyObjectPayload::NativeClosure(nc) => {
-                            return (nc.func)(&[b.clone(), a.clone()]);
-                        }
-                        PyObjectPayload::NativeFunction(nf) => {
-                            return (nf.func)(&[b.clone(), a.clone()]);
-                        }
-                        _ => {
-                            // Python function — dispatch through VM
-                            let result = super::helpers::call_callable(&method, &[b.clone(), a.clone()])?;
-                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                return Ok(result);
+                            None
+                        })
+                } else {
+                    None
+                }
+            };
+
+            // Helper: try calling a comparison method
+            let try_call = |method: &PyObjectRef, lhs: &PyObjectRef, rhs: &PyObjectRef| -> Option<PyResult<PyObjectRef>> {
+                match &method.payload {
+                    PyObjectPayload::NativeClosure(nc) => {
+                        Some((nc.func)(&[lhs.clone(), rhs.clone()]))
+                    }
+                    PyObjectPayload::NativeFunction(nf) => {
+                        Some((nf.func)(&[lhs.clone(), rhs.clone()]))
+                    }
+                    _ => {
+                        match super::helpers::call_callable(method, &[lhs.clone(), rhs.clone()]) {
+                            Ok(result) => {
+                                if matches!(result.payload, PyObjectPayload::NotImplemented) {
+                                    None // NotImplemented — try next
+                                } else {
+                                    Some(Ok(result))
+                                }
                             }
+                            Err(e) => Some(Err(e)),
                         }
+                    }
+                }
+            };
+
+            // Check if b's type is a proper subclass of a's type
+            let b_is_subclass = if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                if !PyObjectRef::ptr_eq(&inst_a.class, &inst_b.class) {
+                    if let PyObjectPayload::Class(cd_b) = &inst_b.class.payload {
+                        cd_b.mro.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
+                            || cd_b.bases.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
+                    } else { false }
+                } else { false }
+            } else { false };
+
+            if b_is_subclass {
+                // Subclass priority: try b's reflected dunder first
+                if let Some(method) = find_method(b, rdunder) {
+                    if let Some(result) = try_call(&method, b, a) {
+                        return result;
+                    }
+                }
+                // Then try a's dunder
+                if let Some(method) = find_method(a, dunder) {
+                    if let Some(result) = try_call(&method, a, b) {
+                        return result;
+                    }
+                }
+            } else {
+                // Normal order: try a's dunder first
+                if let Some(method) = find_method(a, dunder) {
+                    if let Some(result) = try_call(&method, a, b) {
+                        return result;
+                    }
+                }
+                // Then try b's reflected dunder
+                if let Some(method) = find_method(b, rdunder) {
+                    if let Some(result) = try_call(&method, b, a) {
+                        return result;
                     }
                 }
             }
