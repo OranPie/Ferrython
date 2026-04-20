@@ -103,6 +103,15 @@ pub(super) fn builtin_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Reject kwargs: check if last arg looks like a kwargs dict (from call path).
+    // Since this is NativeFunction, kwargs from call sites would be delivered as
+    // extra trailing dict (they aren't here — if caller used x=10, it goes through
+    // a different path). We must also reject >1 positional args.
+    if args.len() > 1 {
+        return Err(PyException::type_error(
+            CompactString::from(format!("bool() takes at most 1 argument ({} given)", args.len())),
+        ));
+    }
     if args.is_empty() {
         return Ok(PyObject::bool_val(false));
     }
@@ -181,6 +190,16 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
     let name = name_obj.as_str().ok_or_else(||
         PyException::type_error("type() argument 1 must be str"))?;
     let bases = bases_obj.to_list()?;
+    // Check for attempts to subclass final builtin types (bool)
+    for base in &bases {
+        if let PyObjectPayload::BuiltinType(n) = &base.payload {
+            if n.as_str() == "bool" {
+                return Err(PyException::type_error(
+                    CompactString::from("type 'bool' is not an acceptable base type"),
+                ));
+            }
+        }
+    }
     let namespace = match &dict_obj.payload {
         PyObjectPayload::Dict(m) => {
             let r = m.read();

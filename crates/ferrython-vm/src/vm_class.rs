@@ -103,6 +103,17 @@ impl VirtualMachine {
         }
         let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
 
+        // Reject subclassing of final builtin types (bool is not subclassable)
+        for base in &bases {
+            if let PyObjectPayload::BuiltinType(n) = &base.payload {
+                if n.as_str() == "bool" {
+                    return Err(PyException::type_error(
+                        CompactString::from("type 'bool' is not an acceptable base type"),
+                    ));
+                }
+            }
+        }
+
         // If any base has a custom metaclass, delegate to the kw path
         if let Some(meta) = Self::inherited_metaclass(&bases) {
             let kwargs = vec![(CompactString::from("metaclass"), meta)];

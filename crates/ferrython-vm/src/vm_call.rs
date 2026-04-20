@@ -1618,7 +1618,16 @@ impl VirtualMachine {
                             }
                             return self.call_object(func, all_args);
                         }
-                        "float" | "str" | "bool" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
+                        "bool" => {
+                            // bool() doesn't accept kwargs
+                            if !kwargs.is_empty() {
+                                return Err(ferrython_core::error::PyException::type_error(
+                                    compact_str::CompactString::from("bool() takes no keyword arguments"),
+                                ));
+                            }
+                            return self.call_object(func, pos_args);
+                        }
+                        "float" | "str" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
                             // These builtins don't use kwargs meaningfully — just pass positional
                             return self.call_object(func, pos_args);
                         }

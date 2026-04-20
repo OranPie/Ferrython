@@ -751,7 +751,7 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("dict.fromkeys"),
             func: builtin_dict_fromkeys,
         })))),
-        ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
+        ("int", "from_bytes") | ("bool", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("int.from_bytes"),
             func: builtin_int_from_bytes,
         })))),
