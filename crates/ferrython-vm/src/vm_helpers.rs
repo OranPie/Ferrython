@@ -2033,28 +2033,80 @@ impl VirtualMachine {
                     self.execute_with_globals(code, shared_globals.clone())?;
                 }
             } else if let PyObjectPayload::Dict(ref map) = args[1].payload {
-                let mut new_globals = FxAttrMap::default();
-                let m = map.read();
-                for (k, v) in m.iter() {
-                    let key_str = match k {
-                        HashableKey::Str(s) => s.as_ref().clone(),
-                        _ => CompactString::from(format!("{:?}", k)),
+                // For dict-based exec WITHOUT separate locals, reuse a cached
+                // FxAttrMap so that closures created in one exec() call share
+                // globals with subsequent exec() calls on the same dict.
+                let cache_key = HashableKey::str_key(CompactString::from("\x00__exec_globals__"));
+                let has_separate_locals = args.len() >= 3;
+
+                if !has_separate_locals {
+                    // Try to reuse cached FxAttrMap from a prior exec on this dict
+                    let cached = {
+                        let mr = map.read();
+                        mr.get(&cache_key).and_then(|v| {
+                            if let PyObjectPayload::InstanceDict(ref shared) = v.payload {
+                                Some(shared.clone())
+                            } else {
+                                None
+                            }
+                        })
                     };
-                    new_globals.insert(key_str, v.clone());
-                }
-                drop(m);
-                // Merge locals dict into globals for execution scope
-                // Track original global keys so we can separate results later
-                let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
-                if args.len() >= 3 {
+                    let shared = if let Some(existing) = cached {
+                        // Sync any new dict entries into the shared map
+                        let mr = map.read();
+                        let mut gw = existing.write();
+                        for (k, v) in mr.iter() {
+                            if *k == cache_key { continue; }
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.as_ref().clone(),
+                                _ => CompactString::from(format!("{:?}", k)),
+                            };
+                            gw.insert(key_str, v.clone());
+                        }
+                        drop(gw);
+                        drop(mr);
+                        existing
+                    } else {
+                        // First exec on this dict — create and cache FxAttrMap
+                        let mut new_globals = FxAttrMap::default();
+                        let mr = map.read();
+                        for (k, v) in mr.iter() {
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.as_ref().clone(),
+                                _ => CompactString::from(format!("{:?}", k)),
+                            };
+                            new_globals.insert(key_str, v.clone());
+                        }
+                        drop(mr);
+                        let s = Rc::new(PyCell::new(new_globals));
+                        map.write().insert(cache_key.clone(),
+                            PyObject::wrap(PyObjectPayload::InstanceDict(s.clone())));
+                        s
+                    };
+                    self.execute_with_globals(code, shared.clone())?;
+                    // Write results back to dict
+                    let results = shared.read();
+                    let mut m = map.write();
+                    for (k, v) in results.iter() {
+                        m.insert(HashableKey::str_key(k.clone()), v.clone());
+                    }
+                } else {
+                    // With separate locals — create a fresh FxAttrMap (no sharing)
+                    let mut new_globals = FxAttrMap::default();
+                    let m = map.read();
+                    for (k, v) in m.iter() {
+                        let key_str = match k {
+                            HashableKey::Str(s) => s.as_ref().clone(),
+                            _ => CompactString::from(format!("{:?}", k)),
+                        };
+                        new_globals.insert(key_str, v.clone());
+                    }
+                    drop(m);
+                    let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
                     Self::merge_dict_into_attrmap(&args[2], &mut new_globals);
-                }
-                let shared = Rc::new(PyCell::new(new_globals));
-                self.execute_with_globals(code, shared.clone())?;
-                let results = shared.read();
-                if args.len() >= 3 {
-                    // Separate globals/locals: only write back original global keys to globals,
-                    // and all new/modified keys to locals
+                    let shared = Rc::new(PyCell::new(new_globals));
+                    self.execute_with_globals(code, shared.clone())?;
+                    let results = shared.read();
                     let mut gm = map.write();
                     for (k, v) in results.iter() {
                         if original_global_keys.contains(k) {
@@ -2063,12 +2115,6 @@ impl VirtualMachine {
                     }
                     drop(gm);
                     Self::write_back_locals(&args[2], &results, &original_global_keys);
-                } else {
-                    // No separate locals — write everything back to globals
-                    let mut m = map.write();
-                    for (k, v) in results.iter() {
-                        m.insert(HashableKey::str_key(k.clone()), v.clone());
-                    }
                 }
             } else {
                 return Err(PyException::type_error("exec() globals must be a dict"));

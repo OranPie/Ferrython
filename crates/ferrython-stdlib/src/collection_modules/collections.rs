@@ -1209,6 +1209,130 @@ fn make_user_dict_class() -> PyObjectRef {
         }
         Ok(args[0].clone())
     }));
+    // Class-level dict delegation methods
+    ns.insert(CompactString::from("keys"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("keys() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("values"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("values() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            Ok(PyObject::wrap(PyObjectPayload::DictValues(m.clone())))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("items"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("items() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            Ok(PyObject::wrap(PyObjectPayload::DictItems(m.clone())))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("get"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("get() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("get() requires at least 1 argument")); };
+            let default = if args.len() >= 3 { args[2].clone() } else { PyObject::none() };
+            Ok(m.read().get(&key).cloned().unwrap_or(default))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("pop"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("pop() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("pop() requires at least 1 argument")); };
+            let default = if args.len() >= 3 { Some(args[2].clone()) } else { None };
+            match m.write().shift_remove(&key) {
+                Some(v) => Ok(v),
+                None => default.ok_or_else(|| PyException::key_error(if args.len() > 1 { args[1].py_to_string() } else { "?".into() })),
+            }
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("setdefault"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("setdefault() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("setdefault() requires at least 1 argument")); };
+            let default = if args.len() >= 3 { args[2].clone() } else { PyObject::none() };
+            let mut w = m.write();
+            if let Some(v) = w.get(&key) { return Ok(v.clone()); }
+            w.insert(key, default.clone());
+            Ok(default)
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("update"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("update() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            if args.len() > 1 {
+                if let PyObjectPayload::Dict(other) = &args[1].payload {
+                    let mut w = m.write();
+                    for (k, v) in other.read().iter() { w.insert(k.clone(), v.clone()); }
+                } else if let Ok(od) = get_user_data(&args[1], "data") {
+                    if let PyObjectPayload::Dict(other) = &od.payload {
+                        let mut w = m.write();
+                        for (k, v) in other.read().iter() { w.insert(k.clone(), v.clone()); }
+                    }
+                }
+            }
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("copy"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("copy() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            Ok(PyObject::dict(m.read().clone()))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("clear"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("clear() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            m.write().clear();
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__reversed__"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("__reversed__() requires self")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(m) = &data.payload {
+            let keys: Vec<PyObjectRef> = m.read().keys().rev().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(keys))
+        } else {
+            Err(PyException::type_error("UserDict.data is not a dict"))
+        }
+    }));
+    ns.insert(CompactString::from("fromkeys"), make_builtin(|args| {
+        // classmethod: fromkeys(iterable, value=None)
+        let iterable = if args.len() > 0 { &args[0] } else { return Err(PyException::type_error("fromkeys() requires an iterable")); };
+        let value = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
+        let keys = iterable.to_list()?;
+        let mut pairs = IndexMap::new();
+        for k in keys {
+            let hk = HashableKey::from_object(&k)?;
+            pairs.insert(hk, value.clone());
+        }
+        Ok(PyObject::dict(pairs))
+    }));
     PyObject::class(CompactString::from("UserDict"), vec![], ns)
 }
 
