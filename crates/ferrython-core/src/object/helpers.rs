@@ -515,7 +515,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
                             return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
                         }
                     }
-                    _ => {}
+                    _ => {
+                        if let Ok(result) = call_callable(&eq_fn, &[a.clone(), b.clone()]) {
+                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
+                                return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                            }
+                        }
+                    }
                 }
             }
             None
@@ -547,7 +553,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
                             return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
                         }
                     }
-                    _ => {}
+                    _ => {
+                        if let Ok(result) = call_callable(&eq_fn, &[b.clone(), a.clone()]) {
+                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
+                                return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                            }
+                        }
+                    }
                 }
             }
             None
@@ -987,6 +999,7 @@ pub(super) fn resolve_slice(
         .and_then(|s| s.as_int())
         .map(|i| {
             if i < 0 { (len + i).max(if step_val < 0 { -1 } else { 0 }) }
+            else if step_val < 0 { i.min(len - 1) }
             else { i.min(len) }
         })
         .unwrap_or(default_start);

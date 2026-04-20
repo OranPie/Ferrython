@@ -99,7 +99,14 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                         PyObjectPayload::NativeFunction(nf) => {
                             return (nf.func)(&[a.clone(), b.clone()]);
                         }
-                        _ => {}
+                        _ => {
+                            // Python function — dispatch through VM
+                            let result = super::helpers::call_callable(&method, &[a.clone(), b.clone()])?;
+                            // If result is NotImplemented, fall through
+                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
+                                return Ok(result);
+                            }
+                        }
                     }
                 }
             }
@@ -135,7 +142,13 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                         PyObjectPayload::NativeFunction(nf) => {
                             return (nf.func)(&[b.clone(), a.clone()]);
                         }
-                        _ => {}
+                        _ => {
+                            // Python function — dispatch through VM
+                            let result = super::helpers::call_callable(&method, &[b.clone(), a.clone()])?;
+                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
+                                return Ok(result);
+                            }
+                        }
                     }
                 }
             }
