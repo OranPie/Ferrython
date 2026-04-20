@@ -606,6 +606,42 @@ impl VirtualMachine {
             8 => PyObject::bool_val(a.is_same(&b)),
             9 => PyObject::bool_val(!a.is_same(&b)),
             10 => {
+                // Validate: handler must be an exception class (or tuple of such)
+                let validate_exc_handler = |handler: &PyObjectRef| -> Result<(), PyException> {
+                    match &handler.payload {
+                        PyObjectPayload::ExceptionType(_) => Ok(()),
+                        PyObjectPayload::BuiltinType(name) => {
+                            if ExceptionKind::from_name(name).is_some() {
+                                Ok(())
+                            } else {
+                                Err(PyException::type_error(
+                                    "catching classes that do not inherit from BaseException is not allowed"
+                                ))
+                            }
+                        }
+                        PyObjectPayload::Class(cd) => {
+                            if cd.is_exception_subclass || Self::is_exception_class(handler) {
+                                Ok(())
+                            } else {
+                                Err(PyException::type_error(
+                                    "catching classes that do not inherit from BaseException is not allowed"
+                                ))
+                            }
+                        }
+                        _ => Err(PyException::type_error(
+                            "catching classes that do not inherit from BaseException is not allowed"
+                        )),
+                    }
+                };
+                match &b.payload {
+                    PyObjectPayload::Tuple(items) => {
+                        for item in items.iter() {
+                            validate_exc_handler(item)?;
+                        }
+                    }
+                    _ => validate_exc_handler(&b)?,
+                }
+
                 let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {
                     // Case 1: Both are user-defined Class payloads
                     if let PyObjectPayload::Class(cls_a) = &a_item.payload {

@@ -2047,14 +2047,17 @@ impl VirtualMachine {
                                 drop(data);
                                 let for_instr = ferrython_bytecode::Instruction::new(
                                     Opcode::ForIter, jump_target as u32);
-                                self.execute_one(for_instr)?;
-                                let frame = self.call_stack.last_mut().unwrap();
-                                // If ForIter didn't jump (value was pushed), store it
-                                if frame.ip != jump_target {
-                                    let v = spop!(frame);
-                                    sset_local!(frame, store_idx, v);
+                                match self.execute_one(for_instr) {
+                                    Err(e) => Err(e),
+                                    Ok(_) => {
+                                        let frame = self.call_stack.last_mut().unwrap();
+                                        if frame.ip != jump_target {
+                                            let v = spop!(frame);
+                                            sset_local!(frame, store_idx, v);
+                                        }
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                     } else if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
@@ -2080,13 +2083,17 @@ impl VirtualMachine {
                         // Fallback for non-iterator types
                         let for_instr = ferrython_bytecode::Instruction::new(
                             Opcode::ForIter, jump_target as u32);
-                        self.execute_one(for_instr)?;
-                        let frame = self.call_stack.last_mut().unwrap();
-                        if frame.ip != jump_target {
-                            let v = spop!(frame);
-                            sset_local!(frame, store_idx, v);
+                        match self.execute_one(for_instr) {
+                            Err(e) => Err(e),
+                            Ok(_) => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                if frame.ip != jump_target {
+                                    let v = spop!(frame);
+                                    sset_local!(frame, store_idx, v);
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
                         }
-                        hot_ok!(profiling, self.profiler, instr.op)
                     }
                 }
                 // Inline ReturnValue: fast path when no finally blocks are active
@@ -4730,10 +4737,14 @@ impl VirtualMachine {
                     } else {
                         // Cache miss — decompose to LoadGlobal + CallFunction
                         let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
-                        let res = self.execute_one(load_instr)?;
-                        if res.is_some() { return Ok(res.unwrap()); }
-                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
-                        self.execute_one(call_instr)
+                        match self.execute_one(load_instr) {
+                            Err(e) => Err(e),
+                            Ok(Some(ret)) => Ok(Some(ret)),
+                            Ok(None) => {
+                                let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                self.execute_one(call_instr)
+                            }
+                        }
                     }
                 }
                 // Inline LoadMethod fast path for plain instances:
@@ -6020,23 +6031,32 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             // Fallback: execute CompareOp, then check result
+                            // Must NOT use ? here — errors must flow into the Err(exc)
+                            // handler below so that try/except blocks can catch them.
                             let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            let result = self.exec_compare_ops(cmp_instr)?;
-                            if result.is_none() {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                let v = spop!(frame);
-                                let is_false = match &v.payload {
-                                    PyObjectPayload::Bool(b) => !b,
-                                    PyObjectPayload::None => true,
-                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                    _ => !self.vm_is_truthy(&v)?,
-                                };
-                                if is_false {
-                                    let cs_len = self.call_stack.len();
-                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                            match self.exec_compare_ops(cmp_instr) {
+                                Err(e) => Err(e),
+                                Ok(cmp_result) => {
+                                    if cmp_result.is_none() {
+                                        let frame = self.call_stack.last_mut().unwrap();
+                                        let v = spop!(frame);
+                                        let is_false = match &v.payload {
+                                            PyObjectPayload::Bool(b) => !b,
+                                            PyObjectPayload::None => true,
+                                            PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                            _ => match self.vm_is_truthy(&v) {
+                                                Ok(t) => !t,
+                                                Err(e) => return Err(e),
+                                            },
+                                        };
+                                        if is_false {
+                                            let cs_len = self.call_stack.len();
+                                            unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                        }
+                                    }
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                             }
-                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
                         self.execute_one(instr)
@@ -6086,22 +6106,29 @@ impl VirtualMachine {
                                 spush!(frame, local.clone());
                                 spush!(frame, c.clone());
                                 let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                                let result = self.exec_compare_ops(cmp_instr)?;
-                                if result.is_none() {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    let v = spop!(frame);
-                                    let is_false = match &v.payload {
-                                        PyObjectPayload::Bool(b) => !b,
-                                        PyObjectPayload::None => true,
-                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                        _ => !self.vm_is_truthy(&v)?,
-                                    };
-                                    if is_false {
-                                        let cs_len = self.call_stack.len();
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                match self.exec_compare_ops(cmp_instr) {
+                                    Err(e) => Err(e),
+                                    Ok(cmp_result) => {
+                                        if cmp_result.is_none() {
+                                            let frame = self.call_stack.last_mut().unwrap();
+                                            let v = spop!(frame);
+                                            let is_false = match &v.payload {
+                                                PyObjectPayload::Bool(b) => !b,
+                                                PyObjectPayload::None => true,
+                                                PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                                _ => match self.vm_is_truthy(&v) {
+                                                    Ok(t) => !t,
+                                                    Err(e) => return Err(e),
+                                                },
+                                            };
+                                            if is_false {
+                                                let cs_len = self.call_stack.len();
+                                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                            }
+                                        }
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                         None => Self::err_unbound_local(&frame.code.varnames, local_idx),
@@ -6160,22 +6187,29 @@ impl VirtualMachine {
                                 spush!(frame, a.clone());
                                 spush!(frame, b.clone());
                                 let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                                let result = self.exec_compare_ops(cmp_instr)?;
-                                if result.is_none() {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    let v = spop!(frame);
-                                    let is_false = match &v.payload {
-                                        PyObjectPayload::Bool(b) => !b,
-                                        PyObjectPayload::None => true,
-                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                        _ => !self.vm_is_truthy(&v)?,
-                                    };
-                                    if is_false {
-                                        let cs_len = self.call_stack.len();
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                match self.exec_compare_ops(cmp_instr) {
+                                    Err(e) => Err(e),
+                                    Ok(cmp_result) => {
+                                        if cmp_result.is_none() {
+                                            let frame = self.call_stack.last_mut().unwrap();
+                                            let v = spop!(frame);
+                                            let is_false = match &v.payload {
+                                                PyObjectPayload::Bool(b) => !b,
+                                                PyObjectPayload::None => true,
+                                                PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                                _ => match self.vm_is_truthy(&v) {
+                                                    Ok(t) => !t,
+                                                    Err(e) => return Err(e),
+                                                },
+                                            };
+                                            if is_false {
+                                                let cs_len = self.call_stack.len();
+                                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                            }
+                                        }
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                         _ => {
@@ -6210,11 +6244,15 @@ impl VirtualMachine {
                     }
                     // Cache miss: fallback to LoadGlobal + StoreFast
                     let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
-                    self.execute_one(load_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
+                    match self.execute_one(load_instr) {
+                        Err(e) => Err(e),
+                        Ok(_) => {
+                            let frame = self.call_stack.last_mut().unwrap();
+                            let v = spop!(frame);
+                            sset_local!(frame, store_idx, v);
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                    }
                 }
                 // Fused PopBlock + Jump: pops exception block and jumps in one dispatch
                 Opcode::PopBlockJump => {
@@ -6297,20 +6335,26 @@ impl VirtualMachine {
                     }
                     // Fallback: decompose to individual ops
                     spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
-                    if let Some(v) = slocal!(frame, fast_idx) {
-                        spush!(frame, v.clone());
-                    } else {
-                        let _ = spop!(frame);
-                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
-                        unreachable!();
+                    match slocal!(frame, fast_idx) {
+                        None => {
+                            let _ = spop!(frame);
+                            Self::err_unbound_local(&frame.code.varnames, fast_idx)
+                        }
+                        Some(v) => {
+                            spush!(frame, v.clone());
+                            let cmp_arg = if not_in { 7u32 } else { 6u32 };
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_arg);
+                            match self.execute_one(cmp_instr) {
+                                Err(e) => Err(e),
+                                Ok(_) => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let v = spop!(frame);
+                                    sset_local!(frame, store_idx, v);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                        }
                     }
-                    let cmp_arg = if not_in { 7u32 } else { 6u32 };
-                    let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_arg);
-                    self.execute_one(cmp_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Fused LoadFast + LoadConst + BinarySubscr + StoreFast
                 // Zero-Arc for container/index; clones element with in-place mutation fallback.
@@ -6395,19 +6439,23 @@ impl VirtualMachine {
                         }
                     }
                     // Fallback: decompose
-                    if let Some(v) = slocal!(frame, fast_idx) {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
-                        unreachable!();
+                    match slocal!(frame, fast_idx) {
+                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
+                        Some(v) => {
+                            spush!(frame, v.clone());
+                            spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
+                            let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
+                            match self.execute_one(subscr_instr) {
+                                Err(e) => Err(e),
+                                Ok(_) => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let v = spop!(frame);
+                                    sset_local!(frame, store_idx, v);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                        }
                     }
-                    spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
-                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
-                    self.execute_one(subscr_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Fused LoadFast + LoadFast + BinarySubscr + StoreFast
                 // Zero-Arc for container and key: reads both from locals by reference.
@@ -6455,24 +6503,31 @@ impl VirtualMachine {
                         }
                     }
                     // Fallback: decompose to individual ops
-                    if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(container_idx) } {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, container_idx)?;
-                        unreachable!();
+                    match unsafe { &*frame.locals.as_ptr().add(container_idx) } {
+                        None => Self::err_unbound_local(&frame.code.varnames, container_idx),
+                        Some(ref v) => {
+                            spush!(frame, v.clone());
+                            match unsafe { &*frame.locals.as_ptr().add(key_idx) } {
+                                None => {
+                                    let _ = spop!(frame);
+                                    Self::err_unbound_local(&frame.code.varnames, key_idx)
+                                }
+                                Some(ref v) => {
+                                    spush!(frame, v.clone());
+                                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
+                                    match self.execute_one(subscr_instr) {
+                                        Err(e) => Err(e),
+                                        Ok(_) => {
+                                            let frame = self.call_stack.last_mut().unwrap();
+                                            let v = spop!(frame);
+                                            sset_local!(frame, store_idx, v);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(key_idx) } {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, key_idx)?;
-                        unreachable!();
-                    }
-                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
-                    self.execute_one(subscr_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Fused LoadFast + LoadFast + LoadFast + StoreSubscr
                 // Zero-Arc: reads value, container, key from locals by reference.
@@ -6521,15 +6576,20 @@ impl VirtualMachine {
                         }
                     }
                     // Fallback: push all 3 locals and execute StoreSubscr
+                    let mut unbound_err = None;
                     for idx in [val_idx, container_idx, key_idx] {
                         if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
                             spush!(frame, v.clone());
                         } else {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
+                            unbound_err = Some(Self::err_unbound_local(&frame.code.varnames, idx));
+                            break;
                         }
                     }
-                    self.execute_one(Instruction::new(Opcode::StoreSubscr, 0))
+                    if let Some(e) = unbound_err {
+                        e
+                    } else {
+                        self.execute_one(Instruction::new(Opcode::StoreSubscr, 0))
+                    }
                 }
                 Opcode::LoadFastLoadFastContainsStoreFast => {
                     let needle_idx = (instr.arg >> 24) as usize;
@@ -6600,14 +6660,18 @@ impl VirtualMachine {
                         }
                     }
                     // Fallback: decompose to individual ops
+                    let mut unbound_err = None;
                     for idx in [needle_idx, haystack_idx] {
                         if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
                             spush!(frame, v.clone());
                         } else {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
+                            unbound_err = Some(Self::err_unbound_local(&frame.code.varnames, idx));
+                            break;
                         }
                     }
+                    if let Some(e) = unbound_err {
+                        e
+                    } else {
                     let cmp_arg = if negate { 7u32 } else { 6u32 };
                     let r = self.execute_one(Instruction::new(Opcode::CompareOp, cmp_arg));
                     if r.is_ok() {
@@ -6619,6 +6683,7 @@ impl VirtualMachine {
                         }
                     }
                     r
+                    } // end else (no unbound err)
                 }
                 _ => self.execute_one(instr),
             };
@@ -7040,7 +7105,9 @@ impl VirtualMachine {
     /// Find an exception handler on the block stack. Returns handler IP if found.
     pub(crate) fn unwind_except(&mut self) -> Option<usize> {
         let frame = self.call_stack.last_mut()?;
+        let mut block_count = 0;
         while let Some(block) = frame.pop_block() {
+            block_count += 1;
             match block.kind() {
                 BlockKind::Except | BlockKind::Finally => {
                     // Unwind value stack to block level

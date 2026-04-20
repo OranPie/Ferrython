@@ -460,10 +460,13 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 }
             }
             PyObjectPayload::ExceptionInstance(ei) => {
-                if ei.message.is_empty() {
+                if ei.args.is_empty() {
                     format!("{}()", ei.kind)
+                } else if ei.args.len() == 1 {
+                    format!("{}({})", ei.kind, ei.args[0].repr())
                 } else {
-                    format!("{}('{}')", ei.kind, ei.message)
+                    let parts: Vec<String> = ei.args.iter().map(|a| a.repr()).collect();
+                    format!("{}({})", ei.kind, parts.join(", "))
                 }
             }
             PyObjectPayload::Instance(inst) => {
