@@ -1142,12 +1142,22 @@ impl VirtualMachine {
                     exc.value = Some(return_val);
                     Err(exc)
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    // PEP 479: StopIteration inside generator → RuntimeError
+                    if e.kind == ExceptionKind::StopIteration {
+                        let mut re = PyException::runtime_error("generator raised StopIteration");
+                        re.cause = Some(Box::new(e.clone()));
+                        re.context = Some(Box::new(e));
+                        re.suppress_context = true;
+                        Err(re)
+                    } else {
+                        Err(e)
+                    }
+                }
             }
         }
     }
 
-    /// Specialized generator resume for ForIter: returns Ok(Some(value)) on yield,
     /// Ok(None) on generator completion (avoids creating StopIteration exception),
     /// Err(e) on actual errors from within the generator.
     pub(crate) fn resume_generator_for_iter(
@@ -1200,7 +1210,14 @@ impl VirtualMachine {
             frame.recycle(&mut self.frame_pool);
             match result {
                 Ok(_) => Ok(None), // Generator finished — no StopIteration needed
-                Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                Err(e) if e.kind == ExceptionKind::StopIteration => {
+                    // PEP 479: StopIteration inside generator → RuntimeError
+                    let mut re = PyException::runtime_error("generator raised StopIteration");
+                    re.cause = Some(Box::new(e.clone()));
+                    re.context = Some(Box::new(e));
+                    re.suppress_context = true;
+                    Err(re)
+                }
                 Err(e) => Err(e),
             }
         }

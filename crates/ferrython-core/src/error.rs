@@ -257,6 +257,8 @@ pub struct PyException {
     pub cause: Option<Box<PyException>>,
     /// Implicit exception context (exception active when this was raised). Maps to __context__.
     pub context: Option<Box<PyException>>,
+    /// Whether __context__ should be suppressed in tracebacks. Maps to __suppress_context__.
+    pub suppress_context: bool,
     /// Value carried by StopIteration (generator return value).
     pub value: Option<PyObjectRef>,
     /// OSError details: (errno, strerror, filename) — populated by `from_io_error`.
@@ -281,10 +283,10 @@ pub struct TracebackEntry {
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<CompactString>) -> Self {
-        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
+        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, suppress_context: false, value: None, os_error_info: None }
     }
     pub fn with_original(kind: ExceptionKind, message: impl Into<CompactString>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
+        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, suppress_context: false, value: None, os_error_info: None }
     }
     /// Ensure this exception has an `original` ExceptionInstance object.
     /// Creates one from `kind`/`message` if absent.

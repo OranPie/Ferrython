@@ -910,6 +910,7 @@ pub struct PropertyData {
 #[derive(Clone, Debug)]
 pub struct NativeFunctionData {
     pub name: CompactString,
+    pub module: CompactString,
     pub func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
 }
 

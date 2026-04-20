@@ -6919,6 +6919,24 @@ impl VirtualMachine {
                             Some(Some(v))
                         }
                     }
+                    IteratorData::Str { chars, index } => {
+                        if *index < chars.len() {
+                            let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
+                            *index += 1;
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    IteratorData::DictKeys { keys, index } => {
+                        if *index < keys.len() {
+                            let v = keys[*index].clone();
+                            *index += 1;
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
                     _ => None,
                 }
             }

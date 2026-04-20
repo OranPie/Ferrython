@@ -44,7 +44,7 @@ fn traceback_format_exc(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some((kind, message, tb_entries)) = exc_info {
         let exc = PyException {
             kind, message, original: None,
-            traceback: tb_entries, cause: None, context: None, value: None, os_error_info: None,
+            traceback: tb_entries, cause: None, context: None, suppress_context: false, value: None, os_error_info: None,
         };
         Ok(PyObject::str_val(CompactString::from(crate::format_traceback(&exc))))
     } else {
@@ -144,7 +144,7 @@ fn traceback_print_exc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some((kind, message, tb_entries)) = exc_info {
         let exc = PyException {
             kind, message, original: None,
-            traceback: tb_entries, cause: None, context: None, value: None, os_error_info: None,
+            traceback: tb_entries, cause: None, context: None, suppress_context: false, value: None, os_error_info: None,
         };
         let text = crate::format_traceback(&exc);
         write_to_file_or_stderr(&file_obj, &text);

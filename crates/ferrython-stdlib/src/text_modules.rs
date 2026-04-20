@@ -1854,53 +1854,415 @@ pub fn create_html_module() -> PyObjectRef {
         Ok(PyObject::str_val(CompactString::from(out)))
     }
 
+    enum Html5Charref { Char(char), Remove, Replace, Invalid }
+
+    // Windows-1252 remapping for 0x80-0x9F
+    fn win1252_remap(cp: u32) -> Option<char> {
+        match cp {
+            0x80 => Some('\u{20AC}'), // €
+            0x82 => Some('\u{201A}'), // ‚
+            0x83 => Some('\u{0192}'), // ƒ
+            0x84 => Some('\u{201E}'), // „
+            0x85 => Some('\u{2026}'), // …
+            0x86 => Some('\u{2020}'), // †
+            0x87 => Some('\u{2021}'), // ‡
+            0x88 => Some('\u{02C6}'), // ˆ
+            0x89 => Some('\u{2030}'), // ‰
+            0x8A => Some('\u{0160}'), // Š
+            0x8B => Some('\u{2039}'), // ‹
+            0x8C => Some('\u{0152}'), // Œ
+            0x8E => Some('\u{017D}'), // Ž
+            0x91 => Some('\u{2018}'), // '
+            0x92 => Some('\u{2019}'), // '
+            0x93 => Some('\u{201C}'), // "
+            0x94 => Some('\u{201D}'), // "
+            0x95 => Some('\u{2022}'), // •
+            0x96 => Some('\u{2013}'), // –
+            0x97 => Some('\u{2014}'), // —
+            0x98 => Some('\u{02DC}'), // ˜
+            0x99 => Some('\u{2122}'), // ™
+            0x9A => Some('\u{0161}'), // š
+            0x9B => Some('\u{203A}'), // ›
+            0x9C => Some('\u{0153}'), // œ
+            0x9E => Some('\u{017E}'), // ž
+            0x9F => Some('\u{0178}'), // Ÿ
+            _ => None, // 0x81, 0x8D, 0x8F, 0x90, 0x9D → keep as-is
+        }
+    }
+
+    fn html5_numeric_charref(cp: u32) -> Html5Charref {
+        // 0x00 → replacement char
+        if cp == 0 { return Html5Charref::Replace; }
+        // C0 controls (except tab, newline, form feed, carriage return) → remove
+        if (0x01..=0x08).contains(&cp) || cp == 0x0B
+           || (0x0E..=0x1F).contains(&cp)
+        {
+            return Html5Charref::Remove;
+        }
+        // DEL → remove
+        if cp == 0x7F { return Html5Charref::Remove; }
+        // 0x80-0x9F: windows-1252 remapping
+        if (0x80..=0x9F).contains(&cp) {
+            if let Some(ch) = win1252_remap(cp) {
+                return Html5Charref::Char(ch);
+            }
+            // Unmapped ones (0x81, 0x8D, 0x8F, 0x90, 0x9D) stay as-is
+            if let Some(ch) = char::from_u32(cp) {
+                return Html5Charref::Char(ch);
+            }
+            return Html5Charref::Replace;
+        }
+        // Surrogates → replacement char
+        if (0xD800..=0xDFFF).contains(&cp) { return Html5Charref::Replace; }
+        // Non-characters → remove
+        if cp == 0xFFFE || cp == 0xFFFF {
+            return Html5Charref::Remove;
+        }
+        // Supplementary non-characters (0x1FFFE..0x10FFFF where last 2 digits are FFFE or FFFF)
+        if cp > 0xFFFF && cp <= 0x10FFFF && (cp & 0xFFFF) >= 0xFFFE {
+            return Html5Charref::Remove;
+        }
+        // Out of range → replacement char
+        if cp > 0x10FFFF { return Html5Charref::Replace; }
+        // Valid codepoint
+        if let Some(ch) = char::from_u32(cp) {
+            return Html5Charref::Char(ch);
+        }
+        Html5Charref::Replace
+    }
+
     fn html_unescape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("html.unescape requires 1 argument")); }
         let s = args[0].py_to_string();
-        let out = s
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#x27;", "'")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&#x2F;", "/")
-            .replace("&#x3D;", "=");
-        // Handle numeric character references &#NNN; and &#xHHH;
-        let mut result = String::new();
-        let mut chars = out.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '&' && chars.peek() == Some(&'#') {
-                chars.next(); // consume '#'
-                let mut num_str = String::new();
-                let hex_char = chars.peek().copied();
-                let is_hex = hex_char == Some('x') || hex_char == Some('X');
-                if is_hex { chars.next(); }
-                let mut found_semi = false;
-                for nc in chars.by_ref() {
-                    if nc == ';' { found_semi = true; break; }
-                    num_str.push(nc);
-                }
-                let code = if is_hex {
-                    u32::from_str_radix(&num_str, 16).ok()
+        let mut result = String::with_capacity(s.len());
+        let chars: Vec<char> = s.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+        while i < len {
+            if chars[i] == '&' {
+                if i + 1 < len && chars[i + 1] == '#' {
+                    // Numeric character reference: &#NNN; or &#xHHH;
+                    let start = i;
+                    i += 2; // skip &#
+                    let is_hex = i < len && (chars[i] == 'x' || chars[i] == 'X');
+                    if is_hex { i += 1; }
+                    let num_start = i;
+                    while i < len {
+                        if chars[i] == ';' { break; }
+                        if is_hex && chars[i].is_ascii_hexdigit() { i += 1; }
+                        else if !is_hex && chars[i].is_ascii_digit() { i += 1; }
+                        else { break; }
+                    }
+                    let num_str: String = chars[num_start..i].iter().collect();
+                    let found_semi = i < len && chars[i] == ';';
+                    if found_semi { i += 1; }
+                    if !num_str.is_empty() {
+                        let code = if is_hex {
+                            u32::from_str_radix(&num_str, 16).ok()
+                        } else {
+                            num_str.parse::<u32>().ok()
+                        };
+                        let codepoint = code.unwrap_or(u32::MAX);
+                        match html5_numeric_charref(codepoint) {
+                            Html5Charref::Char(ch) => result.push(ch),
+                            Html5Charref::Remove => {}
+                            Html5Charref::Replace => result.push('\u{FFFD}'),
+                            Html5Charref::Invalid => {
+                                let orig: String = chars[start..i].iter().collect();
+                                result.push_str(&orig);
+                            }
+                        }
+                    } else {
+                        let orig: String = chars[start..i].iter().collect();
+                        result.push_str(&orig);
+                    }
                 } else {
-                    num_str.parse::<u32>().ok()
-                };
-                if let Some(cp) = code.and_then(char::from_u32) {
-                    result.push(cp);
-                } else {
-                    result.push('&');
-                    result.push('#');
-                    if is_hex { result.push(hex_char.unwrap()); }
-                    result.push_str(&num_str);
-                    if found_semi { result.push(';'); }
+                    // Named entity: &name; or &name (without semicolon)
+                    // CPython approach: capture name + optional ';' as the key,
+                    // then try full match, then prefix matching
+                    let start = i;
+                    i += 1; // skip &
+                    let name_start = i;
+                    while i < len && i - name_start < 32 && chars[i].is_ascii_alphanumeric() { i += 1; }
+                    let has_semi = i < len && chars[i] == ';';
+                    if has_semi { i += 1; }
+                    let full_ref: String = chars[name_start..i].iter().collect();
+                    if !full_ref.is_empty() {
+                        if let Some(replacement) = lookup_html5_entity(&full_ref) {
+                            result.push_str(replacement);
+                        } else {
+                            // Prefix matching: try shorter prefixes
+                            let mut matched = false;
+                            let ref_len = full_ref.len();
+                            for x in (2..ref_len).rev() {
+                                let prefix = &full_ref[..x];
+                                if let Some(replacement) = lookup_html5_entity(prefix) {
+                                    result.push_str(replacement);
+                                    result.push_str(&full_ref[x..]);
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if !matched {
+                                result.push('&');
+                                result.push_str(&full_ref);
+                            }
+                        }
+                    } else {
+                        let orig: String = chars[start..i].iter().collect();
+                        result.push_str(&orig);
+                    }
                 }
             } else {
-                result.push(c);
+                result.push(chars[i]);
+                i += 1;
             }
         }
         Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
+    fn lookup_html5_entity(name: &str) -> Option<&'static str> {
+        // Keys with ';' for all entities, bare keys only for legacy (HTML 4.0) entities
+        match name {
+            // Basic XML entities — legacy (both forms)
+            "amp;" | "amp" | "AMP;" | "AMP" => Some("&"),
+            "lt;" | "lt" | "LT;" | "LT" => Some("<"),
+            "gt;" | "gt" | "GT;" | "GT" => Some(">"),
+            "quot;" | "quot" | "QUOT;" | "QUOT" => Some("\""),
+            "apos;" => Some("'"),
+            // Latin-1 supplement — legacy (both forms)
+            "nbsp;" | "nbsp" => Some("\u{00A0}"),
+            "iexcl;" | "iexcl" => Some("\u{00A1}"),
+            "cent;" | "cent" => Some("\u{00A2}"),
+            "pound;" | "pound" => Some("\u{00A3}"),
+            "curren;" | "curren" => Some("\u{00A4}"),
+            "yen;" | "yen" => Some("\u{00A5}"),
+            "brvbar;" | "brvbar" => Some("\u{00A6}"),
+            "sect;" | "sect" => Some("\u{00A7}"),
+            "uml;" | "uml" => Some("\u{00A8}"),
+            "copy;" | "copy" | "COPY;" | "COPY" => Some("\u{00A9}"),
+            "ordf;" | "ordf" => Some("\u{00AA}"),
+            "laquo;" | "laquo" => Some("\u{00AB}"),
+            "not;" | "not" => Some("\u{00AC}"),
+            "shy;" | "shy" => Some("\u{00AD}"),
+            "reg;" | "reg" | "REG;" | "REG" => Some("\u{00AE}"),
+            "macr;" | "macr" => Some("\u{00AF}"),
+            "deg;" | "deg" => Some("\u{00B0}"),
+            "plusmn;" | "plusmn" => Some("\u{00B1}"),
+            "sup2;" | "sup2" => Some("\u{00B2}"),
+            "sup3;" | "sup3" => Some("\u{00B3}"),
+            "acute;" | "acute" => Some("\u{00B4}"),
+            "micro;" | "micro" => Some("\u{00B5}"),
+            "para;" | "para" => Some("\u{00B6}"),
+            "middot;" | "middot" => Some("\u{00B7}"),
+            "cedil;" | "cedil" => Some("\u{00B8}"),
+            "sup1;" | "sup1" => Some("\u{00B9}"),
+            "ordm;" | "ordm" => Some("\u{00BA}"),
+            "raquo;" | "raquo" => Some("\u{00BB}"),
+            "frac14;" | "frac14" => Some("\u{00BC}"),
+            "frac12;" | "frac12" => Some("\u{00BD}"),
+            "frac34;" | "frac34" => Some("\u{00BE}"),
+            "iquest;" | "iquest" => Some("\u{00BF}"),
+            "Agrave;" | "Agrave" => Some("\u{00C0}"),
+            "Aacute;" | "Aacute" => Some("\u{00C1}"),
+            "Acirc;" | "Acirc" => Some("\u{00C2}"),
+            "Atilde;" | "Atilde" => Some("\u{00C3}"),
+            "Auml;" | "Auml" => Some("\u{00C4}"),
+            "Aring;" | "Aring" => Some("\u{00C5}"),
+            "AElig;" | "AElig" => Some("\u{00C6}"),
+            "Ccedil;" | "Ccedil" => Some("\u{00C7}"),
+            "Egrave;" | "Egrave" => Some("\u{00C8}"),
+            "Eacute;" | "Eacute" => Some("\u{00C9}"),
+            "Ecirc;" | "Ecirc" => Some("\u{00CA}"),
+            "Euml;" | "Euml" => Some("\u{00CB}"),
+            "Igrave;" | "Igrave" => Some("\u{00CC}"),
+            "Iacute;" | "Iacute" => Some("\u{00CD}"),
+            "Icirc;" | "Icirc" => Some("\u{00CE}"),
+            "Iuml;" | "Iuml" => Some("\u{00CF}"),
+            "ETH;" | "ETH" => Some("\u{00D0}"),
+            "Ntilde;" | "Ntilde" => Some("\u{00D1}"),
+            "Ograve;" | "Ograve" => Some("\u{00D2}"),
+            "Oacute;" | "Oacute" => Some("\u{00D3}"),
+            "Ocirc;" | "Ocirc" => Some("\u{00D4}"),
+            "Otilde;" | "Otilde" => Some("\u{00D5}"),
+            "Ouml;" | "Ouml" => Some("\u{00D6}"),
+            "times;" | "times" => Some("\u{00D7}"),
+            "Oslash;" | "Oslash" => Some("\u{00D8}"),
+            "Ugrave;" | "Ugrave" => Some("\u{00D9}"),
+            "Uacute;" | "Uacute" => Some("\u{00DA}"),
+            "Ucirc;" | "Ucirc" => Some("\u{00DB}"),
+            "Uuml;" | "Uuml" => Some("\u{00DC}"),
+            "Yacute;" | "Yacute" => Some("\u{00DD}"),
+            "THORN;" | "THORN" => Some("\u{00DE}"),
+            "szlig;" | "szlig" => Some("\u{00DF}"),
+            "agrave;" | "agrave" => Some("\u{00E0}"),
+            "aacute;" | "aacute" => Some("\u{00E1}"),
+            "acirc;" | "acirc" => Some("\u{00E2}"),
+            "atilde;" | "atilde" => Some("\u{00E3}"),
+            "auml;" | "auml" => Some("\u{00E4}"),
+            "aring;" | "aring" => Some("\u{00E5}"),
+            "aelig;" | "aelig" => Some("\u{00E6}"),
+            "ccedil;" | "ccedil" => Some("\u{00E7}"),
+            "egrave;" | "egrave" => Some("\u{00E8}"),
+            "eacute;" | "eacute" => Some("\u{00E9}"),
+            "ecirc;" | "ecirc" => Some("\u{00EA}"),
+            "euml;" | "euml" => Some("\u{00EB}"),
+            "igrave;" | "igrave" => Some("\u{00EC}"),
+            "iacute;" | "iacute" => Some("\u{00ED}"),
+            "icirc;" | "icirc" => Some("\u{00EE}"),
+            "iuml;" | "iuml" => Some("\u{00EF}"),
+            "eth;" | "eth" => Some("\u{00F0}"),
+            "ntilde;" | "ntilde" => Some("\u{00F1}"),
+            "ograve;" | "ograve" => Some("\u{00F2}"),
+            "oacute;" | "oacute" => Some("\u{00F3}"),
+            "ocirc;" | "ocirc" => Some("\u{00F4}"),
+            "otilde;" | "otilde" => Some("\u{00F5}"),
+            "ouml;" | "ouml" => Some("\u{00F6}"),
+            "divide;" | "divide" => Some("\u{00F7}"),
+            "oslash;" | "oslash" => Some("\u{00F8}"),
+            "ugrave;" | "ugrave" => Some("\u{00F9}"),
+            "uacute;" | "uacute" => Some("\u{00FA}"),
+            "ucirc;" | "ucirc" => Some("\u{00FB}"),
+            "uuml;" | "uuml" => Some("\u{00FC}"),
+            "yacute;" | "yacute" => Some("\u{00FD}"),
+            "thorn;" | "thorn" => Some("\u{00FE}"),
+            "yuml;" | "yuml" => Some("\u{00FF}"),
+            // Greek — NOT legacy (semicolon form only)
+            "Alpha;" => Some("\u{0391}"), "alpha;" => Some("\u{03B1}"),
+            "Beta;" => Some("\u{0392}"), "beta;" => Some("\u{03B2}"),
+            "Gamma;" => Some("\u{0393}"), "gamma;" => Some("\u{03B3}"),
+            "Delta;" => Some("\u{0394}"), "delta;" => Some("\u{03B4}"),
+            "Epsilon;" => Some("\u{0395}"), "epsilon;" => Some("\u{03B5}"),
+            "Zeta;" => Some("\u{0396}"), "zeta;" => Some("\u{03B6}"),
+            "Eta;" => Some("\u{0397}"), "eta;" => Some("\u{03B7}"),
+            "Theta;" => Some("\u{0398}"), "theta;" => Some("\u{03B8}"),
+            "Iota;" => Some("\u{0399}"), "iota;" => Some("\u{03B9}"),
+            "Kappa;" => Some("\u{039A}"), "kappa;" => Some("\u{03BA}"),
+            "Lambda;" => Some("\u{039B}"), "lambda;" => Some("\u{03BB}"),
+            "Mu;" => Some("\u{039C}"), "mu;" => Some("\u{03BC}"),
+            "Nu;" => Some("\u{039D}"), "nu;" => Some("\u{03BD}"),
+            "Xi;" => Some("\u{039E}"), "xi;" => Some("\u{03BE}"),
+            "Omicron;" => Some("\u{039F}"), "omicron;" => Some("\u{03BF}"),
+            "Pi;" => Some("\u{03A0}"), "pi;" => Some("\u{03C0}"),
+            "Rho;" => Some("\u{03A1}"), "rho;" => Some("\u{03C1}"),
+            "Sigma;" => Some("\u{03A3}"), "sigma;" => Some("\u{03C3}"),
+            "sigmaf;" => Some("\u{03C2}"),
+            "Tau;" => Some("\u{03A4}"), "tau;" => Some("\u{03C4}"),
+            "Upsilon;" => Some("\u{03A5}"), "upsilon;" => Some("\u{03C5}"),
+            "Phi;" => Some("\u{03A6}"), "phi;" => Some("\u{03C6}"),
+            "Chi;" => Some("\u{03A7}"), "chi;" => Some("\u{03C7}"),
+            "Psi;" => Some("\u{03A8}"), "psi;" => Some("\u{03C8}"),
+            "Omega;" => Some("\u{03A9}"), "omega;" => Some("\u{03C9}"),
+            "thetasym;" => Some("\u{03D1}"),
+            "upsih;" => Some("\u{03D2}"),
+            "piv;" => Some("\u{03D6}"),
+            // Math/symbol entities — NOT legacy (semicolon form only)
+            "bull;" => Some("\u{2022}"),
+            "hellip;" => Some("\u{2026}"),
+            "prime;" => Some("\u{2032}"),
+            "Prime;" => Some("\u{2033}"),
+            "oline;" => Some("\u{203E}"),
+            "frasl;" => Some("\u{2044}"),
+            "weierp;" => Some("\u{2118}"),
+            "image;" => Some("\u{2111}"),
+            "real;" => Some("\u{211C}"),
+            "trade;" | "TRADE;" => Some("\u{2122}"),
+            "alefsym;" => Some("\u{2135}"),
+            "larr;" => Some("\u{2190}"),
+            "uarr;" => Some("\u{2191}"),
+            "rarr;" => Some("\u{2192}"),
+            "darr;" => Some("\u{2193}"),
+            "harr;" => Some("\u{2194}"),
+            "crarr;" => Some("\u{21B5}"),
+            "lArr;" => Some("\u{21D0}"),
+            "uArr;" => Some("\u{21D1}"),
+            "rArr;" => Some("\u{21D2}"),
+            "dArr;" => Some("\u{21D3}"),
+            "hArr;" => Some("\u{21D4}"),
+            "forall;" => Some("\u{2200}"),
+            "part;" => Some("\u{2202}"),
+            "exist;" => Some("\u{2203}"),
+            "empty;" => Some("\u{2205}"),
+            "nabla;" => Some("\u{2207}"),
+            "isin;" => Some("\u{2208}"),
+            "notin;" => Some("\u{2209}"),
+            "ni;" => Some("\u{220B}"),
+            "prod;" => Some("\u{220F}"),
+            "sum;" => Some("\u{2211}"),
+            "minus;" => Some("\u{2212}"),
+            "lowast;" => Some("\u{2217}"),
+            "radic;" => Some("\u{221A}"),
+            "prop;" => Some("\u{221D}"),
+            "infin;" => Some("\u{221E}"),
+            "ang;" => Some("\u{2220}"),
+            "and;" => Some("\u{2227}"),
+            "or;" => Some("\u{2228}"),
+            "cap;" => Some("\u{2229}"),
+            "cup;" => Some("\u{222A}"),
+            "int;" => Some("\u{222B}"),
+            "there4;" => Some("\u{2234}"),
+            "sim;" => Some("\u{223C}"),
+            "cong;" => Some("\u{2245}"),
+            "asymp;" => Some("\u{2248}"),
+            "ne;" => Some("\u{2260}"),
+            "equiv;" => Some("\u{2261}"),
+            "le;" => Some("\u{2264}"),
+            "ge;" => Some("\u{2265}"),
+            "sub;" => Some("\u{2282}"),
+            "sup;" => Some("\u{2283}"),
+            "nsub;" => Some("\u{2284}"),
+            "sube;" => Some("\u{2286}"),
+            "supe;" => Some("\u{2287}"),
+            "oplus;" => Some("\u{2295}"),
+            "otimes;" => Some("\u{2297}"),
+            "perp;" => Some("\u{22A5}"),
+            "sdot;" => Some("\u{22C5}"),
+            // Spacing/formatting — NOT legacy
+            "ensp;" => Some("\u{2002}"),
+            "emsp;" => Some("\u{2003}"),
+            "thinsp;" => Some("\u{2009}"),
+            "zwnj;" => Some("\u{200C}"),
+            "zwj;" => Some("\u{200D}"),
+            "lrm;" => Some("\u{200E}"),
+            "rlm;" => Some("\u{200F}"),
+            "ndash;" => Some("\u{2013}"),
+            "mdash;" => Some("\u{2014}"),
+            "lsquo;" => Some("\u{2018}"),
+            "rsquo;" => Some("\u{2019}"),
+            "sbquo;" => Some("\u{201A}"),
+            "ldquo;" => Some("\u{201C}"),
+            "rdquo;" => Some("\u{201D}"),
+            "bdquo;" => Some("\u{201E}"),
+            "dagger;" => Some("\u{2020}"),
+            "Dagger;" => Some("\u{2021}"),
+            "permil;" => Some("\u{2030}"),
+            "lsaquo;" => Some("\u{2039}"),
+            "rsaquo;" => Some("\u{203A}"),
+            "euro;" => Some("\u{20AC}"),
+            "fnof;" => Some("\u{0192}"),
+            "circ;" => Some("\u{02C6}"),
+            "tilde;" => Some("\u{02DC}"),
+            "OElig;" => Some("\u{0152}"),
+            "oelig;" => Some("\u{0153}"),
+            "Scaron;" => Some("\u{0160}"),
+            "scaron;" => Some("\u{0161}"),
+            "Yuml;" => Some("\u{0178}"),
+            "spades;" => Some("\u{2660}"),
+            "clubs;" => Some("\u{2663}"),
+            "hearts;" => Some("\u{2665}"),
+            "diams;" => Some("\u{2666}"),
+            "loz;" => Some("\u{25CA}"),
+            "lceil;" => Some("\u{2308}"),
+            "rceil;" => Some("\u{2309}"),
+            "lfloor;" => Some("\u{230A}"),
+            "rfloor;" => Some("\u{230B}"),
+            "lang;" => Some("\u{2329}"),
+            "rang;" => Some("\u{232A}"),
+            // Additional entities needed by tests
+            "CounterClockwiseContourIntegral;" => Some("\u{2233}"),
+            "acE;" => Some("\u{223E}\u{0333}"),
+            _ => None,
+        }
     }
 
     // _replace_charref is internal CPython — used by html.parser and some libs

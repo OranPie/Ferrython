@@ -1516,7 +1516,19 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if f.defaults.is_empty() { Some(PyObject::none()) }
                         else { Some(PyObject::tuple(f.defaults.clone())) }
                     }
-                    "__module__" => Some(PyObject::str_val(intern_or_new("__main__"))),
+                    "__module__" => {
+                        // Check attrs first (set explicitly e.g. by functools.wraps)
+                        if let Some(v) = f.attrs.read().get("__module__").cloned() {
+                            return Some(v);
+                        }
+                        // Look up __name__ from the function's globals
+                        let globals = f.globals.read();
+                        if let Some(mod_name) = globals.get("__name__") {
+                            Some(mod_name.clone())
+                        } else {
+                            Some(PyObject::str_val(intern_or_new("__main__")))
+                        }
+                    }
                     "__doc__" => {
                         // Check attrs first (set by functools.wraps etc.)
                         if let Some(doc) = f.attrs.read().get("__doc__").cloned() {
@@ -1596,7 +1608,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             PyObjectPayload::NativeFunction(nf) => match name {
                 "__name__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
                 "__qualname__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
-                "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+                "__module__" => Some(PyObject::str_val(if nf.module.is_empty() { CompactString::from("builtins") } else { nf.module.clone() })),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
                 "__call__" => Some(obj.clone()),

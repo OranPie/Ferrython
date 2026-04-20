@@ -259,6 +259,8 @@ def import_module(name, deprecated=False, *, required_on=()):
 def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
     """Import a fresh copy of a module, temporarily blocking others."""
     import importlib
+    # Remove the target module and fresh modules so they get re-imported
+    saved_name = sys.modules.pop(name, _MISSING)
     for n in fresh:
         sys.modules.pop(n, None)
     blocked_saved = {}
@@ -273,6 +275,9 @@ def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = blocked_saved[n]
+        # Restore original module if it was cached (but return fresh one)
+        if saved_name is not _MISSING:
+            sys.modules[name] = saved_name
     return mod
 
 # ---------------------------------------------------------------------------

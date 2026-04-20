@@ -752,47 +752,38 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
     match (type_name, method_name) {
         ("dict", "fromkeys") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("dict.fromkeys"),
-            func: builtin_dict_fromkeys,
-        })))),
+            func: builtin_dict_fromkeys, module: CompactString::from(""), })))),
         ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("int.from_bytes"),
-            func: builtin_int_from_bytes,
-        })))),
+            func: builtin_int_from_bytes, module: CompactString::from(""), })))),
         ("str", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("str.maketrans"),
-            func: builtin_str_maketrans,
-        })))),
+            func: builtin_str_maketrans, module: CompactString::from(""), })))),
         ("bytes", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("bytes.fromhex"),
-            func: builtin_bytes_fromhex,
-        })))),
+            func: builtin_bytes_fromhex, module: CompactString::from(""), })))),
         ("bytes", "maketrans") | ("bytearray", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("bytes.maketrans"),
-            func: builtin_bytes_maketrans,
-        })))),
+            func: builtin_bytes_maketrans, module: CompactString::from(""), })))),
         ("object", "__getattribute__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("object.__getattribute__"),
-            func: builtin_object_getattribute,
-        })))),
+            func: builtin_object_getattribute, module: CompactString::from(""), })))),
         ("object", "__setattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("object.__setattr__"),
-            func: builtin_object_setattr,
-        })))),
+            func: builtin_object_setattr, module: CompactString::from(""), })))),
         ("object", "__delattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("object.__delattr__"),
-            func: builtin_object_delattr,
-        })))),
+            func: builtin_object_delattr, module: CompactString::from(""), })))),
         ("type", "__new__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("type.__new__"),
-            func: builtin_type,
-        })))),
+            func: builtin_type, module: CompactString::from(""), })))),
         ("float", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("float.fromhex"),
-            func: builtin_float_fromhex,
-        })))),
+            func: builtin_float_fromhex, module: CompactString::from(""), })))),
         // property descriptor methods: property.__get__(self, obj, type)
         ("property", "__get__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("property.__get__"),
+            module: CompactString::from(""),
             func: |args: &[PyObjectRef]| {
                 // property.__get__(self, obj, objtype=None)
                 // self is the property object, obj is the instance
@@ -835,6 +826,7 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
         })))),
         ("property", "__init__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
             name: CompactString::from("property.__init__"),
+            module: CompactString::from(""),
             func: |args: &[PyObjectRef]| {
                 // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
                 // Store fget/fset/fdel on the instance so subclasses work

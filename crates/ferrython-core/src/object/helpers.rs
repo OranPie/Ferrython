@@ -1050,10 +1050,21 @@ pub type BuiltinFn = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;
 pub fn make_module(name: &str, attrs: Vec<(&str, PyObjectRef)>) -> PyObjectRef {
     let mut map = IndexMap::new();
     map.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
+    let mod_name = CompactString::from(name);
     for (k, v) in attrs {
+        // Set __module__ on native functions so they report the correct module
+        if let PyObjectPayload::NativeFunction(ref nf) = v.payload {
+            if nf.module.is_empty() {
+                let mut nf2 = nf.as_ref().clone();
+                nf2.module = mod_name.clone();
+                let v2 = PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(nf2)));
+                map.insert(CompactString::from(k), v2);
+                continue;
+            }
+        }
         map.insert(CompactString::from(k), v);
     }
-    PyObject::module_with_attrs(CompactString::from(name), map)
+    PyObject::module_with_attrs(mod_name, map)
 }
 
 /// Wrap a bare function pointer as a NativeFunction object.
