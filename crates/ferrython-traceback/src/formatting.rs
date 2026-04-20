@@ -13,6 +13,7 @@
 
 use ferrython_bytecode::code::CodeObject;
 use ferrython_core::error::{PyException, TracebackEntry};
+use ferrython_core::object::{PyObjectPayload, PyObjectMethods};
 
 use crate::source_cache::SourceCache;
 
@@ -32,10 +33,62 @@ pub fn resolve_lineno(code: &CodeObject, instruction_index: usize) -> u32 {
 
 /// Format just the exception line: "ExceptionType: message"
 pub fn format_exception_only(exc: &PyException) -> String {
-    if exc.message.is_empty() {
-        format!("{}", exc.kind)
+    // Use the class name from exc.original when available (for user-defined exceptions)
+    let type_name: String = if let Some(ref original) = exc.original {
+        match &original.payload {
+            PyObjectPayload::Instance(inst) => {
+                // Get the class name from the Instance's class data
+                let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    cd.name.to_string()
+                } else {
+                    original.type_name().to_string()
+                };
+                // Check for module qualifier
+                if let Some(module) = original.get_attr("__module__") {
+                    let mod_str = module.py_to_string();
+                    if !mod_str.is_empty() && mod_str != "builtins" && mod_str != "__main__" {
+                        format!("{}.{}", mod_str, class_name)
+                    } else {
+                        class_name
+                    }
+                } else {
+                    class_name
+                }
+            }
+            _ => format!("{}", exc.kind),
+        }
     } else {
-        format!("{}: {}", exc.kind, exc.message)
+        format!("{}", exc.kind)
+    };
+
+    // Get the message, deriving from args if needed
+    let message = if !exc.message.is_empty() {
+        exc.message.to_string()
+    } else if let Some(ref original) = exc.original {
+        // Try to get message from args attribute (CPython behavior)
+        if let Some(args) = original.get_attr("args") {
+            if let PyObjectPayload::Tuple(items) = &args.payload {
+                if items.len() == 1 {
+                    items[0].py_to_string()
+                } else if items.is_empty() {
+                    String::new()
+                } else {
+                    args.repr()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    if message.is_empty() || message == "None" {
+        type_name
+    } else {
+        format!("{}: {}", type_name, message)
     }
 }
 

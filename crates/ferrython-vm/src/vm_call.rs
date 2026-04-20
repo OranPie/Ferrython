@@ -499,6 +499,23 @@ impl VirtualMachine {
                 && cd.builtin_base_name.is_none()
             {
                 let instance = PyObject::instance(cls.clone());
+                // For exception subclasses, set args/message before __init__
+                // (inherited __init__ from Exception/object won't set these on Instance)
+                if cd.is_exception_subclass && !pos_args.is_empty() {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if pos_args.len() == 1 {
+                            attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                        }
+                        attrs.insert(CompactString::from("args"),
+                            PyObject::tuple(pos_args.clone()));
+                    }
+                } else if cd.is_exception_subclass {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        inst.attrs.write().insert(CompactString::from("args"),
+                            PyObject::tuple(vec![]));
+                    }
+                }
                 // Use cached __init__ — unsafe data_ptr avoids RefCell borrow overhead
                 let init_fn = {
                     let cached_ptr = unsafe { &*cd.cached_init.data_ptr() };
@@ -592,16 +609,6 @@ impl VirtualMachine {
                                 "__init__() should return None, not '".to_string()
                                     + init_result.type_name() + "'"
                             ));
-                        }
-                    }
-                } else if cd.is_exception_subclass {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        let mut attrs = inst.attrs.write();
-                        if !attrs.contains_key("args") {
-                            if pos_args.len() == 1 {
-                                attrs.insert(CompactString::from("message"), pos_args[0].clone());
-                            }
-                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
                         }
                     }
                 }

@@ -308,41 +308,6 @@ impl VirtualMachine {
 
     fn exec_raise_varargs(&mut self, argc: u32) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
-        let raise_exc = |exc: &PyObjectRef| -> PyException {
-            match &exc.payload {
-                PyObjectPayload::ExceptionInstance(ei) => {
-                    PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
-                }
-                PyObjectPayload::ExceptionType(kind) => {
-                    PyException::new(*kind, "")
-                }
-                PyObjectPayload::Instance(inst) => {
-                    let kind = Self::find_exception_kind(&inst.class);
-                    // Derive message from args (CPython: str(exc) uses args)
-                    let msg = if let Some(a) = exc.get_attr("args") {
-                        if let PyObjectPayload::Tuple(items) = &a.payload {
-                            if items.len() == 1 {
-                                items[0].py_to_string()
-                            } else if items.is_empty() {
-                                String::new()
-                            } else {
-                                a.repr()
-                            }
-                        } else {
-                            exc.py_to_string()
-                        }
-                    } else {
-                        exc.py_to_string()
-                    };
-                    PyException::with_original(kind, msg, exc.clone())
-                }
-                PyObjectPayload::Class(_) => {
-                    let kind = Self::find_exception_kind(exc);
-                    PyException::new(kind, "")
-                }
-                _ => PyException::runtime_error(exc.py_to_string()),
-            }
-        };
         match argc {
             0 => {
                 // Bare raise: re-raise the currently active exception
@@ -352,17 +317,23 @@ impl VirtualMachine {
                 return Err(PyException::runtime_error("No active exception to re-raise"));
             }
             1 => {
-                let exc = frame.pop();
-                let py_exc = raise_exc(&exc);
-                // Context chaining (__context__) is deferred to the unwind
-                // path in run_vm() — avoids expensive cloning for exceptions
-                // that are immediately caught in the same frame.
+                let mut exc = frame.pop();
+                // `raise SomeClass` → instantiate the class first (CPython: raise X ≡ raise X())
+                if matches!(&exc.payload, PyObjectPayload::Class(_)) {
+                    exc = self.instantiate_class(&exc, vec![], vec![])
+                        .map_err(|e| e)?;
+                }
+                let py_exc = Self::raise_exc(&exc);
                 return Err(py_exc);
             }
             2 => {
                 let cause = frame.pop();
-                let exc = frame.pop();
-                let mut py_exc = raise_exc(&exc);
+                let mut exc = frame.pop();
+                // `raise SomeClass from cause` → instantiate first
+                if matches!(&exc.payload, PyObjectPayload::Class(_)) {
+                    exc = self.instantiate_class(&exc, vec![], vec![])?;
+                }
+                let mut py_exc = Self::raise_exc(&exc);
                 // `raise X from None` suppresses the cause
                 if matches!(cause.payload, PyObjectPayload::None) {
                     // Ensure we have an original ExceptionInstance to store attrs on
@@ -375,7 +346,12 @@ impl VirtualMachine {
                         }
                     }
                 } else {
-                    let cause_exc = raise_exc(&cause);
+                    let mut cause_obj = cause.clone();
+                    if matches!(&cause_obj.payload, PyObjectPayload::Class(_)) {
+                        cause_obj = self.instantiate_class(&cause_obj, vec![], vec![])
+                            .unwrap_or(cause_obj);
+                    }
+                    let cause_exc = Self::raise_exc(&cause_obj);
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
@@ -401,6 +377,44 @@ impl VirtualMachine {
                 return Err(py_exc);
             }
             _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),
+        }
+    }
+
+    /// Convert a Python exception object into a PyException.
+    /// Handles ExceptionInstance, ExceptionType, Instance (user-defined), and fallback.
+    fn raise_exc(exc: &PyObjectRef) -> PyException {
+        match &exc.payload {
+            PyObjectPayload::ExceptionInstance(ei) => {
+                PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
+            }
+            PyObjectPayload::ExceptionType(kind) => {
+                PyException::new(*kind, "")
+            }
+            PyObjectPayload::Instance(inst) => {
+                let kind = Self::find_exception_kind(&inst.class);
+                let msg = if let Some(a) = exc.get_attr("args") {
+                    if let PyObjectPayload::Tuple(items) = &a.payload {
+                        if items.len() == 1 {
+                            items[0].py_to_string()
+                        } else if items.is_empty() {
+                            String::new()
+                        } else {
+                            a.repr()
+                        }
+                    } else {
+                        exc.py_to_string()
+                    }
+                } else {
+                    exc.py_to_string()
+                };
+                PyException::with_original(kind, msg, exc.clone())
+            }
+            PyObjectPayload::Class(_) => {
+                // Should have been instantiated before reaching here
+                let kind = Self::find_exception_kind(exc);
+                PyException::new(kind, "")
+            }
+            _ => PyException::runtime_error(exc.py_to_string()),
         }
     }
 

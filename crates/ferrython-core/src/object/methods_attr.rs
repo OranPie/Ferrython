@@ -127,6 +127,25 @@ fn synthesize_object_method(name: &str) -> Option<PyObjectRef> {
         })),
         "__repr__" => Some(PyObject::native_function("__repr__", |args| {
             if args.is_empty() { return Err(PyException::type_error("__repr__ requires 1 argument")); }
+            // Exception subclasses: repr(e) = ClassName(args...)
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    if cd.is_exception_subclass {
+                        let attrs = inst.attrs.read();
+                        if let Some(exc_args) = attrs.get("args") {
+                            if let PyObjectPayload::Tuple(items) = &exc_args.payload {
+                                let inner: Vec<String> = items.iter().map(|i| i.repr()).collect();
+                                return Ok(PyObject::str_val(CompactString::from(
+                                    format!("{}({})", cd.name, inner.join(", "))
+                                )));
+                            }
+                        }
+                        return Ok(PyObject::str_val(CompactString::from(
+                            format!("{}()", cd.name)
+                        )));
+                    }
+                }
+            }
             let class_name = match &args[0].payload {
                 PyObjectPayload::Instance(inst) => {
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -141,6 +160,24 @@ fn synthesize_object_method(name: &str) -> Option<PyObjectRef> {
         })),
         "__str__" => Some(PyObject::native_function("__str__", |args| {
             if args.is_empty() { return Err(PyException::type_error("__str__ requires 1 argument")); }
+            // Exception subclasses: str(e) returns str(e.args[0]) or str(e.args)
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    if cd.is_exception_subclass {
+                        let attrs = inst.attrs.read();
+                        if let Some(exc_args) = attrs.get("args") {
+                            if let PyObjectPayload::Tuple(items) = &exc_args.payload {
+                                return match items.len() {
+                                    0 => Ok(PyObject::str_val(CompactString::from(""))),
+                                    1 => Ok(PyObject::str_val(CompactString::from(items[0].py_to_string()))),
+                                    _ => Ok(PyObject::str_val(CompactString::from(exc_args.py_to_string()))),
+                                };
+                            }
+                        }
+                        return Ok(PyObject::str_val(CompactString::from("")));
+                    }
+                }
+            }
             // object.__str__ delegates to __repr__
             if let Some(repr_fn) = args[0].get_attr("__repr__") {
                 return super::helpers::call_callable(&repr_fn, &[args[0].clone()]);

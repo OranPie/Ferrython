@@ -201,8 +201,18 @@ class DocTestRunner:
                     exec(example.source, test.globs)
                 got = sys.stdout.getvalue()
             except Exception as e:
-                got = "Traceback (most recent call last):\n    ...\n%s: %s\n" % (
-                    type(e).__name__, str(e))
+                exc_type = type(e)
+                exc_name = exc_type.__name__
+                # Module-qualify the exception name (CPython behavior)
+                exc_module = getattr(exc_type, '__module__', None)
+                if exc_module and exc_module not in ('builtins', '__main__'):
+                    exc_name = exc_module + '.' + exc_name
+                exc_msg = str(e)
+                if exc_msg:
+                    got = "Traceback (most recent call last):\n    ...\n%s: %s\n" % (
+                        exc_name, exc_msg)
+                else:
+                    got = "Traceback (most recent call last):\n    ...\n%s\n" % exc_name
             finally:
                 sys.stdout = old_stdout
 
