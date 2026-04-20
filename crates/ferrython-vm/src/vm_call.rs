@@ -126,8 +126,9 @@ impl VirtualMachine {
             }
             Ok(())
         } else {
-            print!("{}", text);
-            Ok(())
+            Err(PyException::attribute_error(
+                &format!("'{}' object has no attribute 'write'", target.type_name())
+            ))
         }
     }
 
@@ -1507,10 +1508,23 @@ impl VirtualMachine {
                             return Ok(PyObject::dict(new_fx_hashkey_map()));
                         }
                         "print" => {
-                            let sep = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
-                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| " ".to_string());
-                            let end = kwargs.iter().find(|(k, _)| k.as_str() == "end")
-                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| "\n".to_string());
+                            let sep_raw = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
+                                .map(|(_, v)| v.clone());
+                            let end_raw = kwargs.iter().find(|(k, _)| k.as_str() == "end")
+                                .map(|(_, v)| v.clone());
+                            // sep=None and end=None mean "use defaults"; non-str raises TypeError
+                            let sep = match &sep_raw {
+                                Some(v) if matches!(v.payload, PyObjectPayload::None) => " ".to_string(),
+                                Some(v) if matches!(v.payload, PyObjectPayload::Str(_)) => v.py_to_string(),
+                                Some(_) => return Err(PyException::type_error("sep must be None or a string, not int")),
+                                None => " ".to_string(),
+                            };
+                            let end = match &end_raw {
+                                Some(v) if matches!(v.payload, PyObjectPayload::None) => "\n".to_string(),
+                                Some(v) if matches!(v.payload, PyObjectPayload::Str(_)) => v.py_to_string(),
+                                Some(_) => return Err(PyException::type_error("end must be None or a string, not int")),
+                                None => "\n".to_string(),
+                            };
                             let file_obj = kwargs.iter().find(|(k, _)| k.as_str() == "file").map(|(_, v)| v.clone());
                             let flush = kwargs.iter().find(|(k, _)| k.as_str() == "flush")
                                 .map(|(_,v)| v.is_truthy()).unwrap_or(false);
