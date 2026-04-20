@@ -18,7 +18,6 @@ pub fn create_hashlib_module() -> PyObjectRef {
     let algos = vec![
         "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
         "sha3_224", "sha3_256", "sha3_384", "sha3_512",
-        "shake_128", "shake_256",
         "blake2b", "blake2s",
     ];
     let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos.iter()
@@ -35,8 +34,6 @@ pub fn create_hashlib_module() -> PyObjectRef {
         ("sha3_256", make_builtin(|args| make_hash_obj("sha3_256", args))),
         ("sha3_384", make_builtin(|args| make_hash_obj("sha3_384", args))),
         ("sha3_512", make_builtin(|args| make_hash_obj("sha3_512", args))),
-        ("shake_128", make_builtin(|args| make_hash_obj("shake_128", args))),
-        ("shake_256", make_builtin(|args| make_hash_obj("shake_256", args))),
         ("blake2b", make_builtin(|args| make_hash_obj("blake2b", args))),
         ("blake2s", make_builtin(|args| make_hash_obj("blake2s", args))),
         ("new", make_builtin(hashlib_new)),
@@ -63,35 +60,8 @@ fn compute_digest(name: &str, data: &[u8]) -> PyResult<(String, Vec<u8>)> {
         "sha3_512" | "sha3-512" => { let mut h = sha3::Sha3_512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
         "blake2b"  => { let mut h = blake2::Blake2b512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
         "blake2s"  => { let mut h = blake2::Blake2s256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "shake_128" | "shake_256" => {
-            // Default length for shake when no explicit length given
-            let len = if name == "shake_128" { 32 } else { 64 };
-            compute_shake_digest(name, data, len)
-        }
         _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
     }
-}
-
-/// Compute SHAKE XOF digest with variable output length.
-fn compute_shake_digest(name: &str, data: &[u8], length: usize) -> PyResult<(String, Vec<u8>)> {
-    use sha3::digest::{Update, ExtendableOutput, XofReader};
-    let mut buf = vec![0u8; length];
-    match name {
-        "shake_128" => {
-            let mut h = sha3::Shake128::default();
-            h.update(data);
-            let mut reader = h.finalize_xof();
-            reader.read(&mut buf);
-        }
-        "shake_256" => {
-            let mut h = sha3::Shake256::default();
-            h.update(data);
-            let mut reader = h.finalize_xof();
-            reader.read(&mut buf);
-        }
-        _ => return Err(PyException::value_error(format!("unsupported shake type {}", name))),
-    }
-    Ok((hex_encode(&buf), buf))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -101,8 +71,6 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn hash_block_size(name: &str) -> i64 {
     match name {
         "sha384" | "sha512" | "sha3_384" | "sha3_512" | "blake2b" => 128,
-        "shake_128" => 168,
-        "shake_256" => 136,
         "blake2s" => 64,
         _ => 64,
     }
@@ -115,7 +83,6 @@ fn hash_digest_size(name: &str) -> i64 {
         "sha3_224" | "sha3-224" => 28, "sha3_256" | "sha3-256" => 32,
         "sha3_384" | "sha3-384" => 48, "sha3_512" | "sha3-512" => 64,
         "blake2b" => 64, "blake2s" => 32,
-        "shake_128" | "shake_256" => 0, // XOF: variable length
         _ => 0,
     }
 }
@@ -144,46 +111,19 @@ fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_byte
     // digest() — compute and return bytes
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    let is_shake = name.starts_with("shake_");
-    attrs.insert(CompactString::from("digest"), PyObject::native_closure("digest", move |args| {
+    attrs.insert(CompactString::from("digest"), PyObject::native_closure("digest", move |_args| {
         let data = buf_c.read().clone();
-        if is_shake {
-            // SHAKE XOF: digest(length) required
-            if args.is_empty() {
-                return Err(PyException::type_error("digest() requires a length argument for shake"));
-            }
-            let length = match &args[0].payload {
-                PyObjectPayload::Int(n) => n.to_i64().unwrap_or(0) as usize,
-                _ => return Err(PyException::type_error("length must be an integer")),
-            };
-            let (_, digest_bytes) = compute_shake_digest(&algo_c, &data, length)?;
-            Ok(PyObject::bytes(digest_bytes))
-        } else {
-            let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
-            Ok(PyObject::bytes(digest_bytes))
-        }
+        let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::bytes(digest_bytes))
     }));
 
     // hexdigest() — compute and return hex string
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    let is_shake = name.starts_with("shake_");
-    attrs.insert(CompactString::from("hexdigest"), PyObject::native_closure("hexdigest", move |args| {
+    attrs.insert(CompactString::from("hexdigest"), PyObject::native_closure("hexdigest", move |_args| {
         let data = buf_c.read().clone();
-        if is_shake {
-            if args.is_empty() {
-                return Err(PyException::type_error("hexdigest() requires a length argument for shake"));
-            }
-            let length = match &args[0].payload {
-                PyObjectPayload::Int(n) => n.to_i64().unwrap_or(0) as usize,
-                _ => return Err(PyException::type_error("length must be an integer")),
-            };
-            let (hex, _) = compute_shake_digest(&algo_c, &data, length)?;
-            Ok(PyObject::str_val(CompactString::from(hex)))
-        } else {
-            let (hex, _) = compute_digest(&algo_c, &data)?;
-            Ok(PyObject::str_val(CompactString::from(hex)))
-        }
+        let (hex, _) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::str_val(CompactString::from(hex)))
     }));
 
     // copy() — return independent hash with same accumulated state
@@ -369,10 +309,8 @@ pub fn create_secrets_module() -> PyObjectRef {
         ("token_hex", make_builtin(secrets_token_hex)),
         ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
         ("randbelow", make_builtin(secrets_randbelow)),
-        ("randbits", make_builtin(secrets_randbits)),
         ("choice", make_builtin(secrets_choice)),
         ("compare_digest", make_builtin(secrets_compare_digest)),
-        ("DEFAULT_ENTROPY", PyObject::int(32)),
     ])
 }
 
@@ -409,19 +347,19 @@ fn secrets_random_f64() -> f64 {
 }
 
 fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
     Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
 }
 
 fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
     let bytes = secrets_random_bytes(nbytes);
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     Ok(PyObject::str_val(CompactString::from(hex)))
 }
 
 fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
     let bytes = secrets_random_bytes(nbytes);
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
@@ -442,23 +380,6 @@ fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         i += 3;
     }
     Ok(PyObject::str_val(CompactString::from(result)))
-}
-
-fn secrets_randbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("secrets.randbits", args, 1)?;
-    let k = args[0].to_int()? as usize;
-    if k == 0 {
-        return Ok(PyObject::int(0));
-    }
-    let nbytes = (k + 7) / 8;
-    let bytes = secrets_random_bytes(nbytes);
-    let mut n: i64 = 0;
-    for &b in &bytes {
-        n = (n << 8) | b as i64;
-    }
-    // Mask to k bits
-    n &= (1i64 << k) - 1;
-    Ok(PyObject::int(n))
 }
 
 fn secrets_randbelow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -483,14 +404,6 @@ fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("secrets.compare_digest", args, 2)?;
-    let a_is_str = matches!(&args[0].payload, PyObjectPayload::Str(_));
-    let a_is_bytes = matches!(&args[0].payload, PyObjectPayload::Bytes(_));
-    let b_is_str = matches!(&args[1].payload, PyObjectPayload::Str(_));
-    let b_is_bytes = matches!(&args[1].payload, PyObjectPayload::Bytes(_));
-    // Both must be same type (both str or both bytes)
-    if !((a_is_str && b_is_str) || (a_is_bytes && b_is_bytes)) {
-        return Err(PyException::type_error("unsupported operand type(s) for compare_digest"));
-    }
     let a = args[0].py_to_string();
     let b = args[1].py_to_string();
     let a_bytes = a.as_bytes();

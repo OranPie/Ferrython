@@ -4,8 +4,6 @@ This module helps scripts to parse the command line arguments in sys.argv.
 It supports the same conventions as the Unix getopt() function.
 """
 
-import os
-
 __all__ = ['GetoptError', 'error', 'getopt', 'gnu_getopt']
 
 
@@ -57,14 +55,6 @@ def gnu_getopt(args, shortopts, longopts=[]):
     else:
         longopts = list(longopts)
 
-    # Handle + prefix or POSIXLY_CORRECT (POSIX mode: stop at first non-option)
-    all_options_first = False
-    if shortopts.startswith('+'):
-        shortopts = shortopts[1:]
-        all_options_first = True
-    elif os.environ.get('POSIXLY_CORRECT'):
-        all_options_first = True
-
     while args:
         if args[0] == '--':
             prog_args += args[1:]
@@ -73,40 +63,12 @@ def gnu_getopt(args, shortopts, longopts=[]):
             opts, args = do_longs(opts, args[0][2:], longopts, args[1:])
         elif args[0].startswith('-') and args[0] != '-':
             opts, args = do_shorts(opts, args[0][1:], shortopts, args[1:])
-        elif all_options_first:
-            prog_args += args
-            break
         else:
             prog_args.append(args[0])
             args = args[1:]
 
     return opts, prog_args
 
-
-def short_has_arg(opt, shortopts):
-    """Check if a short option requires an argument."""
-    for i, c in enumerate(shortopts):
-        if c == opt:
-            return i + 1 < len(shortopts) and shortopts[i + 1] == ':'
-    raise GetoptError('option -%s not recognized' % opt, opt)
-
-def long_has_args(opt, longopts):
-    """Check if a long option requires an argument. Returns (has_arg, option)."""
-    possibilities = [o for o in longopts if o == opt or o == opt + '=' or o.startswith(opt) or o.startswith(opt + '=')]
-    if not possibilities:
-        raise GetoptError('option --%s not recognized' % opt, opt)
-    # Exact match takes priority
-    if opt in possibilities:
-        return False, opt
-    if opt + '=' in possibilities:
-        return True, opt
-    # Prefix match — must be unique
-    if len(possibilities) > 1:
-        raise GetoptError('option --%s not a unique prefix' % opt, opt)
-    match = possibilities[0]
-    if match.endswith('='):
-        return True, match[:-1]
-    return False, match
 
 def do_longs(opts, opt, longopts, args):
     """Process a long option."""
@@ -115,7 +77,27 @@ def do_longs(opts, opt, longopts, args):
     else:
         optarg = None
 
-    has_arg, opt = long_has_args(opt, longopts)
+    has_arg = False
+    match = None
+    for lo in longopts:
+        if lo == opt:
+            match = lo
+            break
+        if lo == opt + '=':
+            match = lo
+            has_arg = True
+            break
+        if lo.startswith(opt):
+            match = lo
+            has_arg = lo.endswith('=')
+            break
+        if lo.startswith(opt + '='):
+            match = lo
+            has_arg = True
+            break
+
+    if match is None:
+        raise GetoptError('option --%s not recognized' % opt, opt)
 
     if has_arg:
         if optarg is None:
@@ -125,7 +107,8 @@ def do_longs(opts, opt, longopts, args):
     elif optarg is not None:
         raise GetoptError('option --%s must not have an argument' % opt, opt)
 
-    opts.append(('--' + opt, optarg or ''))
+    opt_name = match.rstrip('=')
+    opts.append(('--' + opt_name, optarg or ''))
     return opts, args
 
 

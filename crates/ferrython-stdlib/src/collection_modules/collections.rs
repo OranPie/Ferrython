@@ -747,47 +747,6 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )))
         }
     ));
-
-    // __eq__ — element-wise comparison with identity check
-    let d_eq = data.clone();
-    cls_ns.insert(CompactString::from("__eq__"), PyObject::native_closure(
-        "deque.__eq__", move |args: &[PyObjectRef]| {
-            if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
-            let other = &args[1];
-            // Other must also be a deque (Instance with __deque__ marker)
-            if let PyObjectPayload::Instance(other_inst) = &other.payload {
-                if !other_inst.attrs.read().contains_key("__deque__") {
-                    return Ok(PyObject::not_implemented());
-                }
-            } else {
-                return Ok(PyObject::not_implemented());
-            }
-            // Get other's internal data via closure capture? No, we need to read from the other deque.
-            // Read the other deque's _data from its attrs or use its class __iter__
-            let other_data_list = if let PyObjectPayload::Instance(other_inst) = &other.payload {
-                other_inst.attrs.read().get("_data").cloned()
-            } else { None };
-            // Use closure-captured data for self
-            let self_data = d_eq.read();
-            // Get other data elements
-            let other_elems: Vec<PyObjectRef> = if let Some(ref od) = other_data_list {
-                if let PyObjectPayload::List(list) = &od.payload {
-                    list.read().clone()
-                } else { return Ok(PyObject::bool_val(false)); }
-            } else { return Ok(PyObject::bool_val(false)); };
-            if self_data.len() != other_elems.len() {
-                return Ok(PyObject::bool_val(false));
-            }
-            for (x, y) in self_data.iter().zip(other_elems.iter()) {
-                // Identity check first (CPython: PyObject_RichCompareBool)
-                if PyObjectRef::ptr_eq(x, y) { continue; }
-                if !x.compare(y, CompareOp::Eq).map_or(false, |r| r.is_truthy()) {
-                    return Ok(PyObject::bool_val(false));
-                }
-            }
-            Ok(PyObject::bool_val(true))
-        }
-    ));
     
     // __contains__(x) - needed for 'in' operator
     let d = data.clone();
@@ -797,10 +756,6 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let target = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else { return Ok(PyObject::bool_val(false)); };
             let r = d.read();
             for item in r.iter() {
-                // Identity check first (needed for NaN: nan is nan → True, nan == nan → False)
-                if PyObjectRef::ptr_eq(item, target) {
-                    return Ok(PyObject::bool_val(true));
-                }
                 if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) {
                     return Ok(PyObject::bool_val(true));
                 }
@@ -1209,130 +1164,6 @@ fn make_user_dict_class() -> PyObjectRef {
         }
         Ok(args[0].clone())
     }));
-    // Class-level dict delegation methods
-    ns.insert(CompactString::from("keys"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("keys() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("values"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("values() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            Ok(PyObject::wrap(PyObjectPayload::DictValues(m.clone())))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("items"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("items() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            Ok(PyObject::wrap(PyObjectPayload::DictItems(m.clone())))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("get"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("get() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("get() requires at least 1 argument")); };
-            let default = if args.len() >= 3 { args[2].clone() } else { PyObject::none() };
-            Ok(m.read().get(&key).cloned().unwrap_or(default))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("pop"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("pop() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("pop() requires at least 1 argument")); };
-            let default = if args.len() >= 3 { Some(args[2].clone()) } else { None };
-            match m.write().shift_remove(&key) {
-                Some(v) => Ok(v),
-                None => default.ok_or_else(|| PyException::key_error(if args.len() > 1 { args[1].py_to_string() } else { "?".into() })),
-            }
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("setdefault"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("setdefault() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            let key = if args.len() > 1 { args[1].to_hashable_key()? } else { return Err(PyException::type_error("setdefault() requires at least 1 argument")); };
-            let default = if args.len() >= 3 { args[2].clone() } else { PyObject::none() };
-            let mut w = m.write();
-            if let Some(v) = w.get(&key) { return Ok(v.clone()); }
-            w.insert(key, default.clone());
-            Ok(default)
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("update"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("update() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            if args.len() > 1 {
-                if let PyObjectPayload::Dict(other) = &args[1].payload {
-                    let mut w = m.write();
-                    for (k, v) in other.read().iter() { w.insert(k.clone(), v.clone()); }
-                } else if let Ok(od) = get_user_data(&args[1], "data") {
-                    if let PyObjectPayload::Dict(other) = &od.payload {
-                        let mut w = m.write();
-                        for (k, v) in other.read().iter() { w.insert(k.clone(), v.clone()); }
-                    }
-                }
-            }
-        }
-        Ok(PyObject::none())
-    }));
-    ns.insert(CompactString::from("copy"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("copy() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            Ok(PyObject::dict(m.read().clone()))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("clear"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("clear() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            m.write().clear();
-        }
-        Ok(PyObject::none())
-    }));
-    ns.insert(CompactString::from("__reversed__"), make_builtin(|args| {
-        if args.is_empty() { return Err(PyException::type_error("__reversed__() requires self")); }
-        let data = get_user_data(&args[0], "data")?;
-        if let PyObjectPayload::Dict(m) = &data.payload {
-            let keys: Vec<PyObjectRef> = m.read().keys().rev().map(|k| k.to_object()).collect();
-            Ok(PyObject::list(keys))
-        } else {
-            Err(PyException::type_error("UserDict.data is not a dict"))
-        }
-    }));
-    ns.insert(CompactString::from("fromkeys"), make_builtin(|args| {
-        // classmethod: fromkeys(iterable, value=None)
-        let iterable = if args.len() > 0 { &args[0] } else { return Err(PyException::type_error("fromkeys() requires an iterable")); };
-        let value = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
-        let keys = iterable.to_list()?;
-        let mut pairs = IndexMap::new();
-        for k in keys {
-            let hk = HashableKey::from_object(&k)?;
-            pairs.insert(hk, value.clone());
-        }
-        Ok(PyObject::dict(pairs))
-    }));
     PyObject::class(CompactString::from("UserDict"), vec![], ns)
 }
 
@@ -1723,27 +1554,6 @@ fn make_user_string_class() -> PyObjectRef {
         let mut hasher = DefaultHasher::new();
         s.hash(&mut hasher);
         Ok(PyObject::int(hasher.finish() as i64))
-    }));
-    ns.insert(CompactString::from("encode"), make_builtin(|args| {
-        let data = get_user_data(&args[0], "data")?;
-        // Delegate to data.encode(...) via str method dispatch
-        if let Some(enc_fn) = data.get_attr("encode") {
-            ferrython_core::object::helpers::call_callable(&enc_fn, &args[1..])
-        } else {
-            Err(PyException::type_error("str has no encode method"))
-        }
-    }));
-    ns.insert(CompactString::from("__mod__"), make_builtin(|args| {
-        if args.len() < 2 { return Err(PyException::type_error("expected value")); }
-        let data = get_user_data(&args[0], "data")?;
-        // Delegate to str.__mod__
-        data.modulo(&args[1])
-    }));
-    ns.insert(CompactString::from("__rmod__"), make_builtin(|args| {
-        if args.len() < 2 { return Err(PyException::type_error("expected value")); }
-        let data = get_user_data(&args[0], "data")?;
-        // __rmod__: other % self => other % self.data
-        args[1].modulo(&data)
     }));
     PyObject::class(CompactString::from("UserString"), vec![], ns)
 }

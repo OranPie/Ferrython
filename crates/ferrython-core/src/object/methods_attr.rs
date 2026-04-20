@@ -75,178 +75,6 @@ fn has_in_class_mro(class: &PyObjectRef, name: &str) -> bool {
     false
 }
 
-/// Synthesize a built-in `object` method for a given dunder name.
-/// Returns None if the name is not a standard object method.
-fn synthesize_object_method(name: &str) -> Option<PyObjectRef> {
-    match name {
-        "__eq__" => Some(PyObject::native_function("__eq__", |args| {
-            if args.len() < 2 { return Ok(PyObject::not_implemented()); }
-            if PyObjectRef::ptr_eq(&args[0], &args[1]) {
-                Ok(PyObject::bool_val(true))
-            } else {
-                Ok(PyObject::not_implemented())
-            }
-        })),
-        "__ne__" => Some(PyObject::native_function("__ne__", |args| {
-            if args.len() < 2 { return Ok(PyObject::not_implemented()); }
-            // object.__ne__: call __eq__ and negate
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                let eq_fn = inst.attrs.read().get("__eq__").cloned()
-                    .or_else(|| {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            let ns = cd.namespace.read();
-                            if let Some(f) = ns.get("__eq__") { return Some(f.clone()); }
-                            for base in &cd.mro {
-                                if let PyObjectPayload::Class(bcd) = &base.payload {
-                                    let bns = bcd.namespace.read();
-                                    if let Some(f) = bns.get("__eq__") { return Some(f.clone()); }
-                                }
-                            }
-                        }
-                        None
-                    });
-                if let Some(eq_fn) = eq_fn {
-                    let result = super::helpers::call_callable(&eq_fn, &[args[0].clone(), args[1].clone()])?;
-                    if matches!(result.payload, PyObjectPayload::NotImplemented) {
-                        return Ok(PyObject::not_implemented());
-                    }
-                    return Ok(PyObject::bool_val(!result.is_truthy()));
-                }
-            }
-            // No custom __eq__ found → behave like object.__eq__ was called:
-            // identical → False (eq returns True, negated), otherwise → NotImplemented
-            if PyObjectRef::ptr_eq(&args[0], &args[1]) {
-                Ok(PyObject::bool_val(false))
-            } else {
-                Ok(PyObject::not_implemented())
-            }
-        })),
-        "__hash__" => Some(PyObject::native_function("__hash__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__hash__ requires 1 argument")); }
-            Ok(PyObject::int(PyObjectRef::as_ptr(&args[0]) as i64))
-        })),
-        "__repr__" => Some(PyObject::native_function("__repr__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__repr__ requires 1 argument")); }
-            // Exception subclasses: repr(e) = ClassName(args...)
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    if cd.is_exception_subclass {
-                        let attrs = inst.attrs.read();
-                        if let Some(exc_args) = attrs.get("args") {
-                            if let PyObjectPayload::Tuple(items) = &exc_args.payload {
-                                let inner: Vec<String> = items.iter().map(|i| i.repr()).collect();
-                                return Ok(PyObject::str_val(CompactString::from(
-                                    format!("{}({})", cd.name, inner.join(", "))
-                                )));
-                            }
-                        }
-                        return Ok(PyObject::str_val(CompactString::from(
-                            format!("{}()", cd.name)
-                        )));
-                    }
-                }
-            }
-            let class_name = match &args[0].payload {
-                PyObjectPayload::Instance(inst) => {
-                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                        cd.name.to_string()
-                    } else { "object".to_string() }
-                }
-                _ => "object".to_string(),
-            };
-            Ok(PyObject::str_val(CompactString::from(
-                format!("<{} object at 0x{:x}>", class_name, PyObjectRef::as_ptr(&args[0]) as usize)
-            )))
-        })),
-        "__str__" => Some(PyObject::native_function("__str__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__str__ requires 1 argument")); }
-            // Exception subclasses: str(e) returns str(e.args[0]) or str(e.args)
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    if cd.is_exception_subclass {
-                        let attrs = inst.attrs.read();
-                        if let Some(exc_args) = attrs.get("args") {
-                            if let PyObjectPayload::Tuple(items) = &exc_args.payload {
-                                return match items.len() {
-                                    0 => Ok(PyObject::str_val(CompactString::from(""))),
-                                    1 => Ok(PyObject::str_val(CompactString::from(items[0].py_to_string()))),
-                                    _ => Ok(PyObject::str_val(CompactString::from(exc_args.py_to_string()))),
-                                };
-                            }
-                        }
-                        return Ok(PyObject::str_val(CompactString::from("")));
-                    }
-                }
-            }
-            // object.__str__ delegates to __repr__
-            if let Some(repr_fn) = args[0].get_attr("__repr__") {
-                return super::helpers::call_callable(&repr_fn, &[args[0].clone()]);
-            }
-            let class_name = match &args[0].payload {
-                PyObjectPayload::Instance(inst) => {
-                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                        cd.name.to_string()
-                    } else { "object".to_string() }
-                }
-                _ => "object".to_string(),
-            };
-            Ok(PyObject::str_val(CompactString::from(
-                format!("<{} object at 0x{:x}>", class_name, PyObjectRef::as_ptr(&args[0]) as usize)
-            )))
-        })),
-        "__init__" => Some(PyObject::native_function("__init__", |_args| {
-            Ok(PyObject::none())
-        })),
-        "__init_subclass__" => Some(PyObject::native_function("__init_subclass__", |_args| {
-            Ok(PyObject::none())
-        })),
-        "__subclasshook__" => Some(PyObject::native_function("__subclasshook__", |_args| {
-            Ok(PyObject::not_implemented())
-        })),
-        "__lt__" | "__le__" | "__gt__" | "__ge__" => Some(PyObject::native_function(name, |_args| {
-            Ok(PyObject::not_implemented())
-        })),
-        "__format__" => Some(PyObject::native_function("__format__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__format__ requires 1 argument")); }
-            let fmt_spec = if args.len() > 1 {
-                match &args[1].payload {
-                    PyObjectPayload::Str(s) => s.as_str().to_string(),
-                    _ => String::new(),
-                }
-            } else { String::new() };
-            if !fmt_spec.is_empty() {
-                return Err(PyException::type_error("unsupported format character"));
-            }
-            // object.__format__ with empty spec delegates to __str__
-            if let Some(str_fn) = args[0].get_attr("__str__") {
-                return super::helpers::call_callable(&str_fn, &[args[0].clone()]);
-            }
-            Ok(PyObject::str_val(CompactString::from(format!("<object at 0x{:x}>", PyObjectRef::as_ptr(&args[0]) as usize))))
-        })),
-        "__sizeof__" => Some(PyObject::native_function("__sizeof__", |_args| {
-            Ok(PyObject::int(64)) // approximate
-        })),
-        "__dir__" => Some(PyObject::native_function("__dir__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__dir__ requires 1 argument")); }
-            let mut names = Vec::new();
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                for k in inst.attrs.read().keys() {
-                    names.push(PyObject::str_val(k.clone()));
-                }
-            }
-            Ok(PyObject::list(names))
-        })),
-        "__reduce_ex__" | "__reduce__" => Some(PyObject::native_function(name, |_args| {
-            Err(PyException::type_error("can't pickle object"))
-        })),
-        "__class_getitem__" => Some(PyObject::native_function("__class_getitem__", |args| {
-            if args.is_empty() { return Err(PyException::type_error("__class_getitem__ requires arguments")); }
-            Ok(args[0].clone())
-        })),
-        _ => None,
-    }
-}
-
 /// Uncached MRO lookup — scans own namespace then bases.
 fn lookup_in_class_mro_uncached(cd: &ClassData, name: &str) -> Option<PyObjectRef> {
     // Check own namespace first
@@ -256,39 +84,22 @@ fn lookup_in_class_mro_uncached(cd: &ClassData, name: &str) -> Option<PyObjectRe
     // Use computed MRO if available, otherwise walk bases recursively
     if !cd.mro.is_empty() {
         for base in &cd.mro {
-            match &base.payload {
-                PyObjectPayload::Class(bcd) => {
-                    if let Some(v) = bcd.namespace.read().get(name).cloned() {
-                        return Some(v);
-                    }
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if let Some(v) = bcd.namespace.read().get(name).cloned() {
+                    return Some(v);
                 }
-                PyObjectPayload::BuiltinType(type_name) if type_name.as_str() == "object" => {
-                    if let Some(v) = synthesize_object_method(name) {
-                        return Some(v);
-                    }
-                }
-                _ => {}
             }
         }
     } else {
         for base in &cd.bases {
-            match &base.payload {
-                PyObjectPayload::Class(bcd) => {
-                    if let Some(v) = lookup_in_class_mro_uncached(bcd, name) {
-                        return Some(v);
-                    }
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if let Some(v) = lookup_in_class_mro_uncached(bcd, name) {
+                    return Some(v);
                 }
-                PyObjectPayload::BuiltinType(type_name) if type_name.as_str() == "object" => {
-                    if let Some(v) = synthesize_object_method(name) {
-                        return Some(v);
-                    }
-                }
-                _ => {}
             }
         }
     }
-    // Final fallback: all classes implicitly inherit from object
-    synthesize_object_method(name)
+    None
 }
 
 /// Check if an object is a data descriptor (has __set__ or __delete__).
@@ -957,11 +768,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if args.len() < 2 {
                             return Ok(PyObject::not_implemented());
                         }
-                        if PyObjectRef::ptr_eq(&args[0], &args[1]) {
-                            Ok(PyObject::bool_val(true))
-                        } else {
-                            Ok(PyObject::not_implemented())
-                        }
+                        Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
                     }));
                 }
                 if name == "__ne__" {
@@ -969,35 +776,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if args.len() < 2 {
                             return Ok(PyObject::not_implemented());
                         }
-                        // object.__ne__: call __eq__ and negate
-                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                            let eq_fn = inst.attrs.read().get("__eq__").cloned()
-                                .or_else(|| {
-                                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                        let ns = cd.namespace.read();
-                                        if let Some(f) = ns.get("__eq__") { return Some(f.clone()); }
-                                        for base in &cd.mro {
-                                            if let PyObjectPayload::Class(bcd) = &base.payload {
-                                                let bns = bcd.namespace.read();
-                                                if let Some(f) = bns.get("__eq__") { return Some(f.clone()); }
-                                            }
-                                        }
-                                    }
-                                    None
-                                });
-                            if let Some(eq_fn) = eq_fn {
-                                let result = super::helpers::call_callable(&eq_fn, &[args[0].clone(), args[1].clone()])?;
-                                if matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                    return Ok(PyObject::not_implemented());
-                                }
-                                return Ok(PyObject::bool_val(!result.is_truthy()));
-                            }
-                        }
-                        if PyObjectRef::ptr_eq(&args[0], &args[1]) {
-                            Ok(PyObject::bool_val(false))
-                        } else {
-                            Ok(PyObject::not_implemented())
-                        }
+                        Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
                     }));
                 }
                 None
@@ -1472,7 +1251,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
                             ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                             ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
-                            ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::UnicodeError),
                             ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
                             ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
                             ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
@@ -1489,8 +1267,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                             ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
                             ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
-                            ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning |
-                            ExceptionKind::EncodingWarning => {
+                            ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => {
                                 Some(ExceptionKind::Warning)
                             }
                             ExceptionKind::BaseExceptionGroup => Some(ExceptionKind::BaseException),
@@ -1535,7 +1312,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::ConnectionRefusedError => ExceptionKind::ConnectionError,
                                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                                 ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
-                                ExceptionKind::UnicodeTranslateError => ExceptionKind::UnicodeError,
                                 ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
                                 ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
                                 ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => ExceptionKind::RuntimeError,
@@ -1548,8 +1324,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                                 ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
                                 ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
-                                ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning |
-                                ExceptionKind::EncodingWarning => ExceptionKind::Warning,
+                                ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => ExceptionKind::Warning,
                                 ExceptionKind::BaseExceptionGroup => ExceptionKind::BaseException,
                                 ExceptionKind::ExceptionGroup => ExceptionKind::BaseExceptionGroup,
                             };
@@ -1721,18 +1496,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "errno" | "strerror" | "filename" if ei.kind.is_subclass_of(&ExceptionKind::OSError) => {
                         ei.get_attrs().and_then(|a| a.read().get(name).cloned()).or_else(|| Some(PyObject::none()))
                     }
-                    "__str__" => {
-                        let obj_ref = obj.clone();
-                        Some(PyObject::native_closure("__str__", move |_args| {
-                            Ok(PyObject::str_val(CompactString::from(obj_ref.py_to_string())))
-                        }))
-                    }
-                    "__repr__" => {
-                        let obj_ref = obj.clone();
-                        Some(PyObject::native_closure("__repr__", move |_args| {
-                            Ok(PyObject::str_val(CompactString::from(obj_ref.repr())))
-                        }))
-                    }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
                         ei.get_attrs().and_then(|a| a.read().get(name).cloned())
@@ -1753,19 +1516,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if f.defaults.is_empty() { Some(PyObject::none()) }
                         else { Some(PyObject::tuple(f.defaults.clone())) }
                     }
-                    "__module__" => {
-                        // Check attrs first (set explicitly e.g. by functools.wraps)
-                        if let Some(v) = f.attrs.read().get("__module__").cloned() {
-                            return Some(v);
-                        }
-                        // Look up __name__ from the function's globals
-                        let globals = f.globals.read();
-                        if let Some(mod_name) = globals.get("__name__") {
-                            Some(mod_name.clone())
-                        } else {
-                            Some(PyObject::str_val(intern_or_new("__main__")))
-                        }
-                    }
+                    "__module__" => Some(PyObject::str_val(intern_or_new("__main__"))),
                     "__doc__" => {
                         // Check attrs first (set by functools.wraps etc.)
                         if let Some(doc) = f.attrs.read().get("__doc__").cloned() {
@@ -1845,7 +1596,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             PyObjectPayload::NativeFunction(nf) => match name {
                 "__name__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
                 "__qualname__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
-                "__module__" => Some(PyObject::str_val(if nf.module.is_empty() { CompactString::from("builtins") } else { nf.module.clone() })),
+                "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
                 "__call__" => Some(obj.clone()),
@@ -2488,56 +2239,24 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 Ok(PyObject::none())
                             }));
                         }
-                        // Builtin __eq__: object.__eq__ returns NotImplemented for non-identity
+                        // Builtin __eq__: object.__eq__ is identity comparison
                         if name == "__eq__" {
                             let inst = instance.clone();
                             return Some(PyObject::native_closure("__eq__", move |args: &[PyObjectRef]| {
                                 if args.is_empty() {
-                                    return Ok(PyObject::not_implemented());
+                                    return Err(PyException::type_error("__eq__ requires an argument"));
                                 }
-                                if PyObjectRef::ptr_eq(&inst, &args[0]) {
-                                    Ok(PyObject::bool_val(true))
-                                } else {
-                                    Ok(PyObject::not_implemented())
-                                }
+                                Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&inst, &args[0])))
                             }));
                         }
-                        // Builtin __ne__: object.__ne__ calls __eq__ and negates
+                        // Builtin __ne__: object.__ne__ is negated identity
                         if name == "__ne__" {
                             let inst = instance.clone();
                             return Some(PyObject::native_closure("__ne__", move |args: &[PyObjectRef]| {
                                 if args.is_empty() {
                                     return Err(PyException::type_error("__ne__ requires an argument"));
                                 }
-                                // Call __eq__ on self and negate
-                                if let PyObjectPayload::Instance(inst_data) = &inst.payload {
-                                    let eq_fn = inst_data.attrs.read().get("__eq__").cloned()
-                                        .or_else(|| {
-                                            if let PyObjectPayload::Class(cd) = &inst_data.class.payload {
-                                                let ns = cd.namespace.read();
-                                                if let Some(f) = ns.get("__eq__") { return Some(f.clone()); }
-                                                for base in &cd.mro {
-                                                    if let PyObjectPayload::Class(bcd) = &base.payload {
-                                                        let bns = bcd.namespace.read();
-                                                        if let Some(f) = bns.get("__eq__") { return Some(f.clone()); }
-                                                    }
-                                                }
-                                            }
-                                            None
-                                        });
-                                    if let Some(eq_fn) = eq_fn {
-                                        let result = super::helpers::call_callable(&eq_fn, &[inst.clone(), args[0].clone()])?;
-                                        if matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                            return Ok(PyObject::not_implemented());
-                                        }
-                                        return Ok(PyObject::bool_val(!result.is_truthy()));
-                                    }
-                                }
-                                if PyObjectRef::ptr_eq(&inst, &args[0]) {
-                                    Ok(PyObject::bool_val(false))
-                                } else {
-                                    Ok(PyObject::not_implemented())
-                                }
+                                Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&inst, &args[0])))
                             }));
                         }
                         // Builtin __repr__ / __str__: default object repr

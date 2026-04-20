@@ -126,9 +126,8 @@ impl VirtualMachine {
             }
             Ok(())
         } else {
-            Err(PyException::attribute_error(
-                &format!("'{}' object has no attribute 'write'", target.type_name())
-            ))
+            print!("{}", text);
+            Ok(())
         }
     }
 
@@ -500,23 +499,6 @@ impl VirtualMachine {
                 && cd.builtin_base_name.is_none()
             {
                 let instance = PyObject::instance(cls.clone());
-                // For exception subclasses, set args/message before __init__
-                // (inherited __init__ from Exception/object won't set these on Instance)
-                if cd.is_exception_subclass && !pos_args.is_empty() {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        let mut attrs = inst.attrs.write();
-                        if pos_args.len() == 1 {
-                            attrs.insert(CompactString::from("message"), pos_args[0].clone());
-                        }
-                        attrs.insert(CompactString::from("args"),
-                            PyObject::tuple(pos_args.clone()));
-                    }
-                } else if cd.is_exception_subclass {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        inst.attrs.write().insert(CompactString::from("args"),
-                            PyObject::tuple(vec![]));
-                    }
-                }
                 // Use cached __init__ — unsafe data_ptr avoids RefCell borrow overhead
                 let init_fn = {
                     let cached_ptr = unsafe { &*cd.cached_init.data_ptr() };
@@ -610,6 +592,16 @@ impl VirtualMachine {
                                 "__init__() should return None, not '".to_string()
                                     + init_result.type_name() + "'"
                             ));
+                        }
+                    }
+                } else if cd.is_exception_subclass {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            if pos_args.len() == 1 {
+                                attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                            }
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
                         }
                     }
                 }
@@ -1508,23 +1500,10 @@ impl VirtualMachine {
                             return Ok(PyObject::dict(new_fx_hashkey_map()));
                         }
                         "print" => {
-                            let sep_raw = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
-                                .map(|(_, v)| v.clone());
-                            let end_raw = kwargs.iter().find(|(k, _)| k.as_str() == "end")
-                                .map(|(_, v)| v.clone());
-                            // sep=None and end=None mean "use defaults"; non-str raises TypeError
-                            let sep = match &sep_raw {
-                                Some(v) if matches!(v.payload, PyObjectPayload::None) => " ".to_string(),
-                                Some(v) if matches!(v.payload, PyObjectPayload::Str(_)) => v.py_to_string(),
-                                Some(_) => return Err(PyException::type_error("sep must be None or a string, not int")),
-                                None => " ".to_string(),
-                            };
-                            let end = match &end_raw {
-                                Some(v) if matches!(v.payload, PyObjectPayload::None) => "\n".to_string(),
-                                Some(v) if matches!(v.payload, PyObjectPayload::Str(_)) => v.py_to_string(),
-                                Some(_) => return Err(PyException::type_error("end must be None or a string, not int")),
-                                None => "\n".to_string(),
-                            };
+                            let sep = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
+                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| " ".to_string());
+                            let end = kwargs.iter().find(|(k, _)| k.as_str() == "end")
+                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| "\n".to_string());
                             let file_obj = kwargs.iter().find(|(k, _)| k.as_str() == "file").map(|(_, v)| v.clone());
                             let flush = kwargs.iter().find(|(k, _)| k.as_str() == "flush")
                                 .map(|(_,v)| v.is_truthy()).unwrap_or(false);

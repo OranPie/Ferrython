@@ -749,28 +749,6 @@ pub fn create_numbers_module() -> PyObjectRef {
         integral_ns,
     );
 
-    // Register built-in types with their ABCs (matching CPython's numbers module)
-    // int → Integral (and transitively Complex, Real, Rational via MRO)
-    // float → Real (and transitively Complex)
-    // complex → Complex
-    fn add_abc_registry(class_obj: &PyObjectRef, type_names: &[&str]) {
-        if let PyObjectPayload::Class(cd) = &class_obj.payload {
-            let mut registry = IndexMap::new();
-            for &tn in type_names {
-                let key = HashableKey::str_key(CompactString::from(format!("<type:{}>", tn)));
-                registry.insert(key, PyObject::bool_val(true));
-            }
-            cd.namespace.write().insert(
-                CompactString::from("_abc_registry"),
-                PyObject::dict(registry),
-            );
-        }
-    }
-    add_abc_registry(&complex_class, &["complex", "float", "int"]);
-    add_abc_registry(&real_class, &["float", "int"]);
-    add_abc_registry(&rational_class, &["int"]);  // float is NOT Rational
-    add_abc_registry(&integral_class, &["int"]);  // only int is Integral
-
     make_module("numbers", vec![
         ("Number", number_class),
         ("Complex", complex_class),
@@ -2297,39 +2275,6 @@ pub fn create_heapq_module() -> PyObjectRef {
         ("nlargest", make_builtin(heapq_nlargest)),
         ("nsmallest", make_builtin(heapq_nsmallest)),
         ("merge", make_builtin(heapq_merge)),
-        ("_heappop_max", make_builtin(heapq_pop_max)),
-        ("_heapreplace_max", make_builtin(heapq_replace_max)),
-        ("_heapify_max", make_builtin(heapq_heapify_max)),
-    ])
-}
-
-pub fn create_heapq_c_module() -> PyObjectRef {
-    let all_names = PyObject::list(vec![
-        PyObject::str_val(CompactString::from("heappush")),
-        PyObject::str_val(CompactString::from("heappop")),
-        PyObject::str_val(CompactString::from("heapify")),
-        PyObject::str_val(CompactString::from("heappushpop")),
-        PyObject::str_val(CompactString::from("heapreplace")),
-        PyObject::str_val(CompactString::from("nlargest")),
-        PyObject::str_val(CompactString::from("nsmallest")),
-        PyObject::str_val(CompactString::from("merge")),
-        PyObject::str_val(CompactString::from("_heappop_max")),
-        PyObject::str_val(CompactString::from("_heapreplace_max")),
-        PyObject::str_val(CompactString::from("_heapify_max")),
-    ]);
-    make_module("_heapq", vec![
-        ("__all__", all_names),
-        ("heappush", make_builtin(heapq_push)),
-        ("heappop", make_builtin(heapq_pop)),
-        ("heapify", make_builtin(heapq_heapify)),
-        ("heappushpop", make_builtin(heapq_pushpop)),
-        ("heapreplace", make_builtin(heapq_replace)),
-        ("nlargest", make_builtin(heapq_nlargest)),
-        ("nsmallest", make_builtin(heapq_nsmallest)),
-        ("merge", make_builtin(heapq_merge)),
-        ("_heappop_max", make_builtin(heapq_pop_max)),
-        ("_heapreplace_max", make_builtin(heapq_replace_max)),
-        ("_heapify_max", make_builtin(heapq_heapify_max)),
     ])
 }
 
@@ -2481,80 +2426,6 @@ fn heapq_merge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         else { std::cmp::Ordering::Equal }
     });
     Ok(PyObject::list(all))
-}
-
-// Max-heap variants for internal use
-fn heap_sift_up_max(items: &mut Vec<PyObjectRef>, mut pos: usize) {
-    while pos > 0 {
-        let parent = (pos - 1) / 2;
-        if heap_cmp_lt(&items[parent], &items[pos]) {
-            items.swap(pos, parent);
-            pos = parent;
-        } else {
-            break;
-        }
-    }
-}
-
-fn heap_sift_down_max(items: &mut Vec<PyObjectRef>, mut pos: usize, end: usize) {
-    loop {
-        let mut child = 2 * pos + 1;
-        if child >= end { break; }
-        let right = child + 1;
-        if right < end && heap_cmp_lt(&items[child], &items[right]) {
-            child = right;
-        }
-        if heap_cmp_lt(&items[pos], &items[child]) {
-            items.swap(pos, child);
-            pos = child;
-        } else {
-            break;
-        }
-    }
-}
-
-fn heapq_pop_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("_heappop_max", args, 1)?;
-    if let PyObjectPayload::List(lock) = &args[0].payload {
-        let mut items = lock.write();
-        if items.is_empty() { return Err(PyException::index_error("index out of range")); }
-        let last = items.pop().unwrap();
-        if items.is_empty() { return Ok(last); }
-        let result = std::mem::replace(&mut items[0], last);
-        let n = items.len();
-        heap_sift_down_max(&mut items, 0, n);
-        Ok(result)
-    } else {
-        Err(PyException::type_error("_heappop_max: first arg must be a list"))
-    }
-}
-
-fn heapq_replace_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("_heapreplace_max", args, 2)?;
-    if let PyObjectPayload::List(lock) = &args[0].payload {
-        let mut items = lock.write();
-        if items.is_empty() { return Err(PyException::index_error("index out of range")); }
-        let result = std::mem::replace(&mut items[0], args[1].clone());
-        let n = items.len();
-        heap_sift_down_max(&mut items, 0, n);
-        Ok(result)
-    } else {
-        Err(PyException::type_error("_heapreplace_max: first arg must be a list"))
-    }
-}
-
-fn heapq_heapify_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("_heapify_max", args, 1)?;
-    if let PyObjectPayload::List(lock) = &args[0].payload {
-        let mut items = lock.write();
-        let n = items.len();
-        for i in (0..n / 2).rev() {
-            heap_sift_down_max(&mut items, i, n);
-        }
-        Ok(PyObject::none())
-    } else {
-        Err(PyException::type_error("_heapify_max: first arg must be a list"))
-    }
 }
 
 // ── bisect module ──

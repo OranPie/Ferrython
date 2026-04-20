@@ -71,7 +71,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 let use_comma = inner_spec.contains(',');
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != ',').collect();
                 if let Some(dot_pos) = clean_spec.rfind('.') {
-                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6).min(4096);
+                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6);
                     let num_str = format!("{:.prec$}", f, prec = prec);
                     let result = if use_comma {
                         add_thousands_separator(&num_str, ',')
@@ -97,8 +97,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             'e' | 'E' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
+                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
                 } else { 6 };
                 let raw = if type_char == 'e' {
                     format!("{:.prec$e}", f, prec = prec)
@@ -110,8 +110,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             '%' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
+                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
                 } else { 6 };
                 let pct = f * 100.0;
                 return Ok(format!("{:.prec$}%", pct, prec = prec));
@@ -165,8 +165,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             'g' | 'G' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
+                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
                 } else { 6usize };
                 // 'g' format: use fixed notation or scientific, whichever is shorter
                 let abs_f = f.abs();
@@ -235,12 +235,24 @@ pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
                 let mut names: Vec<CompactString> = inst.attrs.read().keys().cloned().collect();
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     names.extend(cd.namespace.read().keys().cloned());
+                    // Walk MRO for inherited names
+                    for base in &cd.mro {
+                        if let PyObjectPayload::Class(bcd) = &base.payload {
+                            names.extend(bcd.namespace.read().keys().cloned());
+                        }
+                    }
                 }
                 for d in common_dunders { names.push(CompactString::from(*d)); }
                 names.sort(); names.dedup(); names
             }
             PyObjectPayload::Class(cd) => {
                 let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect();
+                // Walk MRO for inherited names
+                for base in &cd.mro {
+                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                        n.extend(bcd.namespace.read().keys().cloned());
+                    }
+                }
                 for d in common_dunders { n.push(CompactString::from(*d)); }
                 n.sort(); n.dedup(); n
             }

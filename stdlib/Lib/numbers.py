@@ -1,10 +1,11 @@
 """numbers module — Abstract base classes for numbers."""
 
-from abc import ABCMeta
-
-class Number(metaclass=ABCMeta):
+class Number:
     """All numbers derive from this."""
     __hash__ = None
+    
+    def __init__(self):
+        pass
 
 class Complex(Number):
     """Complex defines operations for complex numbers."""
@@ -142,8 +143,3 @@ class Integral(Rational):
     
     def __invert__(self):
         return ~self._value
-
-# Register built-in numeric types with the appropriate ABCs
-Complex.register(complex)
-Real.register(float)
-Integral.register(int)

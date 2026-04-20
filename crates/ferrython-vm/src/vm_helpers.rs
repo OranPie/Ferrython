@@ -1142,22 +1142,12 @@ impl VirtualMachine {
                     exc.value = Some(return_val);
                     Err(exc)
                 }
-                Err(e) => {
-                    // PEP 479: StopIteration inside generator → RuntimeError
-                    if e.kind == ExceptionKind::StopIteration {
-                        let mut re = PyException::runtime_error("generator raised StopIteration");
-                        re.cause = Some(Box::new(e.clone()));
-                        re.context = Some(Box::new(e));
-                        re.suppress_context = true;
-                        Err(re)
-                    } else {
-                        Err(e)
-                    }
-                }
+                Err(e) => Err(e),
             }
         }
     }
 
+    /// Specialized generator resume for ForIter: returns Ok(Some(value)) on yield,
     /// Ok(None) on generator completion (avoids creating StopIteration exception),
     /// Err(e) on actual errors from within the generator.
     pub(crate) fn resume_generator_for_iter(
@@ -1210,14 +1200,7 @@ impl VirtualMachine {
             frame.recycle(&mut self.frame_pool);
             match result {
                 Ok(_) => Ok(None), // Generator finished — no StopIteration needed
-                Err(e) if e.kind == ExceptionKind::StopIteration => {
-                    // PEP 479: StopIteration inside generator → RuntimeError
-                    let mut re = PyException::runtime_error("generator raised StopIteration");
-                    re.cause = Some(Box::new(e.clone()));
-                    re.context = Some(Box::new(e));
-                    re.suppress_context = true;
-                    Err(re)
-                }
+                Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
                 Err(e) => Err(e),
             }
         }
@@ -1830,19 +1813,6 @@ impl VirtualMachine {
                         return Ok(items);
                     }
                     result
-                } else if let Some(getitem_fn) = obj.get_attr("__getitem__") {
-                    // Fallback: iterate via __getitem__(0), __getitem__(1), ... until IndexError
-                    let mut items = Vec::new();
-                    let mut idx = 0i64;
-                    loop {
-                        match self.call_object(getitem_fn.clone(), vec![PyObject::int(idx)]) {
-                            Ok(val) => items.push(val),
-                            Err(e) if e.kind == ExceptionKind::IndexError => break,
-                            Err(e) => return Err(e),
-                        }
-                        idx += 1;
-                    }
-                    return Ok(items);
                 } else {
                     return Err(PyException::type_error(format!(
                         "cannot unpack non-iterable {} object", obj.type_name()
@@ -1999,12 +1969,8 @@ impl VirtualMachine {
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?)
         };
         if args.len() >= 2 {
-            // Accept None → use caller's globals
-            if matches!(&args[1].payload, PyObjectPayload::None) {
-                let globals = self.call_stack.last().unwrap().globals.clone();
-                self.execute_with_globals(code, globals)?;
             // Accept both Dict and InstanceDict (returned by globals())
-            } else if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
+            if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
                 // InstanceDict: execute directly with the shared attr map
                 let locals_dict = if args.len() >= 3 {
                     Some(&args[2])
@@ -2033,80 +1999,28 @@ impl VirtualMachine {
                     self.execute_with_globals(code, shared_globals.clone())?;
                 }
             } else if let PyObjectPayload::Dict(ref map) = args[1].payload {
-                // For dict-based exec WITHOUT separate locals, reuse a cached
-                // FxAttrMap so that closures created in one exec() call share
-                // globals with subsequent exec() calls on the same dict.
-                let cache_key = HashableKey::str_key(CompactString::from("\x00__exec_globals__"));
-                let has_separate_locals = args.len() >= 3;
-
-                if !has_separate_locals {
-                    // Try to reuse cached FxAttrMap from a prior exec on this dict
-                    let cached = {
-                        let mr = map.read();
-                        mr.get(&cache_key).and_then(|v| {
-                            if let PyObjectPayload::InstanceDict(ref shared) = v.payload {
-                                Some(shared.clone())
-                            } else {
-                                None
-                            }
-                        })
+                let mut new_globals = FxAttrMap::default();
+                let m = map.read();
+                for (k, v) in m.iter() {
+                    let key_str = match k {
+                        HashableKey::Str(s) => s.as_ref().clone(),
+                        _ => CompactString::from(format!("{:?}", k)),
                     };
-                    let shared = if let Some(existing) = cached {
-                        // Sync any new dict entries into the shared map
-                        let mr = map.read();
-                        let mut gw = existing.write();
-                        for (k, v) in mr.iter() {
-                            if *k == cache_key { continue; }
-                            let key_str = match k {
-                                HashableKey::Str(s) => s.as_ref().clone(),
-                                _ => CompactString::from(format!("{:?}", k)),
-                            };
-                            gw.insert(key_str, v.clone());
-                        }
-                        drop(gw);
-                        drop(mr);
-                        existing
-                    } else {
-                        // First exec on this dict — create and cache FxAttrMap
-                        let mut new_globals = FxAttrMap::default();
-                        let mr = map.read();
-                        for (k, v) in mr.iter() {
-                            let key_str = match k {
-                                HashableKey::Str(s) => s.as_ref().clone(),
-                                _ => CompactString::from(format!("{:?}", k)),
-                            };
-                            new_globals.insert(key_str, v.clone());
-                        }
-                        drop(mr);
-                        let s = Rc::new(PyCell::new(new_globals));
-                        map.write().insert(cache_key.clone(),
-                            PyObject::wrap(PyObjectPayload::InstanceDict(s.clone())));
-                        s
-                    };
-                    self.execute_with_globals(code, shared.clone())?;
-                    // Write results back to dict
-                    let results = shared.read();
-                    let mut m = map.write();
-                    for (k, v) in results.iter() {
-                        m.insert(HashableKey::str_key(k.clone()), v.clone());
-                    }
-                } else {
-                    // With separate locals — create a fresh FxAttrMap (no sharing)
-                    let mut new_globals = FxAttrMap::default();
-                    let m = map.read();
-                    for (k, v) in m.iter() {
-                        let key_str = match k {
-                            HashableKey::Str(s) => s.as_ref().clone(),
-                            _ => CompactString::from(format!("{:?}", k)),
-                        };
-                        new_globals.insert(key_str, v.clone());
-                    }
-                    drop(m);
-                    let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
+                    new_globals.insert(key_str, v.clone());
+                }
+                drop(m);
+                // Merge locals dict into globals for execution scope
+                // Track original global keys so we can separate results later
+                let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
+                if args.len() >= 3 {
                     Self::merge_dict_into_attrmap(&args[2], &mut new_globals);
-                    let shared = Rc::new(PyCell::new(new_globals));
-                    self.execute_with_globals(code, shared.clone())?;
-                    let results = shared.read();
+                }
+                let shared = Rc::new(PyCell::new(new_globals));
+                self.execute_with_globals(code, shared.clone())?;
+                let results = shared.read();
+                if args.len() >= 3 {
+                    // Separate globals/locals: only write back original global keys to globals,
+                    // and all new/modified keys to locals
                     let mut gm = map.write();
                     for (k, v) in results.iter() {
                         if original_global_keys.contains(k) {
@@ -2115,6 +2029,12 @@ impl VirtualMachine {
                     }
                     drop(gm);
                     Self::write_back_locals(&args[2], &results, &original_global_keys);
+                } else {
+                    // No separate locals — write everything back to globals
+                    let mut m = map.write();
+                    for (k, v) in results.iter() {
+                        m.insert(HashableKey::str_key(k.clone()), v.clone());
+                    }
                 }
             } else {
                 return Err(PyException::type_error("exec() globals must be a dict"));
@@ -2182,11 +2102,7 @@ impl VirtualMachine {
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
             // Extract globals as FxAttrMap, whether Dict or InstanceDict
-            let (new_globals, globals_source) = if matches!(&args[1].payload, PyObjectPayload::None) {
-                // None → use caller's globals
-                let g = self.vm_frame().globals.read().clone();
-                (g, None)
-            } else if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
+            let (new_globals, globals_source) = if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
                 let g = shared_g.read().clone();
                 (g, Some(args[1].clone()))
             } else if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {
@@ -2209,34 +2125,6 @@ impl VirtualMachine {
                 // Check if we have a separate locals dict (args[2] that is not None)
                 let has_separate_locals = args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None);
 
-                // When globals is None and locals is None (or not provided),
-                // merge caller's local variables into the execution namespace.
-                // This matches CPython's eval() behavior where eval(expr) and
-                // eval(expr, None, None) can see the caller's local variables.
-                let globals_is_none = matches!(&args[1].payload, PyObjectPayload::None);
-                if globals_is_none && !has_separate_locals {
-                    let frame = self.call_stack.last().unwrap();
-                    // Merge fast locals (function parameters and local variables)
-                    for (i, name) in frame.code.varnames.iter().enumerate() {
-                        if let Some(Some(val)) = frame.locals.get(i) {
-                            exec_globals.insert(name.clone(), val.clone());
-                        }
-                    }
-                    // Merge local_names (class scope, etc.)
-                    for (k, v) in frame.local_names_iter() {
-                        exec_globals.insert(k.clone(), v.clone());
-                    }
-                    // Merge cell/free variables
-                    for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
-                        if let Some(cell) = frame.cells.get(i) {
-                            let cell_val = cell.read();
-                            if let Some(val) = cell_val.as_ref() {
-                                exec_globals.insert(name.clone(), val.clone());
-                            }
-                        }
-                    }
-                }
-
                 // Merge locals entries into globals for name resolution
                 let original_global_keys: std::collections::HashSet<CompactString> =
                     exec_globals.keys().cloned().collect();
@@ -2254,20 +2142,18 @@ impl VirtualMachine {
                 let results = shared.read();
                 if has_separate_locals {
                     // Write back globals
-                    if let Some(gs) = globals_source.as_ref() {
-                        if let PyObjectPayload::InstanceDict(ref sg) = gs.payload {
-                            let mut gm = sg.write();
-                            for (k, v) in results.iter() {
-                                if original_global_keys.contains(k) {
-                                    gm.insert(k.clone(), v.clone());
-                                }
+                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
+                        let mut gm = sg.write();
+                        for (k, v) in results.iter() {
+                            if original_global_keys.contains(k) {
+                                gm.insert(k.clone(), v.clone());
                             }
-                        } else if let PyObjectPayload::Dict(ref globs_map) = gs.payload {
-                            let mut gm = globs_map.write();
-                            for (k, v) in results.iter() {
-                                if original_global_keys.contains(k) {
-                                    gm.insert(HashableKey::str_key(k.clone()), v.clone());
-                                }
+                        }
+                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
+                        let mut gm = globs_map.write();
+                        for (k, v) in results.iter() {
+                            if original_global_keys.contains(k) {
+                                gm.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                         }
                     }
@@ -2276,21 +2162,17 @@ impl VirtualMachine {
                     Self::write_back_locals(&args[2], &results, &ogk);
                 } else {
                     // No separate locals: write everything back to globals
-                    if let Some(gs) = globals_source.as_ref() {
-                        if let PyObjectPayload::InstanceDict(ref sg) = gs.payload {
-                            let mut gm = sg.write();
-                            for (k, v) in results.iter() {
-                                gm.insert(k.clone(), v.clone());
-                            }
-                        } else if let PyObjectPayload::Dict(ref globs_map) = gs.payload {
-                            let mut gm = globs_map.write();
-                            for (k, v) in results.iter() {
-                                gm.insert(HashableKey::str_key(k.clone()), v.clone());
-                            }
+                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
+                        let mut gm = sg.write();
+                        for (k, v) in results.iter() {
+                            gm.insert(k.clone(), v.clone());
+                        }
+                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
+                        let mut gm = globs_map.write();
+                        for (k, v) in results.iter() {
+                            gm.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                     }
-                    // When globals_source is None (caller's globals), results were
-                    // already written to the shared globals during execution
                 }
                 drop(results);
 
@@ -2302,27 +2184,7 @@ impl VirtualMachine {
                 }
                 Ok(PyObject::none())
         } else {
-            // eval(expr) with no globals/locals — use caller's globals + locals
-            let frame = self.call_stack.last().unwrap();
-            let mut g = frame.globals.read().clone();
-            // Merge fast locals (function parameters and local variables)
-            for (i, name) in frame.code.varnames.iter().enumerate() {
-                if let Some(Some(val)) = frame.locals.get(i) {
-                    g.insert(name.clone(), val.clone());
-                }
-            }
-            for (k, v) in frame.local_names_iter() {
-                g.insert(k.clone(), v.clone());
-            }
-            for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
-                if let Some(cell) = frame.cells.get(i) {
-                    let cell_val = cell.read();
-                    if let Some(val) = cell_val.as_ref() {
-                        g.insert(name.clone(), val.clone());
-                    }
-                }
-            }
-            let globals = Rc::new(PyCell::new(g));
+            let globals = self.call_stack.last().unwrap().globals.clone();
             let exec_result = self.execute_with_globals(code, globals.clone())?;
             // Check for __eval_result__ in globals (set by compile(mode='eval'))
             if let Some(val) = globals.read().get("__eval_result__").cloned() {

@@ -240,27 +240,25 @@ impl VirtualMachine {
         level: usize,
         importer_file: &str,
     ) -> PyResult<PyObjectRef> {
-        // 1b. Check sys.modules dict first (catches dynamically-inserted and removed modules).
+        // 1. Check VM cache
+        if let Some(module) = self.modules.get(name) {
+            return Ok(module.clone());
+        }
+
+        // 1b. Check sys.modules dict (catches dynamically-inserted modules).
+        // CPython allows *any* object in sys.modules — module proxies, lazy
+        // loaders, plain instances, etc.  We accept everything except None
+        // (which CPython treats as "module was deleted / import failed").
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
                 let key = HashableKey::str_key(CompactString::from(name));
                 if let Some(module) = d.read().get(&key).cloned() {
-                    if matches!(&module.payload, PyObjectPayload::None) {
-                        // None in sys.modules = blocked/deleted — import should fail
-                        return Err(PyException::import_error(format!("import of {} halted; None in sys.modules", name)));
+                    if !matches!(&module.payload, PyObjectPayload::None) {
+                        self.modules.insert(CompactString::from(name), module.clone());
+                        return Ok(module);
                     }
-                    self.modules.insert(CompactString::from(name), module.clone());
-                    return Ok(module);
-                } else {
-                    // Module not in sys.modules — remove from VM cache so it gets re-imported
-                    self.modules.remove(name);
                 }
             }
-        }
-
-        // 1. Check VM cache
-        if let Some(module) = self.modules.get(name) {
-            return Ok(module.clone());
         }
 
         // 2. Try stdlib

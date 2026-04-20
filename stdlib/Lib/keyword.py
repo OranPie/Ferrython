@@ -8,10 +8,8 @@ kwlist = [
     'try', 'while', 'with', 'yield'
 ]
 
-_kwset = frozenset(kwlist)
-
 def iskeyword(s):
-    return s in _kwset
+    return s in kwlist
 
 softkwlist = ['_', 'case', 'match', 'type']
 

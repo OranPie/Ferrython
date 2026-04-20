@@ -2,15 +2,11 @@
 
 import os
 
-DEFAULT_ENTROPY = 32
-
-def token_bytes(nbytes=None):
+def token_bytes(nbytes=32):
     """Return a random byte string containing *nbytes* bytes."""
-    if nbytes is None:
-        nbytes = DEFAULT_ENTROPY
     return os.urandom(nbytes)
 
-def token_hex(nbytes=None):
+def token_hex(nbytes=32):
     """Return a random text string, in hexadecimal."""
     raw = token_bytes(nbytes)
     parts = []
@@ -21,20 +17,11 @@ def token_hex(nbytes=None):
             parts.append(format(ord(b), '02x'))
     return ''.join(parts)
 
-def token_urlsafe(nbytes=None):
+def token_urlsafe(nbytes=32):
     """Return a random URL-safe text string, in Base64 encoding."""
     import base64
     tok = token_bytes(nbytes)
     return base64.urlsafe_b64encode(tok).rstrip(b'=').decode('ascii') if hasattr(base64.urlsafe_b64encode(tok), 'decode') else base64.urlsafe_b64encode(tok).rstrip(b'=')
-
-def randbits(k):
-    """Return an int with *k* random bits."""
-    if k <= 0:
-        return 0
-    numbytes = (k + 7) // 8
-    raw = os.urandom(numbytes)
-    n = int.from_bytes(raw, 'big')
-    return n >> (numbytes * 8 - k)
 
 def choice(sequence):
     """Choose a random element from a non-empty sequence."""
@@ -49,7 +36,11 @@ def randbelow(exclusive_upper_bound):
     return random.randint(0, exclusive_upper_bound - 1)
 
 def compare_digest(a, b):
-    """Return ``a == b`` using a constant-time comparison."""
+    """Return ``a == b`` using a constant-time comparison.
+
+    This is a simplified version; true constant-time requires C-level
+    implementation, but we approximate it here.
+    """
     if isinstance(a, bytes) and isinstance(b, bytes):
         pass
     elif isinstance(a, str) and isinstance(b, str):

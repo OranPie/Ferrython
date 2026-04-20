@@ -644,10 +644,6 @@ impl Compiler {
         self.emit_arg(Opcode::LoadConst, qname_idx);
         self.store_name("__qualname__");
 
-        // __module__ = __name__ (from enclosing globals, like CPython)
-        self.load_name("__name__");
-        self.store_name("__module__");
-
         // Setup annotations dict for the class body
         self.emit_op(Opcode::SetupAnnotations);
 

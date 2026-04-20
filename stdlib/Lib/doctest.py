@@ -73,9 +73,6 @@ def _extract_examples(docstring):
                 if cont_stripped.startswith('... '):
                     source_lines.append(cont_stripped[4:])
                     i += 1
-                elif cont_stripped == '...':
-                    source_lines.append('')
-                    i += 1
                 else:
                     break
             source = '\n'.join(source_lines)
@@ -86,29 +83,13 @@ def _extract_examples(docstring):
                 out_stripped = out.lstrip()
                 if out_stripped.startswith('>>> ') or out_stripped.startswith('... '):
                     break
-                # A blank line or a line with less indentation ends expected output
-                if out.strip() == '':
-                    # Check if next non-blank line is still expected output (e.g. <BLANKLINE>)
-                    j = i + 1
-                    while j < len(lines) and lines[j].strip() == '':
-                        j += 1
-                    if j < len(lines):
-                        next_stripped = lines[j].lstrip()
-                        if next_stripped.startswith('>>> '):
-                            # Blank before next example - include trailing blanks as <BLANKLINE>
-                            break
-                        # Non-indented text or text at different indent level ends output
-                        next_indent = len(lines[j]) - len(next_stripped)
-                        if next_indent < indent:
-                            break
+                if out_stripped == '' and i + 1 < len(lines):
+                    next_stripped = lines[i + 1].lstrip()
+                    if next_stripped.startswith('>>> ') or next_stripped == '':
+                        break
+                if out_stripped == '' and i + 1 >= len(lines):
                     break
-                # Line with less indentation than the prompt also ends output
-                if len(out) > 0 and not out[0].isspace() and indent > 0:
-                    break
-                line_indent = len(out) - len(out_stripped)
-                if line_indent < indent and out_stripped:
-                    break
-                want_lines.append(out[indent:] if len(out) > indent else out_stripped)
+                want_lines.append(out[indent:] if len(out) > indent else out)
                 i += 1
             want = '\n'.join(want_lines)
             if want:
@@ -138,7 +119,7 @@ class DocTestFinder:
             if examples:
                 tests.append(DocTest(examples, globs, name, '<doctest>', 0, doc))
 
-        # Check functions/methods/classes in the object
+        # Check functions/methods in the object
         for attr_name in dir(obj):
             try:
                 attr = getattr(obj, attr_name)
@@ -152,23 +133,6 @@ class DocTestFinder:
                 if examples:
                     full_name = "%s.%s" % (name, attr_name)
                     tests.append(DocTest(examples, globs, full_name, '<doctest>', 0, doc))
-
-        # Check __test__ dict for extra doctest strings
-        test_dict = getattr(obj, '__test__', None)
-        if test_dict and isinstance(test_dict, dict):
-            for key, value in test_dict.items():
-                if isinstance(value, str):
-                    examples = _extract_examples(value)
-                    if examples:
-                        full_name = "%s.__test__.%s" % (name, key)
-                        tests.append(DocTest(examples, globs, full_name, '<doctest>', 0, value))
-                elif callable(value) or hasattr(value, '__doc__'):
-                    doc = getattr(value, '__doc__', None)
-                    if doc:
-                        examples = _extract_examples(doc)
-                        if examples:
-                            full_name = "%s.__test__.%s" % (name, key)
-                            tests.append(DocTest(examples, globs, full_name, '<doctest>', 0, doc))
         return tests
 
 
@@ -201,18 +165,8 @@ class DocTestRunner:
                     exec(example.source, test.globs)
                 got = sys.stdout.getvalue()
             except Exception as e:
-                exc_type = type(e)
-                exc_name = exc_type.__name__
-                # Module-qualify the exception name (CPython behavior)
-                exc_module = getattr(exc_type, '__module__', None)
-                if exc_module and exc_module not in ('builtins', '__main__'):
-                    exc_name = exc_module + '.' + exc_name
-                exc_msg = str(e)
-                if exc_msg:
-                    got = "Traceback (most recent call last):\n    ...\n%s: %s\n" % (
-                        exc_name, exc_msg)
-                else:
-                    got = "Traceback (most recent call last):\n    ...\n%s\n" % exc_name
+                got = "Traceback (most recent call last):\n    ...\n%s: %s\n" % (
+                    type(e).__name__, str(e))
             finally:
                 sys.stdout = old_stdout
 
@@ -243,14 +197,9 @@ class DocTestRunner:
         # Normalize trailing whitespace
         if got.rstrip() == want.rstrip():
             return True
-        # Empty want matches empty got
-        if not want.strip() and not got.strip():
-            return True
-        # ELLIPSIS support: always enabled for tracebacks, otherwise check flag
-        if '...' in want:
-            # Check if this is an exception traceback or ELLIPSIS mode
-            is_traceback = want.lstrip().startswith('Traceback')
-            if is_traceback or (self.optionflags & ELLIPSIS):
+        # ELLIPSIS support
+        if self.optionflags & ELLIPSIS:
+            if '...' in want:
                 parts = want.split('...')
                 pos = 0
                 for part in parts:
@@ -261,9 +210,6 @@ class DocTestRunner:
                     if idx < 0:
                         return False
                     pos = idx + len(part)
-                return True
-            # Even without ELLIPSIS flag, a want of just "..." matches anything
-            if want.strip() == '...':
                 return True
         return False
 

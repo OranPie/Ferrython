@@ -861,7 +861,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: globals })))
     }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData { name: CompactString::from(name), module: CompactString::from(""), func })))
+        Self::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData { name: CompactString::from(name), func })))
     }
     pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: std::rc::Rc::new(func) })))

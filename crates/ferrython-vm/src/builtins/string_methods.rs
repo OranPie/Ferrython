@@ -527,37 +527,18 @@ pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             Ok(PyObject::str_val(CompactString::from(result)))
         }
         "encode" => {
-            let encoding = if !args.is_empty() && !matches!(args[0].payload, PyObjectPayload::None) {
+            let encoding = if !args.is_empty() {
                 args[0].py_to_string().to_lowercase()
             } else {
                 "utf-8".to_string()
             };
-            let errors = if args.len() > 1 && !matches!(args[1].payload, PyObjectPayload::None) {
+            let errors = if args.len() > 1 {
                 args[1].py_to_string()
             } else {
                 "strict".to_string()
             };
             match encoding.as_str() {
                 "utf-8" | "utf8" => {
-                    // Check for surrogate codepoints which can't be encoded in UTF-8
-                    for (i, ch) in s.chars().enumerate() {
-                        let cp = ch as u32;
-                        if (0xD800..=0xDFFF).contains(&cp) {
-                            match errors.as_str() {
-                                "ignore" => {}
-                                "replace" => {}
-                                "surrogatepass" => {}
-                                _ => {
-                                    return Err(PyException::new(
-                                        ExceptionKind::UnicodeEncodeError,
-                                        format!(
-                                            "'utf-8' codec can't encode character '\\u{:04x}' in position {}: surrogates not allowed", cp, i
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
                     Ok(PyObject::bytes(s.as_bytes().to_vec()))
                 }
                 "ascii" => {

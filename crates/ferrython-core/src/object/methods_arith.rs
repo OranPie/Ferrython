@@ -300,34 +300,22 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::List(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 let read = items.read();
-                let total = read.len().checked_mul(count);
-                match total {
-                    Some(t) if t <= 0x1000_0000 => {
-                        let mut result = Vec::with_capacity(t);
-                        for _ in 0..count { result.extend(read.iter().cloned()); }
-                        Ok(PyObject::list(result))
-                    }
-                    _ => Err(PyException::memory_error("list repetition too large")),
-                }
+                let mut result = Vec::with_capacity(read.len() * count);
+                for _ in 0..count { result.extend(read.iter().cloned()); }
+                Ok(PyObject::list(result))
             }
             (PyObjectPayload::List(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::List(items)) => {
                 let count = *b as usize;
                 let read = items.read();
-                let mut result = Vec::with_capacity(read.len().saturating_mul(count));
+                let mut result = Vec::with_capacity(read.len() * count);
                 for _ in 0..count { result.extend(read.iter().cloned()); }
                 Ok(PyObject::list(result))
             }
             (PyObjectPayload::Tuple(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Tuple(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
-                let total = items.len().checked_mul(count);
-                match total {
-                    Some(t) if t <= 0x1000_0000 => {
-                        let mut result = Vec::with_capacity(t);
-                        for _ in 0..count { result.extend(items.iter().cloned()); }
-                        Ok(PyObject::tuple(result))
-                    }
-                    _ => Err(PyException::memory_error("tuple repetition too large")),
-                }
+                let mut result = Vec::with_capacity(items.len() * count);
+                for _ in 0..count { result.extend(items.iter().cloned()); }
+                Ok(PyObject::tuple(result))
             }
             (PyObjectPayload::Tuple(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::Tuple(items)) => {
                 let count = *b as usize;
@@ -472,16 +460,6 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
                 if *b == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
                 Ok(PyObject::float(python_fmod(*a, *b)))
-            }
-            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
-                if *b == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
-                let af = a.to_f64();
-                Ok(PyObject::float(python_fmod(af, *b)))
-            }
-            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
-                let bf = b.to_f64();
-                if bf == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
-                Ok(PyObject::float(python_fmod(*a, bf)))
             }
             (PyObjectPayload::Str(fmt_str), _) => {
                 // printf-style string formatting: "Hello %s" % "world"
@@ -636,33 +614,11 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
                     }
                 }
                 // Negative exponent → float result
-                let af = a.to_f64();
-                let bf = b.to_f64();
-                if af == 0.0 && bf < 0.0 {
-                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
-                }
-                Ok(PyObject::float(af.powf(bf)))
+                Ok(PyObject::float(a.to_f64().powf(b.to_f64())))
             }
-            (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
-                if *a == 0.0 && *b < 0.0 {
-                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
-                }
-                Ok(PyObject::float(a.powf(*b)))
-            }
-            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
-                let af = a.to_f64();
-                if af == 0.0 && *b < 0.0 {
-                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
-                }
-                Ok(PyObject::float(af.powf(*b)))
-            }
-            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
-                let bf = b.to_f64();
-                if *a == 0.0 && bf < 0.0 {
-                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
-                }
-                Ok(PyObject::float(a.powf(bf)))
-            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.powf(*b))),
+            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64().powf(*b))),
+            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a.powf(b.to_f64()))),
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for **: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
 }

@@ -3,18 +3,10 @@
 use crate::error::PyResult;
 
 use super::payload::*;
-use super::helpers::{partial_cmp_objects, unwrap_builtin_subclass, cmp_enter, cmp_leave};
+use super::helpers::{partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::CompareOp;
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
-        // Recursion guard for comparing self-referential structures
-        cmp_enter()?;
-        let result = py_compare_inner(a, b, op);
-        cmp_leave();
-        result
-}
-
-fn py_compare_inner(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
         // Unwrap builtin subclass instances for comparison
         let ua = unwrap_builtin_subclass(a);
         let ub = unwrap_builtin_subclass(b);
@@ -83,95 +75,16 @@ fn py_compare_inner(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult
                 CompareOp::Gt => "__gt__",
                 CompareOp::Ge => "__ge__",
             };
-            let rdunder = match op {
-                CompareOp::Eq => "__eq__",
-                CompareOp::Ne => "__ne__",
-                CompareOp::Lt => "__gt__",
-                CompareOp::Le => "__ge__",
-                CompareOp::Gt => "__lt__",
-                CompareOp::Ge => "__le__",
-            };
-
-            // Helper: find a dunder method on an instance (attrs, then class MRO)
-            let find_method = |obj: &PyObjectRef, name: &str| -> Option<PyObjectRef> {
-                if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    inst.attrs.read().get(name).cloned()
-                        .or_else(|| {
-                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                let ns = cd.namespace.read();
-                                if let Some(f) = ns.get(name) { return Some(f.clone()); }
-                                for base in &cd.mro {
-                                    if let PyObjectPayload::Class(bcd) = &base.payload {
-                                        let bns = bcd.namespace.read();
-                                        if let Some(f) = bns.get(name) { return Some(f.clone()); }
-                                    }
-                                }
-                            }
-                            None
-                        })
-                } else {
-                    None
-                }
-            };
-
-            // Helper: try calling a comparison method
-            let try_call = |method: &PyObjectRef, lhs: &PyObjectRef, rhs: &PyObjectRef| -> Option<PyResult<PyObjectRef>> {
-                match &method.payload {
-                    PyObjectPayload::NativeClosure(nc) => {
-                        Some((nc.func)(&[lhs.clone(), rhs.clone()]))
-                    }
-                    PyObjectPayload::NativeFunction(nf) => {
-                        Some((nf.func)(&[lhs.clone(), rhs.clone()]))
-                    }
-                    _ => {
-                        match super::helpers::call_callable(method, &[lhs.clone(), rhs.clone()]) {
-                            Ok(result) => {
-                                if matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                    None // NotImplemented — try next
-                                } else {
-                                    Some(Ok(result))
-                                }
-                            }
-                            Err(e) => Some(Err(e)),
+            if let PyObjectPayload::Instance(inst) = &a.payload {
+                if let Some(method) = inst.attrs.read().get(dunder).cloned() {
+                    match &method.payload {
+                        PyObjectPayload::NativeClosure(nc) => {
+                            return (nc.func)(&[a.clone(), b.clone()]);
                         }
-                    }
-                }
-            };
-
-            // Check if b's type is a proper subclass of a's type
-            let b_is_subclass = if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
-                if !PyObjectRef::ptr_eq(&inst_a.class, &inst_b.class) {
-                    if let PyObjectPayload::Class(cd_b) = &inst_b.class.payload {
-                        cd_b.mro.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
-                            || cd_b.bases.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
-                    } else { false }
-                } else { false }
-            } else { false };
-
-            if b_is_subclass {
-                // Subclass priority: try b's reflected dunder first
-                if let Some(method) = find_method(b, rdunder) {
-                    if let Some(result) = try_call(&method, b, a) {
-                        return result;
-                    }
-                }
-                // Then try a's dunder
-                if let Some(method) = find_method(a, dunder) {
-                    if let Some(result) = try_call(&method, a, b) {
-                        return result;
-                    }
-                }
-            } else {
-                // Normal order: try a's dunder first
-                if let Some(method) = find_method(a, dunder) {
-                    if let Some(result) = try_call(&method, a, b) {
-                        return result;
-                    }
-                }
-                // Then try b's reflected dunder
-                if let Some(method) = find_method(b, rdunder) {
-                    if let Some(result) = try_call(&method, b, a) {
-                        return result;
+                        PyObjectPayload::NativeFunction(nf) => {
+                            return (nf.func)(&[a.clone(), b.clone()]);
+                        }
+                        _ => {}
                     }
                 }
             }

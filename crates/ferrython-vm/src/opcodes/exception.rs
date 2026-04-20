@@ -215,21 +215,16 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let exit_result = frame.pop();
                 let exc_or_none = frame.pop();
-                if !matches!(exc_or_none.payload, PyObjectPayload::None) {
-                    let is_truthy = self.vm_is_truthy(&exit_result)?;
-                    let frame = self.vm_frame();
-                    if is_truthy {
-                        // Exception was suppressed: clean up exception info (value, tb)
-                        frame.pop(); // value
-                        frame.pop(); // tb
-                        frame.push(PyObject::none());
-                    } else {
-                        // Exception NOT suppressed: push type back, leave (tb, value) for EndFinally
-                        frame.push(exc_or_none);
-                    }
+                if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy() {
+                    // Exception was suppressed: clean up exception info (value, tb)
+                    frame.pop(); // value
+                    frame.pop(); // tb
+                    frame.push(PyObject::none());
+                } else if !matches!(exc_or_none.payload, PyObjectPayload::None) {
+                    // Exception NOT suppressed: push type back, leave (tb, value) for EndFinally
+                    frame.push(exc_or_none);
                 } else {
                     // No exception
-                    let frame = self.vm_frame();
                     frame.push(exc_or_none);
                 }
             }
@@ -308,6 +303,41 @@ impl VirtualMachine {
 
     fn exec_raise_varargs(&mut self, argc: u32) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
+        let raise_exc = |exc: &PyObjectRef| -> PyException {
+            match &exc.payload {
+                PyObjectPayload::ExceptionInstance(ei) => {
+                    PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
+                }
+                PyObjectPayload::ExceptionType(kind) => {
+                    PyException::new(*kind, "")
+                }
+                PyObjectPayload::Instance(inst) => {
+                    let kind = Self::find_exception_kind(&inst.class);
+                    // Derive message from args (CPython: str(exc) uses args)
+                    let msg = if let Some(a) = exc.get_attr("args") {
+                        if let PyObjectPayload::Tuple(items) = &a.payload {
+                            if items.len() == 1 {
+                                items[0].py_to_string()
+                            } else if items.is_empty() {
+                                String::new()
+                            } else {
+                                a.repr()
+                            }
+                        } else {
+                            exc.py_to_string()
+                        }
+                    } else {
+                        exc.py_to_string()
+                    };
+                    PyException::with_original(kind, msg, exc.clone())
+                }
+                PyObjectPayload::Class(_) => {
+                    let kind = Self::find_exception_kind(exc);
+                    PyException::new(kind, "")
+                }
+                _ => PyException::runtime_error(exc.py_to_string()),
+            }
+        };
         match argc {
             0 => {
                 // Bare raise: re-raise the currently active exception
@@ -317,73 +347,17 @@ impl VirtualMachine {
                 return Err(PyException::runtime_error("No active exception to re-raise"));
             }
             1 => {
-                let mut exc = frame.pop();
-                // Validate: only exception classes/instances can be raised
-                match &exc.payload {
-                    PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::ExceptionType(_) => {}
-                    PyObjectPayload::Class(cd) => {
-                        if !cd.is_exception_subclass && !Self::is_exception_class(&exc) {
-                            return Err(PyException::type_error(
-                                "exceptions must derive from BaseException"
-                            ));
-                        }
-                        // `raise SomeClass` → instantiate the class first (CPython: raise X ≡ raise X())
-                        exc = self.instantiate_class(&exc, vec![], vec![])?;
-                    }
-                    PyObjectPayload::Instance(inst) => {
-                        let is_exc = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            cd.is_exception_subclass
-                        } else {
-                            false
-                        };
-                        if !is_exc && !Self::is_exception_class(&inst.class) {
-                            return Err(PyException::type_error(
-                                "exceptions must derive from BaseException"
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(PyException::type_error(
-                            "exceptions must derive from BaseException"
-                        ));
-                    }
-                }
-                let py_exc = Self::raise_exc(&exc);
+                let exc = frame.pop();
+                let py_exc = raise_exc(&exc);
+                // Context chaining (__context__) is deferred to the unwind
+                // path in run_vm() — avoids expensive cloning for exceptions
+                // that are immediately caught in the same frame.
                 return Err(py_exc);
             }
             2 => {
                 let cause = frame.pop();
-                let mut exc = frame.pop();
-                // Validate and instantiate if needed
-                match &exc.payload {
-                    PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::ExceptionType(_) => {}
-                    PyObjectPayload::Class(cd) => {
-                        if !cd.is_exception_subclass && !Self::is_exception_class(&exc) {
-                            return Err(PyException::type_error(
-                                "exceptions must derive from BaseException"
-                            ));
-                        }
-                        exc = self.instantiate_class(&exc, vec![], vec![])?;
-                    }
-                    PyObjectPayload::Instance(inst) => {
-                        let is_exc = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            cd.is_exception_subclass
-                        } else {
-                            false
-                        };
-                        if !is_exc && !Self::is_exception_class(&inst.class) {
-                            return Err(PyException::type_error(
-                                "exceptions must derive from BaseException"
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(PyException::type_error(
-                            "exceptions must derive from BaseException"
-                        ));
-                    }
-                }
-                let mut py_exc = Self::raise_exc(&exc);
+                let exc = frame.pop();
+                let mut py_exc = raise_exc(&exc);
                 // `raise X from None` suppresses the cause
                 if matches!(cause.payload, PyObjectPayload::None) {
                     // Ensure we have an original ExceptionInstance to store attrs on
@@ -396,12 +370,7 @@ impl VirtualMachine {
                         }
                     }
                 } else {
-                    let mut cause_obj = cause.clone();
-                    if matches!(&cause_obj.payload, PyObjectPayload::Class(_)) {
-                        cause_obj = self.instantiate_class(&cause_obj, vec![], vec![])
-                            .unwrap_or(cause_obj);
-                    }
-                    let cause_exc = Self::raise_exc(&cause_obj);
+                    let cause_exc = raise_exc(&cause);
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
@@ -430,44 +399,6 @@ impl VirtualMachine {
         }
     }
 
-    /// Convert a Python exception object into a PyException.
-    /// Handles ExceptionInstance, ExceptionType, Instance (user-defined), and fallback.
-    fn raise_exc(exc: &PyObjectRef) -> PyException {
-        match &exc.payload {
-            PyObjectPayload::ExceptionInstance(ei) => {
-                PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
-            }
-            PyObjectPayload::ExceptionType(kind) => {
-                PyException::new(*kind, "")
-            }
-            PyObjectPayload::Instance(inst) => {
-                let kind = Self::find_exception_kind(&inst.class);
-                let msg = if let Some(a) = exc.get_attr("args") {
-                    if let PyObjectPayload::Tuple(items) = &a.payload {
-                        if items.len() == 1 {
-                            items[0].py_to_string()
-                        } else if items.is_empty() {
-                            String::new()
-                        } else {
-                            a.repr()
-                        }
-                    } else {
-                        exc.py_to_string()
-                    }
-                } else {
-                    exc.py_to_string()
-                };
-                PyException::with_original(kind, msg, exc.clone())
-            }
-            PyObjectPayload::Class(_) => {
-                // Should have been instantiated before reaching here
-                let kind = Self::find_exception_kind(exc);
-                PyException::new(kind, "")
-            }
-            _ => PyException::runtime_error(exc.py_to_string()),
-        }
-    }
-
     fn exec_setup_with(&mut self, arg: u32) -> Result<Option<PyObjectRef>, PyException> {
         let ctx_mgr = self.vm_pop();
         if let PyObjectPayload::Generator(gen_arc) = &ctx_mgr.payload {
@@ -481,9 +412,6 @@ impl VirtualMachine {
             frame.push_block(BlockKind::With, arg as usize);
             frame.push(enter_result);
         } else {
-            // CPython checks __enter__ first
-            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                PyException::attribute_error("__enter__"))?;
             let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
                 PyException::attribute_error("__exit__"))?;
             // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
@@ -498,6 +426,8 @@ impl VirtualMachine {
                 })
             };
             self.vm_push(exit_method);
+            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                PyException::attribute_error("__enter__"))?;
             let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                 (enter_raw, vec![])
             } else {

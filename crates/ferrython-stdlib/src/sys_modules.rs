@@ -10,7 +10,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use indexmap::IndexMap;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(3000);
@@ -58,6 +58,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static CURRENT_FRAME: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
+    static CURRENT_GLOBALS: std::cell::RefCell<Option<SharedGlobals>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Read active exception info for traceback.format_exc() etc.
@@ -96,6 +98,16 @@ pub fn get_excepthook() -> Option<PyObjectRef> {
 /// Set the custom excepthook.
 pub fn set_excepthook(func: Option<PyObjectRef>) {
     EXCEPT_HOOK.with(|c| *c.borrow_mut() = func);
+}
+
+/// Set the current globals (called by VM at script entry).
+pub fn set_current_globals(g: Option<SharedGlobals>) {
+    CURRENT_GLOBALS.with(|c| *c.borrow_mut() = g);
+}
+
+/// Get the current globals (for _getframe fallback).
+pub fn get_current_globals() -> Option<SharedGlobals> {
+    CURRENT_GLOBALS.with(|c| c.borrow().clone())
 }
 
 /// Set the current frame (called by VM before native function dispatch).
@@ -503,10 +515,20 @@ pub fn create_sys_module() -> PyObjectRef {
                 }
                 return Ok(current);
             }
-            // Fallback: return a minimal frame
+            // Fallback: return a minimal frame with current globals if available
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
-            attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));
+            let globals = if let Some(sg) = get_current_globals() {
+                // Build a dict from the live SharedGlobals
+                let g_map = sg.read();
+                let pairs: Vec<_> = g_map.iter()
+                    .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
+                    .collect();
+                PyObject::dict_from_pairs(pairs)
+            } else {
+                PyObject::dict_from_pairs(vec![])
+            };
+            attrs.insert(CompactString::from("f_globals"), globals);
             attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
             attrs.insert(CompactString::from("f_code"), PyObject::none());
             attrs.insert(CompactString::from("f_back"), PyObject::none());
@@ -879,28 +901,6 @@ pub fn create_os_module() -> PyObjectRef {
                         ]))
                         .collect();
                     Ok(PyObject::list(items))
-                }
-            ));
-            attrs.insert(CompactString::from("pop"), PyObject::native_closure(
-                "pop", move |args| {
-                    let real_args = if args.len() > 1 && matches!(&args[0].payload, PyObjectPayload::Module(_)) {
-                        &args[1..]
-                    } else { args };
-                    if real_args.is_empty() { return Err(PyException::key_error("key required")); }
-                    let key_str = real_args[0].py_to_string();
-                    match std::env::var(&key_str) {
-                        Ok(val) => {
-                            unsafe { std::env::remove_var(&key_str); }
-                            Ok(PyObject::str_val(CompactString::from(val)))
-                        }
-                        Err(_) => {
-                            if real_args.len() > 1 {
-                                Ok(real_args[1].clone())
-                            } else {
-                                Err(PyException::key_error(format!("'{}'", key_str)))
-                            }
-                        }
-                    }
                 }
             ));
             attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
@@ -2052,7 +2052,6 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("commonpath", make_builtin(os_path_commonpath)),
         ("commonprefix", make_builtin(os_path_commonprefix)),
         ("samefile", make_builtin(os_path_samefile)),
-        ("normcase", make_builtin(os_path_normcase)),
         ("pardir", PyObject::str_val(CompactString::from(".."))),
         ("curdir", PyObject::str_val(CompactString::from("."))),
         ("extsep", PyObject::str_val(CompactString::from("."))),
@@ -2385,19 +2384,6 @@ fn os_path_islink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.islink", args, 1)?;
     let s = args[0].py_to_string();
     Ok(PyObject::bool_val(std::fs::symlink_metadata(&s).map(|m| m.file_type().is_symlink()).unwrap_or(false)))
-}
-
-fn os_path_normcase(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("os.path.normcase", args, 1)?;
-    // On Unix, normcase is a no-op (returns the path unchanged)
-    // On Windows, it converts to lowercase and replaces / with \
-    let s = args[0].py_to_string();
-    if cfg!(windows) {
-        let s = s.replace('/', "\\").to_lowercase();
-        Ok(PyObject::str_val(CompactString::from(s)))
-    } else {
-        Ok(PyObject::str_val(CompactString::from(s)))
-    }
 }
 
 

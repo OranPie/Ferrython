@@ -97,31 +97,6 @@ thread_local! {
     static REPR_ACTIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
 }
 
-// ── Recursive comparison guard ──
-// Prevents stack overflow when comparing self-referential structures.
-thread_local! {
-    static CMP_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
-}
-
-const MAX_CMP_DEPTH: u32 = 20;
-
-/// Enter a comparison. Returns Ok(()) if recursion is safe, Err(RecursionError) if too deep.
-pub fn cmp_enter() -> PyResult<()> {
-    CMP_DEPTH.with(|d| {
-        let depth = d.get() + 1;
-        if depth > MAX_CMP_DEPTH {
-            return Err(PyException::recursion_error("maximum recursion depth exceeded in comparison"));
-        }
-        d.set(depth);
-        Ok(())
-    })
-}
-
-/// Leave a comparison level.
-pub fn cmp_leave() {
-    CMP_DEPTH.with(|d| { d.set(d.get().saturating_sub(1)); });
-}
-
 /// Check if a dict key is a hidden internal marker (should be excluded from iteration).
 /// Used by defaultdict (__defaultdict_factory__), Counter (__counter__), and OrderedDict (__ordered_dict__, __move_to_end_fn__).
 #[inline]
@@ -237,7 +212,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read(); let b = b.read();
             for (x, y) in a.iter().zip(b.iter()) {
-                if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
                     other => return other,
@@ -247,7 +221,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
             for (x, y) in a.iter().zip(b.iter()) {
-                if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
                     other => return other,
@@ -263,24 +236,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) => a.partial_cmp(b),
         (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
             if ar == br && ai == bi { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Int(n), PyObjectPayload::Complex { real, imag }) => {
-            if *imag == 0.0 && n.to_f64() == *real { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(n)) => {
-            if *imag == 0.0 && *real == n.to_f64() { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Float(f), PyObjectPayload::Complex { real, imag }) => {
-            if *imag == 0.0 && *f == *real { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(f)) => {
-            if *imag == 0.0 && *real == *f { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Bool(b), PyObjectPayload::Complex { real, imag }) => {
-            if *imag == 0.0 && (*b as i64 as f64) == *real { Some(std::cmp::Ordering::Equal) } else { None }
-        }
-        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Bool(b)) => {
-            if *imag == 0.0 && *real == (*b as i64 as f64) { Some(std::cmp::Ordering::Equal) } else { None }
         }
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
@@ -510,82 +465,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
                 }
                 Some(std::cmp::Ordering::Equal)
             } else { None }
-        }
-        // Instance (with custom __eq__) vs non-Instance types
-        (PyObjectPayload::Instance(_inst_a), _) => {
-            fn find_in_mro2(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
-                if let PyObjectPayload::Class(cd) = &cls.payload {
-                    let ns = cd.namespace.read();
-                    if let Some(f) = ns.get(name) { return Some(f.clone()); }
-                    for base in &cd.mro {
-                        if let PyObjectPayload::Class(bcd) = &base.payload {
-                            let bns = bcd.namespace.read();
-                            if let Some(f) = bns.get(name) { return Some(f.clone()); }
-                        }
-                    }
-                }
-                None
-            }
-            if let Some(eq_fn) = find_in_mro2(&_inst_a.class, "__eq__") {
-                match &eq_fn.payload {
-                    PyObjectPayload::NativeFunction(nf) => {
-                        if let Ok(result) = (nf.func)(&[a.clone(), b.clone()]) {
-                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                        }
-                    }
-                    PyObjectPayload::NativeClosure(nc) => {
-                        if let Ok(result) = (nc.func)(&[a.clone(), b.clone()]) {
-                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                        }
-                    }
-                    _ => {
-                        if let Ok(result) = call_callable(&eq_fn, &[a.clone(), b.clone()]) {
-                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        // non-Instance vs Instance: try the Instance's __eq__ (reflected)
-        (_, PyObjectPayload::Instance(_inst_b)) => {
-            fn find_in_mro3(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
-                if let PyObjectPayload::Class(cd) = &cls.payload {
-                    let ns = cd.namespace.read();
-                    if let Some(f) = ns.get(name) { return Some(f.clone()); }
-                    for base in &cd.mro {
-                        if let PyObjectPayload::Class(bcd) = &base.payload {
-                            let bns = bcd.namespace.read();
-                            if let Some(f) = bns.get(name) { return Some(f.clone()); }
-                        }
-                    }
-                }
-                None
-            }
-            if let Some(eq_fn) = find_in_mro3(&_inst_b.class, "__eq__") {
-                match &eq_fn.payload {
-                    PyObjectPayload::NativeFunction(nf) => {
-                        if let Ok(result) = (nf.func)(&[b.clone(), a.clone()]) {
-                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                        }
-                    }
-                    PyObjectPayload::NativeClosure(nc) => {
-                        if let Ok(result) = (nc.func)(&[b.clone(), a.clone()]) {
-                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                        }
-                    }
-                    _ => {
-                        if let Ok(result) = call_callable(&eq_fn, &[b.clone(), a.clone()]) {
-                            if !matches!(result.payload, PyObjectPayload::NotImplemented) {
-                                return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
-                            }
-                        }
-                    }
-                }
-            }
-            None
         }
         _ => None,
     }
@@ -1022,7 +901,6 @@ pub(super) fn resolve_slice(
         .and_then(|s| s.as_int())
         .map(|i| {
             if i < 0 { (len + i).max(if step_val < 0 { -1 } else { 0 }) }
-            else if step_val < 0 { i.min(len - 1) }
             else { i.min(len) }
         })
         .unwrap_or(default_start);
@@ -1168,21 +1046,10 @@ pub type BuiltinFn = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;
 pub fn make_module(name: &str, attrs: Vec<(&str, PyObjectRef)>) -> PyObjectRef {
     let mut map = IndexMap::new();
     map.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
-    let mod_name = CompactString::from(name);
     for (k, v) in attrs {
-        // Set __module__ on native functions so they report the correct module
-        if let PyObjectPayload::NativeFunction(ref nf) = v.payload {
-            if nf.module.is_empty() {
-                let mut nf2 = nf.as_ref().clone();
-                nf2.module = mod_name.clone();
-                let v2 = PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(nf2)));
-                map.insert(CompactString::from(k), v2);
-                continue;
-            }
-        }
         map.insert(CompactString::from(k), v);
     }
-    PyObject::module_with_attrs(mod_name, map)
+    PyObject::module_with_attrs(CompactString::from(name), map)
 }
 
 /// Wrap a bare function pointer as a NativeFunction object.

@@ -32,6 +32,7 @@ pub use sys_modules::get_exc_info;
 pub use sys_modules::{get_trace_func, set_trace_func, get_profile_func, set_profile_func, get_excepthook, set_excepthook};
 pub use sys_modules::{is_trace_active, is_profile_active};
 pub use sys_modules::{set_current_frame, get_current_frame};
+pub use sys_modules::{set_current_globals, get_current_globals};
 pub use sys_modules::set_argv;
 pub use sys_modules::get_argv;
 pub use concurrency_modules::drain_deferred_calls;
@@ -88,6 +89,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "numbers" => Some(math_modules::create_numbers_module()),
         "decimal" => Some(math_modules::create_decimal_module()),
         "random" => Some(math_modules::create_random_module()),
+        "heapq" => Some(math_modules::create_heapq_module()),
         "bisect" => Some(math_modules::create_bisect_module()),
         "fractions" => Some(math_modules::create_fractions_module()),
         "cmath" => Some(math_modules::create_cmath_module()),
@@ -242,7 +244,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_functools" => Some(collection_modules::create_functools_module()),
         "_operator" => Some(collection_modules::create_operator_module()),
         "_csv" => Some(serial_modules::create_csv_module()),
-        "_heapq" => Some(math_modules::create_heapq_c_module()),
+        "_heapq" => Some(math_modules::create_heapq_module()),
         "_json" => Some(serial_modules::create_json_module()),
         "_io" => Some(fs_modules::create_io_module()),
         "_collections" => Some(collection_modules::create_collections_module()),
@@ -256,7 +258,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_builtins" => Some(misc_modules::create_builtins_module()),
         "atexit" => Some(sys_modules::create_atexit_module()),
         "site" => Some(sys_modules::create_site_module()),
-        // "sched" — now using stdlib/Lib/sched.py (pure Python)
+        "sched" => Some(sys_modules::create_sched_module()),
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
         // concurrent — handled by stdlib/Lib/concurrent/futures.py (pure Python)

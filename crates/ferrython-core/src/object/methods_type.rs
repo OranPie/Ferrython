@@ -362,12 +362,6 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                         }
                     }
                 }
-                // Check for data attribute (UserString-like subclasses)
-                if let Some(data) = inst.attrs.read().get("data") {
-                    if let PyObjectPayload::Str(_) = &data.payload {
-                        return data.py_to_string();
-                    }
-                }
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     format!("<{} object>", cd.name)
                 } else { "<object>".into() }
@@ -460,13 +454,10 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 }
             }
             PyObjectPayload::ExceptionInstance(ei) => {
-                if ei.args.is_empty() {
+                if ei.message.is_empty() {
                     format!("{}()", ei.kind)
-                } else if ei.args.len() == 1 {
-                    format!("{}({})", ei.kind, ei.args[0].repr())
                 } else {
-                    let parts: Vec<String> = ei.args.iter().map(|a| a.repr()).collect();
-                    format!("{}({})", ei.kind, parts.join(", "))
+                    format!("{}('{}')", ei.kind, ei.message)
                 }
             }
             PyObjectPayload::Instance(inst) => {

@@ -48,7 +48,6 @@ pub enum ExceptionKind {
     UnicodeDecodeError,
     UnicodeEncodeError,
     UnicodeError,
-    UnicodeTranslateError,
     ValueError,
     Warning,
     DeprecationWarning,
@@ -73,7 +72,6 @@ pub enum ExceptionKind {
     BytesWarning,
     ResourceWarning,
     PendingDeprecationWarning,
-    EncodingWarning,
     // Indentation
     IndentationError,
     TabError,
@@ -129,11 +127,11 @@ impl ExceptionKind {
             ExceptionKind::ValueError => matches!(self,
                 ExceptionKind::ValueError | ExceptionKind::UnicodeError |
                 ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError |
-                ExceptionKind::UnicodeTranslateError | ExceptionKind::JSONDecodeError
+                ExceptionKind::JSONDecodeError
             ),
             ExceptionKind::UnicodeError => matches!(self,
                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
-                ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeTranslateError
+                ExceptionKind::UnicodeEncodeError
             ),
             ExceptionKind::Warning => matches!(self,
                 ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
@@ -141,7 +139,7 @@ impl ExceptionKind {
                 ExceptionKind::SyntaxWarning | ExceptionKind::FutureWarning |
                 ExceptionKind::ImportWarning | ExceptionKind::UnicodeWarning |
                 ExceptionKind::BytesWarning | ExceptionKind::ResourceWarning |
-                ExceptionKind::PendingDeprecationWarning | ExceptionKind::EncodingWarning
+                ExceptionKind::PendingDeprecationWarning
             ),
             ExceptionKind::ImportError => matches!(self,
                 ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
@@ -212,11 +210,9 @@ impl ExceptionKind {
             "UnicodeDecodeError" => Some(Self::UnicodeDecodeError),
             "UnicodeEncodeError" => Some(Self::UnicodeEncodeError),
             "UnicodeError" => Some(Self::UnicodeError),
-            "UnicodeTranslateError" => Some(Self::UnicodeTranslateError),
             "ValueError" => Some(Self::ValueError),
             "Warning" => Some(Self::Warning),
             "DeprecationWarning" => Some(Self::DeprecationWarning),
-            "EncodingWarning" => Some(Self::EncodingWarning),
             "RuntimeWarning" => Some(Self::RuntimeWarning),
             "UserWarning" => Some(Self::UserWarning),
             "TimeoutError" => Some(Self::TimeoutError),
@@ -261,8 +257,6 @@ pub struct PyException {
     pub cause: Option<Box<PyException>>,
     /// Implicit exception context (exception active when this was raised). Maps to __context__.
     pub context: Option<Box<PyException>>,
-    /// Whether __context__ should be suppressed in tracebacks. Maps to __suppress_context__.
-    pub suppress_context: bool,
     /// Value carried by StopIteration (generator return value).
     pub value: Option<PyObjectRef>,
     /// OSError details: (errno, strerror, filename) — populated by `from_io_error`.
@@ -287,10 +281,10 @@ pub struct TracebackEntry {
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<CompactString>) -> Self {
-        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, suppress_context: false, value: None, os_error_info: None }
+        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
     pub fn with_original(kind: ExceptionKind, message: impl Into<CompactString>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, suppress_context: false, value: None, os_error_info: None }
+        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
     /// Ensure this exception has an `original` ExceptionInstance object.
     /// Creates one from `kind`/`message` if absent.
@@ -313,7 +307,6 @@ impl PyException {
     pub fn key_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::KeyError, msg) }
     pub fn zero_division_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ZeroDivisionError, msg) }
     pub fn overflow_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OverflowError, msg) }
-    pub fn memory_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::MemoryError, msg) }
     pub fn stop_iteration() -> Self { Self::new(ExceptionKind::StopIteration, "") }
     pub fn os_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OSError, msg) }
     pub fn file_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }

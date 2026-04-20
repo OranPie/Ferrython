@@ -20,7 +20,7 @@ pub enum CompileError {
         location: SourceLocation,
     },
 
-    #[error("cannot assign to expression at {location}")]
+    #[error("invalid assignment target at {location}")]
     InvalidAssignTarget { location: SourceLocation },
 
     #[error("'break' outside loop at {location}")]

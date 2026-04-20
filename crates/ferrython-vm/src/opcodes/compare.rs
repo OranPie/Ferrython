@@ -6,7 +6,6 @@ use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    helpers::{cmp_enter, cmp_leave},
 };
 use ferrython_core::types::PyInt;
 
@@ -87,13 +86,6 @@ impl VirtualMachine {
             _ => {}
         }
         Ok(None)
-    }
-
-    /// Compare two objects using the full comparison protocol (including Python __eq__).
-    /// Returns the comparison result directly instead of pushing to stack.
-    fn exec_richcompare(&mut self, a: &PyObjectRef, b: &PyObjectRef, op: u32) -> Result<PyObjectRef, PyException> {
-        self.exec_compare_op(op, a.clone(), b.clone())?;
-        Ok(self.vm_pop())
     }
 
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
@@ -182,53 +174,6 @@ impl VirtualMachine {
                 5 => ("__ge__", "__le__"),
                 _ => unreachable!()
             };
-            // Recursion guard for comparing self-referential structures
-            cmp_enter()?;
-            struct CmpGuard;
-            impl Drop for CmpGuard { fn drop(&mut self) { cmp_leave(); } }
-            let _cmp_guard = CmpGuard;
-            // Check if b's type is a proper subclass of a's type (subclass gets priority)
-            let b_is_subclass = if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
-                if !PyObjectRef::ptr_eq(&inst_a.class, &inst_b.class) {
-                    // b is subclass of a if a's class appears in b's MRO
-                    if let PyObjectPayload::Class(cd_b) = &inst_b.class.payload {
-                        cd_b.mro.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
-                            || cd_b.bases.iter().any(|base| PyObjectRef::ptr_eq(base, &inst_a.class))
-                    } else { false }
-                } else { false }
-            } else { false };
-
-            if b_is_subclass {
-                // Subclass priority: try b's reflected dunder first
-                if let PyObjectPayload::Instance(inst) = &b.payload {
-                    if let Some(method) = lookup_in_class_mro(&inst.class, rdunder) {
-                        let bound = self.bind_method(&b, method);
-                        let r = self.call_object(bound, vec![a.clone()])?;
-                        if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                            self.vm_push(r);
-                            return Ok(None);
-                        }
-                    }
-                }
-                // Then try a's dunder
-                if let PyObjectPayload::Instance(inst) = &a.payload {
-                    if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
-                        let bound = self.bind_method(&a, method);
-                        let r = self.call_object(bound, vec![b.clone()])?;
-                        if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                            self.vm_push(r);
-                            return Ok(None);
-                        }
-                    }
-                    if let Some(root_marker) = lookup_in_class_mro(&inst.class, "__total_ordering_root__") {
-                        let root = root_marker.py_to_string();
-                        if let Some(result) = self.derive_total_ordering(&a, &b, dunder, &root)? {
-                            self.vm_push(result);
-                            return Ok(None);
-                        }
-                    }
-                }
-            } else {
             // Try a's dunder via MRO walk
             if let PyObjectPayload::Instance(inst) = &a.payload {
                 if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
@@ -256,37 +201,6 @@ impl VirtualMachine {
                     if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
                         self.vm_push(r);
                         return Ok(None);
-                    }
-                }
-            }
-            }
-            // __ne__ fallback: if __ne__ was not found, derive from __eq__
-            if cmp == 3 {
-                // Check if __eq__ is available to derive __ne__ from
-                // Try a.__eq__ if a is an Instance without __ne__
-                if let PyObjectPayload::Instance(inst) = &a.payload {
-                    if lookup_in_class_mro(&inst.class, "__ne__").is_none() {
-                        if let Some(method) = lookup_in_class_mro(&inst.class, "__eq__") {
-                            let bound = self.bind_method(&a, method);
-                            let r = self.call_object(bound, vec![b.clone()])?;
-                            if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                                self.vm_push(PyObject::bool_val(!r.is_truthy()));
-                                return Ok(None);
-                            }
-                        }
-                    }
-                }
-                // Try b.__eq__ reflected if b is an Instance without __ne__
-                if let PyObjectPayload::Instance(inst) = &b.payload {
-                    if lookup_in_class_mro(&inst.class, "__ne__").is_none() {
-                        if let Some(method) = lookup_in_class_mro(&inst.class, "__eq__") {
-                            let bound = self.bind_method(&b, method);
-                            let r = self.call_object(bound, vec![a.clone()])?;
-                            if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                                self.vm_push(PyObject::bool_val(!r.is_truthy()));
-                                return Ok(None);
-                            }
-                        }
                     }
                 }
             }
@@ -418,35 +332,7 @@ impl VirtualMachine {
                 }
             }
         }
-        // Default comparison for Instance types: if VM MRO lookup above
-        // returned NotImplemented, use identity comparison (don't re-enter py_compare)
-        if let cmp @ 0..=5 = op {
-            let a_is_inst = matches!(&a.payload, PyObjectPayload::Instance(_));
-            let b_is_inst = matches!(&b.payload, PyObjectPayload::Instance(_));
-            if a_is_inst || b_is_inst {
-                let result = match cmp {
-                    2 => PyObject::bool_val(PyObjectRef::ptr_eq(&a, &b)),
-                    3 => PyObject::bool_val(!PyObjectRef::ptr_eq(&a, &b)),
-                    _ => {
-                        // For ordering comparisons, try a.compare() which handles
-                        // non-Instance types correctly (e.g., Instance vs Int)
-                        if a_is_inst && b_is_inst {
-                            return Err(PyException::type_error(format!(
-                                "'{}' not supported between instances of '{}' and '{}'",
-                                match cmp { 0 => "<", 1 => "<=", 4 => ">", _ => ">=" },
-                                a.type_name(), b.type_name()
-                            )));
-                        }
-                        a.compare(&b, match cmp {
-                            0 => CompareOp::Lt, 1 => CompareOp::Le,
-                            4 => CompareOp::Gt, _ => CompareOp::Ge,
-                        })?
-                    }
-                };
-                self.vm_push(result);
-                return Ok(None);
-            }
-        }
+        // 'in' / 'not in' with __contains__
         if op == 6 || op == 7 {
             // Handle Class with __contains__ (e.g., Enum: Color.RED in Color)
             if let PyObjectPayload::Class(cd) = &b.payload {
@@ -504,8 +390,7 @@ impl VirtualMachine {
                     loop {
                         match crate::builtins::iter_advance(&iterator)? {
                             Some((_iter, item)) => {
-                                // Identity check first (NaN: nan is nan → True)
-                                if PyObjectRef::ptr_eq(&item, &a) || item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
                                     found = true;
                                     break;
                                 }
@@ -525,8 +410,7 @@ impl VirtualMachine {
                         let getitem = b.get_attr("__getitem__").unwrap();
                         match self.call_object(getitem, vec![PyObject::int(idx)]) {
                             Ok(item) => {
-                                // Identity check first (NaN: nan is nan → True)
-                                if PyObjectRef::ptr_eq(&item, &a) || item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
                                     found = true;
                                     break;
                                 }
@@ -559,89 +443,11 @@ impl VirtualMachine {
             3 => a.compare(&b, CompareOp::Ne)?,
             4 => a.compare(&b, CompareOp::Gt)?,
             5 => a.compare(&b, CompareOp::Ge)?,
-            6 | 7 => {
-                // 'in' / 'not in': for lists/tuples containing or checking Instance types,
-                // iterate and use VM comparison to call Python __eq__
-                let has_instance = matches!(&a.payload, PyObjectPayload::Instance(_));
-                let is_in = match &b.payload {
-                    PyObjectPayload::List(items) if has_instance || {
-                        let r = items.read();
-                        r.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_)))
-                    } => {
-                        let items = items.read().clone();
-                        let mut found = false;
-                        for x in &items {
-                            if PyObjectRef::ptr_eq(x, &a) {
-                                found = true;
-                                break;
-                            }
-                            // Use VM comparison to call Python __eq__
-                            let eq_result = self.exec_richcompare(x, &a, 2)?;
-                            if eq_result.is_truthy() {
-                                found = true;
-                                break;
-                            }
-                        }
-                        found
-                    }
-                    PyObjectPayload::Tuple(items) if has_instance || items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_))) => {
-                        let mut found = false;
-                        for x in items.iter() {
-                            if PyObjectRef::ptr_eq(x, &a) {
-                                found = true;
-                                break;
-                            }
-                            let eq_result = self.exec_richcompare(x, &a, 2)?;
-                            if eq_result.is_truthy() {
-                                found = true;
-                                break;
-                            }
-                        }
-                        found
-                    }
-                    _ => b.contains(&a)?,
-                };
-                PyObject::bool_val(if op == 6 { is_in } else { !is_in })
-            }
+            6 => PyObject::bool_val(b.contains(&a)?),
+            7 => PyObject::bool_val(!b.contains(&a)?),
             8 => PyObject::bool_val(a.is_same(&b)),
             9 => PyObject::bool_val(!a.is_same(&b)),
             10 => {
-                // Validate: handler must be an exception class (or tuple of such)
-                let validate_exc_handler = |handler: &PyObjectRef| -> Result<(), PyException> {
-                    match &handler.payload {
-                        PyObjectPayload::ExceptionType(_) => Ok(()),
-                        PyObjectPayload::BuiltinType(name) => {
-                            if ExceptionKind::from_name(name).is_some() {
-                                Ok(())
-                            } else {
-                                Err(PyException::type_error(
-                                    "catching classes that do not inherit from BaseException is not allowed"
-                                ))
-                            }
-                        }
-                        PyObjectPayload::Class(cd) => {
-                            if cd.is_exception_subclass || Self::is_exception_class(handler) {
-                                Ok(())
-                            } else {
-                                Err(PyException::type_error(
-                                    "catching classes that do not inherit from BaseException is not allowed"
-                                ))
-                            }
-                        }
-                        _ => Err(PyException::type_error(
-                            "catching classes that do not inherit from BaseException is not allowed"
-                        )),
-                    }
-                };
-                match &b.payload {
-                    PyObjectPayload::Tuple(items) => {
-                        for item in items.iter() {
-                            validate_exc_handler(item)?;
-                        }
-                    }
-                    _ => validate_exc_handler(&b)?,
-                }
-
                 let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {
                     // Case 1: Both are user-defined Class payloads
                     if let PyObjectPayload::Class(cls_a) = &a_item.payload {

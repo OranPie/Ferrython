@@ -436,7 +436,7 @@ class ChainMap:
         return 'ChainMap(%s)' % ', '.join(repr(m) for m in self.maps)
 
 
-class UserDict:
+class UserDict(dict):
     """Wrapper around dictionary objects for easier subclassing."""
 
     def __init__(self, dict=None, **kwargs):
@@ -511,7 +511,7 @@ class UserDict:
         return self.data.setdefault(key, default)
 
 
-class UserList:
+class UserList(list):
     """Wrapper around list objects for easier subclassing."""
 
     def __init__(self, initlist=None):
@@ -592,7 +592,7 @@ class UserList:
             self.data.extend(other)
 
 
-class UserString:
+class UserString(str):
     """Wrapper around string objects for easier subclassing."""
 
     def __init__(self, seq=''):
