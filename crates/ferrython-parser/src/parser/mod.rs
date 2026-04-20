@@ -198,5 +198,7 @@ fn parse_expression_text(text: &str, loc: SourceLocation) -> Result<Expression, 
     if text.is_empty() {
         return Ok(Expression::constant(Constant::Str(CompactString::from("")), loc));
     }
-    parse_expression(text, "<fstring>")
+    // Wrap in parens so newlines inside the expression are allowed (matches CPython).
+    let wrapped = format!("({})", text);
+    parse_expression(&wrapped, "<fstring>")
 }

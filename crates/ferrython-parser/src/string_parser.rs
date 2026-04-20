@@ -241,6 +241,10 @@ fn take_n(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, n: usize) -> Str
 /// Covers the most commonly used names. For full coverage, a crate like
 /// `unicode_names2` could be used, but this table handles the cases that
 /// typically appear in real Python code.
+pub fn unicode_name_to_char_pub(name: &str) -> Option<char> {
+    unicode_name_to_char(name)
+}
+
 fn unicode_name_to_char(name: &str) -> Option<char> {
     let name_upper = name.to_ascii_uppercase();
     // Fast path: common names used in Python code and test suites
@@ -272,6 +276,39 @@ fn unicode_name_to_char(name: &str) -> Option<char> {
         "DIVISION SIGN" => Some('\u{00F7}'),
         // Greek letters (commonly used in math/science)
         "GREEK CAPITAL LETTER DELTA" => Some('\u{0394}'),
+        "LEFT CURLY BRACKET" => Some('{'),
+        "RIGHT CURLY BRACKET" => Some('}'),
+        "LEFT PARENTHESIS" => Some('('),
+        "RIGHT PARENTHESIS" => Some(')'),
+        "LEFT SQUARE BRACKET" => Some('['),
+        "RIGHT SQUARE BRACKET" => Some(']'),
+        "LESS-THAN SIGN" => Some('<'),
+        "GREATER-THAN SIGN" => Some('>'),
+        "COMMA" => Some(','),
+        "COLON" => Some(':'),
+        "SEMICOLON" => Some(';'),
+        "FULL STOP" => Some('.'),
+        "SOLIDUS" => Some('/'),
+        "REVERSE SOLIDUS" => Some('\\'),
+        "QUOTATION MARK" => Some('"'),
+        "APOSTROPHE" => Some('\''),
+        "EXCLAMATION MARK" => Some('!'),
+        "QUESTION MARK" => Some('?'),
+        "SPACE" => Some(' '),
+        "HYPHEN-MINUS" => Some('-'),
+        "LOW LINE" => Some('_'),
+        "ASTERISK" => Some('*'),
+        "PLUS SIGN" => Some('+'),
+        "EQUALS SIGN" => Some('='),
+        "COMMERCIAL AT" => Some('@'),
+        "NUMBER SIGN" => Some('#'),
+        "DOLLAR SIGN" => Some('$'),
+        "PERCENT SIGN" => Some('%'),
+        "AMPERSAND" => Some('&'),
+        "CIRCUMFLEX ACCENT" => Some('^'),
+        "GRAVE ACCENT" => Some('`'),
+        "TILDE" => Some('~'),
+        "VERTICAL LINE" => Some('|'),
         "GREEK CAPITAL LETTER SIGMA" => Some('\u{03A3}'),
         "GREEK CAPITAL LETTER OMEGA" => Some('\u{03A9}'),
         "GREEK SMALL LETTER ALPHA" => Some('\u{03B1}'),

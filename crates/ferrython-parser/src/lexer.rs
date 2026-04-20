@@ -740,6 +740,43 @@ impl<'src> Lexer<'src> {
                                 content.push_str(&hex);
                             }
                         }
+                        'N' => {
+                            // \N{NAME} — unicode named character
+                            if !self.is_at_end() && self.peek_char() == '{' {
+                                self.advance();
+                                let mut name = String::new();
+                                while !self.is_at_end() && self.peek_char() != '}' {
+                                    name.push(self.peek_char());
+                                    self.advance();
+                                }
+                                if !self.is_at_end() { self.advance(); }
+                                match crate::string_parser::unicode_name_to_char_pub(&name) {
+                                    Some(ch) => {
+                                        // F-string parser treats `{` and `}` specially, so we need
+                                        // to emit the escaped forms `{{` and `}}` for literal braces.
+                                        if ch == '{' {
+                                            content.push('{');
+                                            content.push('{');
+                                        } else if ch == '}' {
+                                            content.push('}');
+                                            content.push('}');
+                                        } else {
+                                            content.push(ch);
+                                        }
+                                    }
+                                    None => {
+                                        content.push('\\');
+                                        content.push('N');
+                                        content.push('{');
+                                        content.push_str(&name);
+                                        content.push('}');
+                                    }
+                                }
+                            } else {
+                                content.push('\\');
+                                content.push('N');
+                            }
+                        }
                         _ => { content.push('\\'); content.push(esc); }
                     }
                 }

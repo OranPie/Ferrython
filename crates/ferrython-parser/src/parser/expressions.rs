@@ -847,6 +847,7 @@ impl Parser {
                 let mut format_spec = String::new();
                 let mut in_format_spec = false;
                 let mut in_string: Option<char> = None; // tracks if inside 'x' or "x"
+                let mut in_triple = false; // whether in_string is a triple-quoted string
                 while i < chars.len() && depth > 0 {
                     let c = chars[i];
 
@@ -865,7 +866,22 @@ impl Parser {
                             continue;
                         }
                         if c == quote {
-                            in_string = None;
+                            if in_triple {
+                                // Need three consecutive quotes to end
+                                if i + 2 < chars.len() && chars[i+1] == quote && chars[i+2] == quote {
+                                    if in_format_spec {
+                                        format_spec.push(c); format_spec.push(c); format_spec.push(c);
+                                    } else {
+                                        expr_text.push(c); expr_text.push(c); expr_text.push(c);
+                                    }
+                                    in_string = None;
+                                    in_triple = false;
+                                    i += 3;
+                                    continue;
+                                }
+                            } else {
+                                in_string = None;
+                            }
                         }
                         if in_format_spec {
                             format_spec.push(c);
@@ -878,7 +894,16 @@ impl Parser {
 
                     // Not inside a string — check for quote start
                     if (c == '\'' || c == '"') && !in_format_spec {
+                        // Detect triple-quoted string
+                        if i + 2 < chars.len() && chars[i+1] == c && chars[i+2] == c {
+                            in_string = Some(c);
+                            in_triple = true;
+                            expr_text.push(c); expr_text.push(c); expr_text.push(c);
+                            i += 3;
+                            continue;
+                        }
                         in_string = Some(c);
+                        in_triple = false;
                         expr_text.push(c);
                         i += 1;
                         continue;
@@ -921,14 +946,22 @@ impl Parser {
                     i += 1;
                 }
                 // Handle f-string debug `=` format: f"{x=}" → "x=repr(x)"
-                let debug_eq = expr_text.ends_with('=');
+                // The `=` may be followed by trailing whitespace, e.g. f"{x=  }"
+                let trimmed_end = expr_text.trim_end();
+                let debug_eq = trimmed_end.ends_with('=') && !trimmed_end.ends_with("==")
+                    && !trimmed_end.ends_with("!=") && !trimmed_end.ends_with("<=")
+                    && !trimmed_end.ends_with(">=");
                 if debug_eq {
-                    expr_text.pop(); // remove trailing '='
-                    let prefix = format!("{}=", expr_text);
+                    // The trailing whitespace (between `=` and `}`) is part of the prefix text.
+                    let trailing_ws: String = expr_text[trimmed_end.len()..].to_string();
+                    // Remove trailing ws + '=' from expr_text
+                    expr_text.truncate(trimmed_end.len());
+                    expr_text.pop(); // remove '='
+                    let prefix = format!("{}={}", expr_text, trailing_ws);
                     values.push(Expression::constant(
                         Constant::Str(CompactString::from(&prefix)), loc,
                     ));
-                    if conversion.is_none() {
+                    if conversion.is_none() && format_spec.is_empty() {
                         conversion = Some('r');
                     }
                 }
