@@ -1600,6 +1600,24 @@ fn make_user_string_class() -> PyObjectRef {
         s.hash(&mut hasher);
         Ok(PyObject::int(hasher.finish() as i64))
     }));
+    ns.insert(CompactString::from("encode"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        // Simple UTF-8 encoding
+        Ok(PyObject::bytes(s.as_bytes().to_vec()))
+    }));
+    ns.insert(CompactString::from("__mod__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected value")); }
+        let data = get_user_data(&args[0], "data")?;
+        // Delegate to str.__mod__
+        data.modulo(&args[1])
+    }));
+    ns.insert(CompactString::from("__rmod__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected value")); }
+        let data = get_user_data(&args[0], "data")?;
+        // __rmod__ is called when other % self — use data as format string
+        data.modulo(&args[1])
+    }));
     PyObject::class(CompactString::from("UserString"), vec![], ns)
 }
 

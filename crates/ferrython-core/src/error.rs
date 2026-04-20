@@ -309,6 +309,7 @@ impl PyException {
     pub fn key_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::KeyError, msg) }
     pub fn zero_division_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ZeroDivisionError, msg) }
     pub fn overflow_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OverflowError, msg) }
+    pub fn memory_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::MemoryError, msg) }
     pub fn stop_iteration() -> Self { Self::new(ExceptionKind::StopIteration, "") }
     pub fn os_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OSError, msg) }
     pub fn file_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }

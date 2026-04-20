@@ -64,9 +64,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             },
             PyObjectPayload::Range(rd) => {
                 if rd.step > 0 && rd.start < rd.stop {
-                    Ok(((rd.stop - rd.start + rd.step - 1) / rd.step) as usize)
+                    let diff = (rd.stop as i128) - (rd.start as i128);
+                    let step = rd.step as i128;
+                    Ok(((diff + step - 1) / step) as usize)
                 } else if rd.step < 0 && rd.start > rd.stop {
-                    Ok(((rd.start - rd.stop - rd.step - 1) / (-rd.step)) as usize)
+                    let diff = (rd.start as i128) - (rd.stop as i128);
+                    let step = (-(rd.step as i128)) as i128;
+                    Ok(((diff + step - 1) / step) as usize)
                 } else {
                     Ok(0)
                 }
@@ -76,9 +80,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 match &*data {
                     IteratorData::Range { current, stop, step } => {
                         if *step > 0 && *current < *stop {
-                            Ok(((stop - current + step - 1) / step) as usize)
+                            let diff = (*stop as i128) - (*current as i128);
+                            let s = *step as i128;
+                            Ok(((diff + s - 1) / s) as usize)
                         } else if *step < 0 && *current > *stop {
-                            Ok(((current - stop - step - 1) / (-step)) as usize)
+                            let diff = (*current as i128) - (*stop as i128);
+                            let s = (-(*step as i128)) as i128;
+                            Ok(((diff + s - 1) / s) as usize)
                         } else {
                             Ok(0)
                         }

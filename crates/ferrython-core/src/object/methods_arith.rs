@@ -300,22 +300,34 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::List(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 let read = items.read();
-                let mut result = Vec::with_capacity(read.len() * count);
-                for _ in 0..count { result.extend(read.iter().cloned()); }
-                Ok(PyObject::list(result))
+                let total = read.len().checked_mul(count);
+                match total {
+                    Some(t) if t <= 0x1000_0000 => {
+                        let mut result = Vec::with_capacity(t);
+                        for _ in 0..count { result.extend(read.iter().cloned()); }
+                        Ok(PyObject::list(result))
+                    }
+                    _ => Err(PyException::memory_error("list repetition too large")),
+                }
             }
             (PyObjectPayload::List(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::List(items)) => {
                 let count = *b as usize;
                 let read = items.read();
-                let mut result = Vec::with_capacity(read.len() * count);
+                let mut result = Vec::with_capacity(read.len().saturating_mul(count));
                 for _ in 0..count { result.extend(read.iter().cloned()); }
                 Ok(PyObject::list(result))
             }
             (PyObjectPayload::Tuple(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Tuple(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
-                let mut result = Vec::with_capacity(items.len() * count);
-                for _ in 0..count { result.extend(items.iter().cloned()); }
-                Ok(PyObject::tuple(result))
+                let total = items.len().checked_mul(count);
+                match total {
+                    Some(t) if t <= 0x1000_0000 => {
+                        let mut result = Vec::with_capacity(t);
+                        for _ in 0..count { result.extend(items.iter().cloned()); }
+                        Ok(PyObject::tuple(result))
+                    }
+                    _ => Err(PyException::memory_error("tuple repetition too large")),
+                }
             }
             (PyObjectPayload::Tuple(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::Tuple(items)) => {
                 let count = *b as usize;

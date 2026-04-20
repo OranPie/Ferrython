@@ -71,7 +71,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 let use_comma = inner_spec.contains(',');
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != ',').collect();
                 if let Some(dot_pos) = clean_spec.rfind('.') {
-                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6);
+                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6).min(4096);
                     let num_str = format!("{:.prec$}", f, prec = prec);
                     let result = if use_comma {
                         add_thousands_separator(&num_str, ',')
@@ -97,8 +97,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             'e' | 'E' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
+                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
                 } else { 6 };
                 let raw = if type_char == 'e' {
                     format!("{:.prec$e}", f, prec = prec)
@@ -110,8 +110,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             '%' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
+                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
                 } else { 6 };
                 let pct = f * 100.0;
                 return Ok(format!("{:.prec$}%", pct, prec = prec));
@@ -165,8 +165,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             'g' | 'G' => {
                 let f = obj.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
-                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
+                let prec: usize = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse::<usize>().unwrap_or(6).min(4096)
                 } else { 6usize };
                 // 'g' format: use fixed notation or scientific, whichever is shorter
                 let abs_f = f.abs();

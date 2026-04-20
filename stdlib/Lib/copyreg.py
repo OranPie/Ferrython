@@ -56,17 +56,36 @@ _HEAPTYPE = 1 << 9
 
 def _slotnames(cls):
     """Return a list of slot names for a given class."""
-    names = cls.__dict__.get("__slots__")
-    if names is None:
-        return []
-    if isinstance(names, str):
-        names = [names]
-    result = []
-    for name in names:
-        if name == "__dict__" or name == "__weakref__":
+    # Check cache
+    names = cls.__dict__.get("__copyreg_slotnames__")
+    if names is not None:
+        return names
+
+    # Walk the MRO to collect all __slots__
+    names = []
+    for c in cls.__mro__:
+        if c is object:
             continue
-        result.append(name)
-    return result
+        slots = c.__dict__.get("__slots__")
+        if slots is None:
+            continue
+        if isinstance(slots, str):
+            slots = [slots]
+        for name in slots:
+            if name == "__dict__" or name == "__weakref__":
+                continue
+            # Apply name mangling for private names
+            if name.startswith("__") and not name.endswith("__"):
+                # Mangle: __name -> _ClassName__name
+                stripped = c.__name__.lstrip("_")
+                if stripped:
+                    name = "_%s%s" % (stripped, name)
+            names.append(name)
+    try:
+        cls.__copyreg_slotnames__ = names
+    except (AttributeError, TypeError):
+        pass
+    return names
 
 
 def _reduce_ex(self, protocol=0):
@@ -81,6 +100,10 @@ def _new_type(cls, *args):
 
 def add_extension(module, name, code):
     """Register an extension code for (module, name)."""
+    if not isinstance(code, int):
+        raise TypeError("code must be an int")
+    if code <= 0 or code > 0x7fffffff:
+        raise ValueError("code out of range")
     key = (module, name)
     if key in _extension_registry and _extension_registry[key] != code:
         raise ValueError(

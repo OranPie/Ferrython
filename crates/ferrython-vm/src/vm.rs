@@ -4959,7 +4959,13 @@ impl VirtualMachine {
                                         PyObjectPayload::Str(s) => r.get(&BorrowedStrKey(s.as_str())).cloned(),
                                         PyObjectPayload::Int(PyInt::Small(n)) => r.get(&BorrowedIntKey(*n)).cloned(),
                                         PyObjectPayload::Bool(b) => r.get(&BorrowedIntKey(*b as i64)).cloned(),
-                                        _ => None,
+                                        _ => {
+                                            if let Ok(hk) = key_obj.to_hashable_key() {
+                                                r.get(&hk).cloned()
+                                            } else {
+                                                None
+                                            }
+                                        }
                                     }.unwrap_or_else(PyObject::none);
                                     spush!(frame, val);
                                     hot_ok!(profiling, self.profiler, instr.op)

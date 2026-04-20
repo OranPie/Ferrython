@@ -881,6 +881,28 @@ pub fn create_os_module() -> PyObjectRef {
                     Ok(PyObject::list(items))
                 }
             ));
+            attrs.insert(CompactString::from("pop"), PyObject::native_closure(
+                "pop", move |args| {
+                    let real_args = if args.len() > 1 && matches!(&args[0].payload, PyObjectPayload::Module(_)) {
+                        &args[1..]
+                    } else { args };
+                    if real_args.is_empty() { return Err(PyException::key_error("key required")); }
+                    let key_str = real_args[0].py_to_string();
+                    match std::env::var(&key_str) {
+                        Ok(val) => {
+                            unsafe { std::env::remove_var(&key_str); }
+                            Ok(PyObject::str_val(CompactString::from(val)))
+                        }
+                        Err(_) => {
+                            if real_args.len() > 1 {
+                                Ok(real_args[1].clone())
+                            } else {
+                                Err(PyException::key_error(format!("'{}'", key_str)))
+                            }
+                        }
+                    }
+                }
+            ));
             attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
                 "__repr__", move |_| {
                     Ok(PyObject::str_val(CompactString::from("environ({...})")))
