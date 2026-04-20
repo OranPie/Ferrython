@@ -1625,6 +1625,57 @@ impl VirtualMachine {
                                     compact_str::CompactString::from("bool() takes no keyword arguments"),
                                 ));
                             }
+                            if pos_args.len() > 1 {
+                                return Err(ferrython_core::error::PyException::type_error(
+                                    compact_str::CompactString::from(format!("bool() takes at most 1 argument ({} given)", pos_args.len())),
+                                ));
+                            }
+                            if pos_args.is_empty() {
+                                return Ok(PyObject::bool_val(false));
+                            }
+                            let obj = &pos_args[0];
+                            // Instance with __bool__: call it and enforce return type == bool
+                            if let ferrython_core::object::PyObjectPayload::Instance(_) = &obj.payload {
+                                if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__bool__") {
+                                    let method = self.resolve_descriptor(&raw_method, obj)?;
+                                    let result = self.call_object(method, vec![])?;
+                                    if !matches!(&result.payload, ferrython_core::object::PyObjectPayload::Bool(_)) {
+                                        let tn = result.type_name();
+                                        return Err(ferrython_core::error::PyException::type_error(
+                                            compact_str::CompactString::from(format!("__bool__ should return bool, returned {}", tn)),
+                                        ));
+                                    }
+                                    return Ok(result);
+                                }
+                                if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__len__") {
+                                    let method = self.resolve_descriptor(&raw_method, obj)?;
+                                    let result = self.call_object(method, vec![])?;
+                                    // __len__ must return non-negative int
+                                    match &result.payload {
+                                        ferrython_core::object::PyObjectPayload::Int(n) => {
+                                            let is_neg = match n.to_i64() {
+                                                Some(v) => v < 0,
+                                                None => false, // bignum, rarely negative in practice
+                                            };
+                                            if is_neg {
+                                                return Err(ferrython_core::error::PyException::value_error(
+                                                    compact_str::CompactString::from("__len__() should return >= 0"),
+                                                ));
+                                            }
+                                            return Ok(PyObject::bool_val(!n.is_zero()));
+                                        }
+                                        ferrython_core::object::PyObjectPayload::Bool(b) => {
+                                            return Ok(PyObject::bool_val(*b));
+                                        }
+                                        _ => {
+                                            let tn = result.type_name();
+                                            return Err(ferrython_core::error::PyException::type_error(
+                                                compact_str::CompactString::from(format!("__len__() should return >= 0, returned {}", tn)),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                             return self.call_object(func, pos_args);
                         }
                         "float" | "str" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
