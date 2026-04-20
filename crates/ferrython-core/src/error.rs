@@ -48,6 +48,7 @@ pub enum ExceptionKind {
     UnicodeDecodeError,
     UnicodeEncodeError,
     UnicodeError,
+    UnicodeTranslateError,
     ValueError,
     Warning,
     DeprecationWarning,
@@ -72,6 +73,7 @@ pub enum ExceptionKind {
     BytesWarning,
     ResourceWarning,
     PendingDeprecationWarning,
+    EncodingWarning,
     // Indentation
     IndentationError,
     TabError,
@@ -127,11 +129,11 @@ impl ExceptionKind {
             ExceptionKind::ValueError => matches!(self,
                 ExceptionKind::ValueError | ExceptionKind::UnicodeError |
                 ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError |
-                ExceptionKind::JSONDecodeError
+                ExceptionKind::UnicodeTranslateError | ExceptionKind::JSONDecodeError
             ),
             ExceptionKind::UnicodeError => matches!(self,
                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
-                ExceptionKind::UnicodeEncodeError
+                ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeTranslateError
             ),
             ExceptionKind::Warning => matches!(self,
                 ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
@@ -139,7 +141,7 @@ impl ExceptionKind {
                 ExceptionKind::SyntaxWarning | ExceptionKind::FutureWarning |
                 ExceptionKind::ImportWarning | ExceptionKind::UnicodeWarning |
                 ExceptionKind::BytesWarning | ExceptionKind::ResourceWarning |
-                ExceptionKind::PendingDeprecationWarning
+                ExceptionKind::PendingDeprecationWarning | ExceptionKind::EncodingWarning
             ),
             ExceptionKind::ImportError => matches!(self,
                 ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
@@ -210,9 +212,11 @@ impl ExceptionKind {
             "UnicodeDecodeError" => Some(Self::UnicodeDecodeError),
             "UnicodeEncodeError" => Some(Self::UnicodeEncodeError),
             "UnicodeError" => Some(Self::UnicodeError),
+            "UnicodeTranslateError" => Some(Self::UnicodeTranslateError),
             "ValueError" => Some(Self::ValueError),
             "Warning" => Some(Self::Warning),
             "DeprecationWarning" => Some(Self::DeprecationWarning),
+            "EncodingWarning" => Some(Self::EncodingWarning),
             "RuntimeWarning" => Some(Self::RuntimeWarning),
             "UserWarning" => Some(Self::UserWarning),
             "TimeoutError" => Some(Self::TimeoutError),

@@ -1472,6 +1472,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
                             ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                             ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
+                            ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::UnicodeError),
                             ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
                             ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
                             ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
@@ -1488,7 +1489,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                             ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
                             ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
-                            ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => {
+                            ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning |
+                            ExceptionKind::EncodingWarning => {
                                 Some(ExceptionKind::Warning)
                             }
                             ExceptionKind::BaseExceptionGroup => Some(ExceptionKind::BaseException),
@@ -1533,6 +1535,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::ConnectionRefusedError => ExceptionKind::ConnectionError,
                                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                                 ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
+                                ExceptionKind::UnicodeTranslateError => ExceptionKind::UnicodeError,
                                 ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
                                 ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
                                 ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => ExceptionKind::RuntimeError,
@@ -1545,7 +1548,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                                 ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
                                 ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
-                                ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => ExceptionKind::Warning,
+                                ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning |
+                                ExceptionKind::EncodingWarning => ExceptionKind::Warning,
                                 ExceptionKind::BaseExceptionGroup => ExceptionKind::BaseException,
                                 ExceptionKind::ExceptionGroup => ExceptionKind::BaseExceptionGroup,
                             };
@@ -1716,6 +1720,18 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     // OSError attributes: .errno, .strerror, .filename
                     "errno" | "strerror" | "filename" if ei.kind.is_subclass_of(&ExceptionKind::OSError) => {
                         ei.get_attrs().and_then(|a| a.read().get(name).cloned()).or_else(|| Some(PyObject::none()))
+                    }
+                    "__str__" => {
+                        let obj_ref = obj.clone();
+                        Some(PyObject::native_closure("__str__", move |_args| {
+                            Ok(PyObject::str_val(CompactString::from(obj_ref.py_to_string())))
+                        }))
+                    }
+                    "__repr__" => {
+                        let obj_ref = obj.clone();
+                        Some(PyObject::native_closure("__repr__", move |_args| {
+                            Ok(PyObject::str_val(CompactString::from(obj_ref.repr())))
+                        }))
                     }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
