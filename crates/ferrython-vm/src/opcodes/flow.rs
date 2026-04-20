@@ -516,10 +516,16 @@ impl VirtualMachine {
                 let seq = self.vm_pop();
                 let items = self.vm_collect_iterable(&seq)?;
                 let count = instr.arg as usize;
-                if items.len() != count {
+                if items.len() < count {
                     return Err(PyException::value_error(format!(
                         "not enough values to unpack (expected {}, got {})",
                         count, items.len()
+                    )));
+                }
+                if items.len() > count {
+                    return Err(PyException::value_error(format!(
+                        "too many values to unpack (expected {})",
+                        count
                     )));
                 }
                 let frame = self.vm_frame();

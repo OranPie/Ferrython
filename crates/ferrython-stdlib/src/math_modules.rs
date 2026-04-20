@@ -749,6 +749,28 @@ pub fn create_numbers_module() -> PyObjectRef {
         integral_ns,
     );
 
+    // Register built-in types with their ABCs (matching CPython's numbers module)
+    // int → Integral (and transitively Complex, Real, Rational via MRO)
+    // float → Real (and transitively Complex)
+    // complex → Complex
+    fn add_abc_registry(class_obj: &PyObjectRef, type_names: &[&str]) {
+        if let PyObjectPayload::Class(cd) = &class_obj.payload {
+            let mut registry = IndexMap::new();
+            for &tn in type_names {
+                let key = HashableKey::str_key(CompactString::from(format!("<type:{}>", tn)));
+                registry.insert(key, PyObject::bool_val(true));
+            }
+            cd.namespace.write().insert(
+                CompactString::from("_abc_registry"),
+                PyObject::dict(registry),
+            );
+        }
+    }
+    add_abc_registry(&complex_class, &["complex", "float", "int"]);
+    add_abc_registry(&real_class, &["float", "int"]);
+    add_abc_registry(&rational_class, &["int"]);  // float is NOT Rational
+    add_abc_registry(&integral_class, &["int"]);  // only int is Integral
+
     make_module("numbers", vec![
         ("Number", number_class),
         ("Complex", complex_class),

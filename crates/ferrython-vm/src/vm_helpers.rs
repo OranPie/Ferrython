@@ -1986,8 +1986,12 @@ impl VirtualMachine {
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?)
         };
         if args.len() >= 2 {
+            // Accept None → use caller's globals
+            if matches!(&args[1].payload, PyObjectPayload::None) {
+                let globals = self.call_stack.last().unwrap().globals.clone();
+                self.execute_with_globals(code, globals)?;
             // Accept both Dict and InstanceDict (returned by globals())
-            if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
+            } else if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
                 // InstanceDict: execute directly with the shared attr map
                 let locals_dict = if args.len() >= 3 {
                     Some(&args[2])
@@ -2119,7 +2123,11 @@ impl VirtualMachine {
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
             // Extract globals as FxAttrMap, whether Dict or InstanceDict
-            let (new_globals, globals_source) = if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
+            let (new_globals, globals_source) = if matches!(&args[1].payload, PyObjectPayload::None) {
+                // None → use caller's globals
+                let g = self.vm_frame().globals.read().clone();
+                (g, None)
+            } else if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
                 let g = shared_g.read().clone();
                 (g, Some(args[1].clone()))
             } else if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {

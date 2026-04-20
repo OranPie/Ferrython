@@ -520,21 +520,19 @@ pub(super) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             return Err(PyException::value_error("pow() 3rd argument cannot be 0"));
         }
         if exp_i < 0 {
-            // Modular inverse: pow(a, -1, m) = modular inverse of a mod m (Python 3.8+)
-            // Use extended Euclidean algorithm
-            let a = ((base_i % mod_i) + mod_i) % mod_i;
-            let (g, x, _) = extended_gcd(a, mod_i);
+            // Modular inverse: pow(a, -n, m) = pow(mod_inverse(a, m), n, m)
+            // Use extended Euclidean algorithm with absolute modulus
+            let abs_mod = mod_i.unsigned_abs() as i64;
+            let a = ((base_i % abs_mod) + abs_mod) % abs_mod;
+            let (g, x, _) = extended_gcd(a, abs_mod);
             if g != 1 {
-                return Err(PyException::value_error(format!(
+                return Err(PyException::value_error(
                     "base is not invertible for the given modulus"
-                )));
+                ));
             }
-            let inv = ((x % mod_i) + mod_i) % mod_i;
+            let inv = ((x % abs_mod) + abs_mod) % abs_mod;
             // For exponents < -1, compute pow(inv, -exp, mod)
             let pos_exp = (-exp_i) as u64;
-            if pos_exp == 1 {
-                return Ok(PyObject::int(inv));
-            }
             let result = mod_pow(inv, pos_exp, mod_i);
             return Ok(PyObject::int(result));
         }
@@ -547,17 +545,27 @@ pub(super) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// Modular exponentiation: (base^exp) % modulus using repeated squaring
 fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
-    let m = modulus.unsigned_abs() as u128;
+    let abs_m = modulus.unsigned_abs() as u128;
+    if abs_m <= 1 {
+        // anything mod 1 or -1 is 0
+        return 0;
+    }
     let mut result: u128 = 1;
-    let mut b = ((base as i128 % modulus as i128 + modulus as i128) % modulus as i128) as u128;
+    // Normalize base to [0, abs_m) for unsigned arithmetic
+    let mut b = {
+        let base128 = base as i128;
+        let m128 = abs_m as i128;
+        ((base128 % m128 + m128) % m128) as u128
+    };
     while exp > 0 {
         if exp & 1 == 1 {
-            result = result * b % m;
+            result = result * b % abs_m;
         }
-        b = b * b % m;
+        b = b * b % abs_m;
         exp >>= 1;
     }
-    let r = result as i64;
+    let r = (result % abs_m) as i64;
+    // Adjust sign: Python's modular pow matches the sign of the modulus
     if modulus < 0 && r > 0 { r + modulus } else { r }
 }
 
@@ -1875,14 +1883,37 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
             }
             false
         }
-        // BuiltinType vs ABC Class: check _abc_builtin_types registry
+        // BuiltinType vs ABC Class: check _abc_registry and _abc_builtin_types
         (PyObjectPayload::BuiltinType(type_name), PyObjectPayload::Class(sup_cd)) => {
-            if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
-                if let PyObjectPayload::Set(set) = &registry.payload {
-                    let key = HashableKey::str_key(CompactString::from(type_name.as_str()));
-                    return set.read().contains_key(&key);
+            // Check _abc_registry (populated by ABCMeta.register())
+            let ns = sup_cd.namespace.read();
+            if let Some(registry) = ns.get("_abc_registry") {
+                if let PyObjectPayload::Dict(map) = &registry.payload {
+                    // BuiltinType is hashed as "<type:name>" string key
+                    let bt_key = HashableKey::str_key(CompactString::from(format!("<type:{}>", type_name)));
+                    if map.read().contains_key(&bt_key) {
+                        return true;
+                    }
+                    // Also check Identity keys (if the same object was stored)
+                    for (k, _) in map.read().iter() {
+                        if let HashableKey::Identity(_, registered) = k {
+                            if let PyObjectPayload::BuiltinType(bt) = &registered.payload {
+                                if bt == type_name { return true; }
+                            }
+                        }
+                    }
                 }
             }
+            // Check _abc_builtin_types (legacy/alternative)
+            if let Some(registry) = ns.get("_abc_builtin_types") {
+                if let PyObjectPayload::Set(set) = &registry.payload {
+                    let key = HashableKey::str_key(CompactString::from(type_name.as_str()));
+                    if set.read().contains_key(&key) {
+                        return true;
+                    }
+                }
+            }
+            drop(ns);
             false
         }
         _ => false,

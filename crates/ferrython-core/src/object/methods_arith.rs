@@ -624,11 +624,33 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
                     }
                 }
                 // Negative exponent → float result
-                Ok(PyObject::float(a.to_f64().powf(b.to_f64())))
+                let af = a.to_f64();
+                let bf = b.to_f64();
+                if af == 0.0 && bf < 0.0 {
+                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
+                }
+                Ok(PyObject::float(af.powf(bf)))
             }
-            (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.powf(*b))),
-            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64().powf(*b))),
-            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a.powf(b.to_f64()))),
+            (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
+                if *a == 0.0 && *b < 0.0 {
+                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
+                }
+                Ok(PyObject::float(a.powf(*b)))
+            }
+            (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+                let af = a.to_f64();
+                if af == 0.0 && *b < 0.0 {
+                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
+                }
+                Ok(PyObject::float(af.powf(*b)))
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+                let bf = b.to_f64();
+                if *a == 0.0 && bf < 0.0 {
+                    return Err(PyException::zero_division_error("0.0 cannot be raised to a negative power"));
+                }
+                Ok(PyObject::float(a.powf(bf)))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for **: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
 }

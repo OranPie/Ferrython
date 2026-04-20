@@ -70,6 +70,31 @@ def gnu_getopt(args, shortopts, longopts=[]):
     return opts, prog_args
 
 
+def short_has_arg(opt, shortopts):
+    """Check if a short option requires an argument."""
+    for i, c in enumerate(shortopts):
+        if c == opt:
+            return i + 1 < len(shortopts) and shortopts[i + 1] == ':'
+    raise GetoptError('option -%s not recognized' % opt, opt)
+
+def long_has_args(opt, longopts):
+    """Check if a long option requires an argument. Returns (has_arg, option)."""
+    possibilities = [o for o in longopts if o == opt or o == opt + '=' or o.startswith(opt) or o.startswith(opt + '=')]
+    if not possibilities:
+        raise GetoptError('option --%s not recognized' % opt, opt)
+    # Exact match takes priority
+    if opt in possibilities:
+        return False, opt
+    if opt + '=' in possibilities:
+        return True, opt
+    # Prefix match — must be unique
+    if len(possibilities) > 1:
+        raise GetoptError('option --%s not a unique prefix' % opt, opt)
+    match = possibilities[0]
+    if match.endswith('='):
+        return True, match[:-1]
+    return False, match
+
 def do_longs(opts, opt, longopts, args):
     """Process a long option."""
     if '=' in opt:
