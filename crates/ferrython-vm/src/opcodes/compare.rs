@@ -88,6 +88,13 @@ impl VirtualMachine {
         Ok(None)
     }
 
+    /// Compare two objects using the full comparison protocol (including Python __eq__).
+    /// Returns the comparison result directly instead of pushing to stack.
+    fn exec_richcompare(&mut self, a: &PyObjectRef, b: &PyObjectRef, op: u32) -> Result<PyObjectRef, PyException> {
+        self.exec_compare_op(op, a.clone(), b.clone())?;
+        Ok(self.vm_pop())
+    }
+
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         if instr.op == Opcode::LoadFastCompareConstJump {
             // Fallback path: decompose to LoadFast + LoadConst + CompareOp + PopJumpIfFalse
@@ -201,6 +208,36 @@ impl VirtualMachine {
                     if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
                         self.vm_push(r);
                         return Ok(None);
+                    }
+                }
+            }
+            // __ne__ fallback: if __ne__ was not found, derive from __eq__
+            if cmp == 3 {
+                // Check if __eq__ is available to derive __ne__ from
+                // Try a.__eq__ if a is an Instance without __ne__
+                if let PyObjectPayload::Instance(inst) = &a.payload {
+                    if lookup_in_class_mro(&inst.class, "__ne__").is_none() {
+                        if let Some(method) = lookup_in_class_mro(&inst.class, "__eq__") {
+                            let bound = self.bind_method(&a, method);
+                            let r = self.call_object(bound, vec![b.clone()])?;
+                            if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
+                                self.vm_push(PyObject::bool_val(!r.is_truthy()));
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                // Try b.__eq__ reflected if b is an Instance without __ne__
+                if let PyObjectPayload::Instance(inst) = &b.payload {
+                    if lookup_in_class_mro(&inst.class, "__ne__").is_none() {
+                        if let Some(method) = lookup_in_class_mro(&inst.class, "__eq__") {
+                            let bound = self.bind_method(&b, method);
+                            let r = self.call_object(bound, vec![a.clone()])?;
+                            if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
+                                self.vm_push(PyObject::bool_val(!r.is_truthy()));
+                                return Ok(None);
+                            }
+                        }
                     }
                 }
             }
@@ -445,8 +482,50 @@ impl VirtualMachine {
             3 => a.compare(&b, CompareOp::Ne)?,
             4 => a.compare(&b, CompareOp::Gt)?,
             5 => a.compare(&b, CompareOp::Ge)?,
-            6 => PyObject::bool_val(b.contains(&a)?),
-            7 => PyObject::bool_val(!b.contains(&a)?),
+            6 | 7 => {
+                // 'in' / 'not in': for lists/tuples containing or checking Instance types,
+                // iterate and use VM comparison to call Python __eq__
+                let has_instance = matches!(&a.payload, PyObjectPayload::Instance(_));
+                let is_in = match &b.payload {
+                    PyObjectPayload::List(items) if has_instance || {
+                        let r = items.read();
+                        r.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_)))
+                    } => {
+                        let items = items.read().clone();
+                        let mut found = false;
+                        for x in &items {
+                            if PyObjectRef::ptr_eq(x, &a) {
+                                found = true;
+                                break;
+                            }
+                            // Use VM comparison to call Python __eq__
+                            let eq_result = self.exec_richcompare(x, &a, 2)?;
+                            if eq_result.is_truthy() {
+                                found = true;
+                                break;
+                            }
+                        }
+                        found
+                    }
+                    PyObjectPayload::Tuple(items) if has_instance || items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_))) => {
+                        let mut found = false;
+                        for x in items.iter() {
+                            if PyObjectRef::ptr_eq(x, &a) {
+                                found = true;
+                                break;
+                            }
+                            let eq_result = self.exec_richcompare(x, &a, 2)?;
+                            if eq_result.is_truthy() {
+                                found = true;
+                                break;
+                            }
+                        }
+                        found
+                    }
+                    _ => b.contains(&a)?,
+                };
+                PyObject::bool_val(if op == 6 { is_in } else { !is_in })
+            }
             8 => PyObject::bool_val(a.is_same(&b)),
             9 => PyObject::bool_val(!a.is_same(&b)),
             10 => {

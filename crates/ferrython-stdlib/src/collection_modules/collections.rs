@@ -1615,8 +1615,8 @@ fn make_user_string_class() -> PyObjectRef {
     ns.insert(CompactString::from("__rmod__"), make_builtin(|args| {
         if args.len() < 2 { return Err(PyException::type_error("expected value")); }
         let data = get_user_data(&args[0], "data")?;
-        // __rmod__ is called when other % self — use data as format string
-        data.modulo(&args[1])
+        // __rmod__: other % self => other % self.data
+        args[1].modulo(&data)
     }));
     PyObject::class(CompactString::from("UserString"), vec![], ns)
 }

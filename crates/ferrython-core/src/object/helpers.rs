@@ -241,6 +241,24 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
             if ar == br && ai == bi { Some(std::cmp::Ordering::Equal) } else { None }
         }
+        (PyObjectPayload::Int(n), PyObjectPayload::Complex { real, imag }) => {
+            if *imag == 0.0 && n.to_f64() == *real { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(n)) => {
+            if *imag == 0.0 && *real == n.to_f64() { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Float(f), PyObjectPayload::Complex { real, imag }) => {
+            if *imag == 0.0 && *f == *real { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(f)) => {
+            if *imag == 0.0 && *real == *f { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Bool(b), PyObjectPayload::Complex { real, imag }) => {
+            if *imag == 0.0 && (*b as i64 as f64) == *real { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Bool(b)) => {
+            if *imag == 0.0 && *real == (*b as i64 as f64) { Some(std::cmp::Ordering::Equal) } else { None }
+        }
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
@@ -469,6 +487,70 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
                 }
                 Some(std::cmp::Ordering::Equal)
             } else { None }
+        }
+        // Instance (with custom __eq__) vs non-Instance types
+        (PyObjectPayload::Instance(_inst_a), _) => {
+            fn find_in_mro2(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let ns = cd.namespace.read();
+                    if let Some(f) = ns.get(name) { return Some(f.clone()); }
+                    for base in &cd.mro {
+                        if let PyObjectPayload::Class(bcd) = &base.payload {
+                            let bns = bcd.namespace.read();
+                            if let Some(f) = bns.get(name) { return Some(f.clone()); }
+                        }
+                    }
+                }
+                None
+            }
+            if let Some(eq_fn) = find_in_mro2(&_inst_a.class, "__eq__") {
+                match &eq_fn.payload {
+                    PyObjectPayload::NativeFunction(nf) => {
+                        if let Ok(result) = (nf.func)(&[a.clone(), b.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    PyObjectPayload::NativeClosure(nc) => {
+                        if let Ok(result) = (nc.func)(&[a.clone(), b.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        // non-Instance vs Instance: try the Instance's __eq__ (reflected)
+        (_, PyObjectPayload::Instance(_inst_b)) => {
+            fn find_in_mro3(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let ns = cd.namespace.read();
+                    if let Some(f) = ns.get(name) { return Some(f.clone()); }
+                    for base in &cd.mro {
+                        if let PyObjectPayload::Class(bcd) = &base.payload {
+                            let bns = bcd.namespace.read();
+                            if let Some(f) = bns.get(name) { return Some(f.clone()); }
+                        }
+                    }
+                }
+                None
+            }
+            if let Some(eq_fn) = find_in_mro3(&_inst_b.class, "__eq__") {
+                match &eq_fn.payload {
+                    PyObjectPayload::NativeFunction(nf) => {
+                        if let Ok(result) = (nf.func)(&[b.clone(), a.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    PyObjectPayload::NativeClosure(nc) => {
+                        if let Ok(result) = (nc.func)(&[b.clone(), a.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
         }
         _ => None,
     }

@@ -76,13 +76,64 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 CompareOp::Ge => "__ge__",
             };
             if let PyObjectPayload::Instance(inst) = &a.payload {
-                if let Some(method) = inst.attrs.read().get(dunder).cloned() {
+                // Check instance attrs first, then class MRO
+                let method = inst.attrs.read().get(dunder).cloned()
+                    .or_else(|| {
+                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            let ns = cd.namespace.read();
+                            if let Some(f) = ns.get(dunder) { return Some(f.clone()); }
+                            for base in &cd.mro {
+                                if let PyObjectPayload::Class(bcd) = &base.payload {
+                                    let bns = bcd.namespace.read();
+                                    if let Some(f) = bns.get(dunder) { return Some(f.clone()); }
+                                }
+                            }
+                        }
+                        None
+                    });
+                if let Some(method) = method {
                     match &method.payload {
                         PyObjectPayload::NativeClosure(nc) => {
                             return (nc.func)(&[a.clone(), b.clone()]);
                         }
                         PyObjectPayload::NativeFunction(nf) => {
                             return (nf.func)(&[a.clone(), b.clone()]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Also check RHS for reflected comparison (e.g., 2 == Cmp(2.0) → Cmp.__eq__(Cmp(2.0), 2))
+            let rdunder = match op {
+                CompareOp::Eq => "__eq__",
+                CompareOp::Ne => "__ne__",
+                CompareOp::Lt => "__gt__",
+                CompareOp::Le => "__ge__",
+                CompareOp::Gt => "__lt__",
+                CompareOp::Ge => "__le__",
+            };
+            if let PyObjectPayload::Instance(inst) = &b.payload {
+                let method = inst.attrs.read().get(rdunder).cloned()
+                    .or_else(|| {
+                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            let ns = cd.namespace.read();
+                            if let Some(f) = ns.get(rdunder) { return Some(f.clone()); }
+                            for base in &cd.mro {
+                                if let PyObjectPayload::Class(bcd) = &base.payload {
+                                    let bns = bcd.namespace.read();
+                                    if let Some(f) = bns.get(rdunder) { return Some(f.clone()); }
+                                }
+                            }
+                        }
+                        None
+                    });
+                if let Some(method) = method {
+                    match &method.payload {
+                        PyObjectPayload::NativeClosure(nc) => {
+                            return (nc.func)(&[b.clone(), a.clone()]);
+                        }
+                        PyObjectPayload::NativeFunction(nf) => {
+                            return (nf.func)(&[b.clone(), a.clone()]);
                         }
                         _ => {}
                     }

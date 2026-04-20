@@ -362,6 +362,12 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                         }
                     }
                 }
+                // Check for data attribute (UserString-like subclasses)
+                if let Some(data) = inst.attrs.read().get("data") {
+                    if let PyObjectPayload::Str(_) = &data.payload {
+                        return data.py_to_string();
+                    }
+                }
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     format!("<{} object>", cd.name)
                 } else { "<object>".into() }

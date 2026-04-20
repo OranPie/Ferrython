@@ -2520,38 +2520,49 @@ impl VirtualMachine {
                         }
                         PyObjectPayload::List(items) => {
                             let items = unsafe { &*items.data_ptr() };
-                            Some(items.iter().any(|x| {
-                                PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
-                                    (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
-                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
-                                    (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
-                                    (PyObjectPayload::None, PyObjectPayload::None) => true,
-                                    (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
-                                        a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
-                                            ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
-                                        })
+                            // If any element or needle is Instance, bail to full handler
+                            if matches!(&needle.payload, PyObjectPayload::Instance(_)) ||
+                               items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_))) {
+                                None
+                            } else {
+                                Some(items.iter().any(|x| {
+                                    PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
+                                        (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                        (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
+                                        (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
+                                        (PyObjectPayload::None, PyObjectPayload::None) => true,
+                                        (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
+                                            a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
+                                                ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
+                                            })
+                                        }
+                                        _ => x.is_same(needle),
                                     }
-                                    _ => x.is_same(needle),
-                                }
-                            }))
+                                }))
+                            }
                         }
                         PyObjectPayload::Tuple(items) => {
-                            Some(items.iter().any(|x| {
-                                PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
-                                    (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
-                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
-                                    (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
-                                    (PyObjectPayload::None, PyObjectPayload::None) => true,
-                                    (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
-                                        a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
-                                            ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
-                                        })
+                            if matches!(&needle.payload, PyObjectPayload::Instance(_)) ||
+                               items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_))) {
+                                None
+                            } else {
+                                Some(items.iter().any(|x| {
+                                    PyObjectRef::ptr_eq(x, needle) || match (&x.payload, &needle.payload) {
+                                        (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                        (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
+                                        (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
+                                        (PyObjectPayload::None, PyObjectPayload::None) => true,
+                                        (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
+                                            a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
+                                                ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
+                                            })
+                                        }
+                                        _ => x.is_same(needle),
                                     }
-                                    _ => x.is_same(needle),
-                                }
-                            }))
+                                }))
+                            }
                         }
                         PyObjectPayload::Str(haystack_s) => {
                             if let PyObjectPayload::Str(needle_s) = &needle.payload {
