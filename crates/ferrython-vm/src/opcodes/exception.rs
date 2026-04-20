@@ -318,10 +318,35 @@ impl VirtualMachine {
             }
             1 => {
                 let mut exc = frame.pop();
-                // `raise SomeClass` → instantiate the class first (CPython: raise X ≡ raise X())
-                if matches!(&exc.payload, PyObjectPayload::Class(_)) {
-                    exc = self.instantiate_class(&exc, vec![], vec![])
-                        .map_err(|e| e)?;
+                // Validate: only exception classes/instances can be raised
+                match &exc.payload {
+                    PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::ExceptionType(_) => {}
+                    PyObjectPayload::Class(cd) => {
+                        if !cd.is_exception_subclass && !Self::is_exception_class(&exc) {
+                            return Err(PyException::type_error(
+                                "exceptions must derive from BaseException"
+                            ));
+                        }
+                        // `raise SomeClass` → instantiate the class first (CPython: raise X ≡ raise X())
+                        exc = self.instantiate_class(&exc, vec![], vec![])?;
+                    }
+                    PyObjectPayload::Instance(inst) => {
+                        let is_exc = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.is_exception_subclass
+                        } else {
+                            false
+                        };
+                        if !is_exc && !Self::is_exception_class(&inst.class) {
+                            return Err(PyException::type_error(
+                                "exceptions must derive from BaseException"
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(PyException::type_error(
+                            "exceptions must derive from BaseException"
+                        ));
+                    }
                 }
                 let py_exc = Self::raise_exc(&exc);
                 return Err(py_exc);
@@ -329,9 +354,34 @@ impl VirtualMachine {
             2 => {
                 let cause = frame.pop();
                 let mut exc = frame.pop();
-                // `raise SomeClass from cause` → instantiate first
-                if matches!(&exc.payload, PyObjectPayload::Class(_)) {
-                    exc = self.instantiate_class(&exc, vec![], vec![])?;
+                // Validate and instantiate if needed
+                match &exc.payload {
+                    PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::ExceptionType(_) => {}
+                    PyObjectPayload::Class(cd) => {
+                        if !cd.is_exception_subclass && !Self::is_exception_class(&exc) {
+                            return Err(PyException::type_error(
+                                "exceptions must derive from BaseException"
+                            ));
+                        }
+                        exc = self.instantiate_class(&exc, vec![], vec![])?;
+                    }
+                    PyObjectPayload::Instance(inst) => {
+                        let is_exc = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.is_exception_subclass
+                        } else {
+                            false
+                        };
+                        if !is_exc && !Self::is_exception_class(&inst.class) {
+                            return Err(PyException::type_error(
+                                "exceptions must derive from BaseException"
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(PyException::type_error(
+                            "exceptions must derive from BaseException"
+                        ));
+                    }
                 }
                 let mut py_exc = Self::raise_exc(&exc);
                 // `raise X from None` suppresses the cause

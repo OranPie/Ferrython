@@ -2163,6 +2163,34 @@ impl VirtualMachine {
                 // Check if we have a separate locals dict (args[2] that is not None)
                 let has_separate_locals = args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None);
 
+                // When globals is None and locals is None (or not provided),
+                // merge caller's local variables into the execution namespace.
+                // This matches CPython's eval() behavior where eval(expr) and
+                // eval(expr, None, None) can see the caller's local variables.
+                let globals_is_none = matches!(&args[1].payload, PyObjectPayload::None);
+                if globals_is_none && !has_separate_locals {
+                    let frame = self.call_stack.last().unwrap();
+                    // Merge fast locals (function parameters and local variables)
+                    for (i, name) in frame.code.varnames.iter().enumerate() {
+                        if let Some(Some(val)) = frame.locals.get(i) {
+                            exec_globals.insert(name.clone(), val.clone());
+                        }
+                    }
+                    // Merge local_names (class scope, etc.)
+                    for (k, v) in frame.local_names_iter() {
+                        exec_globals.insert(k.clone(), v.clone());
+                    }
+                    // Merge cell/free variables
+                    for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+                        if let Some(cell) = frame.cells.get(i) {
+                            let cell_val = cell.read();
+                            if let Some(val) = cell_val.as_ref() {
+                                exec_globals.insert(name.clone(), val.clone());
+                            }
+                        }
+                    }
+                }
+
                 // Merge locals entries into globals for name resolution
                 let original_global_keys: std::collections::HashSet<CompactString> =
                     exec_globals.keys().cloned().collect();
@@ -2180,18 +2208,20 @@ impl VirtualMachine {
                 let results = shared.read();
                 if has_separate_locals {
                     // Write back globals
-                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = sg.write();
-                        for (k, v) in results.iter() {
-                            if original_global_keys.contains(k) {
-                                gm.insert(k.clone(), v.clone());
+                    if let Some(gs) = globals_source.as_ref() {
+                        if let PyObjectPayload::InstanceDict(ref sg) = gs.payload {
+                            let mut gm = sg.write();
+                            for (k, v) in results.iter() {
+                                if original_global_keys.contains(k) {
+                                    gm.insert(k.clone(), v.clone());
+                                }
                             }
-                        }
-                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = globs_map.write();
-                        for (k, v) in results.iter() {
-                            if original_global_keys.contains(k) {
-                                gm.insert(HashableKey::str_key(k.clone()), v.clone());
+                        } else if let PyObjectPayload::Dict(ref globs_map) = gs.payload {
+                            let mut gm = globs_map.write();
+                            for (k, v) in results.iter() {
+                                if original_global_keys.contains(k) {
+                                    gm.insert(HashableKey::str_key(k.clone()), v.clone());
+                                }
                             }
                         }
                     }
@@ -2200,17 +2230,21 @@ impl VirtualMachine {
                     Self::write_back_locals(&args[2], &results, &ogk);
                 } else {
                     // No separate locals: write everything back to globals
-                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = sg.write();
-                        for (k, v) in results.iter() {
-                            gm.insert(k.clone(), v.clone());
-                        }
-                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = globs_map.write();
-                        for (k, v) in results.iter() {
-                            gm.insert(HashableKey::str_key(k.clone()), v.clone());
+                    if let Some(gs) = globals_source.as_ref() {
+                        if let PyObjectPayload::InstanceDict(ref sg) = gs.payload {
+                            let mut gm = sg.write();
+                            for (k, v) in results.iter() {
+                                gm.insert(k.clone(), v.clone());
+                            }
+                        } else if let PyObjectPayload::Dict(ref globs_map) = gs.payload {
+                            let mut gm = globs_map.write();
+                            for (k, v) in results.iter() {
+                                gm.insert(HashableKey::str_key(k.clone()), v.clone());
+                            }
                         }
                     }
+                    // When globals_source is None (caller's globals), results were
+                    // already written to the shared globals during execution
                 }
                 drop(results);
 
@@ -2222,7 +2256,27 @@ impl VirtualMachine {
                 }
                 Ok(PyObject::none())
         } else {
-            let globals = self.call_stack.last().unwrap().globals.clone();
+            // eval(expr) with no globals/locals — use caller's globals + locals
+            let frame = self.call_stack.last().unwrap();
+            let mut g = frame.globals.read().clone();
+            // Merge fast locals (function parameters and local variables)
+            for (i, name) in frame.code.varnames.iter().enumerate() {
+                if let Some(Some(val)) = frame.locals.get(i) {
+                    g.insert(name.clone(), val.clone());
+                }
+            }
+            for (k, v) in frame.local_names_iter() {
+                g.insert(k.clone(), v.clone());
+            }
+            for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+                if let Some(cell) = frame.cells.get(i) {
+                    let cell_val = cell.read();
+                    if let Some(val) = cell_val.as_ref() {
+                        g.insert(name.clone(), val.clone());
+                    }
+                }
+            }
+            let globals = Rc::new(PyCell::new(g));
             let exec_result = self.execute_with_globals(code, globals.clone())?;
             // Check for __eval_result__ in globals (set by compile(mode='eval'))
             if let Some(val) = globals.read().get("__eval_result__").cloned() {
