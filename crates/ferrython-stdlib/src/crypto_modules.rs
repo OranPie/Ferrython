@@ -309,8 +309,10 @@ pub fn create_secrets_module() -> PyObjectRef {
         ("token_hex", make_builtin(secrets_token_hex)),
         ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
         ("randbelow", make_builtin(secrets_randbelow)),
+        ("randbits", make_builtin(secrets_randbits)),
         ("choice", make_builtin(secrets_choice)),
         ("compare_digest", make_builtin(secrets_compare_digest)),
+        ("DEFAULT_ENTROPY", PyObject::int(32)),
     ])
 }
 
@@ -347,19 +349,19 @@ fn secrets_random_f64() -> f64 {
 }
 
 fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
     Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
 }
 
 fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
     let bytes = secrets_random_bytes(nbytes);
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     Ok(PyObject::str_val(CompactString::from(hex)))
 }
 
 fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) { 32 } else { args[0].to_int()? as usize };
     let bytes = secrets_random_bytes(nbytes);
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
@@ -380,6 +382,23 @@ fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         i += 3;
     }
     Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn secrets_randbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.randbits", args, 1)?;
+    let k = args[0].to_int()? as usize;
+    if k == 0 {
+        return Ok(PyObject::int(0));
+    }
+    let nbytes = (k + 7) / 8;
+    let bytes = secrets_random_bytes(nbytes);
+    let mut n: i64 = 0;
+    for &b in &bytes {
+        n = (n << 8) | b as i64;
+    }
+    // Mask to k bits
+    n &= (1i64 << k) - 1;
+    Ok(PyObject::int(n))
 }
 
 fn secrets_randbelow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -404,6 +423,14 @@ fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("secrets.compare_digest", args, 2)?;
+    let a_is_str = matches!(&args[0].payload, PyObjectPayload::Str(_));
+    let a_is_bytes = matches!(&args[0].payload, PyObjectPayload::Bytes(_));
+    let b_is_str = matches!(&args[1].payload, PyObjectPayload::Str(_));
+    let b_is_bytes = matches!(&args[1].payload, PyObjectPayload::Bytes(_));
+    // Both must be same type (both str or both bytes)
+    if !((a_is_str && b_is_str) || (a_is_bytes && b_is_bytes)) {
+        return Err(PyException::type_error("unsupported operand type(s) for compare_digest"));
+    }
     let a = args[0].py_to_string();
     let b = args[1].py_to_string();
     let a_bytes = a.as_bytes();

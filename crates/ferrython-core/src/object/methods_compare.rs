@@ -3,10 +3,18 @@
 use crate::error::PyResult;
 
 use super::payload::*;
-use super::helpers::{partial_cmp_objects, unwrap_builtin_subclass};
+use super::helpers::{partial_cmp_objects, unwrap_builtin_subclass, cmp_enter, cmp_leave};
 use super::methods::CompareOp;
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
+        // Recursion guard for comparing self-referential structures
+        cmp_enter()?;
+        let result = py_compare_inner(a, b, op);
+        cmp_leave();
+        result
+}
+
+fn py_compare_inner(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
         // Unwrap builtin subclass instances for comparison
         let ua = unwrap_builtin_subclass(a);
         let ub = unwrap_builtin_subclass(b);

@@ -6,6 +6,7 @@ use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    helpers::{cmp_enter, cmp_leave},
 };
 use ferrython_core::types::PyInt;
 
@@ -181,6 +182,11 @@ impl VirtualMachine {
                 5 => ("__ge__", "__le__"),
                 _ => unreachable!()
             };
+            // Recursion guard for comparing self-referential structures
+            cmp_enter()?;
+            struct CmpGuard;
+            impl Drop for CmpGuard { fn drop(&mut self) { cmp_leave(); } }
+            let _cmp_guard = CmpGuard;
             // Check if b's type is a proper subclass of a's type (subclass gets priority)
             let b_is_subclass = if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
                 if !PyObjectRef::ptr_eq(&inst_a.class, &inst_b.class) {

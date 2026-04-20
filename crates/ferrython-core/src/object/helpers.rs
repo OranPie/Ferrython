@@ -97,6 +97,31 @@ thread_local! {
     static REPR_ACTIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
 }
 
+// ── Recursive comparison guard ──
+// Prevents stack overflow when comparing self-referential structures.
+thread_local! {
+    static CMP_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+}
+
+const MAX_CMP_DEPTH: u32 = 20;
+
+/// Enter a comparison. Returns Ok(()) if recursion is safe, Err(RecursionError) if too deep.
+pub fn cmp_enter() -> PyResult<()> {
+    CMP_DEPTH.with(|d| {
+        let depth = d.get() + 1;
+        if depth > MAX_CMP_DEPTH {
+            return Err(PyException::recursion_error("maximum recursion depth exceeded in comparison"));
+        }
+        d.set(depth);
+        Ok(())
+    })
+}
+
+/// Leave a comparison level.
+pub fn cmp_leave() {
+    CMP_DEPTH.with(|d| { d.set(d.get().saturating_sub(1)); });
+}
+
 /// Check if a dict key is a hidden internal marker (should be excluded from iteration).
 /// Used by defaultdict (__defaultdict_factory__), Counter (__counter__), and OrderedDict (__ordered_dict__, __move_to_end_fn__).
 #[inline]
@@ -212,7 +237,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read(); let b = b.read();
             for (x, y) in a.iter().zip(b.iter()) {
-                // Identity check first (CPython: PyObject_RichCompareBool checks identity)
                 if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
@@ -223,7 +247,6 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
             for (x, y) in a.iter().zip(b.iter()) {
-                // Identity check first (CPython: PyObject_RichCompareBool checks identity)
                 if PyObjectRef::ptr_eq(x, y) { continue; }
                 match partial_cmp_objects(x, y) {
                     Some(std::cmp::Ordering::Equal) => continue,
