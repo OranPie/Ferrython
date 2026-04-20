@@ -1753,12 +1753,22 @@ pub fn create_fnmatch_module() -> PyObjectRef {
     make_module("fnmatch", vec![
         ("fnmatch", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("fnmatch requires name and pattern")); }
+            let a_bytes = matches!(args[0].payload, PyObjectPayload::Bytes(_));
+            let b_bytes = matches!(args[1].payload, PyObjectPayload::Bytes(_));
+            if a_bytes != b_bytes {
+                return Err(PyException::type_error("can't mix str and bytes in fnmatch"));
+            }
             let name = args[0].py_to_string();
             let pattern = args[1].py_to_string();
             Ok(PyObject::bool_val(glob_match(&pattern, &name)))
         })),
         ("fnmatchcase", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("fnmatchcase requires name and pattern")); }
+            let a_bytes = matches!(args[0].payload, PyObjectPayload::Bytes(_));
+            let b_bytes = matches!(args[1].payload, PyObjectPayload::Bytes(_));
+            if a_bytes != b_bytes {
+                return Err(PyException::type_error("can't mix str and bytes in fnmatchcase"));
+            }
             let name = args[0].py_to_string();
             let pattern = args[1].py_to_string();
             Ok(PyObject::bool_val(glob_match(&pattern, &name)))
@@ -1766,6 +1776,13 @@ pub fn create_fnmatch_module() -> PyObjectRef {
         ("filter", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("filter requires names and pattern")); }
             let names = args[0].to_list()?;
+            let pat_bytes = matches!(args[1].payload, PyObjectPayload::Bytes(_));
+            if let Some(first) = names.first() {
+                let name_bytes = matches!(first.payload, PyObjectPayload::Bytes(_));
+                if name_bytes != pat_bytes {
+                    return Err(PyException::type_error("can't mix str and bytes in filter"));
+                }
+            }
             let pattern = args[1].py_to_string();
             let filtered: Vec<PyObjectRef> = names.iter()
                 .filter(|n| glob_match(&pattern, &n.py_to_string()))
@@ -1806,6 +1823,9 @@ pub fn create_fnmatch_module() -> PyObjectRef {
                             if stuff.starts_with('!') {
                                 bracket.push('^');
                                 bracket.push_str(&stuff[1..]);
+                            } else if stuff.starts_with('^') {
+                                bracket.push('\\');
+                                bracket.push_str(&stuff);
                             } else {
                                 bracket.push_str(&stuff);
                             }

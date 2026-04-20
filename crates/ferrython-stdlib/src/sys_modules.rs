@@ -2052,6 +2052,7 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("commonpath", make_builtin(os_path_commonpath)),
         ("commonprefix", make_builtin(os_path_commonprefix)),
         ("samefile", make_builtin(os_path_samefile)),
+        ("normcase", make_builtin(os_path_normcase)),
         ("pardir", PyObject::str_val(CompactString::from(".."))),
         ("curdir", PyObject::str_val(CompactString::from("."))),
         ("extsep", PyObject::str_val(CompactString::from("."))),
@@ -2384,6 +2385,19 @@ fn os_path_islink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.islink", args, 1)?;
     let s = args[0].py_to_string();
     Ok(PyObject::bool_val(std::fs::symlink_metadata(&s).map(|m| m.file_type().is_symlink()).unwrap_or(false)))
+}
+
+fn os_path_normcase(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.normcase", args, 1)?;
+    // On Unix, normcase is a no-op (returns the path unchanged)
+    // On Windows, it converts to lowercase and replaces / with \
+    let s = args[0].py_to_string();
+    if cfg!(windows) {
+        let s = s.replace('/', "\\").to_lowercase();
+        Ok(PyObject::str_val(CompactString::from(s)))
+    } else {
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }
 }
 
 
