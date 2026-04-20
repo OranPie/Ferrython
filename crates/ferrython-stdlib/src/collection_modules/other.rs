@@ -11,21 +11,29 @@ use std::sync::{Arc, Mutex};
 // ── queue module ──
 
 pub fn create_queue_module() -> PyObjectRef {
+    let exc_base = PyObject::exception_type(ExceptionKind::Exception);
+    let empty_cls = PyObject::class(CompactString::from("Empty"), vec![exc_base.clone()], IndexMap::new());
+    let full_cls = PyObject::class(CompactString::from("Full"), vec![exc_base], IndexMap::new());
+
     // Queue constructor
+    let ec1 = empty_cls.clone();
     let queue_fn = PyObject::native_closure("Queue", move |args: &[PyObjectRef]| {
-        create_queue_instance_full("Queue", args)
+        create_queue_instance_full("Queue", args, &ec1)
     });
     // LifoQueue constructor
+    let ec2 = empty_cls.clone();
     let lifo_fn = PyObject::native_closure("LifoQueue", move |args: &[PyObjectRef]| {
-        create_queue_instance_full("LifoQueue", args)
+        create_queue_instance_full("LifoQueue", args, &ec2)
     });
     // PriorityQueue constructor
+    let ec3 = empty_cls.clone();
     let prio_fn = PyObject::native_closure("PriorityQueue", move |args: &[PyObjectRef]| {
-        create_queue_instance_full("PriorityQueue", args)
+        create_queue_instance_full("PriorityQueue", args, &ec3)
     });
     // SimpleQueue constructor (unbounded FIFO, no maxsize)
+    let ec4 = empty_cls.clone();
     let simple_queue_fn = PyObject::native_closure("SimpleQueue", move |_args: &[PyObjectRef]| {
-        create_queue_instance_full("SimpleQueue", &[PyObject::int(0)])
+        create_queue_instance_full("SimpleQueue", &[PyObject::int(0)], &ec4)
     });
 
     make_module("queue", vec![
@@ -33,12 +41,12 @@ pub fn create_queue_module() -> PyObjectRef {
         ("LifoQueue", lifo_fn),
         ("PriorityQueue", prio_fn),
         ("SimpleQueue", simple_queue_fn),
-        ("Empty", PyObject::class(CompactString::from("Empty"), vec![], IndexMap::new())),
-        ("Full", PyObject::class(CompactString::from("Full"), vec![], IndexMap::new())),
+        ("Empty", empty_cls),
+        ("Full", full_cls),
     ])
 }
 
-fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn create_queue_instance_full(kind: &str, args: &[PyObjectRef], empty_cls: &PyObjectRef) -> PyResult<PyObjectRef> {
     // Extract maxsize from positional args or kwargs dict
     let maxsize = if !args.is_empty() {
         if let Some(n) = args[0].as_int() {
@@ -60,6 +68,7 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
     let unfinished = Arc::new(Mutex::new(0i64));
     let is_lifo = kind == "LifoQueue";
     let is_priority = kind == "PriorityQueue";
+    let empty_cls = empty_cls.clone();
 
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -114,6 +123,7 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
 
         // get(block=True, timeout=None)
         let it2 = items.clone();
+        let ec_get = empty_cls.clone();
         w.insert(CompactString::from("get"), PyObject::native_closure(
             "get", move |args: &[PyObjectRef]| {
                 // Parse block and timeout from kwargs-style positional args
@@ -142,14 +152,16 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
                             }
                         }
                         if std::time::Instant::now() >= deadline {
-                            return Err(PyException::new(ExceptionKind::RuntimeError, "queue.Empty"));
+                            let empty_inst = PyObject::instance(ec_get.clone());
+                            return Err(PyException::with_original(ExceptionKind::RuntimeError, "queue.Empty", empty_inst));
                         }
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
                 } else {
                     let mut v = it2.write();
                     if v.is_empty() {
-                        return Err(PyException::new(ExceptionKind::RuntimeError, "queue.Empty"));
+                        let empty_inst = PyObject::instance(ec_get.clone());
+                        return Err(PyException::with_original(ExceptionKind::RuntimeError, "queue.Empty", empty_inst));
                     }
                     if is_lifo {
                         Ok(v.pop().unwrap())
@@ -161,11 +173,13 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
 
         // get_nowait() — same as get for single-threaded
         let it2b = items.clone();
+        let ec_gn = empty_cls.clone();
         w.insert(CompactString::from("get_nowait"), PyObject::native_closure(
             "get_nowait", move |_: &[PyObjectRef]| {
                 let mut v = it2b.write();
                 if v.is_empty() {
-                    return Err(PyException::runtime_error("queue is empty"));
+                    let empty_inst = PyObject::instance(ec_gn.clone());
+                    return Err(PyException::with_original(ExceptionKind::RuntimeError, "queue.Empty", empty_inst));
                 }
                 if is_lifo {
                     Ok(v.pop().unwrap())

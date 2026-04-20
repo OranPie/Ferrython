@@ -256,7 +256,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_builtins" => Some(misc_modules::create_builtins_module()),
         "atexit" => Some(sys_modules::create_atexit_module()),
         "site" => Some(sys_modules::create_site_module()),
-        "sched" => Some(sys_modules::create_sched_module()),
+        // "sched" — now using stdlib/Lib/sched.py (pure Python)
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
         // concurrent — handled by stdlib/Lib/concurrent/futures.py (pure Python)

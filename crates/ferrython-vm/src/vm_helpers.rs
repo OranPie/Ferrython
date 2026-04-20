@@ -1830,6 +1830,19 @@ impl VirtualMachine {
                         return Ok(items);
                     }
                     result
+                } else if let Some(getitem_fn) = obj.get_attr("__getitem__") {
+                    // Fallback: iterate via __getitem__(0), __getitem__(1), ... until IndexError
+                    let mut items = Vec::new();
+                    let mut idx = 0i64;
+                    loop {
+                        match self.call_object(getitem_fn.clone(), vec![PyObject::int(idx)]) {
+                            Ok(val) => items.push(val),
+                            Err(e) if e.kind == ExceptionKind::IndexError => break,
+                            Err(e) => return Err(e),
+                        }
+                        idx += 1;
+                    }
+                    return Ok(items);
                 } else {
                     return Err(PyException::type_error(format!(
                         "cannot unpack non-iterable {} object", obj.type_name()

@@ -1602,9 +1602,12 @@ fn make_user_string_class() -> PyObjectRef {
     }));
     ns.insert(CompactString::from("encode"), make_builtin(|args| {
         let data = get_user_data(&args[0], "data")?;
-        let s = data.as_str().unwrap_or("");
-        // Simple UTF-8 encoding
-        Ok(PyObject::bytes(s.as_bytes().to_vec()))
+        // Delegate to data.encode(...) via str method dispatch
+        if let Some(enc_fn) = data.get_attr("encode") {
+            ferrython_core::object::helpers::call_callable(&enc_fn, &args[1..])
+        } else {
+            Err(PyException::type_error("str has no encode method"))
+        }
     }));
     ns.insert(CompactString::from("__mod__"), make_builtin(|args| {
         if args.len() < 2 { return Err(PyException::type_error("expected value")); }
