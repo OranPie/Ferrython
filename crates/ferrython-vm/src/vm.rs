@@ -5140,6 +5140,28 @@ impl VirtualMachine {
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                             let n = name.as_str();
+                                            // list.sort() needs VM-level __lt__ dispatch for
+                                            // user types (namedtuples, custom classes, etc.).
+                                            if n == "sort" {
+                                                if matches!(&receiver.payload, PyObjectPayload::List(_)) {
+                                                    let mut v = if let PyObjectPayload::List(items) = &receiver.payload { items.read().clone() } else { Vec::new() };
+                                                    match self.vm_sort(&mut v) {
+                                                        Ok(()) => {
+                                                            if let PyObjectPayload::List(items) = &receiver.payload {
+                                                                *items.write() = v;
+                                                            }
+                                                            spush!(frame, PyObject::none());
+                                                            hot_ok!(profiling, self.profiler, instr.op)
+                                                        }
+                                                        Err(e) => Err(e),
+                                                    }
+                                                } else {
+                                                    match crate::builtins::call_method(&receiver, n, &[]) {
+                                                        Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                        Err(e) => Err(e),
+                                                    }
+                                                }
+                                            } else {
                                             let result = if n.as_bytes().first() == Some(&b'_') {
                                                 crate::builtins::call_method(&receiver, n, &[])
                                             } else { match &receiver.payload {
@@ -5152,6 +5174,7 @@ impl VirtualMachine {
                                             match result {
                                                 Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
                                                 Err(e) => Err(e)
+                                            }
                                             }
                                         } else { unreachable!() }
                                     } else {
@@ -5278,7 +5301,25 @@ impl VirtualMachine {
                                 let receiver = spop!(frame);
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    crate::builtins::call_method(&receiver, name.as_str(), &[])
+                                    let n = name.as_str();
+                                    if n == "sort" {
+                                        if matches!(&receiver.payload, PyObjectPayload::List(_)) {
+                                            let mut v = if let PyObjectPayload::List(items) = &receiver.payload { items.read().clone() } else { Vec::new() };
+                                            match self.vm_sort(&mut v) {
+                                                Ok(()) => {
+                                                    if let PyObjectPayload::List(items) = &receiver.payload {
+                                                        *items.write() = v;
+                                                    }
+                                                    Ok(PyObject::none())
+                                                }
+                                                Err(e) => Err(e),
+                                            }
+                                        } else {
+                                            crate::builtins::call_method(&receiver, n, &[])
+                                        }
+                                    } else {
+                                        crate::builtins::call_method(&receiver, n, &[])
+                                    }
                                 } else { Ok(PyObject::none()) }
                             } else {
                                 let mut args = Vec::with_capacity(arg_count);

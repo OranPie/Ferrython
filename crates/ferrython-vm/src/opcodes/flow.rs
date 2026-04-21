@@ -181,6 +181,7 @@ impl VirtualMachine {
                             | IteratorData::Cycle { .. }
                             | IteratorData::Repeat { .. }
                             | IteratorData::Chain { .. }
+                            | IteratorData::SeqIter { .. }
                             | IteratorData::Starmap { .. })
                     };
                     if needs_vm {

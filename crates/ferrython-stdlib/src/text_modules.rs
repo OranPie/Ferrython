@@ -1101,11 +1101,7 @@ fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usiz
                     let groups: Vec<Option<String>> = (1..caps.len())
                         .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
                     let match_obj = make_fancy_match_object(text, abs_start, abs_end, whole.as_str(), groups, extract_fancy_group_names(&re));
-                    let replacement = match &repl_fn.payload {
-                        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[match_obj])?,
-                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[match_obj])?,
-                        _ => PyObject::str_val(CompactString::from(whole.as_str())),
-                    };
+                    let replacement = ferrython_core::object::call_callable(repl_fn, &[match_obj])?;
                     result.push_str(&replacement.py_to_string());
                     last = abs_end;
                     pos = abs_end;
@@ -1126,11 +1122,7 @@ fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usiz
             let whole = caps.get(0).unwrap();
             result.push_str(&text[last..whole.start()]);
             let match_obj = make_match_object_from_captures(&caps, text, &re);
-            let replacement = match &repl_fn.payload {
-                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[match_obj])?,
-                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[match_obj])?,
-                _ => PyObject::str_val(CompactString::from(whole.as_str())),
-            };
+            let replacement = ferrython_core::object::call_callable(repl_fn, &[match_obj])?;
             result.push_str(&replacement.py_to_string());
             last = whole.end();
             n += 1;

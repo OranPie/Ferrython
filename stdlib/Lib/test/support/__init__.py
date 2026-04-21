@@ -292,14 +292,27 @@ def create_empty_file(filename):
 def findfile(file, here=None, subdir=None):
     if os.path.isabs(file):
         return file
-    if here is None:
-        here = os.getcwd()
-    if subdir is not None:
-        candidate = os.path.join(here, subdir, file)
+    # Try cwd and, as a fallback, the directory of the main script
+    search_dirs = []
+    if here is not None:
+        search_dirs.append(here)
+    else:
+        search_dirs.append(os.getcwd())
+    try:
+        main_mod = sys.modules.get('__main__')
+        if main_mod is not None and getattr(main_mod, '__file__', None):
+            search_dirs.append(os.path.dirname(os.path.abspath(main_mod.__file__)))
+    except Exception:
+        pass
+    for base in search_dirs:
+        if subdir is not None:
+            candidate = os.path.join(base, subdir, file)
+            if os.path.exists(candidate):
+                return candidate
+        candidate = os.path.join(base, file)
         if os.path.exists(candidate):
             return candidate
-    candidate = os.path.join(here, file)
-    return candidate if os.path.exists(candidate) else file
+    return file
 
 def rmtree(path):
     import shutil

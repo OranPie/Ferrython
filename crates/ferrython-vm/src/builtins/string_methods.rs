@@ -541,10 +541,14 @@ pub(crate) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                 "utf-8" | "utf8" => {
                     Ok(PyObject::bytes(s.as_bytes().to_vec()))
                 }
-                "ascii" => {
+                "ascii" | "us-ascii" | "us_ascii" => {
                     let mut result = Vec::new();
                     for ch in s.chars() {
                         if ch.is_ascii() {
+                            result.push(ch as u8);
+                        } else if errors.as_str() == "surrogateescape" && (ch as u32) >= 0x80 && (ch as u32) <= 0xFF {
+                            // Our surrogateescape fallback uses U+0080..U+00FF as
+                            // the escape range (see bytes.decode). Reverse it here.
                             result.push(ch as u8);
                         } else {
                             match errors.as_str() {

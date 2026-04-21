@@ -62,6 +62,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                     IteratorData::Str { .. } => "str_ascii_iterator",
                     IteratorData::DictEntries { .. } => "dict_itemiterator",
                     IteratorData::DictKeys { .. } => "dict_keyiterator",
+                    IteratorData::SeqIter { .. } => "iterator",
                 }
             }
             PyObjectPayload::Range { .. } => "range",
@@ -590,6 +591,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     | IteratorData::Cycle { .. }
                     | IteratorData::Repeat { .. }
                     | IteratorData::Chain { .. }
+                    | IteratorData::SeqIter { .. }
                     | IteratorData::Starmap { .. }
                     | IteratorData::DictEntries { .. }
                     | IteratorData::DictKeys { .. } => {

@@ -456,6 +456,10 @@ impl Analyzer {
 
             StatementKind::Delete { targets } => {
                 for t in targets {
+                    // `del x` counts as binding x in the current scope (CPython semantics)
+                    if let ExpressionKind::Name { id, .. } = &t.node {
+                        self.current_scope().mark_assigned(id);
+                    }
                     self.analyze_expression(t);
                 }
             }
@@ -671,18 +675,45 @@ impl Analyzer {
                 // PEP 572: In comprehensions, walrus target leaks to enclosing scope
                 if self.current_scope().scope_type == ScopeType::Comprehension {
                     if let ExpressionKind::Name { id, .. } = &target.node {
-                        // Mark target as Free in comprehension (will use STORE_DEREF)
-                        self.current_scope().add_symbol(id, SymbolScope::Free);
-                        // Mark as assigned in the enclosing non-comprehension scope
-                        // (resolve_bottom_up will promote it to Cell)
+                        // Check if enclosing non-comprehension scope has declared this
+                        // name as explicitly global or nonlocal — if so, the walrus
+                        // must respect that declaration (no Cell/Free promotion).
                         let len = self.scope_stack.len();
+                        let mut enclosing_decl: Option<SymbolScope> = None;
                         for i in (0..len - 1).rev() {
                             if self.scope_stack[i].scope_type != ScopeType::Comprehension {
-                                self.scope_stack[i].mark_assigned(id);
+                                if let Some(sym) = self.scope_stack[i].symbols.get(id.as_str()) {
+                                    if sym.is_explicit_global_or_nonlocal {
+                                        enclosing_decl = Some(sym.scope);
+                                    }
+                                }
                                 break;
                             }
-                            // Intermediate comprehension scopes also need Free
-                            self.scope_stack[i].add_symbol(id, SymbolScope::Free);
+                        }
+                        if let Some(decl) = enclosing_decl {
+                            // Propagate the same declaration into comprehension scopes
+                            // so STORE_GLOBAL / STORE_DEREF is emitted correctly.
+                            self.current_scope().add_symbol(id, decl);
+                            for i in (0..len - 1).rev() {
+                                if self.scope_stack[i].scope_type != ScopeType::Comprehension {
+                                    self.scope_stack[i].mark_assigned(id);
+                                    break;
+                                }
+                                self.scope_stack[i].add_symbol(id, decl);
+                            }
+                        } else {
+                            // Mark target as Free in comprehension (will use STORE_DEREF)
+                            self.current_scope().add_symbol(id, SymbolScope::Free);
+                            // Mark as assigned in the enclosing non-comprehension scope
+                            // (resolve_bottom_up will promote it to Cell)
+                            for i in (0..len - 1).rev() {
+                                if self.scope_stack[i].scope_type != ScopeType::Comprehension {
+                                    self.scope_stack[i].mark_assigned(id);
+                                    break;
+                                }
+                                // Intermediate comprehension scopes also need Free
+                                self.scope_stack[i].add_symbol(id, SymbolScope::Free);
+                            }
                         }
                     }
                 } else {

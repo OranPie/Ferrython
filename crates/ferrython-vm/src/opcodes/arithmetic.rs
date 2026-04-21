@@ -1053,7 +1053,12 @@ impl VirtualMachine {
                     let formatted = match spec {
                         's' => self.vm_str(&arg)?,
                         'r' => self.vm_repr(&arg)?,
-                        'd' | 'i' => format!("{}", arg.as_int().unwrap_or(0)),
+                        'd' | 'i' => {
+                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
+                                &format!("%{} format: a number is required, not {}", spec, arg.type_name())
+                            ))?;
+                            format!("{}", n)
+                        }
                         'f' | 'F' => {
                             let v = arg.to_float().unwrap_or(0.0);
                             let p = precision.unwrap_or(6);
@@ -1084,9 +1089,24 @@ impl VirtualMachine {
                                 } else { s }
                             }
                         }
-                        'x' => format!("{:x}", arg.as_int().unwrap_or(0)),
-                        'X' => format!("{:X}", arg.as_int().unwrap_or(0)),
-                        'o' => format!("{:o}", arg.as_int().unwrap_or(0)),
+                        'x' => {
+                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
+                                &format!("%x format: an integer is required, not {}", arg.type_name())
+                            ))?;
+                            format!("{:x}", n)
+                        }
+                        'X' => {
+                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
+                                &format!("%X format: an integer is required, not {}", arg.type_name())
+                            ))?;
+                            format!("{:X}", n)
+                        }
+                        'o' => {
+                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
+                                &format!("%o format: an integer is required, not {}", arg.type_name())
+                            ))?;
+                            format!("{:o}", n)
+                        }
                         'c' => {
                             if let Some(n) = arg.as_int() {
                                 char::from_u32(n as u32).map(|c| c.to_string()).unwrap_or_default()

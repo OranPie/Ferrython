@@ -2229,14 +2229,30 @@ impl VirtualMachine {
                     "iter" => {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
-                                if let Some(iter_method) = Self::resolve_instance_dunder(&args[0], "__iter__") {
-                                    return self.call_object(iter_method, vec![]);
+                                if let Some(raw_iter) = Self::resolve_instance_dunder(&args[0], "__iter__") {
+                                    let iter_method = self.resolve_descriptor(&raw_iter, &args[0])?;
+                                    let r = self.call_object(iter_method, vec![])?;
+                                    if matches!(&r.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                                        return r.get_iter();
+                                    }
+                                    return Ok(r);
                                 }
                                 // Builtin base type subclass: delegate to __builtin_value__
                                 if let Some(bv) = Self::get_builtin_value(&args[0]) {
                                     let resolved = self.resolve_iterable(&bv)?;
                                     return Ok(resolved);
                                 }
+                                // Old-style sequence protocol: lazy SeqIter
+                                if args[0].get_attr("__getitem__").is_some() {
+                                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                        Rc::new(PyCell::new(IteratorData::SeqIter {
+                                            obj: args[0].clone(), index: 0, exhausted: false,
+                                        }))
+                                    )));
+                                }
+                                return Err(PyException::type_error(format!(
+                                    "'{}' object is not iterable", args[0].type_name()
+                                )));
                             }
                             // Fall through to builtin dispatch for non-instances
                         }
@@ -3200,7 +3216,10 @@ impl VirtualMachine {
                     | PyObjectPayload::Bool(_)
                     | PyObjectPayload::Bytes(_)
                     | PyObjectPayload::ByteArray(_)
-                    | PyObjectPayload::FrozenSet(_) => {
+                    | PyObjectPayload::FrozenSet(_)
+                        if !(matches!(&bbm.receiver.payload, PyObjectPayload::List(_))
+                            && bbm.method_name.as_str() == "sort") =>
+                    {
                         return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
                     }
                     _ => {}
@@ -3428,11 +3447,12 @@ impl VirtualMachine {
                 }
                 // VM-level list.sort with key function
                 if bbm.method_name.as_str() == "sort" {
-                    if let PyObjectPayload::List(items_arc) = &bbm.receiver.payload {
-                        let items_arc = items_arc.clone();
-                        let mut items_vec = items_arc.read().clone();
+                    if matches!(&bbm.receiver.payload, PyObjectPayload::List(_)) {
+                        let mut items_vec = if let PyObjectPayload::List(items) = &bbm.receiver.payload { items.read().clone() } else { Vec::new() };
                         self.vm_sort(&mut items_vec)?;
-                        *items_arc.write() = items_vec;
+                        if let PyObjectPayload::List(items) = &bbm.receiver.payload {
+                            *items.write() = items_vec;
+                        }
                         return Ok(PyObject::none());
                     }
                 }
@@ -3620,15 +3640,16 @@ impl VirtualMachine {
                                 w.reverse();
                             }
                             return Ok(PyObject::none());
-                        } else if reverse {
+                        } else {
                             let mut w = items.write();
                             let mut v: Vec<_> = w.drain(..).collect();
                             self.vm_sort(&mut v)?;
-                            v.reverse();
+                            if reverse {
+                                v.reverse();
+                            }
                             w.extend(v);
                             return Ok(PyObject::none());
                         }
-                        // No key or reverse — fall through to basic sort
                     }
                 }
                 // str.format with positional args: needs VM for __str__ on instances

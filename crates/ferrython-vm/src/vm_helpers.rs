@@ -883,9 +883,13 @@ impl VirtualMachine {
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return bv.get_iter();
             }
-            // Has __getitem__: return obj itself for sequence protocol
+            // Has __getitem__: use sequence protocol — return a lazy SeqIter
             if obj.get_attr("__getitem__").is_some() {
-                return Ok(obj.clone());
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                    Rc::new(PyCell::new(IteratorData::SeqIter {
+                        obj: obj.clone(), index: 0, exhausted: false,
+                    }))
+                )));
             }
             return Err(PyException::type_error(format!(
                 "'{}' object is not iterable", obj.type_name()
@@ -1011,6 +1015,7 @@ impl VirtualMachine {
                         | IteratorData::Cycle { .. }
                         | IteratorData::Repeat { .. }
                         | IteratorData::Chain { .. }
+                        | IteratorData::SeqIter { .. }
                         | IteratorData::Starmap { .. })
                 };
                 if is_lazy {
@@ -1499,6 +1504,7 @@ impl VirtualMachine {
                         | IteratorData::Cycle { .. }
                         | IteratorData::Repeat { .. }
                         | IteratorData::Chain { .. }
+                        | IteratorData::SeqIter { .. }
                         | IteratorData::Starmap { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
@@ -1783,6 +1789,34 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
+            IteratorData::SeqIter { obj, index, exhausted } => {
+                if *exhausted { drop(data); return Ok(None); }
+                let src = obj.clone();
+                let idx = *index;
+                drop(data);
+                let getitem = match src.get_attr("__getitem__") {
+                    Some(f) => f,
+                    None => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d { *exhausted = true; }
+                        return Ok(None);
+                    }
+                };
+                match self.call_object(getitem, vec![PyObject::int(idx)]) {
+                    Ok(val) => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::SeqIter { index, .. } = &mut *d { *index = idx.wrapping_add(1); }
+                        Ok(Some(val))
+                    }
+                    Err(e) if e.kind == ExceptionKind::StopIteration
+                        || e.kind == ExceptionKind::IndexError => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d { *exhausted = true; }
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             _ => {
                 drop(data);
                 match builtins::iter_advance(iter_obj)? {
@@ -1890,16 +1924,22 @@ impl VirtualMachine {
 
     /// Compare two objects using __lt__, falling back to native comparison.
     pub(crate) fn vm_lt(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
+        use ferrython_core::object::CompareOp;
         if let PyObjectPayload::Instance(_inst) = &a.payload {
             if let Some(method) = a.get_attr("__lt__") {
-                // If method is from class namespace (not bound), pass self explicitly
-                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
-                    self.call_object(method, vec![a.clone(), b.clone()])?
+                let call_res = if matches!(&method.payload, PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
+                    self.call_object(method, vec![a.clone(), b.clone()])
                 } else {
-                    self.call_object(method, vec![b.clone()])?
+                    self.call_object(method, vec![b.clone()])
                 };
-                return Ok(result.is_truthy());
+                if let Ok(result) = call_res {
+                    return Ok(result.is_truthy());
+                }
+                // Bound builtin-method dispatch may fail (e.g. tuple subclasses
+                // where __lt__ isn't wired for Instance receivers). Fall through
+                // to generic compare, which handles tuple-subclass ordering.
             }
+            return Ok(a.compare(b, CompareOp::Lt).map(|v| v.is_truthy()).unwrap_or(false));
         }
         Ok(builtins::partial_cmp_for_sort(a, b) == Some(std::cmp::Ordering::Less))
     }

@@ -107,7 +107,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "fnmatch" => Some(text_modules::create_fnmatch_module()),
         "html" => Some(text_modules::create_html_module()),
         "shlex" => Some(text_modules::create_shlex_module()),
-        "difflib" => Some(text_modules::create_difflib_module()),
+        // "difflib" overridden via stdlib/Lib/difflib.py (full CPython impl)
         // Collections & functional
         "collections" => Some(collection_modules::create_collections_module()),
         "functools" => Some(collection_modules::create_functools_module()),

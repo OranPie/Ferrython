@@ -1609,7 +1609,7 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                         }
                     }
                 }
-                "ascii" => {
+                "ascii" | "us-ascii" | "us_ascii" | "iso646-us" | "iso_646.irv_1991" => {
                     match errors.as_str() {
                         "strict" => {
                             for (i, &byte) in b.iter().enumerate() {
@@ -1624,6 +1624,13 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                         }
                         "ignore" => {
                             let s: String = b.iter().filter(|&&x| x < 128).map(|&x| x as char).collect();
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        }
+                        "surrogateescape" => {
+                            // Rust String can't hold lone surrogates, so we use a
+                            // lossless fallback: bytes >= 128 map to U+0080..U+00FF.
+                            // The matching encode side must reverse this mapping.
+                            let s: String = b.iter().map(|&x| x as char).collect();
                             Ok(PyObject::str_val(CompactString::from(s)))
                         }
                         "replace" | _ => {

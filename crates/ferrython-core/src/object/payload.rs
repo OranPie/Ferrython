@@ -1706,6 +1706,8 @@ pub enum IteratorData {
     Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },
     TakeWhile { func: PyObjectRef, source: PyObjectRef, done: bool },
     DropWhile { func: PyObjectRef, source: PyObjectRef, dropping: bool },
+    /// Lazy sequence-protocol iterator (old-style __getitem__(0),__getitem__(1),... iter)
+    SeqIter { obj: PyObjectRef, index: i64, exhausted: bool },
     /// Infinite counter: count(start, step)
     Count { current: i64, step: i64 },
     /// Infinite cycle over cached items
