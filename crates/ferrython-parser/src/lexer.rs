@@ -201,7 +201,7 @@ impl<'src> Lexer<'src> {
                 self.pending.push(Token::new(TokenKind::Dedent, span));
             }
             if *self.indent_stack.last().unwrap() != indent {
-                return Err(ParseError::new(ParseErrorKind::IndentationError, span));
+                return Err(ParseError::new(ParseErrorKind::IndentationError("unindent does not match any outer indentation level".into()), span));
             }
             // Return the first DEDENT, rest are pending
             if let Some(tok) = self.pending.pop() {

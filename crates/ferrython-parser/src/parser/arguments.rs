@@ -1,6 +1,6 @@
 //! Argument parsing methods for the Parser.
 
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseErrorKind};
 use crate::token::TokenKind;
 use ferrython_ast::*;
 
@@ -108,6 +108,8 @@ impl Parser {
     pub(super) fn parse_call_args(&mut self) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
         let mut args = Vec::new();
         let mut keywords = Vec::new();
+        let mut has_keyword = false;
+        let mut has_kwarg_unpacking = false;
 
         if self.check(TokenKind::RightParen) {
             return Ok((args, keywords));
@@ -122,9 +124,19 @@ impl Parser {
                     value,
                     location: self.current_location(),
                 });
+                has_keyword = true;
+                has_kwarg_unpacking = true;
             } else if self.check(TokenKind::Star) {
+                let span = self.peek().span;
                 self.advance();
                 let value = self.parse_test()?;
+                if has_kwarg_unpacking {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax(
+                            "iterable argument unpacking follows keyword argument unpacking".into()),
+                        span,
+                    ));
+                }
                 args.push(Expression::new(
                     ExpressionKind::Starred {
                         value: Box::new(value),
@@ -157,10 +169,35 @@ impl Parser {
                             value,
                             location: expr.location,
                         });
+                        has_keyword = true;
                     } else {
                         args.push(expr);
                     }
                 } else {
+                    if has_kwarg_unpacking {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidSyntax(
+                                "positional argument follows keyword argument unpacking".into()),
+                            crate::token::Span {
+                                start_line: expr.location.line,
+                                start_col: expr.location.column,
+                                end_line: expr.location.line,
+                                end_col: expr.location.column,
+                            },
+                        ));
+                    }
+                    if has_keyword {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidSyntax(
+                                "positional argument follows keyword argument".into()),
+                            crate::token::Span {
+                                start_line: expr.location.line,
+                                start_col: expr.location.column,
+                                end_line: expr.location.line,
+                                end_col: expr.location.column,
+                            },
+                        ));
+                    }
                     args.push(expr);
                 }
             }

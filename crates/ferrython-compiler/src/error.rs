@@ -26,7 +26,7 @@ pub enum CompileError {
     #[error("'break' outside loop at {location}")]
     BreakOutsideLoop { location: SourceLocation },
 
-    #[error("'continue' outside loop at {location}")]
+    #[error("'continue' not properly in loop at {location}")]
     ContinueOutsideLoop { location: SourceLocation },
 
     #[error("'return' outside function at {location}")]
@@ -34,6 +34,21 @@ pub enum CompileError {
 
     #[error("'yield' outside function at {location}")]
     YieldOutsideFunction { location: SourceLocation },
+
+    #[error("can't delete function call at {location}")]
+    CannotDeleteCall { location: SourceLocation },
+
+    #[error("can't delete literal at {location}")]
+    CannotDeleteLiteral { location: SourceLocation },
+
+    #[error("can't delete expression at {location}")]
+    CannotDeleteExpression { location: SourceLocation },
+
+    #[error("name '{name}' is parameter and global at {location}")]
+    ParameterAndGlobal { name: String, location: SourceLocation },
+
+    #[error("name '{name}' is parameter and nonlocal at {location}")]
+    ParameterAndNonlocal { name: String, location: SourceLocation },
 
     #[error("internal compiler error: {0}")]
     Internal(String),

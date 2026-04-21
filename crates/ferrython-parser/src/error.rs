@@ -24,8 +24,8 @@ pub enum ParseErrorKind {
     UnexpectedEof,
     #[error("invalid syntax: {0}")]
     InvalidSyntax(String),
-    #[error("invalid indentation")]
-    IndentationError,
+    #[error("{0}")]
+    IndentationError(String),
     #[error("inconsistent use of tabs and spaces")]
     TabError,
     #[error("unterminated string literal")]

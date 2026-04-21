@@ -5,6 +5,7 @@ use ferrython_ast::*;
 use ferrython_bytecode::{CodeFlags, ConstantValue, Opcode};
 
 use super::{Compiler, Result};
+use crate::error::CompileError;
 
 impl Compiler {
     // ── expression compilation ──────────────────────────────────────
@@ -330,6 +331,11 @@ impl Compiler {
             }
 
             ExpressionKind::Yield { value } => {
+                if !self.current_unit().is_function {
+                    return Err(CompileError::YieldOutsideFunction {
+                        location: expr.location,
+                    });
+                }
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                 } else {
@@ -340,6 +346,11 @@ impl Compiler {
             }
 
             ExpressionKind::YieldFrom { value } => {
+                if !self.current_unit().is_function {
+                    return Err(CompileError::YieldOutsideFunction {
+                        location: expr.location,
+                    });
+                }
                 self.compile_expression(value)?;
                 self.emit_op(Opcode::GetIter);
                 let none_idx = self.add_const(ConstantValue::None);

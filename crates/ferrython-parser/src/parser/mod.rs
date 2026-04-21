@@ -99,7 +99,14 @@ impl Parser {
             return Ok(stmts);
         }
         self.expect_newline()?;
-        self.expect(TokenKind::Indent)?;
+        if !self.check(TokenKind::Indent) {
+            return Err(ParseError::new(
+                crate::error::ParseErrorKind::IndentationError(
+                    "expected an indented block".into()),
+                self.peek().span,
+            ));
+        }
+        self.advance();
         let mut stmts = Vec::new();
         while !self.check(TokenKind::Dedent) && !self.is_at_end() {
             self.skip_newlines();

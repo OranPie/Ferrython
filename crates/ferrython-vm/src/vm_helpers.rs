@@ -2267,10 +2267,10 @@ impl VirtualMachine {
                     format!("__eval_result__ = ({})", source)
                 } else { source };
                 let module = ferrython_parser::parse(&effective, &filename)
-                    .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                    .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
                 let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                 let code = compiler.compile_module(&module)
-                    .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                    .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
                 return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
             }
 
@@ -2279,7 +2279,7 @@ impl VirtualMachine {
                 Ok(module) => {
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                     let code = compiler.compile_module(&module)
-                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                        .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
                     return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
                 }
                 Err(_e) => {
@@ -2289,10 +2289,10 @@ impl VirtualMachine {
                         format!("__eval_result__ = ({})", source)
                     } else { source };
                     let module = ferrython_parser::parse(&effective, &filename)
-                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                        .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                     let code = compiler.compile_module(&module)
-                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                        .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
                     return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
                 }
             }
@@ -2311,10 +2311,10 @@ impl VirtualMachine {
             source
         };
         let module = ferrython_parser::parse(&effective_source, &filename)
-            .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
-        let mut compiler = ferrython_compiler::Compiler::new(filename);
+            .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
+        let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
         let code = compiler.compile_module(&module)
-            .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+            .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
         Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))))
     }
 
@@ -2563,4 +2563,57 @@ impl VirtualMachine {
         }
         Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", obj.type_name(), name)))
     }
+}
+
+/// Convert a parser `ParseError` into a `SyntaxError` (or `IndentationError`)
+/// `PyException` carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
+pub(crate) fn parse_error_to_syntax_exc(filename: &str, e: ferrython_parser::ParseError) -> PyException {
+    let (kind, msg) = match &e.kind {
+        ferrython_parser::ParseErrorKind::IndentationError(m) => (ExceptionKind::IndentationError, m.to_string()),
+        ferrython_parser::ParseErrorKind::TabError => (ExceptionKind::TabError, "inconsistent use of tabs and spaces in indentation".to_string()),
+        _ => (ExceptionKind::SyntaxError, format!("{}", e.kind)),
+    };
+    let lineno = e.span.start_line as i64;
+    let offset = (e.span.start_col as i64) + 1;
+    build_syntax_exception(kind, &msg, filename, lineno, offset)
+}
+
+/// Convert a compiler `CompileError` into a `SyntaxError` `PyException`
+/// carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
+pub(crate) fn compile_error_to_syntax_exc(filename: &str, e: ferrython_compiler::CompileError) -> PyException {
+    use ferrython_compiler::CompileError;
+    let (msg, loc) = match &e {
+        CompileError::SyntaxError { message, location } => (message.clone(), Some(*location)),
+        CompileError::Unsupported { feature, location } => (format!("unsupported: {}", feature), Some(*location)),
+        CompileError::InvalidAssignTarget { location } => ("cannot assign to expression".to_string(), Some(*location)),
+        CompileError::BreakOutsideLoop { location } => ("'break' outside loop".to_string(), Some(*location)),
+        CompileError::ContinueOutsideLoop { location } => ("'continue' not properly in loop".to_string(), Some(*location)),
+        CompileError::ReturnOutsideFunction { location } => ("'return' outside function".to_string(), Some(*location)),
+        CompileError::YieldOutsideFunction { location } => ("'yield' outside function".to_string(), Some(*location)),
+        CompileError::CannotDeleteCall { location } => ("cannot delete function call".to_string(), Some(*location)),
+        CompileError::CannotDeleteLiteral { location } => ("cannot delete literal".to_string(), Some(*location)),
+        CompileError::CannotDeleteExpression { location } => ("cannot delete expression".to_string(), Some(*location)),
+        CompileError::ParameterAndGlobal { name, location } => (format!("name '{}' is parameter and global", name), Some(*location)),
+        CompileError::ParameterAndNonlocal { name, location } => (format!("name '{}' is parameter and nonlocal", name), Some(*location)),
+        CompileError::NameError { message } => (message.clone(), None),
+        CompileError::Internal(s) => (s.clone(), None),
+    };
+    let (lineno, offset) = match loc {
+        Some(l) => (l.line as i64, (l.column as i64) + 1),
+        None => (1, 0),
+    };
+    build_syntax_exception(ExceptionKind::SyntaxError, &msg, filename, lineno, offset)
+}
+
+fn build_syntax_exception(kind: ExceptionKind, msg: &str, filename: &str, lineno: i64, offset: i64) -> PyException {
+    let instance = PyObject::exception_instance(kind, CompactString::from(msg));
+    if let PyObjectPayload::ExceptionInstance(ref ei) = instance.payload {
+        let mut w = ei.ensure_attrs().write();
+        w.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename)));
+        w.insert(CompactString::from("lineno"), PyObject::int(lineno));
+        w.insert(CompactString::from("offset"), PyObject::int(offset));
+        w.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg)));
+        w.insert(CompactString::from("text"), PyObject::none());
+    }
+    PyException::with_original(kind, CompactString::from(msg), instance)
 }

@@ -13,6 +13,15 @@ impl Parser {
     pub(super) fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         let loc = self.current_location();
 
+        // Detect unexpected indent at the start of a statement.
+        if matches!(self.peek().kind, TokenKind::Indent) {
+            return Err(ParseError::new(
+                crate::error::ParseErrorKind::IndentationError(
+                    "unexpected indent".into()),
+                self.peek().span,
+            ));
+        }
+
         match &self.peek().kind {
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),

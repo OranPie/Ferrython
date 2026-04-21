@@ -80,6 +80,11 @@ impl Compiler {
             }
 
             StatementKind::Return { value } => {
+                if !self.current_unit().is_function {
+                    return Err(CompileError::ReturnOutsideFunction {
+                        location: stmt.location,
+                    });
+                }
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                 } else {
@@ -206,8 +211,29 @@ impl Compiler {
                 self.compile_import_from(module.as_deref(), names, *level)?;
             }
 
-            StatementKind::Global { .. } | StatementKind::Nonlocal { .. } => {
-                // Handled by symbol table; no bytecode emitted.
+            StatementKind::Global { names } => {
+                for name in names {
+                    if let Some(sym) = self.current_unit().scope.symbols.get(name.as_str()) {
+                        if sym.is_parameter {
+                            return Err(CompileError::ParameterAndGlobal {
+                                name: name.to_string(),
+                                location: stmt.location,
+                            });
+                        }
+                    }
+                }
+            }
+            StatementKind::Nonlocal { names } => {
+                for name in names {
+                    if let Some(sym) = self.current_unit().scope.symbols.get(name.as_str()) {
+                        if sym.is_parameter {
+                            return Err(CompileError::ParameterAndNonlocal {
+                                name: name.to_string(),
+                                location: stmt.location,
+                            });
+                        }
+                    }
+                }
             }
 
             StatementKind::Raise { exc, cause } => {
@@ -1477,8 +1503,18 @@ impl Compiler {
                     self.compile_delete_target(elt)?;
                 }
             }
+            ExpressionKind::Call { .. } => {
+                return Err(CompileError::CannotDeleteCall {
+                    location: target.location,
+                });
+            }
+            ExpressionKind::Constant { .. } => {
+                return Err(CompileError::CannotDeleteLiteral {
+                    location: target.location,
+                });
+            }
             _ => {
-                return Err(CompileError::InvalidAssignTarget {
+                return Err(CompileError::CannotDeleteExpression {
                     location: target.location,
                 });
             }

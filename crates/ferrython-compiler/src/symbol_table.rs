@@ -595,7 +595,12 @@ impl Analyzer {
                     // Check if name was already used before the global declaration
                     if self.current_scope().scope_type == ScopeType::Function {
                         if let Some(sym) = self.current_scope().symbols.get(name.as_str()) {
-                            if sym.is_assigned || sym.is_referenced {
+                            if sym.is_parameter {
+                                self.errors.push(CompileError::syntax(
+                                    format!("name '{}' is parameter and global", name),
+                                    stmt.location,
+                                ));
+                            } else if sym.is_assigned || sym.is_referenced {
                                 self.errors.push(CompileError::syntax(
                                     format!("name '{}' is used prior to global declaration", name),
                                     stmt.location,
@@ -612,7 +617,12 @@ impl Analyzer {
                 for name in names {
                     if self.current_scope().scope_type == ScopeType::Function {
                         if let Some(sym) = self.current_scope().symbols.get(name.as_str()) {
-                            if sym.is_assigned || sym.is_referenced {
+                            if sym.is_parameter {
+                                self.errors.push(CompileError::syntax(
+                                    format!("name '{}' is parameter and nonlocal", name),
+                                    stmt.location,
+                                ));
+                            } else if sym.is_assigned || sym.is_referenced {
                                 self.errors.push(CompileError::syntax(
                                     format!("name '{}' is used prior to nonlocal declaration", name),
                                     stmt.location,
