@@ -2815,7 +2815,46 @@ impl VirtualMachine {
                     }
                     "bool" => {
                         if args.len() == 1 {
-                            return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
+                            let obj = &args[0];
+                            // Instance with __bool__: call it and enforce return type == bool
+                            if let ferrython_core::object::PyObjectPayload::Instance(_) = &obj.payload {
+                                if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__bool__") {
+                                    let method = self.resolve_descriptor(&raw_method, obj)?;
+                                    let result = self.call_object(method, vec![])?;
+                                    if !matches!(&result.payload, ferrython_core::object::PyObjectPayload::Bool(_)) {
+                                        let tn = result.type_name();
+                                        return Err(ferrython_core::error::PyException::type_error(
+                                            compact_str::CompactString::from(format!("__bool__ should return bool, returned {}", tn)),
+                                        ));
+                                    }
+                                    return Ok(result);
+                                }
+                                if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__len__") {
+                                    let method = self.resolve_descriptor(&raw_method, obj)?;
+                                    let result = self.call_object(method, vec![])?;
+                                    match &result.payload {
+                                        ferrython_core::object::PyObjectPayload::Int(n) => {
+                                            let is_neg = n.to_i64().map(|v| v < 0).unwrap_or(false);
+                                            if is_neg {
+                                                return Err(ferrython_core::error::PyException::value_error(
+                                                    compact_str::CompactString::from("__len__() should return >= 0"),
+                                                ));
+                                            }
+                                            return Ok(PyObject::bool_val(!n.is_zero()));
+                                        }
+                                        ferrython_core::object::PyObjectPayload::Bool(b) => {
+                                            return Ok(PyObject::bool_val(*b));
+                                        }
+                                        _ => {
+                                            let tn = result.type_name();
+                                            return Err(ferrython_core::error::PyException::type_error(
+                                                compact_str::CompactString::from(format!("__len__() should return >= 0, returned {}", tn)),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            return Ok(PyObject::bool_val(self.vm_is_truthy(obj)?));
                         }
                     }
                     "mappingproxy" => {

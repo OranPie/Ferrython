@@ -2051,7 +2051,37 @@ fn pickle_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "pickle.dumps() missing 1 required positional argument: 'obj'",
         ));
     }
-    let protocol = args.get(1).and_then(|a| a.as_int()).unwrap_or(0);
+    // Extract protocol from positional arg 1, or from a trailing kwargs dict (protocol=N)
+    let mut protocol: i64 = 0;
+    if let Some(a) = args.get(1) {
+        if let Some(n) = a.as_int() {
+            protocol = n;
+        } else if let PyObjectPayload::Dict(m) = &a.payload {
+            let r = m.read();
+            for (k, v) in r.iter() {
+                if let HashableKey::Str(s) = k {
+                    if s.as_str() == "protocol" {
+                        if let Some(n) = v.as_int() { protocol = n; }
+                    }
+                }
+            }
+        }
+    }
+    // Also check a last-position kwargs dict (e.g., args[2] when args[1] is obj's second positional)
+    if let Some(a) = args.last() {
+        if args.len() > 1 {
+            if let PyObjectPayload::Dict(m) = &a.payload {
+                let r = m.read();
+                for (k, v) in r.iter() {
+                    if let HashableKey::Str(s) = k {
+                        if s.as_str() == "protocol" {
+                            if let Some(n) = v.as_int() { protocol = n; }
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut buf = Vec::new();
     let mut memo: u32 = 0;
     if protocol >= 2 {

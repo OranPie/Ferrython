@@ -37,6 +37,16 @@ fn keys_to_set(keys: FxHashKeyFlatMap) -> PyObjectRef {
     PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(keys))))
 }
 
+/// Coerce a Bool operand to Int for arithmetic that doesn't preserve bool type
+/// (e.g., /, //, %, **, <<, >>). Returns Some(int_obj) if it was a Bool.
+fn bool_as_int(o: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Bool(b) = &o.payload {
+        Some(PyObject::int(if *b { 1 } else { 0 }))
+    } else {
+        None
+    }
+}
+
 pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
         // Unwrap builtin subclass instances to their underlying values
         let ua = unwrap_builtin_subclass(a);
@@ -351,6 +361,8 @@ pub(super) fn py_floor_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjec
         if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
             return py_floor_div(&ua, &ub);
         }
+        if let (Some(ai), _) = (bool_as_int(a), ()) { return py_floor_div(&ai, b); }
+        if let (_, Some(bi)) = ((), bool_as_int(b)) { return py_floor_div(a, &bi); }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if b.is_zero() { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
@@ -451,6 +463,11 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
         let ub = unwrap_builtin_subclass(b);
         if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
             return py_modulo(&ua, &ub);
+        }
+        // Bool → Int coercion (except str % b, which is string formatting)
+        if !matches!(&a.payload, PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_)) {
+            if let Some(ai) = bool_as_int(a) { return py_modulo(&ai, b); }
+            if let Some(bi) = bool_as_int(b) { return py_modulo(a, &bi); }
         }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
@@ -605,6 +622,8 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
         if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
             return py_power(&ua, &ub);
         }
+        if let Some(ai) = bool_as_int(a) { return py_power(&ai, b); }
+        if let Some(bi) = bool_as_int(b) { return py_power(a, &bi); }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if let Some(exp) = b.to_i64() {

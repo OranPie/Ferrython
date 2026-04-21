@@ -17,7 +17,10 @@ impl VirtualMachine {
         match instr.op {
             Opcode::UnaryPositive => {
                 let v = self.vm_pop();
-                if let Some(r) = self.try_call_dunder(&v, "__pos__", vec![])? {
+                // bool: +True/+False must return int, not bool (preserve identity test)
+                if let PyObjectPayload::Bool(b) = &v.payload {
+                    self.vm_push(PyObject::int(if *b { 1 } else { 0 }));
+                } else if let Some(r) = self.try_call_dunder(&v, "__pos__", vec![])? {
                     self.vm_push(r);
                 } else {
                     self.vm_push(v.positive()?);

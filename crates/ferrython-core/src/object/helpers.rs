@@ -1228,6 +1228,14 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 return Err(PyException::type_error("int.__new__ requires cls"));
             }
             let cls = &args[0];
+            // CPython: int.__new__(bool, ...) is not allowed
+            if let PyObjectPayload::BuiltinType(name) = &cls.payload {
+                if name.as_str() == "bool" {
+                    return Err(PyException::type_error(
+                        "int.__new__(bool) is not safe, use bool.__new__()"
+                    ));
+                }
+            }
             let value = if args.len() > 1 {
                 args[1].to_int()?
             } else {
