@@ -1497,26 +1497,26 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let f: f64 = s.parse().unwrap_or(0.0);
         Ok(PyObject::float(f))
     }
 
     fn decimal_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let (neg, digits, scale) = decimal_parse(&s);
         let int_val = digits / 10i128.pow(scale);
         Ok(PyObject::int(if neg { -(int_val as i64) } else { int_val as i64 }))
     }
 
     fn decimal_neg(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let (neg, digits, scale) = decimal_parse(&s);
         Ok(make_decimal(&decimal_format(!neg, digits, scale)))
     }
 
     fn decimal_abs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let (_, digits, scale) = decimal_parse(&s);
         Ok(make_decimal(&decimal_format(false, digits, scale)))
     }
@@ -1564,18 +1564,18 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         Ok(PyObject::str_val(CompactString::from(s)))
     }
 
     fn decimal_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let f: f64 = s.parse().unwrap_or(0.0);
         Ok(PyObject::int(f.to_bits() as i64))
     }
 
     fn decimal_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         if s == "NaN" { return Ok(make_decimal("NaN")); }
         let f: f64 = s.parse().unwrap_or(0.0);
         if f < 0.0 { return Err(PyException::value_error("Square root of negative number")); }
@@ -1584,7 +1584,7 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_ln(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         if s == "NaN" { return Ok(make_decimal("NaN")); }
         let f: f64 = s.parse().unwrap_or(0.0);
         if f <= 0.0 { return Err(PyException::value_error("ln of non-positive number")); }
@@ -1593,7 +1593,7 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         if s == "NaN" { return Ok(make_decimal("NaN")); }
         let f: f64 = s.parse().unwrap_or(0.0);
         let result = f.exp();
@@ -1601,23 +1601,23 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_is_zero(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         let (_, digits, _) = decimal_parse(&s);
         Ok(PyObject::bool_val(digits == 0))
     }
 
     fn decimal_is_nan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         Ok(PyObject::bool_val(s == "NaN"))
     }
 
     fn decimal_is_infinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         Ok(PyObject::bool_val(s == "Infinity" || s == "-Infinity"))
     }
 
     fn decimal_to_eng_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let s = args.first().and_then(get_decimal_str).unwrap_or_else(|| "0".to_string());
         if s == "NaN" || s == "Infinity" || s == "-Infinity" {
             return Ok(PyObject::str_val(CompactString::from(&s)));
         }
