@@ -334,6 +334,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
             PyObjectPayload::VecIter(data) => {
                 let idx = data.index.get();
+                if idx >= data.items.len() { return Ok(false); }
                 Ok(data.items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
             }
             PyObjectPayload::RefIter { source, index } => {
@@ -341,9 +342,11 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
                         let items = unsafe { &*cell.data_ptr() };
+                        if idx >= items.len() { return Ok(false); }
                         Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
                     }
                     PyObjectPayload::Tuple(items) => {
+                        if idx >= items.len() { return Ok(false); }
                         Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
                     }
                     _ => Ok(false),

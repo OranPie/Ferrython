@@ -363,7 +363,8 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             let idx = data.index.get();
             if idx < data.items.len() {
                 let v = data.items[idx].clone();
-                data.index.set(idx + 1);
+                let new_idx = idx + 1;
+                data.index.set(if new_idx >= data.items.len() { usize::MAX } else { new_idx });
                 Ok(Some((iter_obj.clone(), v)))
             } else { Ok(None) }
         }
@@ -374,14 +375,16 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     let items = unsafe { &*cell.data_ptr() };
                     if idx < items.len() {
                         let v = items[idx].clone();
-                        index.set(idx + 1);
+                        let new_idx = idx + 1;
+                        index.set(if new_idx >= items.len() { usize::MAX } else { new_idx });
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
                 PyObjectPayload::Tuple(items) => {
                     if idx < items.len() {
                         let v = items[idx].clone();
-                        index.set(idx + 1);
+                        let new_idx = idx + 1;
+                        index.set(if new_idx >= items.len() { usize::MAX } else { new_idx });
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }

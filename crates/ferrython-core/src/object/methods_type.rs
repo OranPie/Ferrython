@@ -574,21 +574,38 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 Ok(result)
             }
             PyObjectPayload::Iterator(iter_data) => {
-                let data = iter_data.read();
-                match &*data {
-                    IteratorData::List { items, index } => Ok(items[*index..].to_vec()),
-                    IteratorData::Tuple { items, index } => Ok(items[*index..].to_vec()),
+                let mut data = iter_data.write();
+                match &mut *data {
+                    IteratorData::List { items, index } => {
+                        let result = items[*index..].to_vec();
+                        *index = items.len();
+                        Ok(result)
+                    }
+                    IteratorData::Tuple { items, index } => {
+                        let result = items[*index..].to_vec();
+                        *index = items.len();
+                        Ok(result)
+                    }
                     IteratorData::Range { current, stop, step } => {
                         let mut result = Vec::new();
                         let mut val = *current;
                         while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
                             result.push(PyObject::int(val));
-                            val += step;
+                            val += *step;
                         }
+                        *current = *stop;
                         Ok(result)
                     }
                     IteratorData::Str { chars, index } => {
-                        Ok(chars[*index..].iter().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect())
+                        let result: Vec<PyObjectRef> = chars[*index..].iter()
+                            .map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect();
+                        *index = chars.len();
+                        Ok(result)
+                    }
+                    IteratorData::DictKeys { keys, index } => {
+                        let result = keys[*index..].to_vec();
+                        *index = keys.len();
+                        Ok(result)
                     }
                     // Lazy iterators can't be eagerly collected from core
                     IteratorData::Enumerate { .. }
@@ -604,8 +621,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     | IteratorData::Chain { .. }
                     | IteratorData::SeqIter { .. }
                     | IteratorData::Starmap { .. }
-                    | IteratorData::DictEntries { .. }
-                    | IteratorData::DictKeys { .. } => {
+                    | IteratorData::DictEntries { .. } => {
                         Err(PyException::type_error("lazy iterator requires VM to collect"))
                     }
                 }
@@ -617,21 +633,31 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     result.push(PyObject::int(val));
                     val += ri.step;
                 }
+                ri.current.set(ri.stop);
                 Ok(result)
             }
             PyObjectPayload::VecIter(data) => {
                 let idx = data.index.get();
-                Ok(data.items[idx..].to_vec())
+                if idx >= data.items.len() { return Ok(vec![]); }
+                let result = data.items[idx..].to_vec();
+                data.index.set(usize::MAX);
+                Ok(result)
             }
             PyObjectPayload::RefIter { source, index } => {
                 let idx = index.get();
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
                         let items = unsafe { &*cell.data_ptr() };
-                        Ok(items[idx..].to_vec())
+                        if idx >= items.len() { return Ok(vec![]); }
+                        let result = items[idx..].to_vec();
+                        index.set(usize::MAX);
+                        Ok(result)
                     }
                     PyObjectPayload::Tuple(items) => {
-                        Ok(items[idx..].to_vec())
+                        if idx >= items.len() { return Ok(vec![]); }
+                        let result = items[idx..].to_vec();
+                        index.set(usize::MAX);
+                        Ok(result)
                     }
                     _ => Ok(vec![]),
                 }

@@ -985,17 +985,28 @@ impl VirtualMachine {
             }
             PyObjectPayload::VecIter(data) => {
                 let idx = data.index.get();
-                Ok(data.items[idx..].to_vec())
+                if idx >= data.items.len() {
+                    return Ok(vec![]);
+                }
+                let result = data.items[idx..].to_vec();
+                data.index.set(usize::MAX);
+                Ok(result)
             }
             PyObjectPayload::RefIter { source, index } => {
                 let idx = index.get();
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
                         let items = unsafe { &*cell.data_ptr() };
-                        Ok(items[idx..].to_vec())
+                        if idx >= items.len() { return Ok(vec![]); }
+                        let result = items[idx..].to_vec();
+                        index.set(usize::MAX);
+                        Ok(result)
                     }
                     PyObjectPayload::Tuple(items) => {
-                        Ok(items[idx..].to_vec())
+                        if idx >= items.len() { return Ok(vec![]); }
+                        let result = items[idx..].to_vec();
+                        index.set(usize::MAX);
+                        Ok(result)
                     }
                     _ => Ok(vec![]),
                 }
