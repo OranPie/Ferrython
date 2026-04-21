@@ -1,7 +1,7 @@
 //! VM utility functions — repr, str, sort, iteration, generators.
 
 use crate::builtins;
-use crate::frame::Frame;
+use crate::frame::{Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
@@ -2225,15 +2225,40 @@ impl VirtualMachine {
                 Ok(PyObject::none())
         } else {
             let globals = self.call_stack.last().unwrap().globals.clone();
-            let exec_result = self.execute_with_globals(code, globals.clone())?;
-            // Check for __eval_result__ in globals (set by compile(mode='eval'))
-            if let Some(val) = globals.read().get("__eval_result__").cloned() {
+            // Merge in locals so names defined in the enclosing function scope are visible to eval().
+            // Only needed for non-module frames; at module level, locals == globals.
+            let is_module = matches!(self.call_stack.last().unwrap().scope_kind, ScopeKind::Module);
+            let shared = if is_module {
+                globals
+            } else {
+                let mut merged = globals.read().clone();
+                let frame = self.call_stack.last().unwrap();
+                for (i, name) in frame.code.varnames.iter().enumerate() {
+                    if let Some(Some(val)) = frame.locals.get(i) {
+                        merged.insert(name.clone(), val.clone());
+                    }
+                }
+                for (k, v) in frame.local_names_iter() {
+                    merged.insert(k.clone(), v.clone());
+                }
+                for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+                    if let Some(cell) = frame.cells.get(i) {
+                        if let Some(val) = cell.read().as_ref() {
+                            merged.insert(name.clone(), val.clone());
+                        }
+                    }
+                }
+                Rc::new(PyCell::new(merged))
+            };
+            let exec_result = self.execute_with_globals(code, shared.clone())?;
+            // Check for __eval_result__
+            if let Some(val) = shared.read().get("__eval_result__").cloned() {
                 return Ok(val);
             }
             if is_code_obj {
                 return Ok(exec_result);
             }
-            let result = globals.read().get("__eval_result__").cloned()
+            let result = shared.read().get("__eval_result__").cloned()
                 .unwrap_or_else(PyObject::none);
             Ok(result)
         }

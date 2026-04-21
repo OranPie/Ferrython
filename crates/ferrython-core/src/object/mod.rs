@@ -8,7 +8,7 @@ mod methods_arith;
 mod methods_compare;
 mod methods_attr;
 mod methods_container;
-mod methods_format;
+pub mod methods_format;
 pub mod helpers;
 
 // Re-export all public types and functions

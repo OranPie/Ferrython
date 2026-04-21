@@ -470,6 +470,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                         }
                     }
+                    // Builtin base subclass: delegate non-dunder attr lookups (e.g. .real, .imag)
+                    // to the underlying __builtin_value__ when all else fails.
+                    if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                        if let Some(result) = py_get_attr(&val, name) {
+                            return Some(result);
+                        }
+                    }
                     // 3. Builtin instance methods (only for special instances)
                     if inst.is_special {
                         if let Some(result) = instance_builtin_method(obj, inst, name) {
@@ -874,6 +881,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__class__" => Some(PyObject::builtin_type(CompactString::from("complex"))),
                     "conjugate" => Some(PyObjectRef::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from("conjugate")))
+                    })),
+                    "__abs__" | "__neg__" | "__pos__" | "__bool__" |
+                    "__repr__" | "__str__" | "__hash__" | "__format__" |
+                    "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__" |
+                    "__add__" | "__sub__" | "__mul__" | "__truediv__" |
+                    "__floordiv__" | "__mod__" | "__pow__" | "__divmod__" |
+                    "__radd__" | "__rsub__" | "__rmul__" | "__rtruediv__" |
+                    "__rfloordiv__" | "__rmod__" | "__rpow__" |
+                    "__complex__" | "__getnewargs__" => Some(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     })),
                     _ => None,
                 }

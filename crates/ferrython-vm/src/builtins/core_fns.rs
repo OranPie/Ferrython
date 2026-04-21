@@ -529,6 +529,13 @@ pub(super) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if matches!(&modulus.payload, PyObjectPayload::None) {
             return Ok(args[0].power(&args[1])?);
         }
+        // Complex does not support 3-arg pow — raise ValueError to match CPython
+        if matches!(&args[0].payload, PyObjectPayload::Complex { .. })
+            || matches!(&args[1].payload, PyObjectPayload::Complex { .. })
+            || matches!(&modulus.payload, PyObjectPayload::Complex { .. })
+        {
+            return Err(PyException::value_error("complex modulo"));
+        }
         let base_i = args[0].as_int().ok_or_else(||
             PyException::type_error("pow() 1st argument not allowed for 3-argument pow() unless all arguments are integers"))?;
         let exp_i = args[1].as_int().ok_or_else(||
@@ -1748,51 +1755,187 @@ pub(super) fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
-pub(super) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Unwrap Instance subclasses of complex/int/float via __builtin_value__
+    let unwrap = |o: &PyObjectRef| -> PyObjectRef {
+        if let PyObjectPayload::Instance(inst) = &o.payload {
+            if let Some(v) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return v;
+            }
+        }
+        o.clone()
+    };
+    let a0 = args.get(0).map(unwrap);
+    let a1 = args.get(1).map(unwrap);
     if args.len() == 1 {
-        if let PyObjectPayload::Str(s) = &args[0].payload {
-            let s = s.trim().replace(" ", "");
-            return parse_complex_string(&s);
+        let arg = a0.as_ref().unwrap();
+        if let PyObjectPayload::Str(s) = &arg.payload {
+            let s = s.trim();
+            return parse_complex_string(s);
+        }
+        if let PyObjectPayload::Complex { .. } = &arg.payload {
+            return Ok(arg.clone());
+        }
+        if let Some(dunder) = arg.get_attr("__complex__") {
+            if let PyObjectPayload::NativeFunction(nf) = &dunder.payload {
+                let res = (nf.func)(&[])?;
+                return match &res.payload {
+                    PyObjectPayload::Complex { real, imag } => Ok(PyObject::complex(*real, *imag)),
+                    _ => Err(PyException::type_error("__complex__ returned non-complex")),
+                };
+            }
+        }
+        if matches!(&arg.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_)) {
+            // OK, fall through to numeric conversion
+        } else {
+            return Err(PyException::type_error(format!("complex() first argument must be a string or a number, not '{}'", arg.type_name())));
         }
     }
-    let real = if !args.is_empty() { args[0].to_float().unwrap_or(0.0) } else { 0.0 };
-    let imag = if args.len() > 1 { args[1].to_float().unwrap_or(0.0) } else { 0.0 };
+    // With two args: complex(a, b) = a + b*1j
+    // If b is complex, real/imag extraction: result = (a.real - b.imag) + (a.imag + b.real)j
+    if let (Some(a), Some(b)) = (&a0, &a1) {
+        if matches!(&a.payload, PyObjectPayload::Str(_)) {
+            return Err(PyException::type_error("complex() can't take second arg if first is a string"));
+        }
+        if matches!(&b.payload, PyObjectPayload::Str(_)) {
+            return Err(PyException::type_error("complex() second arg can't be a string"));
+        }
+        // Reject dicts/lists/etc for either arg with helpful messages
+        let is_num = |o: &PyObjectRef| matches!(&o.payload,
+            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_) | PyObjectPayload::Complex{..});
+        if !is_num(a) {
+            return Err(PyException::type_error(
+                format!("complex() first argument must be a string or a number, not '{}'", a.type_name())));
+        }
+        if !is_num(b) {
+            return Err(PyException::type_error(
+                format!("complex() second argument must be a number, not '{}'", b.type_name())));
+        }
+        let a_is_complex = matches!(&a.payload, PyObjectPayload::Complex{..});
+        let b_is_complex = matches!(&b.payload, PyObjectPayload::Complex{..});
+        let af = a.to_float().unwrap_or(0.0);
+        let bf = b.to_float().unwrap_or(0.0);
+        if !a_is_complex && matches!(&a.payload, PyObjectPayload::Int(_)) && af.is_infinite() {
+            return Err(PyException::overflow_error("int too large to convert to float"));
+        }
+        if !b_is_complex && matches!(&b.payload, PyObjectPayload::Int(_)) && bf.is_infinite() {
+            return Err(PyException::overflow_error("int too large to convert to float"));
+        }
+        let (ar, ai) = match &a.payload {
+            PyObjectPayload::Complex { real, imag } => (*real, *imag),
+            _ => (af, 0.0),
+        };
+        let (br, bi) = match &b.payload {
+            PyObjectPayload::Complex { real, imag } => (*real, *imag),
+            _ => (bf, 0.0),
+        };
+        let real = if b_is_complex { ar - bi } else { ar };
+        let imag = if a_is_complex { ai + br } else { br };
+        return Ok(PyObject::complex(real, imag));
+    }
+    let real = a0.as_ref().map(|v| v.to_float().unwrap_or(0.0)).unwrap_or(0.0);
+    let imag = a1.as_ref().map(|v| v.to_float().unwrap_or(0.0)).unwrap_or(0.0);
     Ok(PyObject::complex(real, imag))
 }
 
-fn parse_complex_string(s: &str) -> PyResult<PyObjectRef> {
-    // Handle pure imaginary: "2j", "-3j"
-    if s.ends_with('j') || s.ends_with('J') {
-        let body = &s[..s.len()-1];
-        // Pure imaginary like "2j"
-        if let Ok(imag) = body.parse::<f64>() {
-            return Ok(PyObject::complex(0.0, imag));
+fn parse_complex_string(raw: &str) -> PyResult<PyObjectRef> {
+    let trimmed = raw.trim();
+    // Strip matching surrounding parens
+    let trimmed = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        trimmed[1..trimmed.len()-1].trim()
+    } else {
+        trimmed
+    };
+    if trimmed.is_empty() {
+        return Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", raw)));
+    }
+    // Remove all underscores (validated later that no double-underscore creeps in via strtod)
+    let no_ws: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // Handle pure imaginary: "2j", "-3j", or "j" / "+j" / "-j"
+    if no_ws.ends_with('j') || no_ws.ends_with('J') {
+        let body = &no_ws[..no_ws.len()-1];
+        // Handle "j", "+j", "-j"
+        let imag_body = if body.is_empty() { "1" }
+            else if body == "+" { "1" }
+            else if body == "-" { "-1" }
+            else { body };
+        // Pure imaginary: full body parses as float
+        if let Some(f) = parse_py_float(imag_body) {
+            return Ok(PyObject::complex(0.0, f));
         }
-        // "1+2j" or "1-2j"
-        if let Some(pos) = body.rfind('+') {
-            if pos > 0 {
-                let real_s = &body[..pos];
-                let imag_s = &body[pos+1..];
-                if let (Ok(r), Ok(i)) = (real_s.parse::<f64>(), imag_s.parse::<f64>()) {
-                    return Ok(PyObject::complex(r, i));
-                }
-            }
-        }
-        if let Some(pos) = body.rfind('-') {
-            if pos > 0 {
-                let real_s = &body[..pos];
-                let imag_s = &body[pos..]; // includes the minus
-                if let (Ok(r), Ok(i)) = (real_s.parse::<f64>(), imag_s.parse::<f64>()) {
-                    return Ok(PyObject::complex(r, i));
-                }
+        // Split into real+imag. Find last '+' or '-' that is not part of an exponent
+        // and not at position 0.
+        if let Some(split_pos) = find_complex_split(body) {
+            let real_s = &body[..split_pos];
+            let imag_s_raw = &body[split_pos..];
+            let imag_s = if imag_s_raw == "+" { "1".to_string() }
+                else if imag_s_raw == "-" { "-1".to_string() }
+                else if imag_s_raw == "++" || imag_s_raw == "+" { "1".to_string() }
+                else if imag_s_raw.starts_with('+') {
+                    let rest = &imag_s_raw[1..];
+                    if rest.is_empty() { "1".to_string() } else { rest.to_string() }
+                } else if imag_s_raw == "-" {
+                    "-1".to_string()
+                } else if imag_s_raw.starts_with('-') && imag_s_raw.len() == 1 {
+                    "-1".to_string()
+                } else {
+                    imag_s_raw.to_string()
+                };
+            if let (Some(r), Some(i)) = (parse_py_float(real_s), parse_py_float(&imag_s)) {
+                return Ok(PyObject::complex(r, i));
             }
         }
     }
     // Pure real
-    if let Ok(r) = s.parse::<f64>() {
+    if let Some(r) = parse_py_float(&no_ws) {
         return Ok(PyObject::complex(r, 0.0));
     }
-    Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", s)))
+    Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", raw)))
+}
+
+/// Parse a Python-style float string (supports `_` separators, `inf`, `nan`).
+fn parse_py_float(s: &str) -> Option<f64> {
+    if s.is_empty() { return None; }
+    if s.starts_with('_') || s.ends_with('_') || s.contains("__") { return None; }
+    // Each underscore must be surrounded by digits on both sides.
+    let bytes = s.as_bytes();
+    for (i, &c) in bytes.iter().enumerate() {
+        if c == b'_' {
+            if i == 0 || i + 1 >= bytes.len() { return None; }
+            let prev = bytes[i-1];
+            let next = bytes[i+1];
+            if !prev.is_ascii_digit() || !next.is_ascii_digit() { return None; }
+        }
+    }
+    let cleaned: String = s.chars().filter(|&c| c != '_').collect();
+    let lower = cleaned.to_ascii_lowercase();
+    match lower.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+        "nan" | "+nan" | "-nan" => Some(f64::NAN),
+        _ => cleaned.parse::<f64>().ok(),
+    }
+}
+
+/// Find the split position between real and imag in a body like "1+2" or "3.14-5e-2".
+/// Returns the index of the '+' or '-' separating the parts.
+fn find_complex_split(body: &str) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        let c = bytes[i];
+        if (c == b'+' || c == b'-') && i > 0 {
+            let prev = bytes[i-1];
+            if prev == b'e' || prev == b'E' { continue; }
+            // If previous char is also a sign (like `+-0j`), this sign is part of the imag
+            // number, keep scanning to find the earlier one.
+            if prev == b'+' || prev == b'-' { continue; }
+            return Some(i);
+        }
+    }
+    None
 }
 
 pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

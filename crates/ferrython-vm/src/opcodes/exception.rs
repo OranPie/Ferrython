@@ -348,10 +348,16 @@ impl VirtualMachine {
             }
             1 => {
                 let exc = frame.pop();
+                // If raising a user-defined exception class, auto-instantiate to preserve class identity
+                if let PyObjectPayload::Class(cd) = &exc.payload {
+                    let is_builtin_exc = cd.namespace.read().get("__builtin_exception_kind__").is_some();
+                    if !is_builtin_exc {
+                        let inst = self.instantiate_class(&exc, vec![], vec![])?;
+                        let kind = Self::find_exception_kind(&exc);
+                        return Err(PyException::with_original(kind, String::new(), inst));
+                    }
+                }
                 let py_exc = raise_exc(&exc);
-                // Context chaining (__context__) is deferred to the unwind
-                // path in run_vm() — avoids expensive cloning for exceptions
-                // that are immediately caught in the same frame.
                 return Err(py_exc);
             }
             2 => {

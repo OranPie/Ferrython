@@ -677,11 +677,7 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
         PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
         PyObjectPayload::ByteArray(b) => call_bytearray_method(receiver, b, method, args),
         PyObjectPayload::Complex { real, imag } => {
-            match method {
-                "conjugate" => Ok(PyObject::complex(*real, -*imag)),
-                "__abs__" => Ok(PyObject::float((real * real + imag * imag).sqrt())),
-                _ => Err(PyException::attribute_error(format!("'complex' object has no attribute '{}'", method))),
-            }
+            call_complex_method(receiver, *real, *imag, method, args)
         }
         PyObjectPayload::Instance(inst) => call_instance_method(inst, method, args),
         _ => Err(PyException::attribute_error(format!(
@@ -749,5 +745,167 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
         if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "instance" },
         method
     )))
+}
+
+// Helpers to coerce arg into (real, imag). Returns None if not a numeric type.
+fn to_complex_parts(x: &PyObjectRef) -> Option<(f64, f64)> {
+    match &x.payload {
+        PyObjectPayload::Complex { real, imag } => Some((*real, *imag)),
+        PyObjectPayload::Int(n) => Some((n.to_f64(), 0.0)),
+        PyObjectPayload::Float(f) => Some((*f, 0.0)),
+        PyObjectPayload::Bool(b) => Some((if *b { 1.0 } else { 0.0 }, 0.0)),
+        _ => None,
+    }
+}
+
+fn call_complex_method(receiver: &PyObjectRef, real: f64, imag: f64, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use ferrython_core::error::ExceptionKind;
+    match method {
+        "conjugate" => Ok(PyObject::complex(real, -imag)),
+        "__abs__" => Ok(PyObject::float((real * real + imag * imag).sqrt())),
+        "__neg__" => Ok(PyObject::complex(-real, -imag)),
+        "__pos__" => Ok(PyObject::complex(real, imag)),
+        "__bool__" => Ok(PyObject::bool_val(real != 0.0 || imag != 0.0)),
+        "__complex__" => Ok(receiver.clone()),
+        "__hash__" => {
+            // Simple hash: combine real and imag hashes (Python uses a prime-based scheme)
+            let rh = real.to_bits() as i64;
+            let ih = imag.to_bits() as i64;
+            Ok(PyObject::int(rh ^ ih.wrapping_mul(1_000_003)))
+        }
+        "__repr__" | "__str__" => Ok(PyObject::str_val(CompactString::from(format_complex_repr(real, imag)))),
+        "__format__" => {
+            let spec = args.first().and_then(|a| a.as_str().map(|s| s.to_string())).unwrap_or_default();
+            if spec.is_empty() {
+                Ok(PyObject::str_val(CompactString::from(format_complex_repr(real, imag))))
+            } else {
+                let s = ferrython_core::object::methods_format::format_complex_with_spec_pub(real, imag, &spec)?;
+                Ok(PyObject::str_val(CompactString::from(s)))
+            }
+        }
+        "__getnewargs__" => Ok(PyObject::tuple(vec![PyObject::float(real), PyObject::float(imag)])),
+        "__eq__" | "__ne__" => {
+            let Some(other) = args.first() else { return Ok(PyObject::not_implemented()); };
+            let eq = match &other.payload {
+                PyObjectPayload::Complex { real: r2, imag: i2 } => real == *r2 && imag == *i2,
+                PyObjectPayload::Int(n) => imag == 0.0 && real == n.to_f64() && n.to_i64().map(|i| (real as i64) == i).unwrap_or(false),
+                PyObjectPayload::Float(f) => imag == 0.0 && real == *f,
+                PyObjectPayload::Bool(b) => imag == 0.0 && real == (if *b {1.0} else {0.0}),
+                _ => return Ok(PyObject::not_implemented()),
+            };
+            Ok(PyObject::bool_val(if method == "__eq__" { eq } else { !eq }))
+        }
+        "__lt__" | "__le__" | "__gt__" | "__ge__" => Ok(PyObject::not_implemented()),
+        "__add__" | "__radd__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            Ok(PyObject::complex(real + r2, imag + i2))
+        }
+        "__sub__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            Ok(PyObject::complex(real - r2, imag - i2))
+        }
+        "__rsub__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            Ok(PyObject::complex(r2 - real, i2 - imag))
+        }
+        "__mul__" | "__rmul__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            Ok(PyObject::complex(real * r2 - imag * i2, real * i2 + imag * r2))
+        }
+        "__truediv__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            complex_truediv(real, imag, r2, i2)
+        }
+        "__rtruediv__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            complex_truediv(r2, i2, real, imag)
+        }
+        "__floordiv__" | "__rfloordiv__" | "__mod__" | "__rmod__" | "__divmod__" => {
+            Err(PyException::type_error(format!("can't take floor or mod of complex number.")))
+        }
+        "__pow__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            complex_pow(real, imag, r2, i2)
+        }
+        "__rpow__" => {
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            complex_pow(r2, i2, real, imag)
+        }
+        _ => Err(PyException::attribute_error(format!("'complex' object has no attribute '{}'", method))),
+    }
+    .map_err(|e| {
+        let _ = ExceptionKind::SyntaxError; // keep import used
+        e
+    })
+}
+
+fn format_complex_repr(real: f64, imag: f64) -> String {
+    // Match Python: if real==0 and +0 sign, just "Nj"; else "(R+Ij)" with sign handling
+    let is_real_zero = real == 0.0 && !real.is_sign_negative();
+    if is_real_zero {
+        format!("{}j", fmt_float(imag))
+    } else {
+        let imag_str = fmt_float(imag);
+        let sep = if imag_str.starts_with('-') || imag_str.starts_with('+') { "" } else { "+" };
+        format!("({}{}{}j)", fmt_float(real), sep, imag_str)
+    }
+}
+
+fn fmt_float(f: f64) -> String {
+    if f.is_nan() { return "nan".to_string(); }
+    if f.is_infinite() { return if f > 0.0 { "inf".to_string() } else { "-inf".to_string() }; }
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0".to_string() } else { "0".to_string() };
+    }
+    if f == f.trunc() && f.abs() < 1e16 {
+        return format!("{}", f as i64);
+    }
+    let s = format!("{}", f);
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{}.0", s)
+    }
+}
+
+fn complex_truediv(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> {
+    if br == 0.0 && bi == 0.0 {
+        return Err(PyException::zero_division_error("complex division by zero"));
+    }
+    // Numerically stable version (CPython's _Py_c_quot)
+    if bi.abs() <= br.abs() {
+        let ratio = bi / br;
+        let denom = br + bi * ratio;
+        Ok(PyObject::complex((ar + ai * ratio) / denom, (ai - ar * ratio) / denom))
+    } else {
+        let ratio = br / bi;
+        let denom = br * ratio + bi;
+        Ok(PyObject::complex((ar * ratio + ai) / denom, (ai * ratio - ar) / denom))
+    }
+}
+
+fn complex_pow(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> {
+    if ar == 0.0 && ai == 0.0 {
+        if bi != 0.0 || br < 0.0 {
+            return Err(PyException::new(
+                ferrython_core::error::ExceptionKind::ZeroDivisionError,
+                "0.0 to a negative or complex power".to_string(),
+            ));
+        }
+        if br == 0.0 { return Ok(PyObject::complex(1.0, 0.0)); }
+        return Ok(PyObject::complex(0.0, 0.0));
+    }
+    // a = r * e^(i*theta); a^b = r^br * e^(-bi*theta) * e^(i*(bi*ln(r) + br*theta))
+    let r = (ar * ar + ai * ai).sqrt();
+    let theta = ai.atan2(ar);
+    let new_r = r.powf(br) * (-bi * theta).exp();
+    let new_theta = bi * r.ln() + br * theta;
+    if !new_r.is_finite() || !new_theta.is_finite() {
+        return Err(PyException::new(
+            ferrython_core::error::ExceptionKind::OverflowError,
+            "complex exponentiation".to_string(),
+        ));
+    }
+    Ok(PyObject::complex(new_r * new_theta.cos(), new_r * new_theta.sin()))
 }
 

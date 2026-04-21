@@ -149,12 +149,23 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             PyObjectPayload::Int(n) => n.to_string(),
             PyObjectPayload::Float(f) => float_to_str(*f),
             PyObjectPayload::Complex { real, imag } => {
-                if *real == 0.0 {
-                    format!("{}j", imag)
-                } else if *imag >= 0.0 || imag.is_nan() {
-                    format!("({}+{}j)", real, imag)
+                fn ff(f: f64) -> String {
+                    if f.is_nan() { return "nan".into(); }
+                    if f.is_infinite() { return if f > 0.0 { "inf".into() } else { "-inf".into() }; }
+                    if f == 0.0 { return if f.is_sign_negative() { "-0".into() } else { "0".into() }; }
+                    if f == f.trunc() && f.abs() < 1e16 {
+                        return format!("{}", f as i64);
+                    }
+                    let s = format!("{}", f);
+                    if s.contains('.') || s.contains('e') || s.contains('E') { s } else { format!("{}.0", s) }
+                }
+                let is_real_zero = *real == 0.0 && !real.is_sign_negative();
+                if is_real_zero {
+                    format!("{}j", ff(*imag))
                 } else {
-                    format!("({}{}j)", real, imag) // imag already has '-' prefix
+                    let imag_str = ff(*imag);
+                    let sep = if imag_str.starts_with('-') || imag_str.starts_with('+') { "" } else { "+" };
+                    format!("({}{}{}j)", ff(*real), sep, imag_str)
                 }
             }
             PyObjectPayload::Str(s) => s.to_string(),

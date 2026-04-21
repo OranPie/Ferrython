@@ -1,6 +1,6 @@
 //! String formatting and dir methods.
 
-use crate::error::PyResult;
+use crate::error::{PyResult, PyException};
 use compact_str::CompactString;
 
 use super::payload::*;
@@ -10,6 +10,10 @@ use super::methods::PyObjectMethods;
 pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String> {
         if spec.is_empty() {
             return Ok(obj.py_to_string());
+        }
+        // Complex formatting: apply spec to real/imag separately then combine.
+        if let PyObjectPayload::Complex { real, imag } = &obj.payload {
+            return format_complex_with_spec(*real, *imag, spec);
         }
         // Parse format spec: [[fill]align][sign][#][0][width][grouping_option][.precision][type]
         let spec_bytes = spec.as_bytes();
@@ -219,6 +223,240 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 return Ok(apply_string_format_spec(&s, spec));
             }
         }
+}
+
+pub fn format_complex_with_spec_pub(real: f64, imag: f64, spec: &str) -> PyResult<String> {
+    format_complex_with_spec(real, imag, spec)
+}
+
+/// Format a complex number with a format spec. Supports alignment, width,
+/// sign prefix, precision, and type chars (f/F/e/E/g/G). If a type char is
+/// present, each component uses that type. Otherwise uses default complex str.
+fn format_complex_with_spec(real: f64, imag: f64, spec: &str) -> PyResult<String> {
+    let bytes = spec.as_bytes();
+    // Parse [[fill]align][sign][#][0][width][,_][.precision][type]
+    let mut idx = 0usize;
+    let mut fill = ' ';
+    let mut align: Option<char> = None;
+    if bytes.len() >= 2 {
+        let next = bytes[1] as char;
+        if matches!(next, '<' | '>' | '=' | '^') && bytes[0] as char != '{' {
+            fill = bytes[0] as char;
+            align = Some(next);
+            idx = 2;
+        }
+    }
+    if align.is_none() && !bytes.is_empty() {
+        let c = bytes[0] as char;
+        if matches!(c, '<' | '>' | '=' | '^') {
+            align = Some(c);
+            idx = 1;
+        }
+    }
+    if align == Some('=') {
+        return Err(PyException::value_error("'=' alignment flag is not allowed in complex format specifier"));
+    }
+    let sign = if idx < bytes.len() && matches!(bytes[idx] as char, '+' | '-' | ' ') {
+        let s = bytes[idx] as char; idx += 1; Some(s)
+    } else { None };
+    let alt = if idx < bytes.len() && bytes[idx] == b'#' { idx += 1; true } else { false };
+    // Zero padding is not allowed for complex
+    let zero_pad = idx < bytes.len() && bytes[idx] == b'0';
+    if zero_pad {
+        return Err(PyException::value_error("Zero padding is not allowed in complex format specifier"));
+    }
+    // width
+    let mut width = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        width = width * 10 + (bytes[idx] - b'0') as usize; idx += 1;
+    }
+    // grouping
+    let mut grouping: Option<char> = None;
+    if idx < bytes.len() && matches!(bytes[idx] as char, ',' | '_') {
+        grouping = Some(bytes[idx] as char);
+        idx += 1;
+    }
+    // precision
+    let mut precision: Option<usize> = None;
+    if idx < bytes.len() && bytes[idx] == b'.' {
+        idx += 1;
+        let mut p = 0usize;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            p = p * 10 + (bytes[idx] - b'0') as usize; idx += 1;
+        }
+        precision = Some(p);
+    }
+    let type_char = if idx < bytes.len() { bytes[idx] as char } else { '\0' };
+    if matches!(type_char, 'b' | 'c' | 'd' | 'o' | 'x' | 'X' | 'n' | '%') {
+        return Err(PyException::value_error(format!(
+            "Unknown format code '{}' for object of type 'complex'", type_char)));
+    }
+
+    fn fmt_part(f: f64, type_char: char, precision: Option<usize>, alt: bool, explicit_sign: bool) -> String {
+        let upper = matches!(type_char, 'F' | 'E' | 'G');
+        if f.is_nan() {
+            let s = if upper { "NAN" } else { "nan" };
+            return if explicit_sign { format!("+{}", s) } else { s.into() };
+        }
+        if f.is_infinite() {
+            let base = if upper { "INF" } else { "inf" };
+            let s = if f > 0.0 { base.to_string() } else { format!("-{}", base) };
+            return if explicit_sign && f > 0.0 { format!("+{}", s) } else { s };
+        }
+        let prec = precision.unwrap_or(6);
+        let base = match type_char {
+            'f' | 'F' => {
+                let s = format!("{:.prec$}", f, prec = prec);
+                if alt && !s.contains('.') { format!("{}.", s) } else { s }
+            }
+            'e' => {
+                let raw = format!("{:.prec$e}", f, prec = prec);
+                let mut fixed = fix_exp(&raw, 'e');
+                if alt && prec == 0 {
+                    if let Some(e_pos) = fixed.find('e') {
+                        let (m, e) = fixed.split_at(e_pos);
+                        if !m.contains('.') { fixed = format!("{}.{}", m, e); }
+                    }
+                }
+                fixed
+            }
+            'E' => {
+                let raw = format!("{:.prec$e}", f, prec = prec);
+                let mut fixed = fix_exp(&raw, 'E');
+                if alt && prec == 0 {
+                    if let Some(e_pos) = fixed.find('E') {
+                        let (m, e) = fixed.split_at(e_pos);
+                        if !m.contains('.') { fixed = format!("{}.{}", m, e); }
+                    }
+                }
+                fixed
+            }
+            'g' | 'G' => {
+                let p = if prec == 0 { 1 } else { prec };
+                let abs_f = f.abs();
+                let use_exp = if abs_f == 0.0 { false } else {
+                    let exp = abs_f.log10().floor() as i32;
+                    exp < -4 || exp >= p as i32
+                };
+                let raw = if use_exp {
+                    let raw_e = format!("{:.prec$e}", f, prec = p - 1);
+                    let fixed = fix_exp(&raw_e, if type_char == 'g' { 'e' } else { 'E' });
+                    // Trim trailing zeros from mantissa part
+                    if let Some(e_pos) = fixed.find(|c: char| c == 'e' || c == 'E') {
+                        let (m, e) = fixed.split_at(e_pos);
+                        let m = m.trim_end_matches('0').trim_end_matches('.');
+                        let m = if m.is_empty() || m == "-" { if m.is_empty() { "0" } else { "-0" } } else { m };
+                        if alt { format!("{}{}", if m.contains('.') { m.to_string() } else { format!("{}.", m) }, e) }
+                        else { format!("{}{}", m, e) }
+                    } else { fixed }
+                } else {
+                    let mag = if abs_f == 0.0 { 1 } else { abs_f.log10().floor() as i32 + 1 };
+                    let dp = if p as i32 > mag { (p as i32 - mag) as usize } else { 0 };
+                    let s = format!("{:.prec$}", f, prec = dp);
+                    if s.contains('.') && !alt {
+                        let t = s.trim_end_matches('0').trim_end_matches('.');
+                        t.to_string()
+                    } else if alt && !s.contains('.') {
+                        format!("{}.", s)
+                    } else { s }
+                };
+                raw
+            }
+            _ => {
+                if let Some(p) = precision {
+                    // No type char but precision specified — treat as 'g' with that precision
+                    return fmt_part(f, 'g', Some(p), alt, explicit_sign);
+                }
+                // No type: use repr-style
+                if f == 0.0 {
+                    if f.is_sign_negative() { "-0".into() } else { "0".into() }
+                } else if f == f.trunc() && f.abs() < 1e16 {
+                    format!("{}", f as i64)
+                } else {
+                    format!("{}", f)
+                }
+            }
+        };
+        if explicit_sign && f >= 0.0 && !base.starts_with('+') && !base.starts_with('-') {
+            format!("+{}", base)
+        } else { base }
+    }
+    fn fix_exp(raw: &str, e_char: char) -> String {
+        if let Some(e_pos) = raw.rfind('e') {
+            let (m, e) = raw.split_at(e_pos);
+            let exp_val: i64 = e[1..].parse().unwrap_or(0);
+            let sign = if exp_val < 0 { '-' } else { '+' };
+            format!("{}{}{}{:02}", m, e_char, sign, exp_val.abs())
+        } else { raw.to_string() }
+    }
+    fn apply_grouping(s: &str, sep: char) -> String {
+        // Insert separator every 3 digits in integer part, skipping sign and preserving suffix.
+        let bytes = s.as_bytes();
+        let (sign_str, rest) = if !bytes.is_empty() && (bytes[0] == b'+' || bytes[0] == b'-' || bytes[0] == b' ') {
+            (&s[..1], &s[1..])
+        } else { ("", s) };
+        let end_int = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let (int_part, tail) = rest.split_at(end_int);
+        if int_part.len() <= 3 { return s.to_string(); }
+        let mut out = String::new();
+        let n = int_part.len();
+        for (i, ch) in int_part.chars().enumerate() {
+            if i > 0 && (n - i) % 3 == 0 { out.push(sep); }
+            out.push(ch);
+        }
+        format!("{}{}{}", sign_str, out, tail)
+    }
+
+    let sign_plus_real = sign == Some('+');
+    let sign_space = sign == Some(' ');
+    let real_str = {
+        let mut base = fmt_part(real, type_char, precision, alt, sign_plus_real);
+        if let Some(sep) = grouping { base = apply_grouping(&base, sep); }
+        if sign_space && real >= 0.0 && !base.starts_with('+') && !base.starts_with('-') && !base.starts_with(' ') {
+            format!(" {}", base)
+        } else { base }
+    };
+    let imag_str_signed = {
+        let mut s = fmt_part(imag, type_char, precision, alt, true);
+        if let Some(sep) = grouping { s = apply_grouping(&s, sep); }
+        s
+    };
+    let imag_str_plain = {
+        let mut s = fmt_part(imag, type_char, precision, alt, false);
+        if let Some(sep) = grouping { s = apply_grouping(&s, sep); }
+        s
+    };
+    let has_type = matches!(type_char, 'f' | 'F' | 'e' | 'E' | 'g' | 'G');
+
+    let core = if real == 0.0 && !real.is_sign_negative() && !has_type {
+        format!("{}j", imag_str_plain)
+    } else if has_type {
+        format!("{}{}j", real_str, imag_str_signed)
+    } else {
+        // No type char but width/align/fill: use parens like str()
+        format!("({}{}j)", real_str, imag_str_signed)
+    };
+    // apply width/align
+    if width > core.chars().count() {
+        let pad = width - core.chars().count();
+        let default_align = if has_type { '>' } else { '<' };
+        let align = align.unwrap_or(default_align);
+        let padding: String = std::iter::repeat(fill).take(pad).collect();
+        Ok(match align {
+            '<' => format!("{}{}", core, padding),
+            '>' => format!("{}{}", padding, core),
+            '^' => {
+                let left = pad / 2;
+                let right = pad - left;
+                let lp: String = std::iter::repeat(fill).take(left).collect();
+                let rp: String = std::iter::repeat(fill).take(right).collect();
+                format!("{}{}{}", lp, core, rp)
+            }
+            _ => format!("{}{}", core, padding),
+        })
+    } else {
+        Ok(core)
+    }
 }
 
 pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {

@@ -759,7 +759,7 @@ impl VirtualMachine {
                 PyObjectPayload::NativeFunction(nf)
                     if nf.name.ends_with(".__new__") && matches!(nf.name.as_str(),
                         "tuple.__new__" | "list.__new__" | "str.__new__" | "int.__new__"
-                        | "float.__new__" | "object.__new__")
+                        | "float.__new__" | "complex.__new__" | "object.__new__")
             );
             if is_builtin_new || is_native_builtin_new {
                 let inst = PyObject::instance(cls.clone());
@@ -819,6 +819,34 @@ impl VirtualMachine {
                                         Err(_) => {
                                             let s = pos_args[0].py_to_string();
                                             Some(PyObject::str_val(CompactString::from(s)))
+                                        }
+                                    }
+                                }
+                                "complex" => {
+                                    let to_ri = |obj: &PyObjectRef| -> Option<(f64, f64)> {
+                                        match &obj.payload {
+                                            PyObjectPayload::Complex { real, imag } => Some((*real, *imag)),
+                                            PyObjectPayload::Int(n) => Some((n.to_f64(), 0.0)),
+                                            PyObjectPayload::Float(f) => Some((*f, 0.0)),
+                                            PyObjectPayload::Bool(b) => Some((if *b {1.0} else {0.0}, 0.0)),
+                                            _ => None,
+                                        }
+                                    };
+                                    if pos_args.len() >= 2 {
+                                        match (to_ri(&pos_args[0]), to_ri(&pos_args[1])) {
+                                            (Some((ar, ai)), Some((br, bi))) => {
+                                                { let a_c = matches!(&pos_args[0].payload, PyObjectPayload::Complex{..}); let b_c = matches!(&pos_args[1].payload, PyObjectPayload::Complex{..}); let r = if b_c { ar - bi } else { ar }; let i = if a_c { ai + br } else { br }; Some(PyObject::complex(r, i)) }
+                                            }
+                                            _ => None,
+                                        }
+                                    } else {
+                                        let arg = &pos_args[0];
+                                        match &arg.payload {
+                                            PyObjectPayload::Complex { .. } => Some(arg.clone()),
+                                            PyObjectPayload::Int(n) => Some(PyObject::complex(n.to_f64(), 0.0)),
+                                            PyObjectPayload::Float(f) => Some(PyObject::complex(*f, 0.0)),
+                                            PyObjectPayload::Bool(b) => Some(PyObject::complex(if *b {1.0} else {0.0}, 0.0)),
+                                            _ => None,
                                         }
                                     }
                                 }
@@ -930,6 +958,34 @@ impl VirtualMachine {
                                     }
                                 }
                                 "set" | "bytes" | "bytearray" => Some(pos_args[0].clone()),
+                                "complex" => {
+                                    let to_ri = |obj: &PyObjectRef| -> Option<(f64, f64)> {
+                                        match &obj.payload {
+                                            PyObjectPayload::Complex { real, imag } => Some((*real, *imag)),
+                                            PyObjectPayload::Int(n) => Some((n.to_f64(), 0.0)),
+                                            PyObjectPayload::Float(f) => Some((*f, 0.0)),
+                                            PyObjectPayload::Bool(b) => Some((if *b {1.0} else {0.0}, 0.0)),
+                                            _ => None,
+                                        }
+                                    };
+                                    if pos_args.len() >= 2 {
+                                        match (to_ri(&pos_args[0]), to_ri(&pos_args[1])) {
+                                            (Some((ar, ai)), Some((br, bi))) => {
+                                                { let a_c = matches!(&pos_args[0].payload, PyObjectPayload::Complex{..}); let b_c = matches!(&pos_args[1].payload, PyObjectPayload::Complex{..}); let r = if b_c { ar - bi } else { ar }; let i = if a_c { ai + br } else { br }; Some(PyObject::complex(r, i)) }
+                                            }
+                                            _ => None,
+                                        }
+                                    } else {
+                                        let arg = &pos_args[0];
+                                        match &arg.payload {
+                                            PyObjectPayload::Complex { .. } => Some(arg.clone()),
+                                            PyObjectPayload::Int(n) => Some(PyObject::complex(n.to_f64(), 0.0)),
+                                            PyObjectPayload::Float(f) => Some(PyObject::complex(*f, 0.0)),
+                                            PyObjectPayload::Bool(b) => Some(PyObject::complex(if *b {1.0} else {0.0}, 0.0)),
+                                            _ => None,
+                                        }
+                                    }
+                                }
                                 _ => None,
                             }
                         };
@@ -1681,6 +1737,30 @@ impl VirtualMachine {
                         "float" | "str" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
                             // These builtins don't use kwargs meaningfully — just pass positional
                             return self.call_object(func, pos_args);
+                        }
+                        "complex" => {
+                            // complex(real=, imag=) — resolve kwargs to positional
+                            let mut real_arg: Option<PyObjectRef> = None;
+                            let mut imag_arg: Option<PyObjectRef> = None;
+                            for (k, v) in &kwargs {
+                                match k.as_str() {
+                                    "real" => real_arg = Some(v.clone()),
+                                    "imag" => imag_arg = Some(v.clone()),
+                                    _ => return Err(PyException::type_error(
+                                        format!("'{}' is an invalid keyword argument for complex()", k))),
+                                }
+                            }
+                            let mut all_args = pos_args;
+                            if let Some(r) = real_arg {
+                                if all_args.is_empty() { all_args.push(r); }
+                                else { return Err(PyException::type_error("argument for complex() given by name ('real') and position (1)")); }
+                            }
+                            if let Some(i) = imag_arg {
+                                while all_args.len() < 1 { all_args.push(PyObject::int(0)); }
+                                if all_args.len() == 1 { all_args.push(i); }
+                                else { return Err(PyException::type_error("argument for complex() given by name ('imag') and position (2)")); }
+                            }
+                            return self.call_object(func, all_args);
                         }
                         "open" => {
                             // open(file, mode='r', buffering=-1, encoding=None, ...)
@@ -2773,6 +2853,109 @@ impl VirtualMachine {
                                 }
                             }
                             // Fall through to native format
+                        }
+                    }
+                    "complex" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                // Check for user-defined __complex__ FIRST (takes priority over __builtin_value__)
+                                let has_user_complex = inst.class.get_attr("__complex__").is_some() && {
+                                    // Distinguish user-defined from inherited builtin
+                                    let m = Self::resolve_instance_dunder(&args[0], "__complex__");
+                                    matches!(m.as_ref().map(|o| &o.payload), Some(PyObjectPayload::BoundMethod{..} | PyObjectPayload::Function(_)))
+                                };
+                                if has_user_complex {
+                                    if let Some(method) = Self::resolve_instance_dunder(&args[0], "__complex__") {
+                                        let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                        let result = self.call_object(method, ca)?;
+                                        match &result.payload {
+                                            PyObjectPayload::Complex{..} => return Ok(result),
+                                            PyObjectPayload::Instance(i2) => {
+                                                // subclass of complex — extract via __builtin_value__
+                                                if let Some(v) = i2.attrs.read().get("__builtin_value__").cloned() {
+                                                    if matches!(&v.payload, PyObjectPayload::Complex{..}) {
+                                                        return Ok(v);
+                                                    }
+                                                }
+                                                return Err(PyException::type_error(
+                                                    format!("__complex__ returned non-complex (type {})", result.type_name())));
+                                            }
+                                            _ => return Err(PyException::type_error(
+                                                format!("__complex__ returned non-complex (type {})", result.type_name()))),
+                                        }
+                                    }
+                                }
+                                if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                                    if matches!(&val.payload, PyObjectPayload::Complex{..}) {
+                                        return Ok(val);
+                                    }
+                                }
+                                // Fallback: __float__
+                                if let Some(method) = Self::resolve_instance_dunder(&args[0], "__float__") {
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                    let result = self.call_object(method, ca)?;
+                                    match &result.payload {
+                                        PyObjectPayload::Float(f) => return Ok(PyObject::complex(*f, 0.0)),
+                                        PyObjectPayload::Int(n) => return Ok(PyObject::complex(n.to_f64(), 0.0)),
+                                        PyObjectPayload::Bool(b) => return Ok(PyObject::complex(if *b {1.0} else {0.0}, 0.0)),
+                                        _ => return Err(PyException::type_error(
+                                            format!("__float__ returned non-float (type {})", result.type_name()))),
+                                    }
+                                }
+                                // Fallback: __index__
+                                if let Some(method) = Self::resolve_instance_dunder(&args[0], "__index__") {
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                    let result = self.call_object(method, ca)?;
+                                    match &result.payload {
+                                        PyObjectPayload::Int(n) => {
+                                            let f = n.to_f64();
+                                            if f.is_infinite() {
+                                                return Err(PyException::overflow_error("int too large to convert to float"));
+                                            }
+                                            return Ok(PyObject::complex(f, 0.0));
+                                        }
+                                        PyObjectPayload::Bool(b) => return Ok(PyObject::complex(if *b {1.0} else {0.0}, 0.0)),
+                                        _ => return Err(PyException::type_error(
+                                            format!("__index__ returned non-int (type {})", result.type_name()))),
+                                    }
+                                }
+                                return Err(PyException::type_error(
+                                    format!("complex() first argument must be a string or a number, not '{}'", args[0].type_name())));
+                            }
+                        } else if args.len() == 2 {
+                            // Handle instances as either arg via __float__/__index__/__complex__
+                            let coerce_for_complex = |vm: &mut Self, obj: &PyObjectRef, which: &str| -> PyResult<PyObjectRef> {
+                                if matches!(&obj.payload, PyObjectPayload::Complex{..} | PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_)) {
+                                    return Ok(obj.clone());
+                                }
+                                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                                    if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                                        if matches!(&val.payload, PyObjectPayload::Complex{..} | PyObjectPayload::Int(_) | PyObjectPayload::Float(_)) {
+                                            return Ok(val);
+                                        }
+                                    }
+                                    for dunder in &["__complex__", "__float__", "__index__"] {
+                                        if let Some(method) = Self::resolve_instance_dunder(obj, dunder) {
+                                            let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![obj.clone()] };
+                                            let res = vm.call_object(method, ca)?;
+                                            if matches!(&res.payload, PyObjectPayload::Complex{..} | PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_)) {
+                                                return Ok(res);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(PyException::type_error(
+                                    format!("complex() {} argument must be a number, not '{}'", which, obj.type_name())))
+                            };
+                            let has_inst = matches!(&args[0].payload, PyObjectPayload::Instance(_))
+                                || matches!(&args[1].payload, PyObjectPayload::Instance(_));
+                            if has_inst {
+                                let which_first = if matches!(&args[0].payload, PyObjectPayload::Str(_)) { "" } else { "first" };
+                                let which_second = "second";
+                                let a = coerce_for_complex(self, &args[0], if which_first.is_empty() { "first" } else { which_first })?;
+                                let b = coerce_for_complex(self, &args[1], which_second)?;
+                                return crate::builtins::core_fns::builtin_complex(&[a, b]);
+                            }
                         }
                     }
                     "int" => {

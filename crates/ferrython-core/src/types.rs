@@ -409,6 +409,16 @@ impl HashableKey {
             PyObjectPayload::Bool(b) => Ok(HashableKey::Int(PyInt::Small(*b as i64))),
             PyObjectPayload::Int(n) => Ok(HashableKey::Int(n.clone())),
             PyObjectPayload::Float(f) => Ok(HashableKey::Float(OrderedFloat(*f))),
+            PyObjectPayload::Complex { real, imag } => {
+                // CPython: hash(complex(r,i)) == hash(r) when imag==0, else a combined value.
+                if *imag == 0.0 {
+                    Ok(HashableKey::Float(OrderedFloat(*real)))
+                } else {
+                    let rb = real.to_bits() as i64;
+                    let ib = imag.to_bits() as i64;
+                    Ok(HashableKey::Int(PyInt::Small(rb ^ ib.wrapping_mul(1_000_003))))
+                }
+            }
             PyObjectPayload::Str(s) => Ok(HashableKey::str_key(s.to_compact_string())),
             PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
             PyObjectPayload::Tuple(items) => {

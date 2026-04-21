@@ -135,7 +135,7 @@ pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<Co
     for base in bases {
         match &base.payload {
             PyObjectPayload::BuiltinType(name) => {
-                if matches!(name.as_str(), "int" | "str" | "float" | "list" | "tuple"
+                if matches!(name.as_str(), "int" | "str" | "float" | "complex" | "list" | "tuple"
                     | "set" | "frozenset" | "bytes" | "bytearray")
                 {
                     return Some((**name).clone());
@@ -236,6 +236,21 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) => a.partial_cmp(b),
         (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
             if ar == br && ai == bi { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(n)) |
+        (PyObjectPayload::Int(n), PyObjectPayload::Complex { real, imag }) => {
+            if *imag == 0.0 && *real == n.to_f64() && n.to_i64().map(|i| (*real as i64) == i).unwrap_or(false) {
+                Some(std::cmp::Ordering::Equal)
+            } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(f)) |
+        (PyObjectPayload::Float(f), PyObjectPayload::Complex { real, imag }) => {
+            if *imag == 0.0 && real == f { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Bool(b)) |
+        (PyObjectPayload::Bool(b), PyObjectPayload::Complex { real, imag }) => {
+            let bf = if *b { 1.0 } else { 0.0 };
+            if *imag == 0.0 && *real == bf { Some(std::cmp::Ordering::Equal) } else { None }
         }
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
@@ -1277,6 +1292,42 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(inst)
         })),
+        ("complex", "__new__") => Some(PyObject::native_function("complex.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("complex.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            // Extract (real, imag) from up to 2 more args
+            let to_ri = |o: &PyObjectRef| -> (f64, f64) {
+                match &o.payload {
+                    PyObjectPayload::Complex { real, imag } => (*real, *imag),
+                    PyObjectPayload::Int(n) => (n.to_f64(), 0.0),
+                    PyObjectPayload::Float(f) => (*f, 0.0),
+                    PyObjectPayload::Bool(b) => (if *b {1.0} else {0.0}, 0.0),
+                    _ => (0.0, 0.0),
+                }
+            };
+            let is_complex = |o: &PyObjectRef| matches!(&o.payload, PyObjectPayload::Complex{..});
+            let (real, imag) = match (args.get(1), args.get(2)) {
+                (None, _) => (0.0, 0.0),
+                (Some(a), None) => to_ri(a),
+                (Some(a), Some(b)) => {
+                    let (ar, ai) = to_ri(a);
+                    let (br, bi) = to_ri(b);
+                    let r = if is_complex(b) { ar - bi } else { ar };
+                    let i = if is_complex(a) { ai + br } else { br };
+                    (r, i)
+                }
+            };
+            let inst = PyObject::instance(cls.clone());
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::complex(real, imag),
+                );
+            }
+            Ok(inst)
+        })),
         ("object", "__new__") => Some(PyObject::native_function("object.__new__", |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("object.__new__ requires cls"));
@@ -1443,18 +1494,30 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
         })),
         (_, "__lt__") => Some(PyObject::native_function("__lt__", |args| {
             if args.len() != 2 { return Err(PyException::type_error("__lt__ takes 2 arguments")); }
+            if matches!(&args[0].payload, PyObjectPayload::Complex { .. }) {
+                return Ok(PyObject::not_implemented());
+            }
             args[0].compare(&args[1], CompareOp::Lt)
         })),
         (_, "__le__") => Some(PyObject::native_function("__le__", |args| {
             if args.len() != 2 { return Err(PyException::type_error("__le__ takes 2 arguments")); }
+            if matches!(&args[0].payload, PyObjectPayload::Complex { .. }) {
+                return Ok(PyObject::not_implemented());
+            }
             args[0].compare(&args[1], CompareOp::Le)
         })),
         (_, "__gt__") => Some(PyObject::native_function("__gt__", |args| {
             if args.len() != 2 { return Err(PyException::type_error("__gt__ takes 2 arguments")); }
+            if matches!(&args[0].payload, PyObjectPayload::Complex { .. }) {
+                return Ok(PyObject::not_implemented());
+            }
             args[0].compare(&args[1], CompareOp::Gt)
         })),
         (_, "__ge__") => Some(PyObject::native_function("__ge__", |args| {
             if args.len() != 2 { return Err(PyException::type_error("__ge__ takes 2 arguments")); }
+            if matches!(&args[0].payload, PyObjectPayload::Complex { .. }) {
+                return Ok(PyObject::not_implemented());
+            }
             args[0].compare(&args[1], CompareOp::Ge)
         })),
         (_, "__neg__") => Some(PyObject::native_function("__neg__", |args| {

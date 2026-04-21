@@ -385,9 +385,21 @@ pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObject
         // Complex division
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
-                let denom = br * br + bi * bi;
-                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
-                return Ok(PyObject::complex((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom));
+                // Smith's algorithm (CPython _Py_c_quot) — numerically stable
+                let (abs_breal, abs_bimag) = (br.abs(), bi.abs());
+                if abs_breal == 0.0 && abs_bimag == 0.0 {
+                    return Err(PyException::zero_division_error("complex division by zero"));
+                }
+                let (rr, ii) = if abs_breal >= abs_bimag {
+                    let ratio = bi / br;
+                    let denom = br + bi * ratio;
+                    ((ar + ai * ratio) / denom, (ai - ar * ratio) / denom)
+                } else {
+                    let ratio = br / bi;
+                    let denom = br * ratio + bi;
+                    ((ar * ratio + ai) / denom, (ai * ratio - ar) / denom)
+                };
+                return Ok(PyObject::complex(rr, ii));
             }
             (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(b)) => {
                 let bf = b.to_f64();
@@ -400,14 +412,36 @@ pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObject
             }
             (PyObjectPayload::Int(a), PyObjectPayload::Complex { real: br, imag: bi }) => {
                 let af = a.to_f64();
-                let denom = br * br + bi * bi;
-                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
-                return Ok(PyObject::complex((af * br) / denom, (-af * bi) / denom));
+                let (abs_breal, abs_bimag) = (br.abs(), bi.abs());
+                if abs_breal == 0.0 && abs_bimag == 0.0 {
+                    return Err(PyException::zero_division_error("complex division by zero"));
+                }
+                let (rr, ii) = if abs_breal >= abs_bimag {
+                    let ratio = bi / br;
+                    let denom = br + bi * ratio;
+                    (af / denom, -af * ratio / denom)
+                } else {
+                    let ratio = br / bi;
+                    let denom = br * ratio + bi;
+                    (af * ratio / denom, -af / denom)
+                };
+                return Ok(PyObject::complex(rr, ii));
             }
             (PyObjectPayload::Float(a), PyObjectPayload::Complex { real: br, imag: bi }) => {
-                let denom = br * br + bi * bi;
-                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
-                return Ok(PyObject::complex((a * br) / denom, (-a * bi) / denom));
+                let (abs_breal, abs_bimag) = (br.abs(), bi.abs());
+                if abs_breal == 0.0 && abs_bimag == 0.0 {
+                    return Err(PyException::zero_division_error("complex division by zero"));
+                }
+                let (rr, ii) = if abs_breal >= abs_bimag {
+                    let ratio = bi / br;
+                    let denom = br + bi * ratio;
+                    (a / denom, -a * ratio / denom)
+                } else {
+                    let ratio = br / bi;
+                    let denom = br * ratio + bi;
+                    (a * ratio / denom, -a / denom)
+                };
+                return Ok(PyObject::complex(rr, ii));
             }
             _ => {}
         }
@@ -638,8 +672,46 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.powf(*b))),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64().powf(*b))),
             (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a.powf(b.to_f64()))),
+            // Complex exponentiation — delegate to call_complex_method via dunder dispatch path
+            (PyObjectPayload::Complex { real: ar, imag: ai }, _) => {
+                let (br, bi) = match &b.payload {
+                    PyObjectPayload::Complex { real, imag } => (*real, *imag),
+                    PyObjectPayload::Int(n) => (n.to_f64(), 0.0),
+                    PyObjectPayload::Float(f) => (*f, 0.0),
+                    PyObjectPayload::Bool(x) => (if *x {1.0} else {0.0}, 0.0),
+                    _ => return Err(PyException::type_error(format!("unsupported operand type(s) for **: '{}' and '{}'", a.type_name(), b.type_name()))),
+                };
+                complex_pow_inline(*ar, *ai, br, bi)
+            }
+            (_, PyObjectPayload::Complex { real: br, imag: bi }) => {
+                let (ar, ai) = match &a.payload {
+                    PyObjectPayload::Int(n) => (n.to_f64(), 0.0),
+                    PyObjectPayload::Float(f) => (*f, 0.0),
+                    PyObjectPayload::Bool(x) => (if *x {1.0} else {0.0}, 0.0),
+                    _ => return Err(PyException::type_error(format!("unsupported operand type(s) for **: '{}' and '{}'", a.type_name(), b.type_name()))),
+                };
+                complex_pow_inline(ar, ai, *br, *bi)
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for **: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
+}
+
+fn complex_pow_inline(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> {
+    if ar == 0.0 && ai == 0.0 {
+        if bi != 0.0 || br < 0.0 {
+            return Err(PyException::zero_division_error("0.0 to a negative or complex power"));
+        }
+        if br == 0.0 { return Ok(PyObject::complex(1.0, 0.0)); }
+        return Ok(PyObject::complex(0.0, 0.0));
+    }
+    let r = (ar * ar + ai * ai).sqrt();
+    let theta = ai.atan2(ar);
+    let new_r = r.powf(br) * (-bi * theta).exp();
+    let new_theta = bi * r.ln() + br * theta;
+    if !new_r.is_finite() || !new_theta.is_finite() {
+        return Err(PyException::overflow_error("complex exponentiation"));
+    }
+    Ok(PyObject::complex(new_r * new_theta.cos(), new_r * new_theta.sin()))
 }
 
 pub(super) fn py_lshift(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
