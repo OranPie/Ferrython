@@ -325,6 +325,9 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     pub fn new() -> Self {
+        // Initialize search paths (stdlib/Lib) BEFORE sys module is created,
+        // so sys.path is populated with the correct paths on first access.
+        ferrython_import::init();
         let builtins = SharedBuiltins(Rc::new(builtins::init_builtins()));
         // Register the thread spawn callback so the stdlib can spawn real OS
         // threads for Python function targets.  Uses the shared builtins.
@@ -3570,7 +3573,7 @@ impl VirtualMachine {
                         self.call_stack.push(new_frame);
                         // Re-derive frame_ptr: push may reallocate Vec
                         rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                        if self.call_stack.len() > self.recursion_limit {
+                        if self.call_stack.len() > ferrython_stdlib::get_recursion_limit() as usize {
                             if let Some(frame) = self.call_stack.pop() {
                                 frame.recycle(&mut self.frame_pool);
                             }
@@ -3646,7 +3649,7 @@ impl VirtualMachine {
                                             new_frame.discard_return = true;
                                             self.call_stack.push(new_frame);
                                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                                            if self.call_stack.len() > self.recursion_limit {
+                                            if self.call_stack.len() > ferrython_stdlib::get_recursion_limit() as usize {
                                                 if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                                                 Err(PyException::recursion_error("maximum recursion depth exceeded"))
                                             } else {
@@ -3711,7 +3714,28 @@ impl VirtualMachine {
                             Vec::new()
                         };
                         unsafe { frame.stack.set_len(func_idx); }
-                        let inst = PyObject::exception_instance_with_args(kind, msg, args);
+                        let inst = PyObject::exception_instance_with_args(kind, msg, args.clone());
+                        // ExceptionGroup/BaseExceptionGroup: attach .message, .exceptions, .subgroup, .split
+                        if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
+                            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                                let mut a = ei.ensure_attrs().write();
+                                if !args.is_empty() {
+                                    a.insert(CompactString::from("message"), args[0].clone());
+                                }
+                                if args.len() >= 2 {
+                                    let exc_list = match &args[1].payload {
+                                        PyObjectPayload::List(_) => args[1].clone(),
+                                        PyObjectPayload::Tuple(items) => PyObject::list((**items).clone()),
+                                        _ => PyObject::list(vec![args[1].clone()]),
+                                    };
+                                    a.insert(CompactString::from("exceptions"), exc_list);
+                                }
+                                drop(a);
+                            }
+                            if args.len() >= 2 {
+                                crate::vm_call::attach_eg_methods_pub(&inst);
+                            }
+                        }
                         spush!(frame, inst);
                         hot_ok!(profiling, self.profiler, instr.op)
                         } else {
@@ -4336,7 +4360,7 @@ impl VirtualMachine {
                             self.call_stack.push(new_frame);
                             // Re-derive frame_ptr: push may reallocate Vec
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                            if self.call_stack.len() > self.recursion_limit {
+                            if self.call_stack.len() > ferrython_stdlib::get_recursion_limit() as usize {
                                 if let Some(frame) = self.call_stack.pop() {
                                     frame.recycle(&mut self.frame_pool);
                                 }
@@ -4773,8 +4797,9 @@ impl VirtualMachine {
                                                         frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
                                                         fast_val = Some(class_val);
                                                     } else if matches!(&class_val.payload, PyObjectPayload::NativeFunction(_)) {
-                                                        // NativeFunction (builtin) is not a descriptor — load as attribute.
-                                                        fast_kind = 2;
+                                                        // NativeFunction in class namespace — treat as unbound method
+                                                        // (fast_kind=1 so CallMethod prepends receiver as args[0]).
+                                                        fast_kind = 1;
                                                         fast_val = Some(class_val);
                                                     }
                                                 } else if let Some(v) = unsafe { &*inst.attrs.data_ptr() }.get(name.as_str()).cloned() {
@@ -4787,7 +4812,8 @@ impl VirtualMachine {
                                                             frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
                                                             fast_val = Some(method);
                                                         } else if matches!(&method.payload, PyObjectPayload::NativeFunction(_)) {
-                                                            fast_kind = 2;
+                                                            // NativeFunction from MRO — treat as unbound method.
+                                                            fast_kind = 1;
                                                             fast_val = Some(method);
                                                         }
                                                     }
@@ -4893,7 +4919,7 @@ impl VirtualMachine {
                         self.call_stack.push(new_frame);
                         // Re-derive frame_ptr: push may reallocate Vec
                         rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                        if self.call_stack.len() > self.recursion_limit {
+                        if self.call_stack.len() > ferrython_stdlib::get_recursion_limit() as usize {
                             if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
@@ -5380,7 +5406,7 @@ impl VirtualMachine {
                             self.call_stack.push(new_frame);
                             // Re-derive frame_ptr: push may reallocate Vec
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                            if self.call_stack.len() > self.recursion_limit {
+                            if self.call_stack.len() > ferrython_stdlib::get_recursion_limit() as usize {
                                 if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                                 Err(PyException::recursion_error("maximum recursion depth exceeded"))
                             } else {
@@ -5963,9 +5989,15 @@ impl VirtualMachine {
                     if frame.scope_kind == crate::frame::ScopeKind::Module {
                         let idx = instr.arg as usize;
                         let value = spop!(frame);
-                        // Update cache slot in-place so subsequent LoadName hits
+                        // If StoreGlobal in called functions bumped globals_version, our
+                        // cache may have stale entries for variables they modified.
+                        // Invalidate the whole cache before writing the fresh slot.
                         if frame.global_cache.is_some() {
+                            let cur_ver = crate::frame::globals_version();
                             let cache = std::rc::Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                            if frame.global_cache_version != cur_ver {
+                                for slot in cache.iter_mut() { *slot = None; }
+                            }
                             if idx < cache.len() {
                                 cache[idx] = Some(value.clone());
                             }

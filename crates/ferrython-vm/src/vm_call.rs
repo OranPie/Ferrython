@@ -18,6 +18,10 @@ use std::rc::Rc;
 
 /// Attach `split` and `subgroup` methods to an ExceptionGroup instance.
 /// Reads `message` and `exceptions` from the instance attrs.
+pub fn attach_eg_methods_pub(eg: &PyObjectRef) {
+    attach_eg_methods(eg);
+}
+
 fn attach_eg_methods(eg: &PyObjectRef) {
     if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
         let (msg, exc_list) = {

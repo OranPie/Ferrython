@@ -13,7 +13,7 @@ use ferrython_core::object::{
 use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use indexmap::IndexMap;
 
-static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(3000);
+static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
 
 /// Fast atomic flags indicating whether trace/profile functions are installed.
 /// The VM reads these instead of doing thread-local RefCell access per frame.

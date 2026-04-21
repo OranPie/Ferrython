@@ -435,13 +435,11 @@ const SLAB_SIZE: usize = 128;
 /// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
 /// Blocks are never individually deallocated — they're allocated as contiguous slabs
 /// and recycled indefinitely (matching CPython's obmalloc strategy).
-/// SAFETY: Single-threaded interpreter (GIL semantics) — only one thread runs Python
-/// bytecode at a time, so direct static access is safe without TLS overhead.
-struct PoolHolder(std::cell::UnsafeCell<*mut PyObjectBlock>);
-// SAFETY: GIL guarantees single-threaded access to pool during Python execution.
-unsafe impl Sync for PoolHolder {}
-
-static POOL: PoolHolder = PoolHolder(std::cell::UnsafeCell::new(std::ptr::null_mut()));
+/// Thread-local so parallel tests (and future threading support) can each have
+/// their own independent pool without any locking overhead.
+thread_local! {
+    static POOL: std::cell::Cell<*mut PyObjectBlock> = std::cell::Cell::new(std::ptr::null_mut());
+}
 
 /// Read the next-free pointer from a freed block's obj area.
 #[inline(always)]
@@ -468,13 +466,13 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
     // Link blocks 1..SLAB_SIZE into freelist in forward order.
     // Block[1] becomes freelist head → next alloc gets the adjacent block
     // (same cache line or next cache line as block[0] which is returned).
-    unsafe {
-        let head = &mut *POOL.0.get();
+    POOL.with(|pool| unsafe {
+        let old_head = pool.get();
         // Link last block to existing freelist head
         let last = base.add(SLAB_SIZE - 1);
         (*last).strong = Cell::new(FREELIST_SENTINEL);
         (*last).weak = Cell::new(0); // init weak once — never reset after recycle
-        set_free_next(last, *head);
+        set_free_next(last, old_head);
         // Link blocks in reverse so block[1] ends up at head
         for i in (1..SLAB_SIZE - 1).rev() {
             let block = base.add(i);
@@ -487,8 +485,8 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
         (*first_free).strong = Cell::new(FREELIST_SENTINEL);
         (*first_free).weak = Cell::new(0);
         set_free_next(first_free, base.add(2));
-        *head = first_free;
-    }
+        pool.set(first_free);
+    });
 
     // Initialize block[0] weak count (returned directly, not through freelist)
     unsafe { (*base).weak = Cell::new(0); }
@@ -501,16 +499,17 @@ const FREELIST_SENTINEL: u32 = 0xDEAD_BEEF;
 
 #[inline(always)]
 fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
-    let block = unsafe {
-        let head = &mut *POOL.0.get();
-        if !(*head).is_null() {
-            let block = *head;
-            *head = free_next(block);
-            NonNull::new_unchecked(block)
+    let block = POOL.with(|pool| {
+        let head = pool.get();
+        if !head.is_null() {
+            unsafe {
+                pool.set(free_next(head));
+                NonNull::new_unchecked(head)
+            }
         } else {
             alloc_slab_and_pop()
         }
-    };
+    });
     unsafe {
         let p = block.as_ptr();
         (*p).strong = Cell::new(1);
@@ -523,12 +522,15 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
 
 #[inline(always)]
 fn pool_recycle(block: NonNull<PyObjectBlock>) {
-    unsafe {
-        let head = &mut *POOL.0.get();
+    // Use try_with to gracefully handle the case where POOL is being destroyed
+    // (can happen when thread-local freelists are dropped during thread exit).
+    // If POOL is unavailable, just leak the block (it will be freed by the OS on exit).
+    let _ = POOL.try_with(|pool| unsafe {
+        let old_head = pool.get();
         (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
-        set_free_next(block.as_ptr(), *head);
-        *head = block.as_ptr();
-    }
+        set_free_next(block.as_ptr(), old_head);
+        pool.set(block.as_ptr());
+    });
 }
 
 /// A reference-counted handle to a Python object.

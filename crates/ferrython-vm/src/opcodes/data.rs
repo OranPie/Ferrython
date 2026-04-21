@@ -105,9 +105,15 @@ impl VirtualMachine {
                 let value = frame.pop();
                 match frame.scope_kind {
                     ScopeKind::Module => {
-                        // Update cache slot in-place before inserting into globals
                         if frame.global_cache.is_some() {
+                            let cur_ver = crate::frame::globals_version();
                             let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                            // If StoreGlobal in called functions bumped the version, any
+                            // cached values for globals they wrote are now stale — invalidate
+                            // the whole cache before writing our fresh value.
+                            if frame.global_cache_version != cur_ver {
+                                for slot in cache.iter_mut() { *slot = None; }
+                            }
                             if idx < cache.len() {
                                 cache[idx] = Some(value.clone());
                             }

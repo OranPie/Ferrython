@@ -794,9 +794,11 @@ impl VirtualMachine {
                                     return Ok(None);
                                 }
                                 PyObjectPayload::NativeFunction(_) => {
-                                    // Builtin functions are not descriptors — push as attribute value.
-                                    frame.push(PyObject::none());
+                                    // NativeFunction in class namespace — bind to receiver
+                                    // (same as Function: push [method, obj] so CallMethod
+                                    //  prepends receiver as args[0]).
                                     frame.push(method);
+                                    frame.push(obj);
                                     return Ok(None);
                                 }
                                 PyObjectPayload::NativeClosure(ref nc) if nc.name.contains('.') => {

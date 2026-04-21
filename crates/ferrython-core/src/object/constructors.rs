@@ -1,7 +1,7 @@
 //! Singleton values and PyObject factory/constructor methods.
 
 use std::rc::Rc;
-use std::cell::UnsafeCell;
+use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
@@ -12,205 +12,139 @@ use num_bigint::BigInt;
 use super::payload::*;
 use super::methods::PyObjectMethods;
 
-// ── Dict/Set inner Rc freelist (like CPython's dict_freelist) ──
-// When a Dict or Set is dropped and holds the sole reference to its inner
-// Rc<PyCell<FxHashKeyMap>>, we recycle it instead of freeing. On next
-// dict/set creation, we pop from the freelist (clear + reuse), avoiding malloc.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
-const MAP_FREELIST_MAX: usize = 80; // CPython uses 80 for dicts
-struct MapFreelistHolder(UnsafeCell<Vec<Rc<PyCell<FxHashKeyMap>>>>);
-unsafe impl Sync for MapFreelistHolder {}
-static MAP_FREELIST: MapFreelistHolder = MapFreelistHolder(UnsafeCell::new(Vec::new()));
+// ── Thread-local freelists ──
+// Each thread (including parallel test threads) gets its own independent
+// freelist, eliminating data races without any locking overhead.
+// Values containing Rc/Box are fine in thread_local! since they don't need Send.
 
-// ── Exception instance freelist ──
-// Recycle Box<ExceptionInstanceData> to avoid malloc/free per raise/catch cycle.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
+const MAP_FREELIST_MAX: usize = 80;
 const EXCEPTION_FREELIST_MAX: usize = 16;
-struct ExceptionFreelistHolder(UnsafeCell<Vec<Box<ExceptionInstanceData>>>);
-unsafe impl Sync for ExceptionFreelistHolder {}
-static EXCEPTION_FREELIST: ExceptionFreelistHolder = ExceptionFreelistHolder(UnsafeCell::new(Vec::new()));
-
-// ── Instance freelist ──
-// Recycle Box<InstanceData> + its inner Rc<PyCell<FxAttrMap>> to avoid 2 mallocs per instance.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
 const INSTANCE_FREELIST_MAX: usize = 80;
-struct InstanceFreelistHolder(UnsafeCell<Vec<Box<InstanceData>>>);
-unsafe impl Sync for InstanceFreelistHolder {}
-static INSTANCE_FREELIST: InstanceFreelistHolder = InstanceFreelistHolder(UnsafeCell::new(Vec::new()));
-
-// ── Attr map freelist ──
-// Recycle Rc<PyCell<FxAttrMap>> for instance attrs.
-#[allow(dead_code)]
 const ATTR_FREELIST_MAX: usize = 80;
-struct AttrFreelistHolder(UnsafeCell<Vec<SharedFxAttrMap>>);
-unsafe impl Sync for AttrFreelistHolder {}
-static ATTR_FREELIST: AttrFreelistHolder = AttrFreelistHolder(UnsafeCell::new(Vec::new()));
-
-// ── String Box freelist ──
-// Recycle Box<CompactString> to avoid malloc/free per string creation/destruction.
-// str_split creates 6+ short strings per call — this eliminates the Box alloc overhead.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
 const STR_BOX_FREELIST_MAX: usize = 128;
-struct StrBoxHolder(UnsafeCell<Vec<Box<CompactString>>>);
-unsafe impl Sync for StrBoxHolder {}
-static STR_BOX_FREELIST: StrBoxHolder = StrBoxHolder(UnsafeCell::new(Vec::new()));
+const TUPLE_BOX_FREELIST_MAX: usize = 80;
+const LIST_BOX_FREELIST_MAX: usize = 80;
+const BBM_BOX_FREELIST_MAX: usize = 64;
+
+thread_local! {
+    static MAP_FREELIST:       RefCell<Vec<Rc<PyCell<FxHashKeyMap>>>>            = RefCell::new(Vec::new());
+    static EXCEPTION_FREELIST: RefCell<Vec<Box<ExceptionInstanceData>>>           = RefCell::new(Vec::new());
+    static INSTANCE_FREELIST:  RefCell<Vec<Box<InstanceData>>>                    = RefCell::new(Vec::new());
+    static ATTR_FREELIST:      RefCell<Vec<SharedFxAttrMap>>                      = RefCell::new(Vec::new());
+    static STR_BOX_FREELIST:   RefCell<Vec<Box<CompactString>>>                   = RefCell::new(Vec::new());
+    static TUPLE_BOX_FREELIST: RefCell<Vec<Box<Vec<PyObjectRef>>>>                = RefCell::new(Vec::new());
+    static LIST_BOX_FREELIST:  RefCell<Vec<Box<PyCell<Vec<PyObjectRef>>>>>        = RefCell::new(Vec::new());
+    static BBM_BOX_FREELIST:   RefCell<Vec<Box<BuiltinBoundMethodData>>>          = RefCell::new(Vec::new());
+}
 
 /// Allocate a Box<CompactString>, reusing from freelist if possible.
 #[inline(always)]
 pub fn alloc_str_box(s: CompactString) -> Box<CompactString> {
-    unsafe {
-        let list = &mut *STR_BOX_FREELIST.0.get();
-        if let Some(mut b) = list.pop() {
+    STR_BOX_FREELIST.with(|f| {
+        if let Some(mut b) = f.borrow_mut().pop() {
             *b = s;
             b
         } else {
             Box::new(s)
         }
-    }
+    })
 }
 
 /// Return a Box<CompactString> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_str_box(mut b: Box<CompactString>) {
-    // Clear to release any heap-allocated string data
     b.clear();
-    unsafe {
-        let list = &mut *STR_BOX_FREELIST.0.get();
-        if list.len() < STR_BOX_FREELIST_MAX {
-            list.push(b);
-        }
-    }
+    let _ = STR_BOX_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < STR_BOX_FREELIST_MAX { list.push(b); }
+    });
 }
-
-// ── Tuple Box freelist ──
-// Recycle Box<Vec<PyObjectRef>> for tuple creation/destruction.
-const TUPLE_BOX_FREELIST_MAX: usize = 80;
-struct TupleBoxHolder(UnsafeCell<Vec<Box<Vec<PyObjectRef>>>>);
-unsafe impl Sync for TupleBoxHolder {}
-static TUPLE_BOX_FREELIST: TupleBoxHolder = TupleBoxHolder(UnsafeCell::new(Vec::new()));
 
 /// Allocate a Box<Vec<PyObjectRef>> for Tuple, reusing from freelist if possible.
 #[inline(always)]
 pub fn alloc_tuple_box(items: Vec<PyObjectRef>) -> Box<Vec<PyObjectRef>> {
-    unsafe {
-        let list = &mut *TUPLE_BOX_FREELIST.0.get();
-        if let Some(mut b) = list.pop() {
+    TUPLE_BOX_FREELIST.with(|f| {
+        if let Some(mut b) = f.borrow_mut().pop() {
             *b = items;
             b
         } else {
             Box::new(items)
         }
-    }
+    })
 }
 
 /// Allocate an empty Box<Vec<PyObjectRef>> from the tuple freelist.
-/// The returned Vec has retained capacity from previous use (no allocation needed
-/// when pushing elements that fit within the retained capacity).
 #[inline(always)]
 pub fn alloc_tuple_box_empty() -> Box<Vec<PyObjectRef>> {
-    unsafe {
-        let list = &mut *TUPLE_BOX_FREELIST.0.get();
-        if let Some(b) = list.pop() {
-            b
-        } else {
-            Box::new(Vec::new())
-        }
-    }
+    TUPLE_BOX_FREELIST.with(|f| {
+        if let Some(b) = f.borrow_mut().pop() { b } else { Box::new(Vec::new()) }
+    })
 }
 
 /// Return a Box<Vec<PyObjectRef>> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_tuple_box(mut b: Box<Vec<PyObjectRef>>) {
     b.clear();
-    unsafe {
-        let list = &mut *TUPLE_BOX_FREELIST.0.get();
-        if list.len() < TUPLE_BOX_FREELIST_MAX {
-            list.push(b);
-        }
-    }
+    let _ = TUPLE_BOX_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < TUPLE_BOX_FREELIST_MAX { list.push(b); }
+    });
 }
-
-// ── List Box freelist ──
-// Recycle Box<PyCell<Vec<PyObjectRef>>> for list creation/destruction.
-const LIST_BOX_FREELIST_MAX: usize = 80;
-struct ListBoxHolder(UnsafeCell<Vec<Box<PyCell<Vec<PyObjectRef>>>>>);
-unsafe impl Sync for ListBoxHolder {}
-static LIST_BOX_FREELIST: ListBoxHolder = ListBoxHolder(UnsafeCell::new(Vec::new()));
 
 /// Allocate a Box<PyCell<Vec<PyObjectRef>>> for List, reusing from freelist if possible.
 #[inline(always)]
 pub fn alloc_list_box(items: Vec<PyObjectRef>) -> Box<PyCell<Vec<PyObjectRef>>> {
-    unsafe {
-        let list = &mut *LIST_BOX_FREELIST.0.get();
-        if let Some(b) = list.pop() {
-            *b.data_ptr() = items;
+    LIST_BOX_FREELIST.with(|f| {
+        if let Some(b) = f.borrow_mut().pop() {
+            unsafe { *b.data_ptr() = items; }
             b
         } else {
             Box::new(PyCell::new(items))
         }
-    }
+    })
 }
 
 /// Allocate an empty Box<PyCell<Vec<PyObjectRef>>> from the list freelist.
-/// The returned Vec has retained capacity from previous use (no allocation needed).
 #[inline(always)]
 pub fn alloc_list_box_empty() -> Box<PyCell<Vec<PyObjectRef>>> {
-    unsafe {
-        let list = &mut *LIST_BOX_FREELIST.0.get();
-        if let Some(b) = list.pop() {
-            b
-        } else {
-            Box::new(PyCell::new(Vec::new()))
-        }
-    }
+    LIST_BOX_FREELIST.with(|f| {
+        if let Some(b) = f.borrow_mut().pop() { b } else { Box::new(PyCell::new(Vec::new())) }
+    })
 }
 
 /// Return a Box<PyCell<Vec<PyObjectRef>>> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_list_box(b: Box<PyCell<Vec<PyObjectRef>>>) {
     unsafe { (*b.data_ptr()).clear(); }
-    unsafe {
-        let list = &mut *LIST_BOX_FREELIST.0.get();
-        if list.len() < LIST_BOX_FREELIST_MAX {
-            list.push(b);
-        }
-    }
+    let _ = LIST_BOX_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < LIST_BOX_FREELIST_MAX { list.push(b); }
+    });
 }
-
-// ── BuiltinBoundMethod Box freelist ──
-// Recycle Box<BuiltinBoundMethodData> for builtin method calls (str.replace, list.append, etc.)
-const BBM_BOX_FREELIST_MAX: usize = 64;
-struct BbmBoxHolder(UnsafeCell<Vec<Box<BuiltinBoundMethodData>>>);
-unsafe impl Sync for BbmBoxHolder {}
-static BBM_BOX_FREELIST: BbmBoxHolder = BbmBoxHolder(UnsafeCell::new(Vec::new()));
 
 /// Allocate a Box<BuiltinBoundMethodData>, reusing from freelist if possible.
 #[inline(always)]
 pub fn alloc_bbm_box(receiver: PyObjectRef, method_name: CompactString) -> Box<BuiltinBoundMethodData> {
-    unsafe {
-        let list = &mut *BBM_BOX_FREELIST.0.get();
-        if let Some(mut b) = list.pop() {
+    BBM_BOX_FREELIST.with(|f| {
+        if let Some(mut b) = f.borrow_mut().pop() {
             b.receiver = receiver;
             b.method_name = method_name;
             b
         } else {
             Box::new(BuiltinBoundMethodData { receiver, method_name })
         }
-    }
+    })
 }
 
 /// Return a Box<BuiltinBoundMethodData> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_bbm_box(mut b: Box<BuiltinBoundMethodData>) {
-    // Drop receiver ref to prevent leaks
     b.receiver = PyObject::none();
     b.method_name = CompactString::new("");
-    unsafe {
-        let list = &mut *BBM_BOX_FREELIST.0.get();
-        if list.len() < BBM_BOX_FREELIST_MAX {
-            list.push(b);
-        }
-    }
+    let _ = BBM_BOX_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < BBM_BOX_FREELIST_MAX { list.push(b); }
+    });
 }
 
 /// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
@@ -220,52 +154,42 @@ pub fn alloc_exception_box(
     message: CompactString,
     args: Vec<PyObjectRef>,
 ) -> Box<ExceptionInstanceData> {
-    unsafe {
-        let list = &mut *EXCEPTION_FREELIST.0.get();
-        if let Some(mut data) = list.pop() {
+    EXCEPTION_FREELIST.with(|f| {
+        if let Some(mut data) = f.borrow_mut().pop() {
             data.kind = kind;
             data.message = message;
             data.args = args;
-            data.attrs = UnsafeCell::new(None);
+            data.attrs = std::cell::UnsafeCell::new(None);
             data
         } else {
             Box::new(ExceptionInstanceData::new_attrs(kind, message, args, None))
         }
-    }
+    })
 }
 
 /// Return an ExceptionInstanceData box to the freelist.
-/// Clears inner references to avoid holding PyObjectRef alive.
 #[inline]
 pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
-    // Clear inner references BEFORE accessing the freelist.
-    // Dropping PyObjectRefs can cascade into more exception drops.
     data.args.clear();
-    data.attrs = UnsafeCell::new(None);
+    data.attrs = std::cell::UnsafeCell::new(None);
     data.message = CompactString::default();
-    unsafe {
-        let list = &mut *EXCEPTION_FREELIST.0.get();
-        if list.len() < EXCEPTION_FREELIST_MAX {
-            list.push(data);
-        }
-    }
+    let _ = EXCEPTION_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < EXCEPTION_FREELIST_MAX { list.push(data); }
+    });
 }
 
 /// Allocate an InstanceData box, reusing from freelist if possible.
-/// The returned InstanceData has a recycled attrs map with cleared entries but retained capacity.
 #[inline]
 pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>, expected_attrs: usize) -> Box<InstanceData> {
-    unsafe {
-        let list = &mut *INSTANCE_FREELIST.0.get();
-        if let Some(mut data) = list.pop() {
+    INSTANCE_FREELIST.with(|f| {
+        if let Some(mut data) = f.borrow_mut().pop() {
             data.class = class;
             data.class_flags = class_flags;
             data.dict_storage = dict_storage;
             data.is_special = false;
-            // Check if attrs Rc is uniquely owned — if shared (e.g., __dict__ created
-            // an InstanceDict), we must not clear it; allocate a fresh one instead.
             if Rc::strong_count(&data.attrs) == 1 {
-                (&mut *data.attrs.data_ptr()).clear();
+                unsafe { &mut *data.attrs.data_ptr() }.clear();
             } else {
                 data.attrs = alloc_attr_map();
             }
@@ -284,58 +208,48 @@ pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Opt
                 class_flags,
             })
         }
-    }
+    })
 }
 
 /// Return an InstanceData box to the freelist.
 /// Clears inner references to avoid holding PyObjectRef alive.
 #[inline]
 pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
-    // Clear attrs: if uniquely owned, clear entries (retain capacity); else drop reference.
     if Rc::strong_count(&data.attrs) == 1 {
         unsafe { &mut *data.attrs.data_ptr() }.clear();
     } else {
-        // Someone else (e.g., InstanceDict from __dict__) holds a reference.
-        // Replace with a fresh empty Rc so they keep their data.
         data.attrs = alloc_attr_map();
     }
     data.dict_storage = None;
     let old_class = std::mem::replace(&mut data.class, NONE_SINGLETON.clone());
     drop(old_class);
-    unsafe {
-        let list = &mut *INSTANCE_FREELIST.0.get();
-        if list.len() < INSTANCE_FREELIST_MAX {
-            list.push(data);
-        }
-    }
+    let _ = INSTANCE_FREELIST.try_with(|f| {
+        let mut list = f.borrow_mut();
+        if list.len() < INSTANCE_FREELIST_MAX { list.push(data); }
+    });
 }
 
 /// Allocate an attr map (Rc<PyCell<FxAttrMap>>), reusing from freelist if possible.
 #[inline]
 pub fn alloc_attr_map() -> SharedFxAttrMap {
-    unsafe {
-        let list = &mut *ATTR_FREELIST.0.get();
-        if let Some(rc) = list.pop() {
-            rc
-        } else {
-            Rc::new(PyCell::new(FxAttrMap::default()))
-        }
-    }
+    ATTR_FREELIST.try_with(|f| {
+        if let Some(rc) = f.borrow_mut().pop() { rc } else { Rc::new(PyCell::new(FxAttrMap::default())) }
+    }).unwrap_or_else(|_| Rc::new(PyCell::new(FxAttrMap::default())))
 }
 
 /// Allocate an attr map with initial data.
 #[inline]
 fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
-    unsafe {
-        let list = &mut *ATTR_FREELIST.0.get();
-        if let Some(rc) = list.pop() {
-            let map = &mut *rc.data_ptr();
-            *map = attrs;
+    let mut attrs_opt = Some(attrs);
+    ATTR_FREELIST.try_with(|f| {
+        let a = attrs_opt.take().unwrap();
+        if let Some(rc) = f.borrow_mut().pop() {
+            unsafe { *rc.data_ptr() = a; }
             rc
         } else {
-            Rc::new(PyCell::new(attrs))
+            Rc::new(PyCell::new(a))
         }
-    }
+    }).unwrap_or_else(|_| Rc::new(PyCell::new(attrs_opt.take().unwrap())))
 }
 
 /// Try to recycle an attr map back to the freelist (if uniquely owned).
@@ -344,15 +258,15 @@ fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
 pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        unsafe {
-            let list = &mut *ATTR_FREELIST.0.get();
+        ATTR_FREELIST.try_with(|f| {
+            let mut list = f.borrow_mut();
             if list.len() < ATTR_FREELIST_MAX {
                 list.push(rc.clone());
                 true
             } else {
                 false
             }
-        }
+        }).unwrap_or(false)
     } else {
         false
     }
@@ -361,14 +275,9 @@ pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
 /// Allocate an inner Rc<PyCell<FxHashKeyMap>>, reusing from freelist if possible.
 #[inline]
 pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
-    unsafe {
-        let list = &mut *MAP_FREELIST.0.get();
-        if let Some(rc) = list.pop() {
-            rc
-        } else {
-            Rc::new(PyCell::new(new_fx_hashkey_map()))
-        }
-    }
+    MAP_FREELIST.with(|f| {
+        if let Some(rc) = f.borrow_mut().pop() { rc } else { Rc::new(PyCell::new(new_fx_hashkey_map())) }
+    })
 }
 
 /// Return an inner Rc<PyCell<FxHashKeyMap>> to the freelist if it's uniquely owned.
@@ -377,15 +286,15 @@ pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
 pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        unsafe {
-            let list = &mut *MAP_FREELIST.0.get();
+        MAP_FREELIST.try_with(|f| {
+            let mut list = f.borrow_mut();
             if list.len() < MAP_FREELIST_MAX {
                 list.push(rc.clone());
                 true
             } else {
                 false
             }
-        }
+        }).unwrap_or(false)
     } else {
         false
     }
@@ -743,16 +652,14 @@ impl PyObject {
         let inner = if items.is_empty() {
             alloc_map_inner()
         } else {
-            // Try to reuse a freelist Rc (already cleared) — just write items into it
-            unsafe {
-                let list = &mut *MAP_FREELIST.0.get();
-                if let Some(rc) = list.pop() {
-                    *rc.write() = items;
+            MAP_FREELIST.with(|f| {
+                if let Some(rc) = f.borrow_mut().pop() {
+                    unsafe { *rc.data_ptr() = items; }
                     rc
                 } else {
                     Rc::new(PyCell::new(items))
                 }
-            }
+            })
         };
         let obj = Self::wrap(PyObjectPayload::Dict(inner));
         track_object(&obj);

@@ -165,6 +165,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "inspect" => Some(introspection_modules::create_inspect_module()),
         "dis" => Some(introspection_modules::create_dis_module()),
         "_ast" => Some(introspection_modules::create_ast_module()),
+        // ast provided by stdlib/Lib/ast.py (wraps _ast + adds NodeVisitor/NodeTransformer)
         "linecache" => Some(introspection_modules::create_linecache_module()),
         "token" => Some(introspection_modules::create_token_module()),
         // Concurrency
