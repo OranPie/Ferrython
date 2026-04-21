@@ -4754,8 +4754,7 @@ impl VirtualMachine {
                                             // Check inline cache first (avoids vtable lock + hash probe)
                                             let ip = frame.ip as u32;
                                             if let Some(cached) = frame.attr_ic.as_ref().and_then(|ic| ic.lookup(ip, cd.class_version)) {
-                                                if matches!(&cached.payload,
-                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                                if matches!(&cached.payload, PyObjectPayload::Function(_)) {
                                                     fast_kind = 1;
                                                     fast_val = Some(cached.clone());
                                                 }
@@ -4769,10 +4768,13 @@ impl VirtualMachine {
                                                     unsafe { &*cd.namespace.data_ptr() }.get(name.as_str()).cloned()
                                                 };
                                                 if let Some(class_val) = method_hit {
-                                                    if matches!(&class_val.payload,
-                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                                    if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
                                                         fast_kind = 1;
                                                         frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
+                                                        fast_val = Some(class_val);
+                                                    } else if matches!(&class_val.payload, PyObjectPayload::NativeFunction(_)) {
+                                                        // NativeFunction (builtin) is not a descriptor — load as attribute.
+                                                        fast_kind = 2;
                                                         fast_val = Some(class_val);
                                                     }
                                                 } else if let Some(v) = unsafe { &*inst.attrs.data_ptr() }.get(name.as_str()).cloned() {
@@ -4780,10 +4782,12 @@ impl VirtualMachine {
                                                     fast_val = Some(v);
                                                 } else if unsafe { &*cd.method_vtable.data_ptr() }.is_empty() {
                                                     if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
-                                                        if matches!(&method.payload,
-                                                            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                                        if matches!(&method.payload, PyObjectPayload::Function(_)) {
                                                             fast_kind = 1;
                                                             frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
+                                                            fast_val = Some(method);
+                                                        } else if matches!(&method.payload, PyObjectPayload::NativeFunction(_)) {
+                                                            fast_kind = 2;
                                                             fast_val = Some(method);
                                                         }
                                                     }
@@ -5799,9 +5803,11 @@ impl VirtualMachine {
                                         // Check inline cache first (avoids vtable lock + hash probe)
                                         let ip = frame.ip as u32;
                                         if let Some(cached) = frame.attr_ic.as_ref().and_then(|ic| ic.lookup(ip, cd.class_version)) {
-                                            if matches!(&cached.payload,
-                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                            if matches!(&cached.payload, PyObjectPayload::Function(_)) {
                                                 fast_kind = 1;
+                                                fast_val = Some(cached.clone());
+                                            } else if matches!(&cached.payload, PyObjectPayload::NativeFunction(_)) {
+                                                fast_kind = 2;
                                                 fast_val = Some(cached.clone());
                                             }
                                         }
@@ -5815,10 +5821,12 @@ impl VirtualMachine {
                                                 unsafe { &*cd.namespace.data_ptr() }.get(name.as_str()).cloned()
                                             };
                                             if let Some(class_val) = method_hit {
-                                                if matches!(&class_val.payload,
-                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                                if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
                                                     fast_kind = 1;
-                                                    // Populate IC for next time
+                                                    frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
+                                                    fast_val = Some(class_val);
+                                                } else if matches!(&class_val.payload, PyObjectPayload::NativeFunction(_)) {
+                                                    fast_kind = 2;
                                                     frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
                                                     fast_val = Some(class_val);
                                                 }
@@ -5827,9 +5835,12 @@ impl VirtualMachine {
                                                 fast_val = Some(v);
                                             } else if unsafe { &*cd.method_vtable.data_ptr() }.is_empty() {
                                                 if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
-                                                    if matches!(&method.payload,
-                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
+                                                    if matches!(&method.payload, PyObjectPayload::Function(_)) {
                                                         fast_kind = 1;
+                                                        frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
+                                                        fast_val = Some(method);
+                                                    } else if matches!(&method.payload, PyObjectPayload::NativeFunction(_)) {
+                                                        fast_kind = 2;
                                                         frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
                                                         fast_val = Some(method);
                                                     }

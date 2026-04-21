@@ -415,7 +415,6 @@ impl VirtualMachine {
                 if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
                     if matches!(&class_val.payload,
                         PyObjectPayload::Function(_) |
-                        PyObjectPayload::NativeFunction(_) |
                         PyObjectPayload::NativeClosure { .. } |
                         PyObjectPayload::Property(_)
                     ) {

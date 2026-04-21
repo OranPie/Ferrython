@@ -787,11 +787,16 @@ impl VirtualMachine {
                         // MRO lookup
                         if let Some(method) = lookup_in_class_mro(&effective_class, &name) {
                             match &method.payload {
-                                PyObjectPayload::Function(_)
-                                | PyObjectPayload::NativeFunction(_) => {
+                                PyObjectPayload::Function(_) => {
                                     // Two-item: method + receiver
                                     frame.push(method);
                                     frame.push(obj);
+                                    return Ok(None);
+                                }
+                                PyObjectPayload::NativeFunction(_) => {
+                                    // Builtin functions are not descriptors — push as attribute value.
+                                    frame.push(PyObject::none());
+                                    frame.push(method);
                                     return Ok(None);
                                 }
                                 PyObjectPayload::NativeClosure(ref nc) if nc.name.contains('.') => {

@@ -144,13 +144,22 @@ fn wrap_class_attr_for_instance(obj: &PyObjectRef, inst: &InstanceData, v: PyObj
                 method: func.clone(),
             }
         }),
-        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) => {
+        PyObjectPayload::Function(_) => {
             PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: obj.clone(),
                     method: v,
                 }
             })
+        }
+        PyObjectPayload::NativeFunction(_) => {
+            // In CPython, builtin_function_or_method is NOT a descriptor
+            // (no __get__), so accessing one via an instance returns the
+            // function unchanged — it does not bind `self`. Classes
+            // (deque, etc.) that happen to be represented as NativeFunction
+            // also follow this rule (types don't bind when used as class
+            // attributes either).
+            v
         }
         PyObjectPayload::Instance(ref cp_inst) => {
             let cp_attrs = cp_inst.attrs.read();
