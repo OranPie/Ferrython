@@ -1488,6 +1488,22 @@ impl VirtualMachine {
                     Err(PyException::type_error("iterator has no __next__ method"))
                 }
             }
+            // Module with __next__ (e.g. file objects)
+            PyObjectPayload::Module(_) => {
+                if let Some(next_fn) = iter_obj.get_attr("__next__") {
+                    // Module.get_attr returns the raw function (no bound-method wrapping),
+                    // so pass the module itself as self.
+                    match self.call_object(next_fn, vec![iter_obj.clone()]) {
+                        Ok(val) => Ok(Some(val)),
+                        Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(PyException::type_error(format!(
+                        "'{}' object is not an iterator", iter_obj.type_name()
+                    )))
+                }
+            }
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators first
                 {

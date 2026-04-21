@@ -7,7 +7,7 @@ mod file_io;
 mod instance_methods;
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, is_hidden_dict_key};
 use indexmap::IndexMap;
 
@@ -394,6 +394,32 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     } else { Ok(None) }
                 }
                 _ => Ok(None),
+            }
+        }
+        PyObjectPayload::Module(_) => {
+            // File-like objects and other "module-backed" iterators with __next__.
+            if let Some(next_fn) = iter_obj.get_attr("__next__") {
+                match &next_fn.payload {
+                    PyObjectPayload::NativeFunction(nf) => {
+                        match (nf.func)(&[iter_obj.clone()]) {
+                            Ok(v) => Ok(Some((iter_obj.clone(), v))),
+                            Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    PyObjectPayload::NativeClosure(nc) => {
+                        match (nc.func)(&[iter_obj.clone()]) {
+                            Ok(v) => Ok(Some((iter_obj.clone(), v))),
+                            Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    _ => Err(PyException::type_error("module __next__ is not callable from iter_advance")),
+                }
+            } else {
+                Err(PyException::type_error(format!(
+                    "'{}' object is not an iterator", iter_obj.type_name()
+                )))
             }
         }
         _ => Err(PyException::type_error("iter_advance on non-iterator")),

@@ -1222,33 +1222,43 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         // Need to call __iter__ method to get the iterable result
         PyObjectPayload::Module(_) => {
             if let Some(iter_attr) = obj.get_attr("__iter__") {
-                match &iter_attr.payload {
-                    // __iter__ returned a list/iterator directly
+                let result = match &iter_attr.payload {
+                    // __iter__ returned a list/iterator directly (stored as attr)
                     PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) => {
-                        return get_iter_from_obj(&iter_attr);
+                        Some(iter_attr.clone())
                     }
                     // __iter__ is a bound method — call it
                     PyObjectPayload::BoundMethod { receiver, method } => {
                         if let PyObjectPayload::NativeClosure(nc) = &method.payload {
-                            let result = (nc.func)(&[receiver.clone()])?;
-                            return get_iter_from_obj(&result);
-                        }
-                        if let PyObjectPayload::NativeFunction(nf) = &method.payload {
-                            let result = (nf.func)(&[receiver.clone()])?;
-                            return get_iter_from_obj(&result);
-                        }
+                            Some((nc.func)(&[receiver.clone()])?)
+                        } else if let PyObjectPayload::NativeFunction(nf) = &method.payload {
+                            Some((nf.func)(&[receiver.clone()])?)
+                        } else { None }
                     }
                     // __iter__ is a native closure/function to call with self
                     PyObjectPayload::NativeClosure(nc) => {
-                        let result = (nc.func)(&[obj.clone()])?;
-                        return get_iter_from_obj(&result);
+                        Some((nc.func)(&[obj.clone()])?)
                     }
                     PyObjectPayload::NativeFunction(nf) => {
-                        let result = (nf.func)(&[obj.clone()])?;
-                        return get_iter_from_obj(&result);
+                        Some((nf.func)(&[obj.clone()])?)
                     }
-                    _ => {}
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    // Guard against self-iter (module __iter__ returning self) which would infinite-recurse.
+                    if PyObjectRef::ptr_eq(&result, obj) {
+                        // Treat module as already-an-iterator if it has __next__.
+                        if obj.get_attr("__next__").is_some() {
+                            return Ok(obj.clone());
+                        }
+                        return Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())));
+                    }
+                    return get_iter_from_obj(&result);
                 }
+            }
+            // No __iter__ but has __next__ — treat as already iterator
+            if obj.get_attr("__next__").is_some() {
+                return Ok(obj.clone());
             }
             Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
         }
@@ -1453,7 +1463,7 @@ pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         )));
     }
     check_args("iter", args, 1)?;
-    args[0].get_iter()
+    get_iter_from_obj(&args[0])
 }
 
 pub(super) fn builtin_next(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

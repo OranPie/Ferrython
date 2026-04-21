@@ -933,8 +933,79 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
+        // Iterators — pickle as remaining-items list reconstructed via builtins.iter
+        PyObjectPayload::RefIter { source, index } => {
+            let idx = index.get();
+            let items: Vec<PyObjectRef> = match &source.payload {
+                PyObjectPayload::List(cell) => {
+                    cell.read().iter().skip(idx).cloned().collect()
+                }
+                PyObjectPayload::Tuple(items) => {
+                    items.iter().skip(idx).cloned().collect()
+                }
+                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                    cell.read().iter().skip(idx).map(|(k, _)| k.to_object()).collect()
+                }
+                _ => {
+                    return Err(PyException::runtime_error(
+                        format!("PicklingError: can't pickle object of type {}", obj.type_name()),
+                    ));
+                }
+            };
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::VecIter(data) => {
+            let idx = data.index.get();
+            let items: Vec<PyObjectRef> = data.items.iter().skip(idx).cloned().collect();
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::RangeIter(ri) => {
+            let mut items = Vec::new();
+            let mut c = ri.current.get();
+            if ri.step > 0 {
+                while c < ri.stop { items.push(PyObject::int(c)); c += ri.step; }
+            } else if ri.step < 0 {
+                while c > ri.stop { items.push(PyObject::int(c)); c += ri.step; }
+            }
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::Iterator(arc) => {
+            use ferrython_core::object::IteratorData;
+            let data = arc.read();
+            let items: Vec<PyObjectRef> = match &*data {
+                IteratorData::List { items, index } => items.iter().skip(*index).cloned().collect(),
+                IteratorData::Tuple { items, index } => items.iter().skip(*index).cloned().collect(),
+                IteratorData::Str { chars, index } => chars.iter().skip(*index)
+                    .map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect(),
+                IteratorData::Range { current, stop, step } => {
+                    let mut items = Vec::new();
+                    let mut c = *current;
+                    if *step > 0 { while c < *stop { items.push(PyObject::int(c)); c += step; } }
+                    else if *step < 0 { while c > *stop { items.push(PyObject::int(c)); c += step; } }
+                    items
+                }
+                IteratorData::DictKeys { keys, index } => keys.iter().skip(*index).cloned().collect(),
+                IteratorData::DictEntries { source, index, .. } => {
+                    let map = source.read();
+                    map.iter().skip(*index).map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect()
+                }
+                _ => {
+                    return Err(PyException::runtime_error(
+                        format!("PicklingError: can't pickle object of type {}", obj.type_name()),
+                    ));
+                }
+            };
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::ExceptionInstance(ei) => {
-            // Serialize exceptions as: cbuiltins\nExceptionType\n(args)tR
             let type_name = format!("{}", ei.kind);
             buf.extend_from_slice(b"cbuiltins\n");
             buf.extend_from_slice(type_name.as_bytes());
@@ -1133,6 +1204,66 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::RefIter { source, index } => {
+            let idx = index.get();
+            let items: Vec<PyObjectRef> = match &source.payload {
+                PyObjectPayload::List(cell) => cell.read().iter().skip(idx).cloned().collect(),
+                PyObjectPayload::Tuple(items) => items.iter().skip(idx).cloned().collect(),
+                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                    cell.read().iter().skip(idx).map(|(k, _)| k.to_object()).collect()
+                }
+                _ => return Err(PyException::runtime_error(
+                    format!("PicklingError: can't pickle object of type {}", obj.type_name()),
+                )),
+            };
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::VecIter(data) => {
+            let idx = data.index.get();
+            let items: Vec<PyObjectRef> = data.items.iter().skip(idx).cloned().collect();
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::RangeIter(ri) => {
+            let mut items = Vec::new();
+            let mut c = ri.current.get();
+            if ri.step > 0 { while c < ri.stop { items.push(PyObject::int(c)); c += ri.step; } }
+            else if ri.step < 0 { while c > ri.stop { items.push(PyObject::int(c)); c += ri.step; } }
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::Iterator(arc) => {
+            use ferrython_core::object::IteratorData;
+            let data = arc.read();
+            let items: Vec<PyObjectRef> = match &*data {
+                IteratorData::List { items, index } => items.iter().skip(*index).cloned().collect(),
+                IteratorData::Tuple { items, index } => items.iter().skip(*index).cloned().collect(),
+                IteratorData::Str { chars, index } => chars.iter().skip(*index)
+                    .map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect(),
+                IteratorData::Range { current, stop, step } => {
+                    let mut items = Vec::new();
+                    let mut c = *current;
+                    if *step > 0 { while c < *stop { items.push(PyObject::int(c)); c += step; } }
+                    else if *step < 0 { while c > *stop { items.push(PyObject::int(c)); c += step; } }
+                    items
+                }
+                IteratorData::DictKeys { keys, index } => keys.iter().skip(*index).cloned().collect(),
+                IteratorData::DictEntries { source, index, .. } => {
+                    let map = source.read();
+                    map.iter().skip(*index).map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect()
+                }
+                _ => return Err(PyException::runtime_error(
+                    format!("PicklingError: can't pickle object of type {}", obj.type_name()),
+                )),
+            };
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::ExceptionInstance(ei) => {
             let type_name = format!("{}", ei.kind);
             buf.extend_from_slice(b"cbuiltins\n");
@@ -1317,6 +1448,24 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     }
                 }
                 Ok(PyObject::frozenset(IndexMap::new()))
+            }
+            ("__builtin__" | "builtins", "iter") => {
+                // Reconstruct iter(list_or_tuple) as a VecIter.
+                if let Some(first) = arg_list.first() {
+                    let items: Vec<PyObjectRef> = match &first.payload {
+                        PyObjectPayload::List(cell) => cell.read().clone(),
+                        PyObjectPayload::Tuple(items) => (**items).clone(),
+                        _ => vec![first.clone()],
+                    };
+                    use ferrython_core::object::{VecIterData, SyncUsize};
+                    return Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
+                        VecIterData { items, index: SyncUsize::new(0) }
+                    ))));
+                }
+                use ferrython_core::object::{VecIterData, SyncUsize};
+                Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
+                    VecIterData { items: vec![], index: SyncUsize::new(0) }
+                ))))
             }
             _ => {
                 // For __main__.ClassName — reconstruct as Instance with dict state
