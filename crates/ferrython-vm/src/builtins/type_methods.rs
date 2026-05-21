@@ -2,12 +2,13 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ FxHashKeyMap, FxHashKeyFlatMap, new_fx_hashkey_map, new_fx_hashkey_flatmap, PyCell, 
-    check_args_min,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-};
 use ferrython_core::object::helpers::is_hidden_dict_key;
 use ferrython_core::object::IteratorData;
+use ferrython_core::object::{
+    check_args_min, checked_repeat_len, new_fx_hashkey_flatmap, new_fx_hashkey_map,
+    FxHashKeyFlatMap, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
+};
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::rc::Rc;
@@ -18,7 +19,10 @@ fn decode_utf16_le_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
     if b.len() % 2 != 0 {
         return Err(PyException::value_error("utf-16-le: truncated data"));
     }
-    let u16s: Vec<u16> = b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let u16s: Vec<u16> = b
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
     let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-le"))?;
     Ok(PyObject::str_val(CompactString::from(s)))
 }
@@ -27,7 +31,10 @@ fn decode_utf16_be_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
     if b.len() % 2 != 0 {
         return Err(PyException::value_error("utf-16-be: truncated data"));
     }
-    let u16s: Vec<u16> = b.chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let u16s: Vec<u16> = b
+        .chunks(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-be"))?;
     Ok(PyObject::str_val(CompactString::from(s)))
 }
@@ -36,10 +43,12 @@ fn decode_utf32_le_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
     if b.len() % 4 != 0 {
         return Err(PyException::value_error("utf-32-le: truncated data"));
     }
-    let s: Result<String, _> = b.chunks(4)
+    let s: Result<String, _> = b
+        .chunks(4)
         .map(|c| {
             let cp = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-le codepoint"))
+            char::from_u32(cp)
+                .ok_or_else(|| PyException::value_error("invalid utf-32-le codepoint"))
         })
         .collect();
     Ok(PyObject::str_val(CompactString::from(s?)))
@@ -49,10 +58,12 @@ fn decode_utf32_be_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
     if b.len() % 4 != 0 {
         return Err(PyException::value_error("utf-32-be: truncated data"));
     }
-    let s: Result<String, _> = b.chunks(4)
+    let s: Result<String, _> = b
+        .chunks(4)
         .map(|c| {
             let cp = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
-            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-be codepoint"))
+            char::from_u32(cp)
+                .ok_or_else(|| PyException::value_error("invalid utf-32-be codepoint"))
         })
         .collect();
     Ok(PyObject::str_val(CompactString::from(s?)))
@@ -64,19 +75,29 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let r = map.read();
-            return r.get(&HashableKey::str_key(CompactString::from(name))).cloned();
+            return r
+                .get(&HashableKey::str_key(CompactString::from(name)))
+                .cloned();
         }
     }
     None
 }
 
-pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_list_method(
+    items: &PyCell<Vec<PyObjectRef>>,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::list(items.read().to_vec())),
         "count" => {
             check_args_min("count", args, 1)?;
             let target = &args[0];
-            let c = items.read().iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+            let c = items
+                .read()
+                .iter()
+                .filter(|x| x.py_to_string() == target.py_to_string())
+                .count();
             Ok(PyObject::int(c as i64))
         }
         "index" => {
@@ -86,18 +107,33 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             let len = items_r.len();
             let start = if args.len() > 1 {
                 let s = args[1].to_int().unwrap_or(0);
-                if s < 0 { (len as i64 + s).max(0) as usize } else { s as usize }
-            } else { 0 };
+                if s < 0 {
+                    (len as i64 + s).max(0) as usize
+                } else {
+                    s as usize
+                }
+            } else {
+                0
+            };
             let stop = if args.len() > 2 {
                 let s = args[2].to_int().unwrap_or(len as i64);
-                if s < 0 { (len as i64 + s).max(0) as usize } else { (s as usize).min(len) }
-            } else { len };
+                if s < 0 {
+                    (len as i64 + s).max(0) as usize
+                } else {
+                    (s as usize).min(len)
+                }
+            } else {
+                len
+            };
             for i in start..stop {
                 if items_r[i].py_to_string() == target.py_to_string() {
                     return Ok(PyObject::int(i as i64));
                 }
             }
-            Err(PyException::value_error(format!("{} is not in list", target.py_to_string())))
+            Err(PyException::value_error(format!(
+                "{} is not in list",
+                target.py_to_string()
+            )))
         }
         "append" => {
             check_args_min("append", args, 1)?;
@@ -115,7 +151,11 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             let idx = args[0].to_int()?;
             let mut w = items.write();
             let len = w.len() as i64;
-            let actual = if idx < 0 { (len + idx).max(0) as usize } else { (idx as usize).min(w.len()) };
+            let actual = if idx < 0 {
+                (len + idx).max(0) as usize
+            } else {
+                (idx as usize).min(w.len())
+            };
             w.insert(actual, args[1].clone());
             Ok(PyObject::none())
         }
@@ -140,9 +180,14 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             check_args_min("remove", args, 1)?;
             let target = &args[0];
             let mut w = items.write();
-            let pos = w.iter().position(|x| x.py_to_string() == target.py_to_string());
+            let pos = w
+                .iter()
+                .position(|x| x.py_to_string() == target.py_to_string());
             match pos {
-                Some(i) => { w.remove(i); Ok(PyObject::none()) }
+                Some(i) => {
+                    w.remove(i);
+                    Ok(PyObject::none())
+                }
                 None => Err(PyException::value_error("list.remove(x): x not in list")),
             }
         }
@@ -155,11 +200,30 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             let mut v: Vec<_> = w.drain(..).collect();
             // Homogeneous small-int sort: only for large lists (≥32 elements)
             if v.len() >= 32 {
-                let all_small_int = v.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+                let all_small_int = v.iter().all(|x| {
+                    matches!(
+                        &x.payload,
+                        PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))
+                    )
+                });
                 if all_small_int {
                     v.sort_unstable_by(|a, b| {
-                        let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &a.payload { *val } else { 0 };
-                        let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &b.payload { *val } else { 0 };
+                        let av =
+                            if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) =
+                                &a.payload
+                            {
+                                *val
+                            } else {
+                                0
+                            };
+                        let bv =
+                            if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) =
+                                &b.payload
+                            {
+                                *val
+                            } else {
+                                0
+                            };
                         av.cmp(&bv)
                     });
                 } else {
@@ -168,9 +232,7 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
                     });
                 }
             } else if v.len() > 1 {
-                v.sort_by(|a, b| {
-                    partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                v.sort_by(|a, b| partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal));
             }
             w.extend(v);
             Ok(PyObject::none())
@@ -181,22 +243,21 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
         }
         "__iter__" => {
             let snapshot = items.read().clone();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List {
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
                     items: snapshot,
                     index: 0,
-                })),
-            )))
+                }),
+            ))))
         }
-        "__len__" => {
-            Ok(PyObject::int(items.read().len() as i64))
-        }
+        "__len__" => Ok(PyObject::int(items.read().len() as i64)),
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
             let target = &args[0];
-            let found = items.read().iter().any(|x| {
-                x.py_to_string() == target.py_to_string()
-            });
+            let found = items
+                .read()
+                .iter()
+                .any(|x| x.py_to_string() == target.py_to_string());
             Ok(PyObject::bool_val(found))
         }
         "__getitem__" => {
@@ -204,24 +265,55 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let r = items.read();
                 let len = r.len() as i64;
-                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let step_val = sd
+                    .step
+                    .as_ref()
+                    .map(|v| v.as_int().unwrap_or(1))
+                    .unwrap_or(1);
                 if step_val == 0 {
                     return Err(PyException::value_error("slice step cannot be zero"));
                 }
-                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
-                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
-                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
-                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                let s_val = sd
+                    .start
+                    .as_ref()
+                    .map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 }))
+                    .unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = sd
+                    .stop
+                    .as_ref()
+                    .map(|v| {
+                        v.as_int()
+                            .unwrap_or(if step_val > 0 { len } else { -len - 1 })
+                    })
+                    .unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let s = (if s_val < 0 {
+                    (len + s_val).max(0)
+                } else {
+                    s_val.min(len)
+                }) as usize;
+                let e = (if e_val < 0 {
+                    (len + e_val).max(0)
+                } else {
+                    e_val.min(len)
+                }) as usize;
                 let mut result = Vec::new();
                 if step_val == 1 {
-                    if s < e { result = r[s..e].to_vec(); }
+                    if s < e {
+                        result = r[s..e].to_vec();
+                    }
                 } else if step_val > 0 {
                     let mut i = s;
-                    while i < e { result.push(r[i].clone()); i += step_val as usize; }
+                    while i < e {
+                        result.push(r[i].clone());
+                        i += step_val as usize;
+                    }
                 } else {
                     let mut i = s as i64;
                     let end = e as i64;
-                    while i > end { result.push(r[i as usize].clone()); i += step_val; }
+                    while i > end {
+                        result.push(r[i as usize].clone());
+                        i += step_val;
+                    }
                 }
                 Ok(PyObject::list(result))
             } else {
@@ -241,37 +333,84 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
                 let new_items = args[1].to_list()?;
                 let mut w = items.write();
                 let len = w.len() as i64;
-                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let step_val = sd
+                    .step
+                    .as_ref()
+                    .map(|v| v.as_int().unwrap_or(1))
+                    .unwrap_or(1);
                 if step_val == 1 || step_val == 0 {
-                    let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                    let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
-                    let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
-                    let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                    let s_val = sd
+                        .start
+                        .as_ref()
+                        .map(|v| v.as_int().unwrap_or(0))
+                        .unwrap_or(0);
+                    let e_val = sd
+                        .stop
+                        .as_ref()
+                        .map(|v| v.as_int().unwrap_or(len))
+                        .unwrap_or(len);
+                    let s = (if s_val < 0 {
+                        (len + s_val).max(0)
+                    } else {
+                        s_val.min(len)
+                    }) as usize;
+                    let e = (if e_val < 0 {
+                        (len + e_val).max(0)
+                    } else {
+                        e_val.min(len)
+                    }) as usize;
                     let e = e.max(s);
                     w.splice(s..e, new_items);
                 } else {
                     let s_val = if step_val > 0 {
-                        sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                        sd.start
+                            .as_ref()
+                            .map(|v| v.as_int().unwrap_or(0))
+                            .unwrap_or(0)
                     } else {
-                        sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                        sd.start
+                            .as_ref()
+                            .map(|v| v.as_int().unwrap_or(len - 1))
+                            .unwrap_or(len - 1)
                     };
                     let e_val = if step_val > 0 {
-                        sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                        sd.stop
+                            .as_ref()
+                            .map(|v| v.as_int().unwrap_or(len))
+                            .unwrap_or(len)
                     } else {
-                        sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                        sd.stop
+                            .as_ref()
+                            .map(|v| v.as_int().unwrap_or(-len - 1))
+                            .unwrap_or(-len - 1)
                     };
                     let mut indices = Vec::new();
-                    let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
-                    let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
-                    if step_val > 0 {
-                        while i < end { indices.push(i as usize); i += step_val; }
+                    let mut i = if s_val < 0 {
+                        (len + s_val).max(0)
                     } else {
-                        while i > end { indices.push(i as usize); i += step_val; }
+                        s_val.min(len)
+                    };
+                    let end = if e_val < 0 {
+                        (len + e_val).max(-1)
+                    } else {
+                        e_val.min(len)
+                    };
+                    if step_val > 0 {
+                        while i < end {
+                            indices.push(i as usize);
+                            i += step_val;
+                        }
+                    } else {
+                        while i > end {
+                            indices.push(i as usize);
+                            i += step_val;
+                        }
                     }
                     if indices.len() != new_items.len() {
                         return Err(PyException::value_error(format!(
                             "attempt to assign sequence of size {} to extended slice of size {}",
-                            new_items.len(), indices.len()
+                            new_items.len(),
+                            indices.len()
                         )));
                     }
                     for (idx, val) in indices.iter().zip(new_items.iter()) {
@@ -285,7 +424,9 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
-                    return Err(PyException::index_error("list assignment index out of range"));
+                    return Err(PyException::index_error(
+                        "list assignment index out of range",
+                    ));
                 }
                 w[actual as usize] = args[1].clone();
                 Ok(PyObject::none())
@@ -296,21 +437,54 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let mut w = items.write();
                 let len = w.len() as i64;
-                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
-                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
-                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let step_val = sd
+                    .step
+                    .as_ref()
+                    .map(|v| v.as_int().unwrap_or(1))
+                    .unwrap_or(1);
+                let s_val = sd
+                    .start
+                    .as_ref()
+                    .map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 }))
+                    .unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = sd
+                    .stop
+                    .as_ref()
+                    .map(|v| {
+                        v.as_int()
+                            .unwrap_or(if step_val > 0 { len } else { -len - 1 })
+                    })
+                    .unwrap_or(if step_val > 0 { len } else { -len - 1 });
                 let mut indices = Vec::new();
-                let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
-                let end = if e_val < 0 { (len + e_val).max(if step_val > 0 { 0 } else { -1 }) } else { e_val.min(len) };
+                let mut i = if s_val < 0 {
+                    (len + s_val).max(0)
+                } else {
+                    s_val.min(len)
+                };
+                let end = if e_val < 0 {
+                    (len + e_val).max(if step_val > 0 { 0 } else { -1 })
+                } else {
+                    e_val.min(len)
+                };
                 if step_val > 0 {
-                    while i < end { indices.push(i as usize); i += step_val; }
+                    while i < end {
+                        indices.push(i as usize);
+                        i += step_val;
+                    }
                 } else if step_val < 0 {
-                    while i > end { indices.push(i as usize); i += step_val; }
+                    while i > end {
+                        indices.push(i as usize);
+                        i += step_val;
+                    }
                 }
                 // Remove in reverse order to preserve indices
                 indices.sort_unstable();
                 indices.reverse();
-                for idx in indices { if idx < w.len() { w.remove(idx); } }
+                for idx in indices {
+                    if idx < w.len() {
+                        w.remove(idx);
+                    }
+                }
                 Ok(PyObject::none())
             } else {
                 let idx = args[0].to_int()?;
@@ -318,7 +492,9 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
-                    return Err(PyException::index_error("list assignment index out of range"));
+                    return Err(PyException::index_error(
+                        "list assignment index out of range",
+                    ));
                 }
                 w.remove(actual as usize);
                 Ok(PyObject::none())
@@ -335,8 +511,11 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             check_args_min("__mul__", args, 1)?;
             let n = args[0].to_int()?.max(0) as usize;
             let base = items.read().clone();
-            let mut result = Vec::with_capacity(base.len() * n);
-            for _ in 0..n { result.extend_from_slice(&base); }
+            let size = checked_repeat_len(base.len(), n, "list repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..n {
+                result.extend_from_slice(&base);
+            }
             Ok(PyObject::list(result))
         }
         "__iadd__" => {
@@ -350,82 +529,111 @@ pub(crate) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
             let n = args[0].to_int()?.max(0) as usize;
             let mut w = items.write();
             let base = w.clone();
+            checked_repeat_len(base.len(), n, "list repeat")?;
             w.clear();
-            for _ in 0..n { w.extend_from_slice(&base); }
+            for _ in 0..n {
+                w.extend_from_slice(&base);
+            }
             Ok(PyObject::none())
         }
         "__reversed__" => {
             let mut snapshot = items.read().clone();
             snapshot.reverse();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List {
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
                     items: snapshot,
                     index: 0,
-                })),
-            )))
+                }),
+            ))))
         }
         "__repr__" | "__str__" => {
             let r = items.read();
             let parts: Vec<String> = r.iter().map(|x| x.repr()).collect();
-            Ok(PyObject::str_val(CompactString::from(format!("[{}]", parts.join(", ")))))
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "[{}]",
+                parts.join(", ")
+            ))))
         }
         "__eq__" => {
             check_args_min("__eq__", args, 1)?;
             if let PyObjectPayload::List(other) = &args[0].payload {
                 let a = items.read();
                 let b = other.read();
-                if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
+                if a.len() != b.len() {
+                    return Ok(PyObject::bool_val(false));
+                }
                 for (x, y) in a.iter().zip(b.iter()) {
-                    if x.py_to_string() != y.py_to_string() { return Ok(PyObject::bool_val(false)); }
+                    if x.py_to_string() != y.py_to_string() {
+                        return Ok(PyObject::bool_val(false));
+                    }
                 }
                 Ok(PyObject::bool_val(true))
-            } else { Ok(PyObject::not_implemented()) }
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         }
         "__ne__" => {
             check_args_min("__ne__", args, 1)?;
             if let PyObjectPayload::List(other) = &args[0].payload {
                 let a = items.read();
                 let b = other.read();
-                if a.len() != b.len() { return Ok(PyObject::bool_val(true)); }
+                if a.len() != b.len() {
+                    return Ok(PyObject::bool_val(true));
+                }
                 for (x, y) in a.iter().zip(b.iter()) {
-                    if x.py_to_string() != y.py_to_string() { return Ok(PyObject::bool_val(true)); }
+                    if x.py_to_string() != y.py_to_string() {
+                        return Ok(PyObject::bool_val(true));
+                    }
                 }
                 Ok(PyObject::bool_val(false))
-            } else { Ok(PyObject::not_implemented()) }
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         }
         "__bool__" => Ok(PyObject::bool_val(!items.read().is_empty())),
         "__hash__" => Err(PyException::type_error("unhashable type: 'list'")),
-        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<Vec<PyObjectRef>>() + items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64)),
+        "__sizeof__" => Ok(PyObject::int(
+            (std::mem::size_of::<Vec<PyObjectRef>>()
+                + items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64,
+        )),
         _ => Err(PyException::attribute_error(format!(
-            "'list' object has no attribute '{}'", method
+            "'list' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_dict_method(
+    map: &Rc<PyCell<FxHashKeyMap>>,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
-        "keys" => {
-            Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone())))
-        }
-        "values" => {
-            Ok(PyObject::wrap(PyObjectPayload::DictValues(map.clone())))
-        }
-        "items" => {
-            Ok(PyObject::wrap(PyObjectPayload::DictItems(map.clone())))
-        }
+        "keys" => Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone()))),
+        "values" => Ok(PyObject::wrap(PyObjectPayload::DictValues(map.clone()))),
+        "items" => Ok(PyObject::wrap(PyObjectPayload::DictItems(map.clone()))),
         "get" => {
             check_args_min("get", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            let default = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                PyObject::none()
+            };
             Ok(map.read().get(&key).cloned().unwrap_or(default))
         }
-        "copy" => {
-            Ok(PyObject::dict(map.read().clone()))
-        }
+        "copy" => Ok(PyObject::dict(map.read().clone())),
         "update" => {
             check_args_min("update", args, 1)?;
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "update expected at most 1 positional argument",
+                ));
+            }
             // Check if this is a Counter (has __counter__ key)
-            let is_counter = map.read().contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
+            let is_counter = map
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
             if is_counter {
                 // Counter.update: add counts from iterable or mapping
                 match &args[0].payload {
@@ -441,7 +649,10 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                         let other_items = other.read().clone();
                         let mut w = map.write();
                         for (k, v) in other_items {
-                            if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
+                            if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")
+                            {
+                                continue;
+                            }
                             let existing = w.get(&k).and_then(|v| v.as_int()).unwrap_or(0);
                             let add = v.as_int().unwrap_or(0);
                             w.insert(k, PyObject::int(existing + add));
@@ -456,7 +667,11 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                             w.insert(key, PyObject::int(count + 1));
                         }
                     }
-                    _ => {}
+                    _ => {
+                        return Err(PyException::type_error(
+                            "Counter.update() argument must be a mapping or iterable",
+                        ));
+                    }
                 }
             } else {
                 match &args[0].payload {
@@ -493,7 +708,11 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        return Err(PyException::type_error(
+                            "update() argument must be a mapping or iterable",
+                        ));
+                    }
                 }
             }
             Ok(PyObject::none())
@@ -501,12 +720,20 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         "subtract" => {
             // Counter.subtract — subtract counts from iterable or mapping
             check_args_min("subtract", args, 1)?;
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "subtract expected at most 1 positional argument",
+                ));
+            }
             match &args[0].payload {
                 PyObjectPayload::Dict(other) => {
                     let other_items = other.read().clone();
                     let mut w = map.write();
                     for (k, v) in other_items {
-                        if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
+                        if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")
+                        {
+                            continue;
+                        }
                         let existing = w.get(&k).and_then(|v| v.as_int()).unwrap_or(0);
                         let sub = v.as_int().unwrap_or(0);
                         w.insert(k, PyObject::int(existing - sub));
@@ -529,14 +756,22 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                         w.insert(key, PyObject::int(count - 1));
                     }
                 }
-                _ => {}
+                _ => {
+                    return Err(PyException::type_error(
+                        "Counter.subtract() argument must be a mapping or iterable",
+                    ));
+                }
             }
             Ok(PyObject::none())
         }
         "pop" => {
             check_args_min("pop", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
+            let default = if args.len() >= 2 {
+                Some(args[1].clone())
+            } else {
+                None
+            };
             match map.write().swap_remove(&key) {
                 Some(v) => Ok(v),
                 None => match default {
@@ -548,7 +783,11 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         "setdefault" => {
             check_args_min("setdefault", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            let default = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                PyObject::none()
+            };
             let mut w = map.write();
             Ok(w.entry(key).or_insert(default).clone())
         }
@@ -603,8 +842,14 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                 .map(|(k, v)| (k.clone(), v.as_int().unwrap_or(0)))
                 .collect();
             pairs.sort_by(|a, b| b.1.cmp(&a.1));
-            let n = if !args.is_empty() { args[0].as_int().unwrap_or(pairs.len() as i64) as usize } else { pairs.len() };
-            let result: Vec<PyObjectRef> = pairs.into_iter().take(n)
+            let n = if !args.is_empty() {
+                args[0].as_int().unwrap_or(pairs.len() as i64) as usize
+            } else {
+                pairs.len()
+            };
+            let result: Vec<PyObjectRef> = pairs
+                .into_iter()
+                .take(n)
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), PyObject::int(v)]))
                 .collect();
             Ok(PyObject::list(result))
@@ -614,7 +859,10 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
             let r = map.read();
             let mut result = Vec::new();
             for (k, v) in r.iter() {
-                if matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
+                if matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")
+                {
+                    continue;
+                }
                 let count = v.as_int().unwrap_or(0);
                 for _ in 0..count {
                     result.push(k.to_object());
@@ -651,20 +899,68 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         }
         "__contains__" => {
             check_args_min("dict.__contains__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
+            let key =
+                args[0]
+                    .to_hashable_key()
+                    .unwrap_or(HashableKey::str_key(CompactString::from(
+                        args[0].py_to_string(),
+                    )));
+            if is_hidden_dict_key(&key) {
+                return Ok(PyObject::bool_val(false));
+            }
             Ok(PyObject::bool_val(map.read().contains_key(&key)))
         }
-        "__len__" => Ok(PyObject::int(map.read().len() as i64)),
+        "__len__" => {
+            let r = map.read();
+            let hidden = r.keys().filter(|k| is_hidden_dict_key(k)).count();
+            Ok(PyObject::int((r.len() - hidden) as i64))
+        }
         "__iter__" => {
-            let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
+            let keys: Vec<PyObjectRef> = map
+                .read()
+                .keys()
+                .filter(|k| !is_hidden_dict_key(k))
+                .map(|k| k.to_object())
+                .collect();
             Ok(PyObject::list(keys))
         }
         "__getitem__" => {
             check_args_min("dict.__getitem__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
-            match map.read().get(&key) {
-                Some(v) => Ok(v.clone()),
-                None => Err(PyException::key_error(args[0].repr())),
+            let key =
+                args[0]
+                    .to_hashable_key()
+                    .unwrap_or(HashableKey::str_key(CompactString::from(
+                        args[0].py_to_string(),
+                    )));
+            if is_hidden_dict_key(&key) {
+                return Err(PyException::key_error(args[0].repr()));
+            }
+            match map.read().get(&key).cloned() {
+                Some(v) => Ok(v),
+                None => {
+                    let factory_key =
+                        HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
+                    if let Some(factory) = map.read().get(&factory_key).cloned() {
+                        let default = match &factory.payload {
+                            PyObjectPayload::BuiltinType(name) => match name.as_str() {
+                                "int" => PyObject::int(0),
+                                "float" => PyObject::float(0.0),
+                                "str" => PyObject::str_val(CompactString::new("")),
+                                "list" => PyObject::list(vec![]),
+                                "bool" => PyObject::bool_val(false),
+                                "tuple" => PyObject::tuple(vec![]),
+                                "set" => PyObject::set(new_fx_hashkey_map()),
+                                "dict" => PyObject::dict(new_fx_hashkey_map()),
+                                _ => return Err(PyException::key_error(args[0].repr())),
+                            },
+                            _ => return Err(PyException::key_error(args[0].repr())),
+                        };
+                        map.write().insert(key, default.clone());
+                        Ok(default)
+                    } else {
+                        Err(PyException::key_error(args[0].repr()))
+                    }
+                }
             }
         }
         "__eq__" => {
@@ -672,8 +968,15 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
             if let PyObjectPayload::Dict(other) = &args[0].payload {
                 let a = map.read();
                 let b = other.read();
-                if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
-                let eq = a.iter().all(|(k, v)| b.get(k).map_or(false, |v2| v.py_to_string() == v2.py_to_string()));
+                let a_visible: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                let b_visible: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                if a_visible.len() != b_visible.len() {
+                    return Ok(PyObject::bool_val(false));
+                }
+                let eq = a_visible.iter().all(|(k, v)| {
+                    b.get(*k)
+                        .map_or(false, |v2| v.py_to_string() == v2.py_to_string())
+                });
                 Ok(PyObject::bool_val(eq))
             } else {
                 Ok(PyObject::bool_val(false))
@@ -684,8 +987,15 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
             if let PyObjectPayload::Dict(other) = &args[0].payload {
                 let a = map.read();
                 let b = other.read();
-                if a.len() != b.len() { return Ok(PyObject::bool_val(true)); }
-                let eq = a.iter().all(|(k, v)| b.get(k).map_or(false, |v2| v.py_to_string() == v2.py_to_string()));
+                let a_visible: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                let b_visible: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                if a_visible.len() != b_visible.len() {
+                    return Ok(PyObject::bool_val(true));
+                }
+                let eq = a_visible.iter().all(|(k, v)| {
+                    b.get(*k)
+                        .map_or(false, |v2| v.py_to_string() == v2.py_to_string())
+                });
                 Ok(PyObject::bool_val(!eq))
             } else {
                 Ok(PyObject::bool_val(true))
@@ -693,8 +1003,35 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         }
         "__repr__" | "__str__" => {
             let r = map.read();
-            let inner: Vec<String> = r.iter().map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
-            Ok(PyObject::str_val(CompactString::from(format!("{{{}}}", inner.join(", ")))))
+            let is_counter =
+                r.contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
+            let mut visible: Vec<(HashableKey, PyObjectRef)> = r
+                .iter()
+                .filter(|(k, _)| !is_hidden_dict_key(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if is_counter {
+                visible.sort_by(|a, b| b.1.as_int().unwrap_or(0).cmp(&a.1.as_int().unwrap_or(0)));
+                if visible.is_empty() {
+                    return Ok(PyObject::str_val(CompactString::from("Counter()")));
+                }
+                let inner: Vec<String> = visible
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
+                    .collect();
+                return Ok(PyObject::str_val(CompactString::from(format!(
+                    "Counter({{{}}})",
+                    inner.join(", ")
+                ))));
+            }
+            let inner: Vec<String> = visible
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
+                .collect();
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "{{{}}}",
+                inner.join(", ")
+            ))))
         }
         "__bool__" => Ok(PyObject::bool_val(!map.read().is_empty())),
         "__setitem__" => {
@@ -706,25 +1043,39 @@ pub(crate) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         "__delitem__" => {
             check_args_min("dict.__delitem__", args, 1)?;
             let key = args[0].to_hashable_key()?;
+            let is_counter = map
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
             match map.write().swap_remove(&key) {
                 Some(_) => Ok(PyObject::none()),
+                None if is_counter => Ok(PyObject::none()),
                 None => Err(PyException::key_error(args[0].py_to_string())),
             }
         }
         "__hash__" => Err(PyException::type_error("unhashable type: 'dict'")),
-        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<FxHashKeyMap>() + map.read().len() * 64) as i64)),
+        "__sizeof__" => Ok(PyObject::int(
+            (std::mem::size_of::<FxHashKeyMap>() + map.read().len() * 64) as i64,
+        )),
         _ => Err(PyException::attribute_error(format!(
-            "'dict' object has no attribute '{}'", method
+            "'dict' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(crate) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_tuple_method(
+    items: &[PyObjectRef],
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "count" => {
             check_args_min("count", args, 1)?;
             let target = &args[0];
-            let c = items.iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+            let c = items
+                .iter()
+                .filter(|x| x.py_to_string() == target.py_to_string())
+                .count();
             Ok(PyObject::int(c as i64))
         }
         "index" => {
@@ -737,21 +1088,19 @@ pub(crate) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
             }
             Err(PyException::value_error("tuple.index(x): x not in tuple"))
         }
-        "__iter__" => {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List {
-                    items: items.to_vec(),
-                    index: 0,
-                })),
-            )))
-        }
-        "__len__" => {
-            Ok(PyObject::int(items.len() as i64))
-        }
+        "__iter__" => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: items.to_vec(),
+                index: 0,
+            }),
+        )))),
+        "__len__" => Ok(PyObject::int(items.len() as i64)),
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
             let target = &args[0];
-            let found = items.iter().any(|x| x.py_to_string() == target.py_to_string());
+            let found = items
+                .iter()
+                .any(|x| x.py_to_string() == target.py_to_string());
             Ok(PyObject::bool_val(found))
         }
         "__getitem__" => {
@@ -771,48 +1120,71 @@ pub(crate) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
                 result.extend_from_slice(other);
                 Ok(PyObject::tuple(result))
             } else {
-                Err(PyException::type_error("can only concatenate tuple to tuple"))
+                Err(PyException::type_error(
+                    "can only concatenate tuple to tuple",
+                ))
             }
         }
         "__mul__" | "__rmul__" => {
             check_args_min("__mul__", args, 1)?;
             let n = args[0].to_int()?.max(0) as usize;
-            let mut result = Vec::with_capacity(items.len() * n);
-            for _ in 0..n { result.extend_from_slice(items); }
+            let size = checked_repeat_len(items.len(), n, "tuple repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..n {
+                result.extend_from_slice(items);
+            }
             Ok(PyObject::tuple(result))
         }
         "__eq__" => {
             check_args_min("__eq__", args, 1)?;
             if let PyObjectPayload::Tuple(other) = &args[0].payload {
-                if items.len() != other.len() { return Ok(PyObject::bool_val(false)); }
+                if items.len() != other.len() {
+                    return Ok(PyObject::bool_val(false));
+                }
                 for (a, b) in items.iter().zip(other.iter()) {
-                    if a.py_to_string() != b.py_to_string() { return Ok(PyObject::bool_val(false)); }
+                    if a.py_to_string() != b.py_to_string() {
+                        return Ok(PyObject::bool_val(false));
+                    }
                 }
                 Ok(PyObject::bool_val(true))
-            } else { Ok(PyObject::not_implemented()) }
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         }
         "__ne__" => {
             check_args_min("__ne__", args, 1)?;
             if let PyObjectPayload::Tuple(other) = &args[0].payload {
-                if items.len() != other.len() { return Ok(PyObject::bool_val(true)); }
+                if items.len() != other.len() {
+                    return Ok(PyObject::bool_val(true));
+                }
                 for (a, b) in items.iter().zip(other.iter()) {
-                    if a.py_to_string() != b.py_to_string() { return Ok(PyObject::bool_val(true)); }
+                    if a.py_to_string() != b.py_to_string() {
+                        return Ok(PyObject::bool_val(true));
+                    }
                 }
                 Ok(PyObject::bool_val(false))
-            } else { Ok(PyObject::not_implemented()) }
+            } else {
+                Ok(PyObject::not_implemented())
+            }
         }
         "__repr__" | "__str__" => {
             let parts: Vec<String> = items.iter().map(|x| x.repr()).collect();
             if items.len() == 1 {
-                Ok(PyObject::str_val(CompactString::from(format!("({},)", parts[0]))))
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "({},)",
+                    parts[0]
+                ))))
             } else {
-                Ok(PyObject::str_val(CompactString::from(format!("({})", parts.join(", ")))))
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "({})",
+                    parts.join(", ")
+                ))))
             }
         }
         "__bool__" => Ok(PyObject::bool_val(!items.is_empty())),
         "__hash__" => {
-            use std::hash::{Hash, Hasher};
             use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
             let mut hasher = DefaultHasher::new();
             for item in items {
                 if let Ok(hk) = item.to_hashable_key() {
@@ -821,14 +1193,22 @@ pub(crate) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
             }
             Ok(PyObject::int(hasher.finish() as i64))
         }
-        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<Vec<PyObjectRef>>() + items.len() * std::mem::size_of::<PyObjectRef>()) as i64)),
+        "__sizeof__" => Ok(PyObject::int(
+            (std::mem::size_of::<Vec<PyObjectRef>>()
+                + items.len() * std::mem::size_of::<PyObjectRef>()) as i64,
+        )),
         _ => Err(PyException::attribute_error(format!(
-            "'tuple' object has no attribute '{}'", method
+            "'tuple' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn call_set_method(
+    m: &Rc<PyCell<FxHashKeyFlatMap>>,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
         "union" | "__or__" => {
@@ -844,10 +1224,11 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "intersection" | "__and__" => {
             check_args_min("intersection", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: FxHashKeyFlatMap = guard.iter()
+            let result: FxHashKeyFlatMap = guard
+                .iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -856,10 +1237,11 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "difference" | "__sub__" => {
             check_args_min("difference", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: FxHashKeyFlatMap = guard.iter()
+            let result: FxHashKeyFlatMap = guard
+                .iter()
                 .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -869,10 +1251,10 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
             check_args_min("symmetric_difference", args, 1)?;
             let other_items = args[0].to_list()?;
             let guard = m.read();
-            let self_keys: std::collections::HashSet<String> = guard.values()
-                .map(|x| x.py_to_string()).collect();
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let self_keys: std::collections::HashSet<String> =
+                guard.values().map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let mut result = new_fx_hashkey_flatmap();
             for (k, v) in guard.iter() {
                 if !other_keys.contains(&v.py_to_string()) {
@@ -891,27 +1273,34 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "issubset" => {
             check_args_min("issubset", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
-            let all_in = m.read().values().all(|v| other_keys.contains(&v.py_to_string()));
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
+            let all_in = m
+                .read()
+                .values()
+                .all(|v| other_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(all_in))
         }
         "issuperset" => {
             check_args_min("issuperset", args, 1)?;
             let other_items = args[0].to_list()?;
             let guard = m.read();
-            let self_keys: std::collections::HashSet<String> = guard.values()
-                .map(|x| x.py_to_string()).collect();
-            let all_in = other_items.iter().all(|v| self_keys.contains(&v.py_to_string()));
+            let self_keys: std::collections::HashSet<String> =
+                guard.values().map(|x| x.py_to_string()).collect();
+            let all_in = other_items
+                .iter()
+                .all(|v| self_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(all_in))
         }
         "isdisjoint" => {
             check_args_min("isdisjoint", args, 1)?;
             let other_items = args[0].to_list()?;
             let guard = m.read();
-            let self_keys: std::collections::HashSet<String> = guard.values()
-                .map(|x| x.py_to_string()).collect();
-            let none_in = other_items.iter().all(|v| !self_keys.contains(&v.py_to_string()));
+            let self_keys: std::collections::HashSet<String> =
+                guard.values().map(|x| x.py_to_string()).collect();
+            let none_in = other_items
+                .iter()
+                .all(|v| !self_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(none_in))
         }
         "add" => {
@@ -964,7 +1353,8 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "difference_update" => {
             check_args_min("difference_update", args, 1)?;
             let other_items = args[0].to_list()?;
-            let remove_keys: Vec<HashableKey> = other_items.iter()
+            let remove_keys: Vec<HashableKey> = other_items
+                .iter()
                 .filter_map(|x| x.to_hashable_key().ok())
                 .collect();
             let mut guard = m.write();
@@ -976,8 +1366,8 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         "intersection_update" => {
             check_args_min("intersection_update", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let mut guard = m.write();
             guard.retain(|_, v| other_keys.contains(&v.py_to_string()));
             Ok(PyObject::none())
@@ -986,8 +1376,8 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
             check_args_min("symmetric_difference_update", args, 1)?;
             let other_items = args[0].to_list()?;
             let mut guard = m.write();
-            let self_keys: std::collections::HashSet<String> = guard.values()
-                .map(|x| x.py_to_string()).collect();
+            let self_keys: std::collections::HashSet<String> =
+                guard.values().map(|x| x.py_to_string()).collect();
             // Remove items that are in both
             let mut to_remove = Vec::new();
             for item in &other_items {
@@ -1013,7 +1403,12 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
         }
         "__contains__" => {
             check_args_min("set.__contains__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
+            let key =
+                args[0]
+                    .to_hashable_key()
+                    .unwrap_or(HashableKey::str_key(CompactString::from(
+                        args[0].py_to_string(),
+                    )));
             Ok(PyObject::bool_val(m.read().contains_key(&key)))
         }
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
@@ -1023,12 +1418,17 @@ pub(crate) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, ar
             Ok(PyObject::list(items))
         }
         _ => Err(PyException::attribute_error(format!(
-            "'set' object has no attribute '{}'", method
+            "'set' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_frozenset_method(
+    m: &FxHashKeyMap,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::frozenset(m.clone())),
         "union" | "__or__" => {
@@ -1044,9 +1444,10 @@ pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyOb
         "intersection" | "__and__" => {
             check_args_min("intersection", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
-            let result: FxHashKeyMap = m.iter()
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
+            let result: FxHashKeyMap = m
+                .iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -1055,9 +1456,10 @@ pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyOb
         "difference" | "__sub__" => {
             check_args_min("difference", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
-            let result: FxHashKeyMap = m.iter()
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
+            let result: FxHashKeyMap = m
+                .iter()
                 .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -1066,10 +1468,10 @@ pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyOb
         "symmetric_difference" | "__xor__" => {
             check_args_min("symmetric_difference", args, 1)?;
             let other_items = args[0].to_list()?;
-            let self_keys: std::collections::HashSet<String> = m.values()
-                .map(|x| x.py_to_string()).collect();
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let self_keys: std::collections::HashSet<String> =
+                m.values().map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let mut result = IndexMap::new();
             for (k, v) in m.iter() {
                 if !other_keys.contains(&v.py_to_string()) {
@@ -1088,71 +1490,92 @@ pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyOb
         "issubset" => {
             check_args_min("issubset", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let all_in = m.values().all(|v| other_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(all_in))
         }
         "issuperset" => {
             check_args_min("issuperset", args, 1)?;
             let other_items = args[0].to_list()?;
-            let self_keys: std::collections::HashSet<String> = m.values()
-                .map(|x| x.py_to_string()).collect();
-            let all_in = other_items.iter().all(|v| self_keys.contains(&v.py_to_string()));
+            let self_keys: std::collections::HashSet<String> =
+                m.values().map(|x| x.py_to_string()).collect();
+            let all_in = other_items
+                .iter()
+                .all(|v| self_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(all_in))
         }
         "isdisjoint" => {
             check_args_min("isdisjoint", args, 1)?;
             let other_items = args[0].to_list()?;
-            let self_keys: std::collections::HashSet<String> = m.values()
-                .map(|x| x.py_to_string()).collect();
-            let none_in = other_items.iter().all(|v| !self_keys.contains(&v.py_to_string()));
+            let self_keys: std::collections::HashSet<String> =
+                m.values().map(|x| x.py_to_string()).collect();
+            let none_in = other_items
+                .iter()
+                .all(|v| !self_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(none_in))
         }
         "__len__" => Ok(PyObject::int(m.len() as i64)),
         "__lt__" => {
             check_args_min("__lt__", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
             let is_subset = m.values().all(|v| other_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(is_subset && m.len() < other_keys.len()))
         }
         "__le__" => {
             check_args_min("__le__", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
-            Ok(PyObject::bool_val(m.values().all(|v| other_keys.contains(&v.py_to_string()))))
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
+            Ok(PyObject::bool_val(
+                m.values().all(|v| other_keys.contains(&v.py_to_string())),
+            ))
         }
         "__gt__" => {
             check_args_min("__gt__", args, 1)?;
             let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> = other_items.iter()
-                .map(|x| x.py_to_string()).collect();
-            let self_keys: std::collections::HashSet<String> = m.values()
-                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> =
+                other_items.iter().map(|x| x.py_to_string()).collect();
+            let self_keys: std::collections::HashSet<String> =
+                m.values().map(|x| x.py_to_string()).collect();
             let is_superset = other_keys.iter().all(|v| self_keys.contains(v));
-            Ok(PyObject::bool_val(is_superset && m.len() > other_keys.len()))
+            Ok(PyObject::bool_val(
+                is_superset && m.len() > other_keys.len(),
+            ))
         }
         "__ge__" => {
             check_args_min("__ge__", args, 1)?;
             let other_items = args[0].to_list()?;
-            let self_keys: std::collections::HashSet<String> = m.values()
-                .map(|x| x.py_to_string()).collect();
-            Ok(PyObject::bool_val(other_items.iter().all(|v| self_keys.contains(&v.py_to_string()))))
+            let self_keys: std::collections::HashSet<String> =
+                m.values().map(|x| x.py_to_string()).collect();
+            Ok(PyObject::bool_val(
+                other_items
+                    .iter()
+                    .all(|v| self_keys.contains(&v.py_to_string())),
+            ))
         }
         _ => Err(PyException::attribute_error(format!(
-            "'frozenset' object has no attribute '{}'", method
+            "'frozenset' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_int_method(
+    _receiver: &PyObjectRef,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "bit_length" => {
             let n = _receiver.to_int()?;
-            Ok(PyObject::int(if n == 0 { 0 } else { 64 - n.abs().leading_zeros() as i64 }))
+            Ok(PyObject::int(if n == 0 {
+                0
+            } else {
+                64 - n.abs().leading_zeros() as i64
+            }))
         }
         "bit_count" => {
             let n = _receiver.to_int()?;
@@ -1161,7 +1584,9 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
         "to_bytes" => {
             let n = _receiver.to_int()?;
             if args.is_empty() {
-                return Err(PyException::type_error("to_bytes() requires at least 1 argument"));
+                return Err(PyException::type_error(
+                    "to_bytes() requires at least 1 argument",
+                ));
             }
             let length = args[0].to_int()? as usize;
             // Extract byteorder and signed from positional or kwargs dict
@@ -1172,10 +1597,13 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(map) = &last.payload {
                     let map_r = map.read();
-                    if let Some(bo) = map_r.get(&HashableKey::str_key(CompactString::from("byteorder"))) {
+                    if let Some(bo) =
+                        map_r.get(&HashableKey::str_key(CompactString::from("byteorder")))
+                    {
                         byteorder = bo.py_to_string();
                     }
-                    if let Some(s) = map_r.get(&HashableKey::str_key(CompactString::from("signed"))) {
+                    if let Some(s) = map_r.get(&HashableKey::str_key(CompactString::from("signed")))
+                    {
                         signed = s.is_truthy();
                     }
                     _kwarg_start = args.len(); // skip kwargs dict for positional scan
@@ -1213,7 +1641,11 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
                     }
                     result
                 }
-                _ => return Err(PyException::value_error("byteorder must be 'big' or 'little'")),
+                _ => {
+                    return Err(PyException::value_error(
+                        "byteorder must be 'big' or 'little'",
+                    ))
+                }
             };
             Ok(PyObject::bytes(bytes))
         }
@@ -1242,117 +1674,208 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
         }
         "__format__" => {
             let n = _receiver.to_int()?;
-            let spec = if !args.is_empty() { args[0].as_str().unwrap_or("").to_string() } else { String::new() };
-            if spec.is_empty() { return Ok(PyObject::str_val(CompactString::from(n.to_string()))); }
-            Ok(PyObject::str_val(CompactString::from(super::apply_format_spec_int(n, &spec))))
+            let spec = if !args.is_empty() {
+                args[0].as_str().unwrap_or("").to_string()
+            } else {
+                String::new()
+            };
+            if spec.is_empty() {
+                return Ok(PyObject::str_val(CompactString::from(n.to_string())));
+            }
+            Ok(PyObject::str_val(CompactString::from(
+                super::apply_format_spec_int(n, &spec),
+            )))
         }
-        "__str__" => { let n = _receiver.to_int()?; Ok(PyObject::str_val(CompactString::from(n.to_string()))) }
-        "__repr__" => { let n = _receiver.to_int()?; Ok(PyObject::str_val(CompactString::from(n.to_string()))) }
+        "__str__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::str_val(CompactString::from(n.to_string())))
+        }
+        "__repr__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::str_val(CompactString::from(n.to_string())))
+        }
         "__hash__" => Ok(_receiver.clone()),
-        "__bool__" => { let n = _receiver.to_int()?; Ok(PyObject::bool_val(n != 0)) }
+        "__bool__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::bool_val(n != 0))
+        }
         "__eq__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n == m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 == f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n == m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val(n as f64 == f));
+                }
             }
             Ok(PyObject::bool_val(false))
         }
         "__ne__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n != m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 != f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n != m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val(n as f64 != f));
+                }
             }
             Ok(PyObject::bool_val(true))
         }
         "__lt__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n < m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val((n as f64) < f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n < m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val((n as f64) < f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__le__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n <= m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 <= f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n <= m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val(n as f64 <= f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__gt__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n > m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 > f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n > m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val(n as f64 > f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__ge__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n >= m)); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 >= f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::bool_val(n >= m));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::bool_val(n as f64 >= f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__add__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_add(m))); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 + f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n.wrapping_add(m)));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::float(n as f64 + f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__sub__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_sub(m))); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 - f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n.wrapping_sub(m)));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::float(n as f64 - f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__mul__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_mul(m))); }
-                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 * f)); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n.wrapping_mul(m)));
+                }
+                if let Ok(f) = args[0].to_float() {
+                    return Ok(PyObject::float(n as f64 * f));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__floordiv__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { if m != 0 { return Ok(PyObject::int(n.div_euclid(m))); } else { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); } }
+                if let Ok(m) = args[0].to_int() {
+                    if m != 0 {
+                        return Ok(PyObject::int(n.div_euclid(m)));
+                    } else {
+                        return Err(PyException::new(
+                            ExceptionKind::ZeroDivisionError,
+                            "integer division or modulo by zero".to_string(),
+                        ));
+                    }
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__mod__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { if m != 0 { return Ok(PyObject::int(n.rem_euclid(m))); } else { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); } }
+                if let Ok(m) = args[0].to_int() {
+                    if m != 0 {
+                        return Ok(PyObject::int(n.rem_euclid(m)));
+                    } else {
+                        return Err(PyException::new(
+                            ExceptionKind::ZeroDivisionError,
+                            "integer division or modulo by zero".to_string(),
+                        ));
+                    }
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__pow__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() { return Ok(if m >= 0 { PyObject::int(n.wrapping_pow(m as u32)) } else { PyObject::float((n as f64).powi(m as i32)) }); }
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(if m >= 0 {
+                        PyObject::int(n.wrapping_pow(m as u32))
+                    } else {
+                        PyObject::float((n as f64).powi(m as i32))
+                    });
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__truediv__" => {
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
-                let d = if let Ok(m) = args[0].to_int() { m as f64 } else if let Ok(f) = args[0].to_float() { f } else { return Ok(PyObject::not_implemented()); };
-                if d == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "division by zero".to_string())); }
+                let d = if let Ok(m) = args[0].to_int() {
+                    m as f64
+                } else if let Ok(f) = args[0].to_float() {
+                    f
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
+                if d == 0.0 {
+                    return Err(PyException::new(
+                        ExceptionKind::ZeroDivisionError,
+                        "division by zero".to_string(),
+                    ));
+                }
                 return Ok(PyObject::float(n as f64 / d));
             }
             Ok(PyObject::not_implemented())
         }
-        "__float__" => { let n = _receiver.to_int()?; Ok(PyObject::float(n as f64)) }
+        "__float__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::float(n as f64))
+        }
         "__round__" => {
             let n = _receiver.to_int()?;
             // int.__round__(ndigits) — for ints, just returns self (unless ndigits is negative)
@@ -1370,39 +1893,77 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             if !args.is_empty() {
                 let n = _receiver.to_int()?;
                 if let Ok(m) = args[0].to_int() {
-                    if m == 0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); }
-                    return Ok(PyObject::tuple(vec![PyObject::int(n.div_euclid(m)), PyObject::int(n.rem_euclid(m))]));
+                    if m == 0 {
+                        return Err(PyException::new(
+                            ExceptionKind::ZeroDivisionError,
+                            "integer division or modulo by zero".to_string(),
+                        ));
+                    }
+                    return Ok(PyObject::tuple(vec![
+                        PyObject::int(n.div_euclid(m)),
+                        PyObject::int(n.rem_euclid(m)),
+                    ]));
                 }
             }
             Ok(PyObject::not_implemented())
         }
         "__lshift__" => {
-            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n << (m as u32))); } }
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n << (m as u32)));
+                }
+            }
             Ok(PyObject::not_implemented())
         }
         "__rshift__" => {
-            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n >> (m as u32))); } }
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n >> (m as u32)));
+                }
+            }
             Ok(PyObject::not_implemented())
         }
         "__and__" => {
-            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n & m)); } }
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n & m));
+                }
+            }
             Ok(PyObject::not_implemented())
         }
         "__or__" => {
-            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n | m)); } }
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n | m));
+                }
+            }
             Ok(PyObject::not_implemented())
         }
         "__xor__" => {
-            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n ^ m)); } }
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    return Ok(PyObject::int(n ^ m));
+                }
+            }
             Ok(PyObject::not_implemented())
         }
         _ => Err(PyException::attribute_error(format!(
-            "'int' object has no attribute '{}'", method
+            "'int' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_float_method(
+    f: f64,
+    method: &str,
+    _args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "is_integer" => Ok(PyObject::bool_val(f.fract() == 0.0)),
         "hex" => {
@@ -1417,12 +1978,15 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
                 (mant, exp, sign)
             };
             Ok(PyObject::str_val(CompactString::from(format!(
-                "{}0x1.{:013x}p{:+}", sign, mantissa, exponent
+                "{}0x1.{:013x}p{:+}",
+                sign, mantissa, exponent
             ))))
         }
         "as_integer_ratio" => {
             if f.is_infinite() || f.is_nan() {
-                return Err(PyException::value_error("cannot convert Infinity or NaN to integer ratio"));
+                return Err(PyException::value_error(
+                    "cannot convert Infinity or NaN to integer ratio",
+                ));
             }
             // Decompose f into mantissa * 2^exponent
             let (mantissa, exponent) = {
@@ -1444,22 +2008,42 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
             };
             // Simplify by GCD
             fn gcd(mut a: i64, mut b: i64) -> i64 {
-                a = a.abs(); b = b.abs();
-                while b != 0 { let t = b; b = a % b; a = t; }
+                a = a.abs();
+                b = b.abs();
+                while b != 0 {
+                    let t = b;
+                    b = a % b;
+                    a = t;
+                }
                 a
             }
             let g = gcd(numer, denom);
-            Ok(PyObject::tuple(vec![PyObject::int(numer / g), PyObject::int(denom / g)]))
+            Ok(PyObject::tuple(vec![
+                PyObject::int(numer / g),
+                PyObject::int(denom / g),
+            ]))
         }
         "conjugate" => Ok(PyObject::float(f)),
         "real" => Ok(PyObject::float(f)),
         "imag" => Ok(PyObject::float(0.0)),
         "__format__" => {
-            let spec = if !_args.is_empty() { _args[0].as_str().unwrap_or("").to_string() } else { String::new() };
-            if spec.is_empty() { return Ok(PyObject::str_val(CompactString::from(super::format_float_repr(f)))); }
-            Ok(PyObject::str_val(CompactString::from(super::apply_format_spec_float(f, &spec))))
+            let spec = if !_args.is_empty() {
+                _args[0].as_str().unwrap_or("").to_string()
+            } else {
+                String::new()
+            };
+            if spec.is_empty() {
+                return Ok(PyObject::str_val(CompactString::from(
+                    super::format_float_repr(f),
+                )));
+            }
+            Ok(PyObject::str_val(CompactString::from(
+                super::apply_format_spec_float(f, &spec),
+            )))
         }
-        "__str__" | "__repr__" => Ok(PyObject::str_val(CompactString::from(super::format_float_repr(f)))),
+        "__str__" | "__repr__" => Ok(PyObject::str_val(CompactString::from(
+            super::format_float_repr(f),
+        ))),
         "__hash__" => Ok(PyObject::int(f.to_bits() as i64)),
         "__bool__" => Ok(PyObject::bool_val(f != 0.0)),
         "__int__" | "__trunc__" => Ok(PyObject::int(f as i64)),
@@ -1468,147 +2052,257 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
         "__neg__" => Ok(PyObject::float(-f)),
         "__pos__" => Ok(PyObject::float(f)),
         "__round__" => {
-            let ndigits = if !_args.is_empty() { _args[0].as_int().unwrap_or(0) } else { 0 };
+            let ndigits = if !_args.is_empty() {
+                _args[0].as_int().unwrap_or(0)
+            } else {
+                0
+            };
             let factor = 10f64.powi(ndigits as i32);
             Ok(PyObject::float((f * factor).round() / factor))
         }
         "__eq__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f == g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f == n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f == g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f == n as f64));
+                }
             }
             Ok(PyObject::bool_val(false))
         }
         "__ne__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f != g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f != n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f != g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f != n as f64));
+                }
             }
             Ok(PyObject::bool_val(true))
         }
         "__lt__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f < g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f < n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f < g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f < n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__le__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f <= g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f <= n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f <= g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f <= n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__gt__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f > g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f > n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f > g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f > n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__ge__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f >= g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f >= n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::bool_val(f >= g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::bool_val(f >= n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__add__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f + g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f + n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::float(f + g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::float(f + n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__sub__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f - g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f - n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::float(f - g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::float(f - n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__mul__" => {
             if !_args.is_empty() {
-                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f * g)); }
-                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f * n as f64)); }
+                if let Ok(g) = _args[0].to_float() {
+                    return Ok(PyObject::float(f * g));
+                }
+                if let Ok(n) = _args[0].to_int() {
+                    return Ok(PyObject::float(f * n as f64));
+                }
             }
             Ok(PyObject::not_implemented())
         }
         "__truediv__" => {
             if !_args.is_empty() {
-                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
-                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float division by zero".to_string())); }
+                let g = if let Ok(g) = _args[0].to_float() {
+                    g
+                } else if let Ok(n) = _args[0].to_int() {
+                    n as f64
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
+                if g == 0.0 {
+                    return Err(PyException::new(
+                        ExceptionKind::ZeroDivisionError,
+                        "float division by zero".to_string(),
+                    ));
+                }
                 return Ok(PyObject::float(f / g));
             }
             Ok(PyObject::not_implemented())
         }
         "__floordiv__" => {
             if !_args.is_empty() {
-                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
-                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float floor division by zero".to_string())); }
+                let g = if let Ok(g) = _args[0].to_float() {
+                    g
+                } else if let Ok(n) = _args[0].to_int() {
+                    n as f64
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
+                if g == 0.0 {
+                    return Err(PyException::new(
+                        ExceptionKind::ZeroDivisionError,
+                        "float floor division by zero".to_string(),
+                    ));
+                }
                 return Ok(PyObject::float((f / g).floor()));
             }
             Ok(PyObject::not_implemented())
         }
         "__mod__" => {
             if !_args.is_empty() {
-                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
-                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float modulo".to_string())); }
+                let g = if let Ok(g) = _args[0].to_float() {
+                    g
+                } else if let Ok(n) = _args[0].to_int() {
+                    n as f64
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
+                if g == 0.0 {
+                    return Err(PyException::new(
+                        ExceptionKind::ZeroDivisionError,
+                        "float modulo".to_string(),
+                    ));
+                }
                 return Ok(PyObject::float(f - (f / g).floor() * g));
             }
             Ok(PyObject::not_implemented())
         }
         "__pow__" => {
             if !_args.is_empty() {
-                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                let g = if let Ok(g) = _args[0].to_float() {
+                    g
+                } else if let Ok(n) = _args[0].to_int() {
+                    n as f64
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
                 return Ok(PyObject::float(f.powf(g)));
             }
             Ok(PyObject::not_implemented())
         }
         "__divmod__" => {
             if !_args.is_empty() {
-                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
-                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float divmod()".to_string())); }
+                let g = if let Ok(g) = _args[0].to_float() {
+                    g
+                } else if let Ok(n) = _args[0].to_int() {
+                    n as f64
+                } else {
+                    return Ok(PyObject::not_implemented());
+                };
+                if g == 0.0 {
+                    return Err(PyException::new(
+                        ExceptionKind::ZeroDivisionError,
+                        "float divmod()".to_string(),
+                    ));
+                }
                 let q = (f / g).floor();
-                return Ok(PyObject::tuple(vec![PyObject::float(q), PyObject::float(f - q * g)]));
+                return Ok(PyObject::tuple(vec![
+                    PyObject::float(q),
+                    PyObject::float(f - q * g),
+                ]));
             }
             Ok(PyObject::not_implemented())
         }
         "__ceil__" => Ok(PyObject::int(f.ceil() as i64)),
         "__floor__" => Ok(PyObject::int(f.floor() as i64)),
         _ => Err(PyException::attribute_error(format!(
-            "'float' object has no attribute '{}'", method
+            "'float' object has no attribute '{}'",
+            method
         ))),
     }
 }
 
-pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_bytes_method(
+    b: &[u8],
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "decode" => {
-            let encoding = if !args.is_empty() { args[0].py_to_string().to_lowercase() } else { "utf-8".to_string() };
-            let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+            let encoding = if !args.is_empty() {
+                args[0].py_to_string().to_lowercase()
+            } else {
+                "utf-8".to_string()
+            };
+            let errors = if args.len() > 1 {
+                args[1].py_to_string()
+            } else {
+                "strict".to_string()
+            };
             match encoding.as_str() {
-                "utf-8" | "utf8" => {
-                    match errors.as_str() {
-                        "strict" => {
-                            match std::str::from_utf8(b) {
-                                Ok(s) => Ok(PyObject::str_val(CompactString::from(s))),
-                                Err(e) => Err(PyException::new(
-                                    ExceptionKind::UnicodeDecodeError,
-                                    format!("'utf-8' codec can't decode byte 0x{:02x} in position {}", b[e.valid_up_to()], e.valid_up_to()),
-                                )),
-                            }
-                        }
-                        "ignore" => {
-                            let s: String = b.iter().filter(|&&x| x < 0x80).map(|&x| x as char).collect();
-                            Ok(PyObject::str_val(CompactString::from(s)))
-                        }
-                        "replace" | _ => {
-                            Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b))))
-                        }
+                "utf-8" | "utf8" => match errors.as_str() {
+                    "strict" => match std::str::from_utf8(b) {
+                        Ok(s) => Ok(PyObject::str_val(CompactString::from(s))),
+                        Err(e) => Err(PyException::new(
+                            ExceptionKind::UnicodeDecodeError,
+                            format!(
+                                "'utf-8' codec can't decode byte 0x{:02x} in position {}",
+                                b[e.valid_up_to()],
+                                e.valid_up_to()
+                            ),
+                        )),
+                    },
+                    "ignore" => {
+                        let s: String = b
+                            .iter()
+                            .filter(|&&x| x < 0x80)
+                            .map(|&x| x as char)
+                            .collect();
+                        Ok(PyObject::str_val(CompactString::from(s)))
                     }
-                }
+                    "replace" | _ => Ok(PyObject::str_val(CompactString::from(
+                        String::from_utf8_lossy(b),
+                    ))),
+                },
                 "ascii" | "us-ascii" | "us_ascii" | "iso646-us" | "iso_646.irv_1991" => {
                     match errors.as_str() {
                         "strict" => {
@@ -1620,10 +2314,13 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                                     ));
                                 }
                             }
-                            Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b))))
+                            Ok(PyObject::str_val(CompactString::from(
+                                String::from_utf8_lossy(b),
+                            )))
                         }
                         "ignore" => {
-                            let s: String = b.iter().filter(|&&x| x < 128).map(|&x| x as char).collect();
+                            let s: String =
+                                b.iter().filter(|&&x| x < 128).map(|&x| x as char).collect();
                             Ok(PyObject::str_val(CompactString::from(s)))
                         }
                         "surrogateescape" => {
@@ -1634,7 +2331,10 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                             Ok(PyObject::str_val(CompactString::from(s)))
                         }
                         "replace" | _ => {
-                            let s: String = b.iter().map(|&x| if x < 128 { x as char } else { '\u{FFFD}' }).collect();
+                            let s: String = b
+                                .iter()
+                                .map(|&x| if x < 128 { x as char } else { '\u{FFFD}' })
+                                .collect();
                             Ok(PyObject::str_val(CompactString::from(s)))
                         }
                     }
@@ -1667,26 +2367,47 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 "utf-32-le" | "utf32-le" | "utf-32le" | "utf32le" => decode_utf32_le_bytes(b),
                 "utf-32-be" | "utf32-be" | "utf-32be" | "utf32be" => decode_utf32_be_bytes(b),
                 "cp1252" | "windows-1252" | "windows1252" => {
-                    let s: String = b.iter().map(|&byte| {
-                        if byte < 0x80 || byte >= 0xA0 { return byte as char; }
-                        match byte {
-                            0x80 => '\u{20AC}', 0x82 => '\u{201A}', 0x83 => '\u{0192}',
-                            0x84 => '\u{201E}', 0x85 => '\u{2026}', 0x86 => '\u{2020}',
-                            0x87 => '\u{2021}', 0x88 => '\u{02C6}', 0x89 => '\u{2030}',
-                            0x8A => '\u{0160}', 0x8B => '\u{2039}', 0x8C => '\u{0152}',
-                            0x8E => '\u{017D}', 0x91 => '\u{2018}', 0x92 => '\u{2019}',
-                            0x93 => '\u{201C}', 0x94 => '\u{201D}', 0x95 => '\u{2022}',
-                            0x96 => '\u{2013}', 0x97 => '\u{2014}', 0x98 => '\u{02DC}',
-                            0x99 => '\u{2122}', 0x9A => '\u{0161}', 0x9B => '\u{203A}',
-                            0x9C => '\u{0153}', 0x9E => '\u{017E}', 0x9F => '\u{0178}',
-                            _ => '\u{FFFD}',
-                        }
-                    }).collect();
+                    let s: String = b
+                        .iter()
+                        .map(|&byte| {
+                            if byte < 0x80 || byte >= 0xA0 {
+                                return byte as char;
+                            }
+                            match byte {
+                                0x80 => '\u{20AC}',
+                                0x82 => '\u{201A}',
+                                0x83 => '\u{0192}',
+                                0x84 => '\u{201E}',
+                                0x85 => '\u{2026}',
+                                0x86 => '\u{2020}',
+                                0x87 => '\u{2021}',
+                                0x88 => '\u{02C6}',
+                                0x89 => '\u{2030}',
+                                0x8A => '\u{0160}',
+                                0x8B => '\u{2039}',
+                                0x8C => '\u{0152}',
+                                0x8E => '\u{017D}',
+                                0x91 => '\u{2018}',
+                                0x92 => '\u{2019}',
+                                0x93 => '\u{201C}',
+                                0x94 => '\u{201D}',
+                                0x95 => '\u{2022}',
+                                0x96 => '\u{2013}',
+                                0x97 => '\u{2014}',
+                                0x98 => '\u{02DC}',
+                                0x99 => '\u{2122}',
+                                0x9A => '\u{0161}',
+                                0x9B => '\u{203A}',
+                                0x9C => '\u{0153}',
+                                0x9E => '\u{017E}',
+                                0x9F => '\u{0178}',
+                                _ => '\u{FFFD}',
+                            }
+                        })
+                        .collect();
                     Ok(PyObject::str_val(CompactString::from(s)))
                 }
-                "punycode" => {
-                    crate::builtins::string_methods::punycode_decode_bytes(b)
-                }
+                "punycode" => crate::builtins::string_methods::punycode_decode_bytes(b),
                 "idna" => {
                     let s = std::str::from_utf8(b)
                         .map_err(|_| PyException::value_error("idna: invalid bytes"))?;
@@ -1725,17 +2446,25 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 }
                 Ok(PyObject::str_val(CompactString::from(result)))
             }
-        },
+        }
         "count" => {
-            if args.is_empty() { return Err(PyException::type_error("count requires an argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("count requires an argument"));
+            }
             match &args[0].payload {
                 PyObjectPayload::Int(n) => {
                     let byte = n.to_i64().unwrap_or(-1);
-                    if byte < 0 || byte > 255 { return Ok(PyObject::int(0)); }
-                    Ok(PyObject::int(b.iter().filter(|&&x| x == byte as u8).count() as i64))
+                    if byte < 0 || byte > 255 {
+                        return Ok(PyObject::int(0));
+                    }
+                    Ok(PyObject::int(
+                        b.iter().filter(|&&x| x == byte as u8).count() as i64,
+                    ))
                 }
                 PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) => {
-                    if needle.is_empty() { return Ok(PyObject::int(b.len() as i64 + 1)); }
+                    if needle.is_empty() {
+                        return Ok(PyObject::int(b.len() as i64 + 1));
+                    }
                     let mut count = 0i64;
                     let mut start = 0;
                     while start + needle.len() <= b.len() {
@@ -1752,28 +2481,45 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "find" => {
-            if args.is_empty() { return Err(PyException::type_error("find requires an argument")); }
-            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("find requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
+                &args[0].payload
+            {
                 let pos = b.windows(needle.len()).position(|w| w == needle.as_slice());
                 Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
             } else if let Some(n) = args[0].as_int() {
                 let byte = n as u8;
-                Ok(PyObject::int(b.iter().position(|&x| x == byte).map(|p| p as i64).unwrap_or(-1)))
+                Ok(PyObject::int(
+                    b.iter()
+                        .position(|&x| x == byte)
+                        .map(|p| p as i64)
+                        .unwrap_or(-1),
+                ))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
         }
         "startswith" => {
-            if args.is_empty() { return Err(PyException::type_error("startswith requires an argument")); }
-            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("startswith requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) =
+                &args[0].payload
+            {
                 Ok(PyObject::bool_val(b.starts_with(prefix)))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
         }
         "endswith" => {
-            if args.is_empty() { return Err(PyException::type_error("endswith requires an argument")); }
-            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("endswith requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) =
+                &args[0].payload
+            {
                 Ok(PyObject::bool_val(b.ends_with(suffix)))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
@@ -1782,12 +2528,19 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         "upper" => Ok(PyObject::bytes(b.to_ascii_uppercase())),
         "lower" => Ok(PyObject::bytes(b.to_ascii_lowercase())),
         "strip" => {
-            let stripped = b.iter().copied()
+            let stripped = b
+                .iter()
+                .copied()
                 .skip_while(|c| c.is_ascii_whitespace())
                 .collect::<Vec<u8>>();
-            let stripped: Vec<u8> = stripped.into_iter().rev()
+            let stripped: Vec<u8> = stripped
+                .into_iter()
+                .rev()
                 .skip_while(|c| c.is_ascii_whitespace())
-                .collect::<Vec<u8>>().into_iter().rev().collect();
+                .collect::<Vec<u8>>()
+                .into_iter()
+                .rev()
+                .collect();
             Ok(PyObject::bytes(stripped))
         }
         "split" => {
@@ -1798,11 +2551,16 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                     .map(|s| PyObject::bytes(s.as_bytes().to_vec()))
                     .collect();
                 Ok(PyObject::list(parts))
-            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) =
+                &args[0].payload
+            {
                 let mut parts = Vec::new();
                 let mut start = 0;
                 while start <= b.len() {
-                    if let Some(pos) = b[start..].windows(sep.len()).position(|w| w == sep.as_slice()) {
+                    if let Some(pos) = b[start..]
+                        .windows(sep.len())
+                        .position(|w| w == sep.as_slice())
+                    {
                         parts.push(PyObject::bytes(b[start..start + pos].to_vec()));
                         start = start + pos + sep.len();
                     } else {
@@ -1816,7 +2574,9 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "join" => {
-            if args.is_empty() { return Err(PyException::type_error("join requires an argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("join requires an argument"));
+            }
             // Extract items from list, tuple, or other sequence types
             let items: Vec<PyObjectRef> = match &args[0].payload {
                 PyObjectPayload::List(items) => items.read().clone(),
@@ -1827,38 +2587,57 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             };
             let mut result = Vec::new();
             for (i, item) in items.iter().enumerate() {
-                if i > 0 { result.extend_from_slice(b); }
+                if i > 0 {
+                    result.extend_from_slice(b);
+                }
                 match &item.payload {
                     PyObjectPayload::Bytes(ib) => result.extend_from_slice(ib),
                     PyObjectPayload::ByteArray(ib) => result.extend_from_slice(ib),
-                    _ => return Err(PyException::type_error("sequence item: expected a bytes-like object")),
+                    _ => {
+                        return Err(PyException::type_error(
+                            "sequence item: expected a bytes-like object",
+                        ))
+                    }
                 }
             }
             Ok(PyObject::bytes(result))
         }
         "replace" => {
-            if args.len() < 2 { return Err(PyException::type_error("replace requires 2 arguments")); }
-            if let (PyObjectPayload::Bytes(old) | PyObjectPayload::ByteArray(old),
-                    PyObjectPayload::Bytes(new) | PyObjectPayload::ByteArray(new)) = (&args[0].payload, &args[1].payload) {
+            if args.len() < 2 {
+                return Err(PyException::type_error("replace requires 2 arguments"));
+            }
+            if let (
+                PyObjectPayload::Bytes(old) | PyObjectPayload::ByteArray(old),
+                PyObjectPayload::Bytes(new) | PyObjectPayload::ByteArray(new),
+            ) = (&args[0].payload, &args[1].payload)
+            {
                 let s = String::from_utf8_lossy(b);
                 let old_s = String::from_utf8_lossy(old);
                 let new_s = String::from_utf8_lossy(new);
-                Ok(PyObject::bytes(s.replace(old_s.as_ref(), new_s.as_ref()).into_bytes()))
+                Ok(PyObject::bytes(
+                    s.replace(old_s.as_ref(), new_s.as_ref()).into_bytes(),
+                ))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
         }
-        "isdigit" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_digit()))),
-        "isalpha" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphabetic()))),
-        "isalnum" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphanumeric()))),
-        "isspace" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_whitespace()))),
+        "isdigit" => Ok(PyObject::bool_val(
+            !b.is_empty() && b.iter().all(|c| c.is_ascii_digit()),
+        )),
+        "isalpha" => Ok(PyObject::bool_val(
+            !b.is_empty() && b.iter().all(|c| c.is_ascii_alphabetic()),
+        )),
+        "isalnum" => Ok(PyObject::bool_val(
+            !b.is_empty() && b.iter().all(|c| c.is_ascii_alphanumeric()),
+        )),
+        "isspace" => Ok(PyObject::bool_val(
+            !b.is_empty() && b.iter().all(|c| c.is_ascii_whitespace()),
+        )),
         "islower" => Ok(PyObject::bool_val(
-            b.iter().any(|c| c.is_ascii_lowercase()) &&
-            b.iter().all(|c| !c.is_ascii_uppercase())
+            b.iter().any(|c| c.is_ascii_lowercase()) && b.iter().all(|c| !c.is_ascii_uppercase()),
         )),
         "isupper" => Ok(PyObject::bool_val(
-            b.iter().any(|c| c.is_ascii_uppercase()) &&
-            b.iter().all(|c| !c.is_ascii_lowercase())
+            b.iter().any(|c| c.is_ascii_uppercase()) && b.iter().all(|c| !c.is_ascii_lowercase()),
         )),
         "istitle" => {
             let s = String::from_utf8_lossy(b);
@@ -1867,11 +2646,17 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             let mut is_title = true;
             for c in s.chars() {
                 if c.is_uppercase() {
-                    if prev_cased { is_title = false; break; }
+                    if prev_cased {
+                        is_title = false;
+                        break;
+                    }
                     prev_cased = true;
                     found_cased = true;
                 } else if c.is_lowercase() {
-                    if !prev_cased { is_title = false; break; }
+                    if !prev_cased {
+                        is_title = false;
+                        break;
+                    }
                     prev_cased = true;
                     found_cased = true;
                 } else {
@@ -1880,11 +2665,19 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
             Ok(PyObject::bool_val(found_cased && is_title))
         }
-        "swapcase" => Ok(PyObject::bytes(b.iter().map(|&c| {
-            if c.is_ascii_lowercase() { c.to_ascii_uppercase() }
-            else if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
-            else { c }
-        }).collect())),
+        "swapcase" => Ok(PyObject::bytes(
+            b.iter()
+                .map(|&c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else if c.is_ascii_uppercase() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
+        )),
         "title" => {
             let mut result = Vec::with_capacity(b.len());
             let mut prev_alpha = false;
@@ -1904,18 +2697,30 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             Ok(PyObject::bytes(result))
         }
         "capitalize" => {
-            if b.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            if b.is_empty() {
+                return Ok(PyObject::bytes(vec![]));
+            }
             let mut result = vec![b[0].to_ascii_uppercase()];
             result.extend(b[1..].iter().map(|c| c.to_ascii_lowercase()));
             Ok(PyObject::bytes(result))
         }
         "center" => {
-            if args.is_empty() { return Err(PyException::type_error("center requires width argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("center requires width argument"));
+            }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
-            } else { b' ' };
-            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
+                    fb[0]
+                } else {
+                    b' '
+                }
+            } else {
+                b' '
+            };
+            if b.len() >= width {
+                return Ok(PyObject::bytes(b.to_vec()));
+            }
             let pad = width - b.len();
             let left = pad / 2;
             let right = pad - left;
@@ -1925,29 +2730,53 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             Ok(PyObject::bytes(result))
         }
         "ljust" => {
-            if args.is_empty() { return Err(PyException::type_error("ljust requires width argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("ljust requires width argument"));
+            }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
-            } else { b' ' };
-            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
+                    fb[0]
+                } else {
+                    b' '
+                }
+            } else {
+                b' '
+            };
+            if b.len() >= width {
+                return Ok(PyObject::bytes(b.to_vec()));
+            }
             let mut result = b.to_vec();
             result.extend(vec![fill; width - b.len()]);
             Ok(PyObject::bytes(result))
         }
         "rjust" => {
-            if args.is_empty() { return Err(PyException::type_error("rjust requires width argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("rjust requires width argument"));
+            }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
-            } else { b' ' };
-            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
+                    fb[0]
+                } else {
+                    b' '
+                }
+            } else {
+                b' '
+            };
+            if b.len() >= width {
+                return Ok(PyObject::bytes(b.to_vec()));
+            }
             let mut result = vec![fill; width - b.len()];
             result.extend_from_slice(b);
             Ok(PyObject::bytes(result))
         }
         "lstrip" => {
-            let stripped: Vec<u8> = b.iter().copied().skip_while(|c| c.is_ascii_whitespace()).collect();
+            let stripped: Vec<u8> = b
+                .iter()
+                .copied()
+                .skip_while(|c| c.is_ascii_whitespace())
+                .collect();
             Ok(PyObject::bytes(stripped))
         }
         "rstrip" => {
@@ -1958,22 +2787,51 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             Ok(PyObject::bytes(result))
         }
         "rfind" => {
-            if args.is_empty() { return Err(PyException::type_error("rfind requires an argument")); }
-            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
-                let pos = b.windows(needle.len()).rposition(|w| w == needle.as_slice());
+            if args.is_empty() {
+                return Err(PyException::type_error("rfind requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
+                &args[0].payload
+            {
+                let pos = b
+                    .windows(needle.len())
+                    .rposition(|w| w == needle.as_slice());
                 Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
             } else if let Some(n) = args[0].as_int() {
                 let byte = n as u8;
-                Ok(PyObject::int(b.iter().rposition(|&x| x == byte).map(|p| p as i64).unwrap_or(-1)))
+                Ok(PyObject::int(
+                    b.iter()
+                        .rposition(|&x| x == byte)
+                        .map(|p| p as i64)
+                        .unwrap_or(-1),
+                ))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
         }
         "index" => {
-            if args.is_empty() { return Err(PyException::type_error("index requires an argument")); }
-            let start = if args.len() > 1 { args[1].to_int().unwrap_or(0).max(0) as usize } else { 0 };
-            let stop = if args.len() > 2 { args[2].to_int().unwrap_or(b.len() as i64).min(b.len() as i64).max(0) as usize } else { b.len() };
-            let slice = if start < b.len() && start < stop { &b[start..stop.min(b.len())] } else { &b[0..0] };
+            if args.is_empty() {
+                return Err(PyException::type_error("index requires an argument"));
+            }
+            let start = if args.len() > 1 {
+                args[1].to_int().unwrap_or(0).max(0) as usize
+            } else {
+                0
+            };
+            let stop = if args.len() > 2 {
+                args[2]
+                    .to_int()
+                    .unwrap_or(b.len() as i64)
+                    .min(b.len() as i64)
+                    .max(0) as usize
+            } else {
+                b.len()
+            };
+            let slice = if start < b.len() && start < stop {
+                &b[start..stop.min(b.len())]
+            } else {
+                &b[0..0]
+            };
             if let Some(val) = args[0].as_int() {
                 // int arg: search for single byte value
                 let byte_val = val as u8;
@@ -1981,20 +2839,32 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                     Some(p) => Ok(PyObject::int((start + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
-            } else if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
-                let pos = slice.windows(needle.len()).position(|w| w == needle.as_slice());
+            } else if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
+                &args[0].payload
+            {
+                let pos = slice
+                    .windows(needle.len())
+                    .position(|w| w == needle.as_slice());
                 match pos {
                     Some(p) => Ok(PyObject::int((start + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
             } else {
-                Err(PyException::type_error("a bytes-like object or int is required"))
+                Err(PyException::type_error(
+                    "a bytes-like object or int is required",
+                ))
             }
         }
         "rindex" => {
-            if args.is_empty() { return Err(PyException::type_error("rindex requires an argument")); }
-            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
-                let pos = b.windows(needle.len()).rposition(|w| w == needle.as_slice());
+            if args.is_empty() {
+                return Err(PyException::type_error("rindex requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
+                &args[0].payload
+            {
+                let pos = b
+                    .windows(needle.len())
+                    .rposition(|w| w == needle.as_slice());
                 match pos {
                     Some(p) => Ok(PyObject::int(p as i64)),
                     None => Err(PyException::value_error("subsection not found")),
@@ -2004,16 +2874,24 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "zfill" => {
-            if args.is_empty() { return Err(PyException::type_error("zfill requires width argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("zfill requires width argument"));
+            }
             let width = args[0].to_int()? as usize;
-            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+            if b.len() >= width {
+                return Ok(PyObject::bytes(b.to_vec()));
+            }
             let pad = width - b.len();
             let mut result = vec![b'0'; pad];
             result.extend_from_slice(b);
             Ok(PyObject::bytes(result))
         }
         "expandtabs" => {
-            let tabsize = if !args.is_empty() { args[0].to_int()? as usize } else { 8 };
+            let tabsize = if !args.is_empty() {
+                args[0].to_int()? as usize
+            } else {
+                8
+            };
             let mut result = Vec::new();
             let mut col = 0;
             for &byte in b {
@@ -2033,8 +2911,11 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         }
         "isascii" => Ok(PyObject::bool_val(b.iter().all(|c| c.is_ascii()))),
         "partition" => {
-            if args.is_empty() { return Err(PyException::type_error("partition requires an argument")); }
-            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("partition requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload
+            {
                 if let Some(pos) = b.windows(sep.len()).position(|w| w == sep.as_slice()) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
@@ -2053,8 +2934,11 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "rpartition" => {
-            if args.is_empty() { return Err(PyException::type_error("rpartition requires an argument")); }
-            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("rpartition requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload
+            {
                 if let Some(pos) = b.windows(sep.len()).rposition(|w| w == sep.as_slice()) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
@@ -2073,8 +2957,12 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "removeprefix" => {
-            if args.is_empty() { return Err(PyException::type_error("removeprefix requires an argument")); }
-            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("removeprefix requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) =
+                &args[0].payload
+            {
                 if b.starts_with(prefix) {
                     Ok(PyObject::bytes(b[prefix.len()..].to_vec()))
                 } else {
@@ -2085,8 +2973,12 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
         }
         "removesuffix" => {
-            if args.is_empty() { return Err(PyException::type_error("removesuffix requires an argument")); }
-            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) = &args[0].payload {
+            if args.is_empty() {
+                return Err(PyException::type_error("removesuffix requires an argument"));
+            }
+            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) =
+                &args[0].payload
+            {
                 if b.ends_with(suffix) {
                     Ok(PyObject::bytes(b[..b.len() - suffix.len()].to_vec()))
                 } else {
@@ -2102,10 +2994,19 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                     .split_whitespace()
                     .rev()
                     .map(|s| PyObject::bytes(s.as_bytes().to_vec()))
-                    .collect::<Vec<_>>().into_iter().rev().collect();
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
                 Ok(PyObject::list(parts))
-            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
-                let max_split = if args.len() > 1 { args[1].to_int().unwrap_or(-1) } else { -1 };
+            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) =
+                &args[0].payload
+            {
+                let max_split = if args.len() > 1 {
+                    args[1].to_int().unwrap_or(-1)
+                } else {
+                    -1
+                };
                 let s = String::from_utf8_lossy(b);
                 let sep_s = String::from_utf8_lossy(sep);
                 let parts: Vec<&str> = if max_split < 0 {
@@ -2113,7 +3014,9 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 } else {
                     s.rsplitn(max_split as usize + 1, sep_s.as_ref()).collect()
                 };
-                let result: Vec<PyObjectRef> = parts.into_iter().rev()
+                let result: Vec<PyObjectRef> = parts
+                    .into_iter()
+                    .rev()
                     .map(|p| PyObject::bytes(p.as_bytes().to_vec()))
                     .collect();
                 Ok(PyObject::list(result))
@@ -2125,28 +3028,44 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             let s = String::from_utf8_lossy(b);
             let keep_ends = !args.is_empty() && args[0].is_truthy();
             let parts: Vec<PyObjectRef> = if keep_ends {
-                s.split_inclusive('\n').map(|l| PyObject::bytes(l.as_bytes().to_vec())).collect()
+                s.split_inclusive('\n')
+                    .map(|l| PyObject::bytes(l.as_bytes().to_vec()))
+                    .collect()
             } else {
-                s.lines().map(|l| PyObject::bytes(l.as_bytes().to_vec())).collect()
+                s.lines()
+                    .map(|l| PyObject::bytes(l.as_bytes().to_vec()))
+                    .collect()
             };
             Ok(PyObject::list(parts))
         }
         "translate" => {
-            if args.is_empty() { return Err(PyException::type_error("translate requires a table argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "translate requires a table argument",
+                ));
+            }
             let table = match &args[0].payload {
                 PyObjectPayload::Bytes(t) | PyObjectPayload::ByteArray(t) => (**t).clone(),
                 PyObjectPayload::None => vec![],
-                _ => return Err(PyException::type_error("a bytes-like object or None is required")),
+                _ => {
+                    return Err(PyException::type_error(
+                        "a bytes-like object or None is required",
+                    ))
+                }
             };
             let delete: Vec<u8> = if args.len() > 1 {
                 match &args[1].payload {
                     PyObjectPayload::Bytes(d) | PyObjectPayload::ByteArray(d) => (**d).clone(),
                     _ => vec![],
                 }
-            } else { vec![] };
+            } else {
+                vec![]
+            };
             let mut result = Vec::with_capacity(b.len());
             for &byte in b.iter() {
-                if delete.contains(&byte) { continue; }
+                if delete.contains(&byte) {
+                    continue;
+                }
                 if table.len() == 256 {
                     result.push(table[byte as usize]);
                 } else {
@@ -2161,7 +3080,8 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         }
         "tolist" => {
             // memoryview.tolist() — return list of ints
-            let items: Vec<PyObjectRef> = b.iter().map(|&byte| PyObject::int(byte as i64)).collect();
+            let items: Vec<PyObjectRef> =
+                b.iter().map(|&byte| PyObject::int(byte as i64)).collect();
             Ok(PyObject::list(items))
         }
         "release" => {
@@ -2169,7 +3089,8 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             Ok(PyObject::none())
         }
         _ => Err(PyException::attribute_error(format!(
-            "'bytes' object has no attribute '{}'", method
+            "'bytes' object has no attribute '{}'",
+            method
         ))),
     }
 }
@@ -2199,7 +3120,8 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
             x.len().partial_cmp(&y.len())
         }
         (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
-            let x = x.read(); let y = y.read();
+            let x = x.read();
+            let y = y.read();
             for (a_item, b_item) in x.iter().zip(y.iter()) {
                 match partial_cmp_for_sort(a_item, b_item) {
                     Some(std::cmp::Ordering::Equal) => continue,
@@ -2216,10 +3138,19 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
 }
 
 /// Bytearray-specific method dispatch (mutable operations + delegates immutable ones to call_bytes_method).
-pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_bytearray_method(
+    receiver: &PyObjectRef,
+    b: &[u8],
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "append" => {
-            if args.is_empty() { return Err(PyException::type_error("append() takes exactly one argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "append() takes exactly one argument",
+                ));
+            }
             let byte_val = args[0].to_int()? as u8;
             // Safety: single-threaded access, Vec is owned inside Arc<PyObject>
             unsafe {
@@ -2234,13 +3165,23 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             Ok(PyObject::none())
         }
         "extend" => {
-            if args.is_empty() { return Err(PyException::type_error("extend() takes exactly one argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "extend() takes exactly one argument",
+                ));
+            }
             let new_bytes: Vec<u8> = match &args[0].payload {
                 PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
-                PyObjectPayload::List(items) => {
-                    items.read().iter().map(|i| i.to_int().unwrap_or(0) as u8).collect()
-                }
-                _ => args[0].to_list()?.iter().map(|i| i.to_int().unwrap_or(0) as u8).collect(),
+                PyObjectPayload::List(items) => items
+                    .read()
+                    .iter()
+                    .map(|i| i.to_int().unwrap_or(0) as u8)
+                    .collect(),
+                _ => args[0]
+                    .to_list()?
+                    .iter()
+                    .map(|i| i.to_int().unwrap_or(0) as u8)
+                    .collect(),
             };
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
@@ -2256,7 +3197,11 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
                     let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
-                    if let Some(idx) = if args.is_empty() { Some((*vp).len().wrapping_sub(1)) } else { Some(args[0].to_int()? as usize) } {
+                    if let Some(idx) = if args.is_empty() {
+                        Some((*vp).len().wrapping_sub(1))
+                    } else {
+                        Some(args[0].to_int()? as usize)
+                    } {
                         if idx < (*vp).len() {
                             let val = (*vp).remove(idx);
                             return Ok(PyObject::int(val as i64));
@@ -2268,7 +3213,11 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             Err(PyException::index_error("pop from empty bytearray"))
         }
         "insert" => {
-            if args.len() < 2 { return Err(PyException::type_error("insert() takes exactly 2 arguments")); }
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "insert() takes exactly 2 arguments",
+                ));
+            }
             let idx = args[0].to_int()?;
             let byte_val = args[1].to_int()? as u8;
             unsafe {
@@ -2276,7 +3225,11 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
                     let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     let len = (*vp).len() as i64;
-                    let actual = if idx < 0 { (len + idx).max(0) as usize } else { (idx as usize).min((*vp).len()) };
+                    let actual = if idx < 0 {
+                        (len + idx).max(0) as usize
+                    } else {
+                        (idx as usize).min((*vp).len())
+                    };
                     (*vp).insert(actual, byte_val);
                 }
             }
@@ -2304,7 +3257,11 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
         }
         "copy" => Ok(PyObject::bytearray(b.to_vec())),
         "__setitem__" => {
-            if args.len() < 2 { return Err(PyException::type_error("__setitem__() takes exactly 2 arguments")); }
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "__setitem__() takes exactly 2 arguments",
+                ));
+            }
             let idx = args[0].to_int()?;
             let byte_val = args[1].to_int()? as u8;
             let len = b.len() as i64;
@@ -2325,4 +3282,3 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
         _ => call_bytes_method(b, method, args),
     }
 }
-

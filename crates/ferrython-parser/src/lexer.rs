@@ -6,8 +6,8 @@
 use crate::error::{ParseError, ParseErrorKind};
 use crate::string_parser;
 use crate::token::{Span, Token, TokenKind};
-use ferrython_ast::BigInt;
 use compact_str::CompactString;
+use ferrython_ast::BigInt;
 
 pub struct Lexer<'src> {
     _source: &'src str,
@@ -107,7 +107,9 @@ impl<'src> Lexer<'src> {
         }
 
         // Numbers
-        if c.is_ascii_digit() || (c == '.' && self.peek_char_at(1).map_or(false, |c| c.is_ascii_digit())) {
+        if c.is_ascii_digit()
+            || (c == '.' && self.peek_char_at(1).map_or(false, |c| c.is_ascii_digit()))
+        {
             return self.lex_number();
         }
 
@@ -201,7 +203,12 @@ impl<'src> Lexer<'src> {
                 self.pending.push(Token::new(TokenKind::Dedent, span));
             }
             if *self.indent_stack.last().unwrap() != indent {
-                return Err(ParseError::new(ParseErrorKind::IndentationError("unindent does not match any outer indentation level".into()), span));
+                return Err(ParseError::new(
+                    ParseErrorKind::IndentationError(
+                        "unindent does not match any outer indentation level".into(),
+                    ),
+                    span,
+                ));
             }
             // Return the first DEDENT, rest are pending
             if let Some(tok) = self.pending.pop() {
@@ -264,7 +271,10 @@ impl<'src> Lexer<'src> {
         let is_float = !self.is_at_end()
             && (self.peek_char() == '.'
                 || ((self.peek_char() == 'e' || self.peek_char() == 'E')
-                    && matches!(self.peek_char_at(1), Some('0'..='9') | Some('+') | Some('-'))));
+                    && matches!(
+                        self.peek_char_at(1),
+                        Some('0'..='9') | Some('+') | Some('-')
+                    )));
 
         if !self.is_at_end() && self.peek_char() == '.' {
             // Check it's not ellipsis
@@ -301,10 +311,7 @@ impl<'src> Lexer<'src> {
         if !self.is_at_end() && matches!(self.peek_char(), 'j' | 'J') {
             self.advance();
             let val: f64 = num_str.replace('_', "").parse().unwrap_or(0.0);
-            return Ok(Token::new(
-                TokenKind::Complex(val),
-                self.span_from(start),
-            ));
+            return Ok(Token::new(TokenKind::Complex(val), self.span_from(start)));
         }
 
         self.make_int_token(num_str, 10, start)
@@ -350,7 +357,9 @@ impl<'src> Lexer<'src> {
         self.advance(); // 0
         self.advance(); // b/B
         let mut s = String::new();
-        while !self.is_at_end() && (self.peek_char() == '0' || self.peek_char() == '1' || self.peek_char() == '_') {
+        while !self.is_at_end()
+            && (self.peek_char() == '0' || self.peek_char() == '1' || self.peek_char() == '_')
+        {
             let c = self.peek_char();
             if c != '_' {
                 s.push(c);
@@ -360,7 +369,12 @@ impl<'src> Lexer<'src> {
         self.make_int_token(s, 2, start)
     }
 
-    fn make_int_token(&self, s: String, radix: u32, start: (u32, u32)) -> Result<Token, ParseError> {
+    fn make_int_token(
+        &self,
+        s: String,
+        radix: u32,
+        start: (u32, u32),
+    ) -> Result<Token, ParseError> {
         let clean = s.replace('_', "");
         let span = self.span_from(start);
         if clean.is_empty() || clean == "0" {
@@ -374,10 +388,7 @@ impl<'src> Lexer<'src> {
                 // Fall back to big int
                 match num_bigint::BigInt::parse_bytes(clean.as_bytes(), radix) {
                     Some(n) => Ok(Token::new(TokenKind::Int(BigInt::Big(Box::new(n))), span)),
-                    None => Err(ParseError::new(
-                        ParseErrorKind::InvalidNumber(s),
-                        span,
-                    )),
+                    None => Err(ParseError::new(ParseErrorKind::InvalidNumber(s), span)),
                 }
             }
         }
@@ -396,10 +407,7 @@ impl<'src> Lexer<'src> {
 
         match clean.parse::<f64>() {
             Ok(f) => Ok(Token::new(TokenKind::Float(f), span)),
-            Err(_) => Err(ParseError::new(
-                ParseErrorKind::InvalidNumber(s),
-                span,
-            )),
+            Err(_) => Err(ParseError::new(ParseErrorKind::InvalidNumber(s), span)),
         }
     }
 
@@ -414,8 +422,7 @@ impl<'src> Lexer<'src> {
     }
 
     fn collect_hex_digits(&mut self, s: &mut String) {
-        while !self.is_at_end()
-            && (self.peek_char().is_ascii_hexdigit() || self.peek_char() == '_')
+        while !self.is_at_end() && (self.peek_char().is_ascii_hexdigit() || self.peek_char() == '_')
         {
             let c = self.peek_char();
             if c != '_' {
@@ -436,8 +443,8 @@ impl<'src> Lexer<'src> {
         }
 
         let span = self.span_from(start);
-        let kind = TokenKind::from_keyword(&name)
-            .unwrap_or(TokenKind::Name(CompactString::from(name)));
+        let kind =
+            TokenKind::from_keyword(&name).unwrap_or(TokenKind::Name(CompactString::from(name)));
         Ok(Token::new(kind, span))
     }
 
@@ -460,10 +467,21 @@ impl<'src> Lexer<'src> {
             }
             let c = self.chars[self.pos + prefix_len];
             match c {
-                'r' | 'R' if !is_raw => { is_raw = true; prefix_len += 1; }
-                'b' | 'B' if !is_bytes && !is_fstring => { is_bytes = true; prefix_len += 1; }
-                'f' | 'F' if !is_fstring && !is_bytes => { is_fstring = true; prefix_len += 1; }
-                'u' | 'U' if prefix_len == 0 => { prefix_len += 1; }
+                'r' | 'R' if !is_raw => {
+                    is_raw = true;
+                    prefix_len += 1;
+                }
+                'b' | 'B' if !is_bytes && !is_fstring => {
+                    is_bytes = true;
+                    prefix_len += 1;
+                }
+                'f' | 'F' if !is_fstring && !is_bytes => {
+                    is_fstring = true;
+                    prefix_len += 1;
+                }
+                'u' | 'U' if prefix_len == 0 => {
+                    prefix_len += 1;
+                }
                 '\'' | '"' => break,
                 _ => {
                     // Not a string prefix — treat as identifier
@@ -550,16 +568,22 @@ impl<'src> Lexer<'src> {
                         && self.peek_char() == inner_quote
                         && self.peek_char_at(1) == Some(inner_quote);
                     if inner_triple {
-                        content.push(self.peek_char()); self.advance();
-                        content.push(self.peek_char()); self.advance();
+                        content.push(self.peek_char());
+                        self.advance();
+                        content.push(self.peek_char());
+                        self.advance();
                         // Read until closing triple quote
                         loop {
-                            if self.is_at_end() { break; }
+                            if self.is_at_end() {
+                                break;
+                            }
                             let ic = self.peek_char();
                             if ic == '\\' {
-                                content.push(ic); self.advance();
+                                content.push(ic);
+                                self.advance();
                                 if !self.is_at_end() {
-                                    content.push(self.peek_char()); self.advance();
+                                    content.push(self.peek_char());
+                                    self.advance();
                                 }
                                 continue;
                             }
@@ -567,9 +591,12 @@ impl<'src> Lexer<'src> {
                                 && self.peek_char_at(1) == Some(inner_quote)
                                 && self.peek_char_at(2) == Some(inner_quote)
                             {
-                                content.push(ic); self.advance();
-                                content.push(self.peek_char()); self.advance();
-                                content.push(self.peek_char()); self.advance();
+                                content.push(ic);
+                                self.advance();
+                                content.push(self.peek_char());
+                                self.advance();
+                                content.push(self.peek_char());
+                                self.advance();
                                 break;
                             }
                             content.push(ic);
@@ -578,12 +605,16 @@ impl<'src> Lexer<'src> {
                     } else {
                         // Single-quoted string — read until closing quote
                         loop {
-                            if self.is_at_end() { break; }
+                            if self.is_at_end() {
+                                break;
+                            }
                             let ic = self.peek_char();
                             if ic == '\\' {
-                                content.push(ic); self.advance();
+                                content.push(ic);
+                                self.advance();
                                 if !self.is_at_end() {
-                                    content.push(self.peek_char()); self.advance();
+                                    content.push(self.peek_char());
+                                    self.advance();
                                 }
                                 continue;
                             }
@@ -609,7 +640,8 @@ impl<'src> Lexer<'src> {
                     // Escaped {{ — push literal { (but as {{ for parser to handle)
                     content.push('{');
                     content.push('{');
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     continue;
                 }
                 brace_depth = 1;
@@ -620,10 +652,10 @@ impl<'src> Lexer<'src> {
 
             if c == quote && brace_depth == 0 {
                 if triple {
-                    if self.peek_char_at(1) == Some(quote)
-                        && self.peek_char_at(2) == Some(quote)
-                    {
-                        self.advance(); self.advance(); self.advance();
+                    if self.peek_char_at(1) == Some(quote) && self.peek_char_at(2) == Some(quote) {
+                        self.advance();
+                        self.advance();
+                        self.advance();
                         break;
                     }
                 } else {
@@ -749,7 +781,9 @@ impl<'src> Lexer<'src> {
                                     name.push(self.peek_char());
                                     self.advance();
                                 }
-                                if !self.is_at_end() { self.advance(); }
+                                if !self.is_at_end() {
+                                    self.advance();
+                                }
                                 match crate::string_parser::unicode_name_to_char_pub(&name) {
                                     Some(ch) => {
                                         // F-string parser treats `{` and `}` specially, so we need
@@ -777,7 +811,10 @@ impl<'src> Lexer<'src> {
                                 content.push('N');
                             }
                         }
-                        _ => { content.push('\\'); content.push(esc); }
+                        _ => {
+                            content.push('\\');
+                            content.push(esc);
+                        }
                     }
                 }
                 continue;
@@ -821,9 +858,7 @@ impl<'src> Lexer<'src> {
 
             if c == quote {
                 if triple {
-                    if self.peek_char_at(1) == Some(quote)
-                        && self.peek_char_at(2) == Some(quote)
-                    {
+                    if self.peek_char_at(1) == Some(quote) && self.peek_char_at(2) == Some(quote) {
                         self.advance();
                         self.advance();
                         self.advance();
@@ -900,12 +935,30 @@ impl<'src> Lexer<'src> {
         self.advance();
 
         let kind = match c {
-            '(' => { self.nesting += 1; TokenKind::LeftParen }
-            ')' => { self.nesting = self.nesting.saturating_sub(1); TokenKind::RightParen }
-            '[' => { self.nesting += 1; TokenKind::LeftBracket }
-            ']' => { self.nesting = self.nesting.saturating_sub(1); TokenKind::RightBracket }
-            '{' => { self.nesting += 1; TokenKind::LeftBrace }
-            '}' => { self.nesting = self.nesting.saturating_sub(1); TokenKind::RightBrace }
+            '(' => {
+                self.nesting += 1;
+                TokenKind::LeftParen
+            }
+            ')' => {
+                self.nesting = self.nesting.saturating_sub(1);
+                TokenKind::RightParen
+            }
+            '[' => {
+                self.nesting += 1;
+                TokenKind::LeftBracket
+            }
+            ']' => {
+                self.nesting = self.nesting.saturating_sub(1);
+                TokenKind::RightBracket
+            }
+            '{' => {
+                self.nesting += 1;
+                TokenKind::LeftBrace
+            }
+            '}' => {
+                self.nesting = self.nesting.saturating_sub(1);
+                TokenKind::RightBrace
+            }
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semicolon,
             '~' => TokenKind::Tilde,
@@ -1084,7 +1137,10 @@ mod tests {
     fn test_indentation() {
         let mut lexer = Lexer::new("if True:\n    x = 1\n");
         let tokens = lexer.tokenize().unwrap();
-        let _kinds: Vec<_> = tokens.iter().map(|t| std::mem::discriminant(&t.kind)).collect();
+        let _kinds: Vec<_> = tokens
+            .iter()
+            .map(|t| std::mem::discriminant(&t.kind))
+            .collect();
         // Should contain: If, True, Colon, Newline, Indent, Name, Equal, Int, Newline, Dedent, ...
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Indent)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Dedent)));
@@ -1094,7 +1150,10 @@ mod tests {
     fn test_hex_literal() {
         let mut lexer = Lexer::new("0xFF\n");
         let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(&tokens[0].kind, TokenKind::Int(BigInt::Small(255))));
+        assert!(matches!(
+            &tokens[0].kind,
+            TokenKind::Int(BigInt::Small(255))
+        ));
     }
 
     #[test]

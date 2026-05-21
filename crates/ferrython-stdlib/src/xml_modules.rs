@@ -1,15 +1,13 @@
 //! XML stdlib modules: xml.etree.ElementTree
 
 use compact_str::CompactString;
-use std::rc::Rc;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyCell,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_builtin, make_module, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 // ── XML Parser ─────────────────────────────────────────────────────────
@@ -42,7 +40,10 @@ struct XmlParser<'a> {
 
 impl<'a> XmlParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input: input.as_bytes(), pos: 0 }
+        Self {
+            input: input.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -96,7 +97,9 @@ impl<'a> XmlParser<'a> {
         self.advance(); // skip opening quote
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c == quote { break; }
+            if c == quote {
+                break;
+            }
             self.advance();
         }
         let val = String::from_utf8_lossy(&self.input[start..self.pos]).to_string();
@@ -107,7 +110,9 @@ impl<'a> XmlParser<'a> {
     fn read_text_until_lt(&mut self) -> String {
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c == b'<' { break; }
+            if c == b'<' {
+                break;
+            }
             self.advance();
         }
         let raw = String::from_utf8_lossy(&self.input[start..self.pos]).to_string();
@@ -149,7 +154,11 @@ impl<'a> XmlParser<'a> {
         }
 
         if self.peek() != Some(b'<') {
-            return Err(format!("expected '<', found {:?} at pos {}", self.peek().map(|c| c as char), self.pos));
+            return Err(format!(
+                "expected '<', found {:?} at pos {}",
+                self.peek().map(|c| c as char),
+                self.pos
+            ));
         }
         self.advance(); // skip '<'
 
@@ -164,7 +173,10 @@ impl<'a> XmlParser<'a> {
         loop {
             self.skip_ws();
             match self.peek() {
-                Some(b'>') => { self.advance(); break; }
+                Some(b'>') => {
+                    self.advance();
+                    break;
+                }
                 Some(b'/') => {
                     self.advance();
                     if self.peek() == Some(b'>') {
@@ -205,7 +217,9 @@ impl<'a> XmlParser<'a> {
                 self.skip_ws();
             }
 
-            if self.pos >= self.input.len() { break; }
+            if self.pos >= self.input.len() {
+                break;
+            }
 
             // check for closing tag
             let closing = format!("</{}", tag);
@@ -222,7 +236,9 @@ impl<'a> XmlParser<'a> {
                 // mismatched close tag - skip it
                 while let Some(c) = self.peek() {
                     self.advance();
-                    if c == b'>' { break; }
+                    if c == b'>' {
+                        break;
+                    }
                 }
                 break;
             }
@@ -257,18 +273,18 @@ impl<'a> XmlParser<'a> {
 
 fn unescape_xml(s: &str) -> String {
     s.replace("&amp;", "&")
-     .replace("&lt;", "<")
-     .replace("&gt;", ">")
-     .replace("&quot;", "\"")
-     .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&apos;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 // ── Convert XmlElement ↔ PyObject ──────────────────────────────────────
@@ -277,13 +293,14 @@ fn escape_xml(s: &str) -> String {
 // list (Rc<PyCell<Vec<PyObjectRef>>>).  This eliminates the dual-state problem
 // where `child.text = "hello"` updated instance attrs but not the inner struct.
 
-
 type ChildrenList = Rc<PyCell<Vec<PyObjectRef>>>;
 
 /// Convert a parsed XmlElement tree into a live PyObject Element.
 fn xml_element_to_pyobject(elem: &XmlElement) -> PyObjectRef {
     // Recursively convert children first
-    let child_objs: Vec<PyObjectRef> = elem.children.iter()
+    let child_objs: Vec<PyObjectRef> = elem
+        .children
+        .iter()
         .map(|c| xml_element_to_pyobject(c))
         .collect();
     let children = Rc::new(PyCell::new(child_objs));
@@ -292,21 +309,39 @@ fn xml_element_to_pyobject(elem: &XmlElement) -> PyObjectRef {
 
 /// Core builder: all Element methods operate on instance attrs + shared children list.
 fn build_element_object(
-    tag: &str, text: &str, tail: &str,
+    tag: &str,
+    text: &str,
+    tail: &str,
     attrib: &[(String, String)],
     children: ChildrenList,
 ) -> PyObjectRef {
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("__etree_element__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__etree_element__"),
+        PyObject::bool_val(true),
+    );
 
     // Scalar attrs
-    attrs.insert(CompactString::from("tag"), PyObject::str_val(CompactString::from(tag)));
-    attrs.insert(CompactString::from("text"),
-        if text.is_empty() { PyObject::none() }
-        else { PyObject::str_val(CompactString::from(text)) });
-    attrs.insert(CompactString::from("tail"),
-        if tail.is_empty() { PyObject::none() }
-        else { PyObject::str_val(CompactString::from(tail)) });
+    attrs.insert(
+        CompactString::from("tag"),
+        PyObject::str_val(CompactString::from(tag)),
+    );
+    attrs.insert(
+        CompactString::from("text"),
+        if text.is_empty() {
+            PyObject::none()
+        } else {
+            PyObject::str_val(CompactString::from(text))
+        },
+    );
+    attrs.insert(
+        CompactString::from("tail"),
+        if tail.is_empty() {
+            PyObject::none()
+        } else {
+            PyObject::str_val(CompactString::from(tail))
+        },
+    );
 
     // attrib dict
     let mut attrib_map = IndexMap::new();
@@ -324,74 +359,159 @@ fn build_element_object(
     let attrib_inner = Arc::new(Mutex::new(attrib.to_vec()));
 
     let ai = attrib_inner.clone();
-    attrs.insert(CompactString::from("get"), PyObject::native_closure("get", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("get() requires at least 1 argument")); }
-        let key = args[0].py_to_string();
-        let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-        let guard = ai.lock().unwrap();
-        for (k, v) in guard.iter() {
-            if k == &key { return Ok(PyObject::str_val(CompactString::from(v.as_str()))); }
-        }
-        Ok(default)
-    }));
+    attrs.insert(
+        CompactString::from("get"),
+        PyObject::native_closure("get", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "get() requires at least 1 argument",
+                ));
+            }
+            let key = args[0].py_to_string();
+            let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+            let guard = ai.lock().unwrap();
+            for (k, v) in guard.iter() {
+                if k == &key {
+                    return Ok(PyObject::str_val(CompactString::from(v.as_str())));
+                }
+            }
+            Ok(default)
+        }),
+    );
 
     let ai = attrib_inner.clone();
-    attrs.insert(CompactString::from("set"), PyObject::native_closure("set", move |args| {
-        if args.len() < 2 { return Err(PyException::type_error("set() requires 2 arguments")); }
-        let key = args[0].py_to_string();
-        let val = args[1].py_to_string();
-        let mut guard = ai.lock().unwrap();
-        for entry in guard.iter_mut() {
-            if entry.0 == key { entry.1 = val; return Ok(PyObject::none()); }
-        }
-        guard.push((key, val));
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("set"),
+        PyObject::native_closure("set", move |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("set() requires 2 arguments"));
+            }
+            let key = args[0].py_to_string();
+            let val = args[1].py_to_string();
+            let mut guard = ai.lock().unwrap();
+            for entry in guard.iter_mut() {
+                if entry.0 == key {
+                    entry.1 = val;
+                    return Ok(PyObject::none());
+                }
+            }
+            guard.push((key, val));
+            Ok(PyObject::none())
+        }),
+    );
 
     let ai = attrib_inner.clone();
-    attrs.insert(CompactString::from("keys"), PyObject::native_closure("keys", move |_args| {
-        let guard = ai.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.iter().map(|(k, _)| PyObject::str_val(CompactString::from(k.as_str()))).collect();
-        Ok(PyObject::list(items))
-    }));
+    attrs.insert(
+        CompactString::from("keys"),
+        PyObject::native_closure("keys", move |_args| {
+            let guard = ai.lock().unwrap();
+            let items: Vec<PyObjectRef> = guard
+                .iter()
+                .map(|(k, _)| PyObject::str_val(CompactString::from(k.as_str())))
+                .collect();
+            Ok(PyObject::list(items))
+        }),
+    );
 
     let ai = attrib_inner.clone();
-    attrs.insert(CompactString::from("values"), PyObject::native_closure("values", move |_args| {
-        let guard = ai.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.iter().map(|(_, v)| PyObject::str_val(CompactString::from(v.as_str()))).collect();
-        Ok(PyObject::list(items))
-    }));
+    attrs.insert(
+        CompactString::from("values"),
+        PyObject::native_closure("values", move |_args| {
+            let guard = ai.lock().unwrap();
+            let items: Vec<PyObjectRef> = guard
+                .iter()
+                .map(|(_, v)| PyObject::str_val(CompactString::from(v.as_str())))
+                .collect();
+            Ok(PyObject::list(items))
+        }),
+    );
 
     let ai = attrib_inner.clone();
-    attrs.insert(CompactString::from("items"), PyObject::native_closure("items", move |_args| {
-        let guard = ai.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.iter()
-            .map(|(k, v)| PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(k.as_str())),
-                PyObject::str_val(CompactString::from(v.as_str())),
-            ])).collect();
-        Ok(PyObject::list(items))
-    }));
+    attrs.insert(
+        CompactString::from("items"),
+        PyObject::native_closure("items", move |_args| {
+            let guard = ai.lock().unwrap();
+            let items: Vec<PyObjectRef> = guard
+                .iter()
+                .map(|(k, v)| {
+                    PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from(k.as_str())),
+                        PyObject::str_val(CompactString::from(v.as_str())),
+                    ])
+                })
+                .collect();
+            Ok(PyObject::list(items))
+        }),
+    );
 
     // ── Child navigation ──────────────────────────────────────────────
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("find() requires at least 1 argument")); }
-        let tag_match = args[0].py_to_string();
-        if tag_match.starts_with(".//") {
-            let real_tag = &tag_match[3..];
-            fn find_desc(children: &[PyObjectRef], tag: &str) -> Option<PyObjectRef> {
-                for c in children {
-                    let matched = c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag || tag == "*" }).unwrap_or(false);
-                    if matched { return Some(c.clone()); }
-                    if let PyObjectPayload::Instance(ref d) = c.payload {
-                        if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
-                            if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
-                                if let Ok(list_obj) = (nc.func)(&[PyObject::str_val(CompactString::from("*"))]) {
-                                    if let PyObjectPayload::List(items) = &list_obj.payload {
-                                        if let Some(found) = find_desc(&items.read(), tag) {
-                                            return Some(found);
+    attrs.insert(
+        CompactString::from("find"),
+        PyObject::native_closure("find", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "find() requires at least 1 argument",
+                ));
+            }
+            let tag_match = args[0].py_to_string();
+            if tag_match.starts_with(".//") {
+                let real_tag = &tag_match[3..];
+                fn find_desc(children: &[PyObjectRef], tag: &str) -> Option<PyObjectRef> {
+                    for c in children {
+                        let matched = c
+                            .get_attr("tag")
+                            .map(|t| {
+                                let s = t.py_to_string();
+                                s == tag || tag == "*"
+                            })
+                            .unwrap_or(false);
+                        if matched {
+                            return Some(c.clone());
+                        }
+                        if let PyObjectPayload::Instance(ref d) = c.payload {
+                            if let Some(fa_fn) =
+                                d.attrs.read().get(&CompactString::from("findall")).cloned()
+                            {
+                                if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                                    if let Ok(list_obj) =
+                                        (nc.func)(&[PyObject::str_val(CompactString::from("*"))])
+                                    {
+                                        if let PyObjectPayload::List(items) = &list_obj.payload {
+                                            if let Some(found) = find_desc(&items.read(), tag) {
+                                                return Some(found);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                }
+                let guard = ch.read();
+                if let Some(found) = find_desc(&guard, real_tag) {
+                    return Ok(found);
+                }
+                return Ok(PyObject::none());
+            }
+            // Handle path expressions like "book/title"
+            if tag_match.contains('/') {
+                let parts: Vec<&str> = tag_match.splitn(2, '/').collect();
+                let first = parts[0];
+                let rest = parts[1];
+                let guard = ch.read();
+                for child in guard.iter() {
+                    if let Some(t) = child.get_attr("tag") {
+                        if t.py_to_string() == first {
+                            if let Some(find_fn) = child.get_attr("find") {
+                                if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
+                                    if let Ok(result) =
+                                        (nc.func)(&[PyObject::str_val(CompactString::from(rest))])
+                                    {
+                                        if !matches!(result.payload, PyObjectPayload::None) {
+                                            return Ok(result);
                                         }
                                     }
                                 }
@@ -399,155 +519,206 @@ fn build_element_object(
                         }
                     }
                 }
-                None
+                return Ok(PyObject::none());
             }
-            let guard = ch.read();
-            if let Some(found) = find_desc(&guard, real_tag) { return Ok(found); }
-            return Ok(PyObject::none());
-        }
-        // Handle path expressions like "book/title"
-        if tag_match.contains('/') {
-            let parts: Vec<&str> = tag_match.splitn(2, '/').collect();
-            let first = parts[0];
-            let rest = parts[1];
             let guard = ch.read();
             for child in guard.iter() {
                 if let Some(t) = child.get_attr("tag") {
-                    if t.py_to_string() == first {
-                        if let Some(find_fn) = child.get_attr("find") {
-                            if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
-                                if let Ok(result) = (nc.func)(&[PyObject::str_val(CompactString::from(rest))]) {
-                                    if !matches!(result.payload, PyObjectPayload::None) {
-                                        return Ok(result);
-                                    }
-                                }
-                            }
-                        }
+                    if t.py_to_string() == tag_match {
+                        return Ok(child.clone());
                     }
                 }
             }
-            return Ok(PyObject::none());
-        }
-        let guard = ch.read();
-        for child in guard.iter() {
-            if let Some(t) = child.get_attr("tag") {
-                if t.py_to_string() == tag_match { return Ok(child.clone()); }
-            }
-        }
-        Ok(PyObject::none())
-    }));
+            Ok(PyObject::none())
+        }),
+    );
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("findall"), PyObject::native_closure("findall", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("findall() requires at least 1 argument")); }
-        let tag_match = args[0].py_to_string();
-        if tag_match.starts_with(".//") {
-            let real_tag = &tag_match[3..];
-            fn findall_desc(children: &[PyObjectRef], tag: &str, results: &mut Vec<PyObjectRef>) {
-                for c in children {
-                    let matched = c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag || tag == "*" }).unwrap_or(false);
-                    if matched { results.push(c.clone()); }
-                    if let PyObjectPayload::Instance(ref d) = c.payload {
-                        if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
-                            if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
-                                if let Ok(list_obj) = (nc.func)(&[PyObject::str_val(CompactString::from("*"))]) {
-                                    if let PyObjectPayload::List(items) = &list_obj.payload {
-                                        findall_desc(&items.read(), tag, results);
+    attrs.insert(
+        CompactString::from("findall"),
+        PyObject::native_closure("findall", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "findall() requires at least 1 argument",
+                ));
+            }
+            let tag_match = args[0].py_to_string();
+            if tag_match.starts_with(".//") {
+                let real_tag = &tag_match[3..];
+                fn findall_desc(
+                    children: &[PyObjectRef],
+                    tag: &str,
+                    results: &mut Vec<PyObjectRef>,
+                ) {
+                    for c in children {
+                        let matched = c
+                            .get_attr("tag")
+                            .map(|t| {
+                                let s = t.py_to_string();
+                                s == tag || tag == "*"
+                            })
+                            .unwrap_or(false);
+                        if matched {
+                            results.push(c.clone());
+                        }
+                        if let PyObjectPayload::Instance(ref d) = c.payload {
+                            if let Some(fa_fn) =
+                                d.attrs.read().get(&CompactString::from("findall")).cloned()
+                            {
+                                if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                                    if let Ok(list_obj) =
+                                        (nc.func)(&[PyObject::str_val(CompactString::from("*"))])
+                                    {
+                                        if let PyObjectPayload::List(items) = &list_obj.payload {
+                                            findall_desc(&items.read(), tag, results);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                let mut results = Vec::new();
+                let guard = ch.read();
+                findall_desc(&guard, real_tag, &mut results);
+                return Ok(PyObject::list(results));
             }
-            let mut results = Vec::new();
             let guard = ch.read();
-            findall_desc(&guard, real_tag, &mut results);
-            return Ok(PyObject::list(results));
-        }
-        let guard = ch.read();
-        let results: Vec<PyObjectRef> = guard.iter()
-            .filter(|c| {
-                c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag_match || tag_match == "*" }).unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-        Ok(PyObject::list(results))
-    }));
+            let results: Vec<PyObjectRef> = guard
+                .iter()
+                .filter(|c| {
+                    c.get_attr("tag")
+                        .map(|t| {
+                            let s = t.py_to_string();
+                            s == tag_match || tag_match == "*"
+                        })
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            Ok(PyObject::list(results))
+        }),
+    );
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("findtext"), PyObject::native_closure("findtext", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("findtext() requires at least 1 argument")); }
-        let tag_match = args[0].py_to_string();
-        let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-        let guard = ch.read();
-        for child in guard.iter() {
-            if let Some(t) = child.get_attr("tag") {
-                if t.py_to_string() == tag_match {
-                    let text = child.get_attr("text")
-                        .map(|t| if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() })
-                        .unwrap_or_default();
-                    return Ok(PyObject::str_val(CompactString::from(text)));
+    attrs.insert(
+        CompactString::from("findtext"),
+        PyObject::native_closure("findtext", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "findtext() requires at least 1 argument",
+                ));
+            }
+            let tag_match = args[0].py_to_string();
+            let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+            let guard = ch.read();
+            for child in guard.iter() {
+                if let Some(t) = child.get_attr("tag") {
+                    if t.py_to_string() == tag_match {
+                        let text = child
+                            .get_attr("text")
+                            .map(|t| {
+                                if matches!(t.payload, PyObjectPayload::None) {
+                                    String::new()
+                                } else {
+                                    t.py_to_string()
+                                }
+                            })
+                            .unwrap_or_default();
+                        return Ok(PyObject::str_val(CompactString::from(text)));
+                    }
                 }
             }
-        }
-        Ok(default)
-    }));
+            Ok(default)
+        }),
+    );
 
     // iter() is added post-creation to include self reference
 
     // ── Mutation ───────────────────────────────────────────────────────
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("append() requires 1 argument")); }
-        ch.write().push(args[0].clone());
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("append"),
+        PyObject::native_closure("append", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("append() requires 1 argument"));
+            }
+            ch.write().push(args[0].clone());
+            Ok(PyObject::none())
+        }),
+    );
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("remove"), PyObject::native_closure("remove", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("remove() requires 1 argument")); }
-        let child_tag = extract_element_tag(&args[0]);
-        let mut guard = ch.write();
-        if let Some(idx) = guard.iter().position(|c| extract_element_tag(c) == child_tag) {
-            guard.remove(idx);
-        }
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("remove"),
+        PyObject::native_closure("remove", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("remove() requires 1 argument"));
+            }
+            let child_tag = extract_element_tag(&args[0]);
+            let mut guard = ch.write();
+            if let Some(idx) = guard
+                .iter()
+                .position(|c| extract_element_tag(c) == child_tag)
+            {
+                guard.remove(idx);
+            }
+            Ok(PyObject::none())
+        }),
+    );
 
     // ── Dunder methods ────────────────────────────────────────────────
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_args| {
-        Ok(PyObject::int(ch.read().len() as i64))
-    }));
+    attrs.insert(
+        CompactString::from("__len__"),
+        PyObject::native_closure("__len__", move |_args| {
+            Ok(PyObject::int(ch.read().len() as i64))
+        }),
+    );
 
     attrs.insert(CompactString::from("__repr__"), {
         let tag_str = CompactString::from(tag);
         PyObject::native_closure("__repr__", move |_args| {
-            Ok(PyObject::str_val(CompactString::from(format!("<Element '{}' at 0x0>", tag_str))))
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "<Element '{}' at 0x0>",
+                tag_str
+            ))))
         })
     });
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_args| {
-        let guard = ch.read();
-        Ok(PyObject::list(guard.clone()))
-    }));
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("__iter__", move |_args| {
+            let guard = ch.read();
+            Ok(PyObject::list(guard.clone()))
+        }),
+    );
 
     let ch = children.clone();
-    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("__getitem__ requires 1 argument")); }
-        let idx = args[0].to_int().map_err(|_| PyException::type_error("index must be an integer"))?;
-        let guard = ch.read();
-        let len = guard.len() as i64;
-        let actual = if idx < 0 { len + idx } else { idx };
-        if actual < 0 || actual >= len {
-            return Err(PyException::new(ferrython_core::error::ExceptionKind::IndexError, "child index out of range"));
-        }
-        Ok(guard[actual as usize].clone())
-    }));
+    attrs.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_closure("__getitem__", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("__getitem__ requires 1 argument"));
+            }
+            let idx = args[0]
+                .to_int()
+                .map_err(|_| PyException::type_error("index must be an integer"))?;
+            let guard = ch.read();
+            let len = guard.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::IndexError,
+                    "child index out of range",
+                ));
+            }
+            Ok(guard[actual as usize].clone())
+        }),
+    );
 
     let cls = PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
     let element = PyObject::instance_with_attrs(cls, attrs);
@@ -556,38 +727,61 @@ fn build_element_object(
     if let PyObjectPayload::Instance(ref d) = element.payload {
         let elem_ref = element.clone();
         let ch = children.clone();
-        d.attrs.write().insert(CompactString::from("iter"), PyObject::native_closure("iter", move |args| {
-            let tag_filter = if !args.is_empty() {
-                let s = args[0].py_to_string();
-                if s == "None" { None } else { Some(s) }
-            } else { None };
-            let mut results = Vec::new();
-            // Include self first (CPython behavior)
-            let self_tag = elem_ref.get_attr("tag").map(|t| t.py_to_string()).unwrap_or_default();
-            let self_matches = match &tag_filter {
-                Some(t) => self_tag == *t,
-                None => true,
-            };
-            if self_matches { results.push(elem_ref.clone()); }
-            // Then recurse into children
-            let guard = ch.read();
-            collect_pyobject_elements(&guard, &tag_filter, &mut results);
-            Ok(PyObject::list(results))
-        }));
+        d.attrs.write().insert(
+            CompactString::from("iter"),
+            PyObject::native_closure("iter", move |args| {
+                let tag_filter = if !args.is_empty() {
+                    let s = args[0].py_to_string();
+                    if s == "None" {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                } else {
+                    None
+                };
+                let mut results = Vec::new();
+                // Include self first (CPython behavior)
+                let self_tag = elem_ref
+                    .get_attr("tag")
+                    .map(|t| t.py_to_string())
+                    .unwrap_or_default();
+                let self_matches = match &tag_filter {
+                    Some(t) => self_tag == *t,
+                    None => true,
+                };
+                if self_matches {
+                    results.push(elem_ref.clone());
+                }
+                // Then recurse into children
+                let guard = ch.read();
+                collect_pyobject_elements(&guard, &tag_filter, &mut results);
+                Ok(PyObject::list(results))
+            }),
+        );
     }
 
     element
 }
 
 /// Recursively collect matching PyObject elements for iter().
-fn collect_pyobject_elements(children: &[PyObjectRef], tag_filter: &Option<String>, results: &mut Vec<PyObjectRef>) {
+fn collect_pyobject_elements(
+    children: &[PyObjectRef],
+    tag_filter: &Option<String>,
+    results: &mut Vec<PyObjectRef>,
+) {
     for child in children {
-        let tag = child.get_attr("tag").map(|t| t.py_to_string()).unwrap_or_default();
+        let tag = child
+            .get_attr("tag")
+            .map(|t| t.py_to_string())
+            .unwrap_or_default();
         let matches = match tag_filter {
             Some(t) => tag == *t,
             None => true,
         };
-        if matches { results.push(child.clone()); }
+        if matches {
+            results.push(child.clone());
+        }
         // Recurse into child's children
         if let PyObjectPayload::Instance(ref d) = child.payload {
             let r = d.attrs.read();
@@ -619,13 +813,30 @@ fn extract_element_tag(obj: &PyObjectRef) -> String {
 fn pyobject_to_xml_element(obj: &PyObjectRef) -> PyResult<XmlElement> {
     if let PyObjectPayload::Instance(ref d) = obj.payload {
         let r = d.attrs.read();
-        let tag = r.get(&CompactString::from("tag")).map(|t| t.py_to_string()).unwrap_or_default();
-        let text = r.get(&CompactString::from("text")).map(|t| {
-            if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() }
-        }).unwrap_or_default();
-        let tail = r.get(&CompactString::from("tail")).map(|t| {
-            if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() }
-        }).unwrap_or_default();
+        let tag = r
+            .get(&CompactString::from("tag"))
+            .map(|t| t.py_to_string())
+            .unwrap_or_default();
+        let text = r
+            .get(&CompactString::from("text"))
+            .map(|t| {
+                if matches!(t.payload, PyObjectPayload::None) {
+                    String::new()
+                } else {
+                    t.py_to_string()
+                }
+            })
+            .unwrap_or_default();
+        let tail = r
+            .get(&CompactString::from("tail"))
+            .map(|t| {
+                if matches!(t.payload, PyObjectPayload::None) {
+                    String::new()
+                } else {
+                    t.py_to_string()
+                }
+            })
+            .unwrap_or_default();
 
         let mut attrib = Vec::new();
         if let Some(attr_obj) = r.get(&CompactString::from("attrib")) {
@@ -655,7 +866,13 @@ fn pyobject_to_xml_element(obj: &PyObjectRef) -> PyResult<XmlElement> {
             }
         }
 
-        Ok(XmlElement { tag, text, tail, attrib, children })
+        Ok(XmlElement {
+            tag,
+            text,
+            tail,
+            attrib,
+            children,
+        })
     } else {
         Err(PyException::type_error("expected an Element object"))
     }
@@ -696,7 +913,9 @@ fn element_to_string(elem: &XmlElement) -> String {
 
 fn etree_element(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("Element() requires at least 1 argument: tag"));
+        return Err(PyException::type_error(
+            "Element() requires at least 1 argument: tag",
+        ));
     }
     let tag = args[0].py_to_string();
     let mut elem = XmlElement::new(&tag);
@@ -747,7 +966,9 @@ fn etree_element(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn etree_subelement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
-        return Err(PyException::type_error("SubElement() requires at least 2 arguments: parent, tag"));
+        return Err(PyException::type_error(
+            "SubElement() requires at least 2 arguments: parent, tag",
+        ));
     }
     let tag = args[1].py_to_string();
     let mut child_elem = XmlElement::new(&tag);
@@ -810,7 +1031,11 @@ fn etree_fromstring(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let text = match &args[0].payload {
         PyObjectPayload::Str(s) => s.to_string(),
-        _ => return Err(PyException::type_error("fromstring() requires a string argument")),
+        _ => {
+            return Err(PyException::type_error(
+                "fromstring() requires a string argument",
+            ))
+        }
     };
     let mut parser = XmlParser::new(&text);
     match parser.parse_document() {
@@ -848,12 +1073,17 @@ fn etree_tostring(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn etree_parse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("parse() requires 1 argument: source"));
+        return Err(PyException::type_error(
+            "parse() requires 1 argument: source",
+        ));
     }
     let path = args[0].py_to_string();
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| PyException::new(ferrython_core::error::ExceptionKind::FileNotFoundError,
-            format!("No such file or directory: '{}'", e)))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::FileNotFoundError,
+            format!("No such file or directory: '{}'", e),
+        )
+    })?;
     let mut parser = XmlParser::new(&content);
     match parser.parse_document() {
         Ok(root) => Ok(build_element_tree(root)),
@@ -865,54 +1095,73 @@ fn build_element_tree(root: XmlElement) -> PyObjectRef {
     let root_obj = xml_element_to_pyobject(&root);
 
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("__etree_tree__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__etree_tree__"),
+        PyObject::bool_val(true),
+    );
 
     // getroot()
     let ro = root_obj.clone();
-    attrs.insert(CompactString::from("getroot"), PyObject::native_closure("getroot", move |_args| {
-        Ok(ro.clone())
-    }));
+    attrs.insert(
+        CompactString::from("getroot"),
+        PyObject::native_closure("getroot", move |_args| Ok(ro.clone())),
+    );
 
     // find(match) — delegate to root element
     let ro = root_obj.clone();
-    attrs.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("find() requires 1 argument")); }
-        if let PyObjectPayload::Instance(ref d) = ro.payload {
-            let r = d.attrs.read();
-            if let Some(find_fn) = r.get(&CompactString::from("find")) {
-                if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
-                    return (nc.func)(args);
+    attrs.insert(
+        CompactString::from("find"),
+        PyObject::native_closure("find", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("find() requires 1 argument"));
+            }
+            if let PyObjectPayload::Instance(ref d) = ro.payload {
+                let r = d.attrs.read();
+                if let Some(find_fn) = r.get(&CompactString::from("find")) {
+                    if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
+                        return (nc.func)(args);
+                    }
                 }
             }
-        }
-        Ok(PyObject::none())
-    }));
+            Ok(PyObject::none())
+        }),
+    );
 
     // findall(match) — delegate to root element
     let ro = root_obj.clone();
-    attrs.insert(CompactString::from("findall"), PyObject::native_closure("findall", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("findall() requires 1 argument")); }
-        if let PyObjectPayload::Instance(ref d) = ro.payload {
-            let r = d.attrs.read();
-            if let Some(fa_fn) = r.get(&CompactString::from("findall")) {
-                if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
-                    return (nc.func)(args);
+    attrs.insert(
+        CompactString::from("findall"),
+        PyObject::native_closure("findall", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("findall() requires 1 argument"));
+            }
+            if let PyObjectPayload::Instance(ref d) = ro.payload {
+                let r = d.attrs.read();
+                if let Some(fa_fn) = r.get(&CompactString::from("findall")) {
+                    if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                        return (nc.func)(args);
+                    }
                 }
             }
-        }
-        Ok(PyObject::list(vec![]))
-    }));
+            Ok(PyObject::list(vec![]))
+        }),
+    );
 
     // parse(source) — re-parse from string
-    attrs.insert(CompactString::from("parse"), PyObject::native_closure("parse", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("parse() requires 1 argument")); }
-        let text = args[0].py_to_string();
-        let mut parser = XmlParser::new(&text);
-        match parser.parse_document() {
-            Ok(root) => Ok(build_element_tree(root)),
-            Err(e) => Err(PyException::value_error(format!("XML parse error: {}", e))),
-        }
-    }));
+    attrs.insert(
+        CompactString::from("parse"),
+        PyObject::native_closure("parse", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("parse() requires 1 argument"));
+            }
+            let text = args[0].py_to_string();
+            let mut parser = XmlParser::new(&text);
+            match parser.parse_document() {
+                Ok(root) => Ok(build_element_tree(root)),
+                Err(e) => Err(PyException::value_error(format!("XML parse error: {}", e))),
+            }
+        }),
+    );
 
     let cls = PyObject::class(CompactString::from("ElementTree"), vec![], IndexMap::new());
     PyObject::instance_with_attrs(cls, attrs)
@@ -932,99 +1181,152 @@ fn etree_element_tree(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── Public module constructors ─────────────────────────────────────────
 
 pub fn create_xml_etree_elementtree_module() -> PyObjectRef {
-    make_module("xml.etree.ElementTree", vec![
-        ("Element", make_builtin(etree_element)),
-        ("SubElement", make_builtin(etree_subelement)),
-        ("ElementTree", make_builtin(etree_element_tree)),
-        ("fromstring", make_builtin(etree_fromstring)),
-        ("tostring", make_builtin(etree_tostring)),
-        ("parse", make_builtin(etree_parse)),
-        ("XML", make_builtin(etree_fromstring)),
-        ("Comment", make_builtin(|args: &[PyObjectRef]| {
-            let text = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
-            let mut elem = XmlElement::new("!--");
-            elem.text = text;
-            Ok(xml_element_to_pyobject(&elem))
-        })),
-        ("ProcessingInstruction", make_builtin(|args: &[PyObjectRef]| {
-            let target = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
-            let text = if args.len() > 1 { args[1].py_to_string() } else { String::new() };
-            let pi_tag = format!("?{}", target);
-            let mut elem = XmlElement::new(&pi_tag);
-            elem.text = text;
-            Ok(xml_element_to_pyobject(&elem))
-        })),
-        // QName(text_or_uri, tag=None) — qualified XML name
-        ("QName", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("QName() requires at least 1 argument")); }
-            let text = if args.len() >= 2 {
-                let uri = args[0].py_to_string();
-                let tag = args[1].py_to_string();
-                format!("{{{}}}{}", uri, tag)
-            } else {
-                args[0].py_to_string()
-            };
-            let cls = PyObject::class(CompactString::from("QName"), vec![], IndexMap::new());
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("text"), PyObject::str_val(CompactString::from(text.as_str())));
-            Ok(PyObject::instance_with_attrs(cls, attrs))
-        })),
-        // indent(tree, space="  ", level=0) — add whitespace indentation
-        ("indent", make_builtin(|_args: &[PyObjectRef]| {
-            Ok(PyObject::none())
-        })),
-        // TreeBuilder class (stub)
-        ("TreeBuilder", make_builtin(|_args: &[PyObjectRef]| {
-            let cls = PyObject::class(CompactString::from("TreeBuilder"), vec![], IndexMap::new());
-            Ok(PyObject::instance(cls))
-        })),
-        // iterparse(source, events=None) — stub
-        ("iterparse", make_builtin(|_args: &[PyObjectRef]| {
-            Ok(PyObject::list(vec![]))
-        })),
-        // register_namespace(prefix, uri) — stub
-        ("register_namespace", make_builtin(|_args: &[PyObjectRef]| {
-            Ok(PyObject::none())
-        })),
-        // HTML_EMPTY — set of HTML void elements (CPython compat)
-        ("HTML_EMPTY", {
-            let elems = vec![
-                "area", "base", "basefont", "br", "col", "frame", "hr",
-                "img", "input", "isindex", "link", "meta", "param",
-            ];
-            let mut set = IndexMap::new();
-            for s in elems {
-                let val = PyObject::str_val(CompactString::from(s));
-                set.insert(HashableKey::str_key(CompactString::from(s)), val);
-            }
-            PyObject::set(set)
-        }),
-    ])
+    make_module(
+        "xml.etree.ElementTree",
+        vec![
+            ("Element", make_builtin(etree_element)),
+            ("SubElement", make_builtin(etree_subelement)),
+            ("ElementTree", make_builtin(etree_element_tree)),
+            ("fromstring", make_builtin(etree_fromstring)),
+            ("tostring", make_builtin(etree_tostring)),
+            ("parse", make_builtin(etree_parse)),
+            ("XML", make_builtin(etree_fromstring)),
+            (
+                "Comment",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let text = if !args.is_empty() {
+                        args[0].py_to_string()
+                    } else {
+                        String::new()
+                    };
+                    let mut elem = XmlElement::new("!--");
+                    elem.text = text;
+                    Ok(xml_element_to_pyobject(&elem))
+                }),
+            ),
+            (
+                "ProcessingInstruction",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let target = if !args.is_empty() {
+                        args[0].py_to_string()
+                    } else {
+                        String::new()
+                    };
+                    let text = if args.len() > 1 {
+                        args[1].py_to_string()
+                    } else {
+                        String::new()
+                    };
+                    let pi_tag = format!("?{}", target);
+                    let mut elem = XmlElement::new(&pi_tag);
+                    elem.text = text;
+                    Ok(xml_element_to_pyobject(&elem))
+                }),
+            ),
+            // QName(text_or_uri, tag=None) — qualified XML name
+            (
+                "QName",
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error(
+                            "QName() requires at least 1 argument",
+                        ));
+                    }
+                    let text = if args.len() >= 2 {
+                        let uri = args[0].py_to_string();
+                        let tag = args[1].py_to_string();
+                        format!("{{{}}}{}", uri, tag)
+                    } else {
+                        args[0].py_to_string()
+                    };
+                    let cls =
+                        PyObject::class(CompactString::from("QName"), vec![], IndexMap::new());
+                    let mut attrs = IndexMap::new();
+                    attrs.insert(
+                        CompactString::from("text"),
+                        PyObject::str_val(CompactString::from(text.as_str())),
+                    );
+                    Ok(PyObject::instance_with_attrs(cls, attrs))
+                }),
+            ),
+            // indent(tree, space="  ", level=0) — add whitespace indentation
+            (
+                "indent",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+            ),
+            // TreeBuilder class (stub)
+            (
+                "TreeBuilder",
+                make_builtin(|_args: &[PyObjectRef]| {
+                    let cls = PyObject::class(
+                        CompactString::from("TreeBuilder"),
+                        vec![],
+                        IndexMap::new(),
+                    );
+                    Ok(PyObject::instance(cls))
+                }),
+            ),
+            // iterparse(source, events=None) — stub
+            (
+                "iterparse",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![]))),
+            ),
+            // register_namespace(prefix, uri) — stub
+            (
+                "register_namespace",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+            ),
+            // HTML_EMPTY — set of HTML void elements (CPython compat)
+            ("HTML_EMPTY", {
+                let elems = vec![
+                    "area", "base", "basefont", "br", "col", "frame", "hr", "img", "input",
+                    "isindex", "link", "meta", "param",
+                ];
+                let mut set = IndexMap::new();
+                for s in elems {
+                    let val = PyObject::str_val(CompactString::from(s));
+                    set.insert(HashableKey::str_key(CompactString::from(s)), val);
+                }
+                PyObject::set(set)
+            }),
+        ],
+    )
 }
 
 pub fn create_xml_module() -> PyObjectRef {
     // xml package — just expose the etree sub-module path
-    make_module("xml", vec![
-        ("etree", create_xml_etree_module()),
-    ])
+    make_module("xml", vec![("etree", create_xml_etree_module())])
 }
 
 pub fn create_xml_etree_module() -> PyObjectRef {
-    make_module("xml.etree", vec![
-        ("ElementTree", create_xml_etree_elementtree_module()),
-    ])
+    make_module(
+        "xml.etree",
+        vec![("ElementTree", create_xml_etree_elementtree_module())],
+    )
 }
 
 // ── xml.dom module ──
 
 pub fn create_xml_dom_module() -> PyObjectRef {
-    make_module("xml.dom", vec![
-        ("minidom", create_xml_dom_minidom_module()),
-        ("EMPTY_NAMESPACE", PyObject::none()),
-        ("XML_NAMESPACE", PyObject::str_val(CompactString::from("http://www.w3.org/XML/1998/namespace"))),
-        ("XMLNS_NAMESPACE", PyObject::str_val(CompactString::from("http://www.w3.org/2000/xmlns/"))),
-        ("XHTML_NAMESPACE", PyObject::str_val(CompactString::from("http://www.w3.org/1999/xhtml"))),
-    ])
+    make_module(
+        "xml.dom",
+        vec![
+            ("minidom", create_xml_dom_minidom_module()),
+            ("EMPTY_NAMESPACE", PyObject::none()),
+            (
+                "XML_NAMESPACE",
+                PyObject::str_val(CompactString::from("http://www.w3.org/XML/1998/namespace")),
+            ),
+            (
+                "XMLNS_NAMESPACE",
+                PyObject::str_val(CompactString::from("http://www.w3.org/2000/xmlns/")),
+            ),
+            (
+                "XHTML_NAMESPACE",
+                PyObject::str_val(CompactString::from("http://www.w3.org/1999/xhtml")),
+            ),
+        ],
+    )
 }
 
 // ── xml.dom.minidom module ──
@@ -1041,7 +1343,10 @@ fn minidom_make_document(root_tag: &str, text_content: &str) -> PyObjectRef {
         };
         let xml_ref = Arc::new(Mutex::new(xml_str.clone()));
 
-        w.insert(CompactString::from("nodeName"), PyObject::str_val(CompactString::from("#document")));
+        w.insert(
+            CompactString::from("nodeName"),
+            PyObject::str_val(CompactString::from("#document")),
+        );
         w.insert(CompactString::from("nodeType"), PyObject::int(9));
 
         // documentElement
@@ -1049,34 +1354,51 @@ fn minidom_make_document(root_tag: &str, text_content: &str) -> PyObjectRef {
         let elem = PyObject::instance(elem_cls);
         if let PyObjectPayload::Instance(ref ed) = elem.payload {
             let mut ew = ed.attrs.write();
-            ew.insert(CompactString::from("tagName"), PyObject::str_val(CompactString::from(root_tag)));
-            ew.insert(CompactString::from("nodeName"), PyObject::str_val(CompactString::from(root_tag)));
+            ew.insert(
+                CompactString::from("tagName"),
+                PyObject::str_val(CompactString::from(root_tag)),
+            );
+            ew.insert(
+                CompactString::from("nodeName"),
+                PyObject::str_val(CompactString::from(root_tag)),
+            );
             ew.insert(CompactString::from("nodeType"), PyObject::int(1));
             ew.insert(CompactString::from("childNodes"), PyObject::list(vec![]));
-            ew.insert(CompactString::from("attributes"), PyObject::dict(IndexMap::new()));
-            ew.insert(CompactString::from("getAttribute"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() > 1 {
-                    Ok(PyObject::str_val(CompactString::from("")))
-                } else {
-                    Ok(PyObject::str_val(CompactString::from("")))
-                }
-            }));
-            ew.insert(CompactString::from("getElementsByTagName"), make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::list(vec![]))
-            }));
+            ew.insert(
+                CompactString::from("attributes"),
+                PyObject::dict(IndexMap::new()),
+            );
+            ew.insert(
+                CompactString::from("getAttribute"),
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.len() > 1 {
+                        Ok(PyObject::str_val(CompactString::from("")))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from("")))
+                    }
+                }),
+            );
+            ew.insert(
+                CompactString::from("getElementsByTagName"),
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![]))),
+            );
         }
         w.insert(CompactString::from("documentElement"), elem);
 
         let xr = xml_ref.clone();
-        w.insert(CompactString::from("toxml"), PyObject::native_closure(
-            "Document.toxml", move |_args: &[PyObjectRef]| {
-                Ok(PyObject::str_val(CompactString::from(xr.lock().unwrap().as_str())))
-            }
-        ));
+        w.insert(
+            CompactString::from("toxml"),
+            PyObject::native_closure("Document.toxml", move |_args: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(
+                    xr.lock().unwrap().as_str(),
+                )))
+            }),
+        );
 
         let xr2 = xml_ref.clone();
-        w.insert(CompactString::from("toprettyxml"), PyObject::native_closure(
-            "Document.toprettyxml", move |args: &[PyObjectRef]| {
+        w.insert(
+            CompactString::from("toprettyxml"),
+            PyObject::native_closure("Document.toprettyxml", move |args: &[PyObjectRef]| {
                 let indent = if !args.is_empty() {
                     args[0].py_to_string()
                 } else {
@@ -1086,42 +1408,68 @@ fn minidom_make_document(root_tag: &str, text_content: &str) -> PyObjectRef {
                 // Simple pretty-print: just add indent prefix
                 let pretty = format!("<?xml version=\"1.0\" ?>\n{}{}\n", indent, raw);
                 Ok(PyObject::str_val(CompactString::from(pretty.as_str())))
-            }
-        ));
+            }),
+        );
 
-        w.insert(CompactString::from("getElementsByTagName"), make_builtin(|_args: &[PyObjectRef]| {
-            Ok(PyObject::list(vec![]))
-        }));
+        w.insert(
+            CompactString::from("getElementsByTagName"),
+            make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![]))),
+        );
 
-        w.insert(CompactString::from("createElement"), make_builtin(|args: &[PyObjectRef]| {
-            let tag = if !args.is_empty() { args[0].py_to_string() } else { "div".to_string() };
-            let e_cls = PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
-            let e = PyObject::instance(e_cls);
-            if let PyObjectPayload::Instance(ref ed) = e.payload {
-                let mut ew = ed.attrs.write();
-                ew.insert(CompactString::from("tagName"), PyObject::str_val(CompactString::from(tag.as_str())));
-                ew.insert(CompactString::from("nodeName"), PyObject::str_val(CompactString::from(tag.as_str())));
-                ew.insert(CompactString::from("nodeType"), PyObject::int(1));
-                ew.insert(CompactString::from("childNodes"), PyObject::list(vec![]));
-            }
-            Ok(e)
-        }));
+        w.insert(
+            CompactString::from("createElement"),
+            make_builtin(|args: &[PyObjectRef]| {
+                let tag = if !args.is_empty() {
+                    args[0].py_to_string()
+                } else {
+                    "div".to_string()
+                };
+                let e_cls =
+                    PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
+                let e = PyObject::instance(e_cls);
+                if let PyObjectPayload::Instance(ref ed) = e.payload {
+                    let mut ew = ed.attrs.write();
+                    ew.insert(
+                        CompactString::from("tagName"),
+                        PyObject::str_val(CompactString::from(tag.as_str())),
+                    );
+                    ew.insert(
+                        CompactString::from("nodeName"),
+                        PyObject::str_val(CompactString::from(tag.as_str())),
+                    );
+                    ew.insert(CompactString::from("nodeType"), PyObject::int(1));
+                    ew.insert(CompactString::from("childNodes"), PyObject::list(vec![]));
+                }
+                Ok(e)
+            }),
+        );
 
-        w.insert(CompactString::from("createTextNode"), make_builtin(|args: &[PyObjectRef]| {
-            let text = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
-            let t_cls = PyObject::class(CompactString::from("Text"), vec![], IndexMap::new());
-            let t = PyObject::instance(t_cls);
-            if let PyObjectPayload::Instance(ref td) = t.payload {
-                let mut tw = td.attrs.write();
-                tw.insert(CompactString::from("data"), PyObject::str_val(CompactString::from(text.as_str())));
-                tw.insert(CompactString::from("nodeType"), PyObject::int(3));
-            }
-            Ok(t)
-        }));
+        w.insert(
+            CompactString::from("createTextNode"),
+            make_builtin(|args: &[PyObjectRef]| {
+                let text = if !args.is_empty() {
+                    args[0].py_to_string()
+                } else {
+                    String::new()
+                };
+                let t_cls = PyObject::class(CompactString::from("Text"), vec![], IndexMap::new());
+                let t = PyObject::instance(t_cls);
+                if let PyObjectPayload::Instance(ref td) = t.payload {
+                    let mut tw = td.attrs.write();
+                    tw.insert(
+                        CompactString::from("data"),
+                        PyObject::str_val(CompactString::from(text.as_str())),
+                    );
+                    tw.insert(CompactString::from("nodeType"), PyObject::int(3));
+                }
+                Ok(t)
+            }),
+        );
 
-        w.insert(CompactString::from("unlink"), make_builtin(|_args: &[PyObjectRef]| {
-            Ok(PyObject::none())
-        }));
+        w.insert(
+            CompactString::from("unlink"),
+            make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+        );
     }
     doc
 }
@@ -1129,7 +1477,9 @@ fn minidom_make_document(root_tag: &str, text_content: &str) -> PyObjectRef {
 pub fn create_xml_dom_minidom_module() -> PyObjectRef {
     let parse_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
-            return Err(PyException::type_error("parse() requires a filename argument"));
+            return Err(PyException::type_error(
+                "parse() requires a filename argument",
+            ));
         }
         let filename = args[0].py_to_string();
         match std::fs::read_to_string(&filename) {
@@ -1143,7 +1493,9 @@ pub fn create_xml_dom_minidom_module() -> PyObjectRef {
 
     let parse_string_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
-            return Err(PyException::type_error("parseString() requires a string argument"));
+            return Err(PyException::type_error(
+                "parseString() requires a string argument",
+            ));
         }
         let xml_str = args[0].py_to_string();
         // Try to extract root tag name from the XML
@@ -1165,58 +1517,108 @@ pub fn create_xml_dom_minidom_module() -> PyObjectRef {
         Ok(minidom_make_document(root_tag, &xml_str))
     });
 
-    make_module("xml.dom.minidom", vec![
-        ("parse", parse_fn),
-        ("parseString", parse_string_fn),
-        ("Document", PyObject::class(CompactString::from("Document"), vec![], IndexMap::new())),
-        ("Element", PyObject::class(CompactString::from("Element"), vec![], IndexMap::new())),
-        ("Text", PyObject::class(CompactString::from("Text"), vec![], IndexMap::new())),
-        ("Node", PyObject::class(CompactString::from("Node"), vec![], IndexMap::new())),
-    ])
+    make_module(
+        "xml.dom.minidom",
+        vec![
+            ("parse", parse_fn),
+            ("parseString", parse_string_fn),
+            (
+                "Document",
+                PyObject::class(CompactString::from("Document"), vec![], IndexMap::new()),
+            ),
+            (
+                "Element",
+                PyObject::class(CompactString::from("Element"), vec![], IndexMap::new()),
+            ),
+            (
+                "Text",
+                PyObject::class(CompactString::from("Text"), vec![], IndexMap::new()),
+            ),
+            (
+                "Node",
+                PyObject::class(CompactString::from("Node"), vec![], IndexMap::new()),
+            ),
+        ],
+    )
 }
 
 // ── xml.sax module ──
 
 pub fn create_xml_sax_module() -> PyObjectRef {
     let content_handler_cls = PyObject::class(
-        CompactString::from("ContentHandler"), vec![], IndexMap::new(),
+        CompactString::from("ContentHandler"),
+        vec![],
+        IndexMap::new(),
     );
     if let PyObjectPayload::Class(ref cd) = content_handler_cls.payload {
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("startDocument"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("endDocument"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("startElement"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("endElement"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("characters"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        ns.insert(
+            CompactString::from("startDocument"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("endDocument"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("startElement"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("endElement"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("characters"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
     }
 
-    let error_handler_cls = PyObject::class(
-        CompactString::from("ErrorHandler"), vec![], IndexMap::new(),
-    );
+    let error_handler_cls =
+        PyObject::class(CompactString::from("ErrorHandler"), vec![], IndexMap::new());
 
-    let sax_exception = PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError);
+    let sax_exception =
+        PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError);
 
     let make_parser_fn = make_builtin(|_args: &[PyObjectRef]| {
         let cls = PyObject::class(CompactString::from("XMLReader"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            w.insert(CompactString::from("setContentHandler"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("setErrorHandler"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("parse"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(
+                CompactString::from("setContentHandler"),
+                make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("setErrorHandler"),
+                make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("parse"),
+                make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+            );
         }
         Ok(inst)
     });
 
-    make_module("xml.sax", vec![
-        ("ContentHandler", content_handler_cls),
-        ("ErrorHandler", error_handler_cls),
-        ("SAXException", sax_exception.clone()),
-        ("SAXParseException", sax_exception),
-        ("make_parser", make_parser_fn),
-        ("parseString", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
-        ("parse", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
-    ])
+    make_module(
+        "xml.sax",
+        vec![
+            ("ContentHandler", content_handler_cls),
+            ("ErrorHandler", error_handler_cls),
+            ("SAXException", sax_exception.clone()),
+            ("SAXParseException", sax_exception),
+            ("make_parser", make_parser_fn),
+            (
+                "parseString",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+            ),
+            (
+                "parse",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+            ),
+        ],
+    )
 }
 
 /// xml.parsers.expat — minimal expat parser interface
@@ -1224,30 +1626,78 @@ pub fn create_xml_parsers_expat_module() -> PyObjectRef {
     let expat_error = PyObject::class(CompactString::from("ExpatError"), vec![], IndexMap::new());
 
     let parser_create = make_builtin(|args: &[PyObjectRef]| {
-        let encoding = if !args.is_empty() { args[0].py_to_string() } else { "UTF-8".to_string() };
+        let encoding = if !args.is_empty() {
+            args[0].py_to_string()
+        } else {
+            "UTF-8".to_string()
+        };
         let cls = PyObject::class(CompactString::from("xmlparser"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            w.insert(CompactString::from("encoding"), PyObject::str_val(CompactString::from(&encoding)));
-            w.insert(CompactString::from("Parse"), make_builtin(|_| Ok(PyObject::int(1))));
-            w.insert(CompactString::from("ParseFile"), make_builtin(|_| Ok(PyObject::int(1))));
-            w.insert(CompactString::from("SetBase"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("GetBase"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("GetInputContext"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("ExternalEntityParserCreate"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("SetParamEntityParsing"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("UseForeignDTD"), make_builtin(|_| Ok(PyObject::none())));
-            for cb in &["StartElementHandler", "EndElementHandler", "CharacterDataHandler",
-                       "ProcessingInstructionHandler", "CommentHandler",
-                       "StartNamespaceDeclHandler", "EndNamespaceDeclHandler",
-                       "DefaultHandler", "DefaultHandlerExpand",
-                       "NotStandaloneHandler", "ExternalEntityRefHandler"] {
+            w.insert(
+                CompactString::from("encoding"),
+                PyObject::str_val(CompactString::from(&encoding)),
+            );
+            w.insert(
+                CompactString::from("Parse"),
+                make_builtin(|_| Ok(PyObject::int(1))),
+            );
+            w.insert(
+                CompactString::from("ParseFile"),
+                make_builtin(|_| Ok(PyObject::int(1))),
+            );
+            w.insert(
+                CompactString::from("SetBase"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("GetBase"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("GetInputContext"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("ExternalEntityParserCreate"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("SetParamEntityParsing"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            w.insert(
+                CompactString::from("UseForeignDTD"),
+                make_builtin(|_| Ok(PyObject::none())),
+            );
+            for cb in &[
+                "StartElementHandler",
+                "EndElementHandler",
+                "CharacterDataHandler",
+                "ProcessingInstructionHandler",
+                "CommentHandler",
+                "StartNamespaceDeclHandler",
+                "EndNamespaceDeclHandler",
+                "DefaultHandler",
+                "DefaultHandlerExpand",
+                "NotStandaloneHandler",
+                "ExternalEntityRefHandler",
+            ] {
                 w.insert(CompactString::from(*cb), PyObject::none());
             }
-            w.insert(CompactString::from("buffer_text"), PyObject::bool_val(false));
-            w.insert(CompactString::from("ordered_attributes"), PyObject::bool_val(false));
-            w.insert(CompactString::from("returns_unicode"), PyObject::bool_val(true));
+            w.insert(
+                CompactString::from("buffer_text"),
+                PyObject::bool_val(false),
+            );
+            w.insert(
+                CompactString::from("ordered_attributes"),
+                PyObject::bool_val(false),
+            );
+            w.insert(
+                CompactString::from("returns_unicode"),
+                PyObject::bool_val(true),
+            );
         }
         Ok(inst)
     });
@@ -1255,19 +1705,31 @@ pub fn create_xml_parsers_expat_module() -> PyObjectRef {
     let error_cls = PyObject::class(CompactString::from("errors"), vec![], IndexMap::new());
     if let PyObjectPayload::Class(ref cd) = error_cls.payload {
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("XML_ERROR_SYNTAX"), PyObject::str_val(CompactString::from("syntax error")));
-        ns.insert(CompactString::from("XML_ERROR_NO_MEMORY"), PyObject::str_val(CompactString::from("out of memory")));
+        ns.insert(
+            CompactString::from("XML_ERROR_SYNTAX"),
+            PyObject::str_val(CompactString::from("syntax error")),
+        );
+        ns.insert(
+            CompactString::from("XML_ERROR_NO_MEMORY"),
+            PyObject::str_val(CompactString::from("out of memory")),
+        );
     }
 
-    make_module("xml.parsers.expat", vec![
-        ("ParserCreate", parser_create),
-        ("ExpatError", expat_error.clone()),
-        ("error", expat_error),
-        ("errors", error_cls),
-        ("XML_PARAM_ENTITY_PARSING_NEVER", PyObject::int(0)),
-        ("XML_PARAM_ENTITY_PARSING_UNLESS_STANDALONE", PyObject::int(1)),
-        ("XML_PARAM_ENTITY_PARSING_ALWAYS", PyObject::int(2)),
-    ])
+    make_module(
+        "xml.parsers.expat",
+        vec![
+            ("ParserCreate", parser_create),
+            ("ExpatError", expat_error.clone()),
+            ("error", expat_error),
+            ("errors", error_cls),
+            ("XML_PARAM_ENTITY_PARSING_NEVER", PyObject::int(0)),
+            (
+                "XML_PARAM_ENTITY_PARSING_UNLESS_STANDALONE",
+                PyObject::int(1),
+            ),
+            ("XML_PARAM_ENTITY_PARSING_ALWAYS", PyObject::int(2)),
+        ],
+    )
 }
 
 /// xml.parsers — package namespace
@@ -1277,42 +1739,109 @@ pub fn create_xml_parsers_module() -> PyObjectRef {
 
 /// xml.sax.handler — SAX handler base classes
 pub fn create_xml_sax_handler_module() -> PyObjectRef {
-    let content_handler = PyObject::class(CompactString::from("ContentHandler"), vec![], IndexMap::new());
+    let content_handler = PyObject::class(
+        CompactString::from("ContentHandler"),
+        vec![],
+        IndexMap::new(),
+    );
     if let PyObjectPayload::Class(ref cd) = content_handler.payload {
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("startDocument"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("endDocument"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("startElement"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("endElement"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("characters"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        ns.insert(CompactString::from("setDocumentLocator"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        ns.insert(
+            CompactString::from("startDocument"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("endDocument"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("startElement"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("endElement"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("characters"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
+        ns.insert(
+            CompactString::from("setDocumentLocator"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())),
+        );
     }
-    let error_handler = PyObject::class(CompactString::from("ErrorHandler"), vec![], IndexMap::new());
+    let error_handler =
+        PyObject::class(CompactString::from("ErrorHandler"), vec![], IndexMap::new());
     let dtd_handler = PyObject::class(CompactString::from("DTDHandler"), vec![], IndexMap::new());
-    let entity_resolver = PyObject::class(CompactString::from("EntityResolver"), vec![], IndexMap::new());
+    let entity_resolver = PyObject::class(
+        CompactString::from("EntityResolver"),
+        vec![],
+        IndexMap::new(),
+    );
 
-    make_module("xml.sax.handler", vec![
-        ("ContentHandler", content_handler),
-        ("ErrorHandler", error_handler),
-        ("DTDHandler", dtd_handler),
-        ("EntityResolver", entity_resolver),
-        ("feature_namespaces", PyObject::str_val(CompactString::from("http://xml.org/sax/features/namespaces"))),
-        ("feature_namespace_prefixes", PyObject::str_val(CompactString::from("http://xml.org/sax/features/namespace-prefixes"))),
-        ("feature_validation", PyObject::str_val(CompactString::from("http://xml.org/sax/features/validation"))),
-        ("feature_external_ges", PyObject::str_val(CompactString::from("http://xml.org/sax/features/external-general-entities"))),
-        ("feature_external_pes", PyObject::str_val(CompactString::from("http://xml.org/sax/features/external-parameter-entities"))),
-        ("all_features", PyObject::list(vec![])),
-        ("property_lexical_handler", PyObject::str_val(CompactString::from("http://xml.org/sax/properties/lexical-handler"))),
-        ("property_declaration_handler", PyObject::str_val(CompactString::from("http://xml.org/sax/properties/declaration-handler"))),
-        ("all_properties", PyObject::list(vec![])),
-    ])
+    make_module(
+        "xml.sax.handler",
+        vec![
+            ("ContentHandler", content_handler),
+            ("ErrorHandler", error_handler),
+            ("DTDHandler", dtd_handler),
+            ("EntityResolver", entity_resolver),
+            (
+                "feature_namespaces",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/features/namespaces",
+                )),
+            ),
+            (
+                "feature_namespace_prefixes",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/features/namespace-prefixes",
+                )),
+            ),
+            (
+                "feature_validation",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/features/validation",
+                )),
+            ),
+            (
+                "feature_external_ges",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/features/external-general-entities",
+                )),
+            ),
+            (
+                "feature_external_pes",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/features/external-parameter-entities",
+                )),
+            ),
+            ("all_features", PyObject::list(vec![])),
+            (
+                "property_lexical_handler",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/properties/lexical-handler",
+                )),
+            ),
+            (
+                "property_declaration_handler",
+                PyObject::str_val(CompactString::from(
+                    "http://xml.org/sax/properties/declaration-handler",
+                )),
+            ),
+            ("all_properties", PyObject::list(vec![])),
+        ],
+    )
 }
 
 /// xml.sax.saxutils — escape/unescape and XMLGenerator
 pub fn create_xml_sax_saxutils_module() -> PyObjectRef {
     fn sax_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() {
-            return Err(PyException::type_error("escape() requires at least 1 argument"));
+            return Err(PyException::type_error(
+                "escape() requires at least 1 argument",
+            ));
         }
         let mut data = args[0].py_to_string();
         // Default entities
@@ -1335,7 +1864,9 @@ pub fn create_xml_sax_saxutils_module() -> PyObjectRef {
 
     fn sax_unescape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() {
-            return Err(PyException::type_error("unescape() requires at least 1 argument"));
+            return Err(PyException::type_error(
+                "unescape() requires at least 1 argument",
+            ));
         }
         let mut data = args[0].py_to_string();
         // Additional entities from dict argument (applied first)
@@ -1358,7 +1889,9 @@ pub fn create_xml_sax_saxutils_module() -> PyObjectRef {
 
     fn sax_quoteattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() {
-            return Err(PyException::type_error("quoteattr() requires at least 1 argument"));
+            return Err(PyException::type_error(
+                "quoteattr() requires at least 1 argument",
+            ));
         }
         let data = args[0].py_to_string();
         let mut escaped = data.replace('&', "&amp;");
@@ -1367,105 +1900,165 @@ pub fn create_xml_sax_saxutils_module() -> PyObjectRef {
         if escaped.contains('"') {
             if escaped.contains('\'') {
                 escaped = escaped.replace('"', "&quot;");
-                Ok(PyObject::str_val(CompactString::from(format!("\"{}\"", escaped))))
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "\"{}\"",
+                    escaped
+                ))))
             } else {
-                Ok(PyObject::str_val(CompactString::from(format!("'{}'", escaped))))
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "'{}'",
+                    escaped
+                ))))
             }
         } else {
-            Ok(PyObject::str_val(CompactString::from(format!("\"{}\"", escaped))))
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "\"{}\"",
+                escaped
+            ))))
         }
     }
 
     // XMLGenerator class (stub)
     let xml_gen = PyObject::class(CompactString::from("XMLGenerator"), vec![], IndexMap::new());
 
-    make_module("xml.sax.saxutils", vec![
-        ("escape", PyObject::native_function("saxutils.escape", sax_escape)),
-        ("unescape", PyObject::native_function("saxutils.unescape", sax_unescape)),
-        ("quoteattr", PyObject::native_function("saxutils.quoteattr", sax_quoteattr)),
-        ("XMLGenerator", xml_gen),
-    ])
+    make_module(
+        "xml.sax.saxutils",
+        vec![
+            (
+                "escape",
+                PyObject::native_function("saxutils.escape", sax_escape),
+            ),
+            (
+                "unescape",
+                PyObject::native_function("saxutils.unescape", sax_unescape),
+            ),
+            (
+                "quoteattr",
+                PyObject::native_function("saxutils.quoteattr", sax_quoteattr),
+            ),
+            ("XMLGenerator", xml_gen),
+        ],
+    )
 }
 
 /// xml.sax.xmlreader — XMLReader and AttributesImpl
 pub fn create_xml_sax_xmlreader_module() -> PyObjectRef {
     let xml_reader = PyObject::class(CompactString::from("XMLReader"), vec![], IndexMap::new());
-    let incremental_parser = PyObject::class(CompactString::from("IncrementalParser"), vec![], IndexMap::new());
+    let incremental_parser = PyObject::class(
+        CompactString::from("IncrementalParser"),
+        vec![],
+        IndexMap::new(),
+    );
     let locator = PyObject::class(CompactString::from("Locator"), vec![], IndexMap::new());
-    let attrs_impl = PyObject::class(CompactString::from("AttributesImpl"), vec![], IndexMap::new());
+    let attrs_impl = PyObject::class(
+        CompactString::from("AttributesImpl"),
+        vec![],
+        IndexMap::new(),
+    );
 
-    let attrs_ns_impl = PyObject::class(CompactString::from("AttributesNSImpl"), vec![], IndexMap::new());
+    let attrs_ns_impl = PyObject::class(
+        CompactString::from("AttributesNSImpl"),
+        vec![],
+        IndexMap::new(),
+    );
     if let PyObjectPayload::Class(ref cd) = attrs_ns_impl.payload {
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
-            if args.len() >= 3 {
-                let self_obj = &args[0];
-                if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
-                    inst.attrs.write().insert(CompactString::from("_attrs"), args[1].clone());
-                    inst.attrs.write().insert(CompactString::from("_qnames"), args[2].clone());
+        ns.insert(
+            CompactString::from("__init__"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 3 {
+                    let self_obj = &args[0];
+                    if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                        inst.attrs
+                            .write()
+                            .insert(CompactString::from("_attrs"), args[1].clone());
+                        inst.attrs
+                            .write()
+                            .insert(CompactString::from("_qnames"), args[2].clone());
+                    }
                 }
-            }
-            Ok(PyObject::none())
-        }));
-        ns.insert(CompactString::from("getValueByQName"), make_builtin(|args: &[PyObjectRef]| {
-            if args.len() < 2 { return Ok(PyObject::none()); }
-            let self_obj = &args[0];
-            let qname = args[1].py_to_string();
-            if let Some(qnames) = self_obj.get_attr("_qnames") {
-                if let Some(attrs) = self_obj.get_attr("_attrs") {
-                    if let PyObjectPayload::Dict(ref qd) = qnames.payload {
-                        let qm = qd.read();
-                        for (k, v) in qm.iter() {
-                            if v.py_to_string() == qname {
-                                let ns_key = k.to_object();
-                                if let PyObjectPayload::Dict(ref ad) = attrs.payload {
-                                    let am = ad.read();
-                                    if let Some(val) = am.get(&HashableKey::from_object(&ns_key).unwrap_or(HashableKey::None)) {
-                                        return Ok(val.clone());
+                Ok(PyObject::none())
+            }),
+        );
+        ns.insert(
+            CompactString::from("getValueByQName"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 {
+                    return Ok(PyObject::none());
+                }
+                let self_obj = &args[0];
+                let qname = args[1].py_to_string();
+                if let Some(qnames) = self_obj.get_attr("_qnames") {
+                    if let Some(attrs) = self_obj.get_attr("_attrs") {
+                        if let PyObjectPayload::Dict(ref qd) = qnames.payload {
+                            let qm = qd.read();
+                            for (k, v) in qm.iter() {
+                                if v.py_to_string() == qname {
+                                    let ns_key = k.to_object();
+                                    if let PyObjectPayload::Dict(ref ad) = attrs.payload {
+                                        let am = ad.read();
+                                        if let Some(val) = am.get(
+                                            &HashableKey::from_object(&ns_key)
+                                                .unwrap_or(HashableKey::None),
+                                        ) {
+                                            return Ok(val.clone());
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            Err(PyException::key_error(qname))
-        }));
-        ns.insert(CompactString::from("getNames"), make_builtin(|args: &[PyObjectRef]| {
-            if let Some(attrs) = args[0].get_attr("_attrs") {
-                if let PyObjectPayload::Dict(ref d) = attrs.payload {
-                    let m = d.read();
-                    let keys: Vec<PyObjectRef> = m.keys().map(|k| k.to_object()).collect();
-                    return Ok(PyObject::list(keys));
+                Err(PyException::key_error(qname))
+            }),
+        );
+        ns.insert(
+            CompactString::from("getNames"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if let Some(attrs) = args[0].get_attr("_attrs") {
+                    if let PyObjectPayload::Dict(ref d) = attrs.payload {
+                        let m = d.read();
+                        let keys: Vec<PyObjectRef> = m.keys().map(|k| k.to_object()).collect();
+                        return Ok(PyObject::list(keys));
+                    }
                 }
-            }
-            Ok(PyObject::list(vec![]))
-        }));
-        ns.insert(CompactString::from("getQNames"), make_builtin(|args: &[PyObjectRef]| {
-            if let Some(qnames) = args[0].get_attr("_qnames") {
-                if let PyObjectPayload::Dict(ref d) = qnames.payload {
-                    let m = d.read();
-                    let vals: Vec<PyObjectRef> = m.values().cloned().collect();
-                    return Ok(PyObject::list(vals));
+                Ok(PyObject::list(vec![]))
+            }),
+        );
+        ns.insert(
+            CompactString::from("getQNames"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if let Some(qnames) = args[0].get_attr("_qnames") {
+                    if let PyObjectPayload::Dict(ref d) = qnames.payload {
+                        let m = d.read();
+                        let vals: Vec<PyObjectRef> = m.values().cloned().collect();
+                        return Ok(PyObject::list(vals));
+                    }
                 }
-            }
-            Ok(PyObject::list(vec![]))
-        }));
-        ns.insert(CompactString::from("__len__"), make_builtin(|args: &[PyObjectRef]| {
-            if let Some(attrs) = args[0].get_attr("_attrs") {
-                if let PyObjectPayload::Dict(ref d) = attrs.payload {
-                    return Ok(PyObject::int(d.read().len() as i64));
+                Ok(PyObject::list(vec![]))
+            }),
+        );
+        ns.insert(
+            CompactString::from("__len__"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if let Some(attrs) = args[0].get_attr("_attrs") {
+                    if let PyObjectPayload::Dict(ref d) = attrs.payload {
+                        return Ok(PyObject::int(d.read().len() as i64));
+                    }
                 }
-            }
-            Ok(PyObject::int(0))
-        }));
+                Ok(PyObject::int(0))
+            }),
+        );
     }
 
-    make_module("xml.sax.xmlreader", vec![
-        ("XMLReader", xml_reader),
-        ("IncrementalParser", incremental_parser),
-        ("Locator", locator),
-        ("AttributesImpl", attrs_impl),
-        ("AttributesNSImpl", attrs_ns_impl),
-    ])
+    make_module(
+        "xml.sax.xmlreader",
+        vec![
+            ("XMLReader", xml_reader),
+            ("IncrementalParser", incremental_parser),
+            ("Locator", locator),
+            ("AttributesImpl", attrs_impl),
+            ("AttributesNSImpl", attrs_ns_impl),
+        ],
+    )
 }

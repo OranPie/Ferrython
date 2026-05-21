@@ -97,7 +97,9 @@ static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
     // Check for venv first (VIRTUAL_ENV env var), then system site-packages
     if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
         let venv_site = PathBuf::from(&venv)
-            .join("lib").join("ferrython").join("site-packages");
+            .join("lib")
+            .join("ferrython")
+            .join("site-packages");
         if venv_site.is_dir() && !paths.contains(&venv_site) {
             paths.push(venv_site);
         }
@@ -126,10 +128,11 @@ static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
 
     // Sync search paths to ferrython-core so sys.path can pick them up
     ferrython_core::set_extra_sys_paths(
-        paths.iter()
+        paths
+            .iter()
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != "." && !s.is_empty())
-            .collect()
+            .collect(),
     );
 
     RwLock::new(paths)
@@ -150,10 +153,11 @@ pub fn get_search_paths() -> Vec<PathBuf> {
 /// Set the search paths (called when sys.path is modified).
 pub fn set_search_paths(paths: Vec<PathBuf>) {
     ferrython_core::set_extra_sys_paths(
-        paths.iter()
+        paths
+            .iter()
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != "." && !s.is_empty())
-            .collect()
+            .collect(),
     );
     *SEARCH_PATHS.write() = paths;
 }
@@ -182,10 +186,11 @@ pub fn append_search_path(path: PathBuf) {
 fn sync_paths_to_core() {
     let paths = SEARCH_PATHS.read();
     ferrython_core::set_extra_sys_paths(
-        paths.iter()
+        paths
+            .iter()
             .map(|p| p.to_string_lossy().to_string())
             .filter(|s| s != "." && !s.is_empty())
-            .collect()
+            .collect(),
     );
 }
 
@@ -244,7 +249,10 @@ pub fn resolve_module(name: &str, importer_filename: &str) -> PyResult<ResolvedM
         }
     }
 
-    Err(PyException::module_not_found_error(format!("No module named '{}'", name)))
+    Err(PyException::module_not_found_error(format!(
+        "No module named '{}'",
+        name
+    )))
 }
 
 /// Resolve a relative import (leading dots).
@@ -270,7 +278,7 @@ pub fn resolve_relative_import(
             return compile_source(&init, "<package>");
         }
         return Err(PyException::import_error(
-            "attempted relative import with no known parent package"
+            "attempted relative import with no known parent package",
         ));
     }
 
@@ -286,7 +294,8 @@ pub fn resolve_relative_import(
     }
 
     Err(PyException::import_error(format!(
-        "No module named '{}' (relative import level={})", name, level
+        "No module named '{}' (relative import level={})",
+        name, level
     )))
 }
 
@@ -308,9 +317,7 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
 
     // Check bytecode cache: if the file path + mtime match, reuse compiled code.
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mtime = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok();
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
     if let Some(mtime) = mtime {
         let cache = BYTECODE_CACHE.lock();
@@ -324,24 +331,18 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
     }
 
     let source = std::fs::read_to_string(path)
-        .map_err(|e| PyException::import_error(
-            format!("cannot read '{}': {}", path_str, e)
-        ))?;
+        .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", path_str, e)))?;
     let ast = ferrython_parser::parse(&source, &path_str)
-        .map_err(|e| PyException::import_error(
-            format!("syntax error in '{}': {}", path_str, e)
-        ))?;
-    let code = Rc::new(ferrython_compiler::compile(&ast, &path_str)
-        .map_err(|e| PyException::import_error(
-            format!("compile error in '{}': {}", path_str, e)
-        ))?);
+        .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", path_str, e)))?;
+    let code = Rc::new(ferrython_compiler::compile(&ast, &path_str).map_err(|e| {
+        PyException::import_error(format!("compile error in '{}': {}", path_str, e))
+    })?);
 
     // Store in cache if we have a valid mtime.
     if let Some(mtime) = mtime {
-        BYTECODE_CACHE.lock().insert(
-            (canonical, mtime),
-            SendableCode(Rc::clone(&code)),
-        );
+        BYTECODE_CACHE
+            .lock()
+            .insert((canonical, mtime), SendableCode(Rc::clone(&code)));
     }
 
     Ok(ResolvedModule::Source {
@@ -375,7 +376,10 @@ fn process_pth_files_once() {
                             for line in content.lines() {
                                 let line = line.trim();
                                 // Skip empty lines, comments, and import lines
-                                if line.is_empty() || line.starts_with('#') || line.starts_with("import ") {
+                                if line.is_empty()
+                                    || line.starts_with('#')
+                                    || line.starts_with("import ")
+                                {
                                     continue;
                                 }
                                 let path = if Path::new(line).is_absolute() {
@@ -383,7 +387,10 @@ fn process_pth_files_once() {
                                 } else {
                                     sp.join(line)
                                 };
-                                if path.is_dir() && !search_paths.contains(&path) && !new_paths.contains(&path) {
+                                if path.is_dir()
+                                    && !search_paths.contains(&path)
+                                    && !new_paths.contains(&path)
+                                {
                                     new_paths.push(path);
                                 }
                             }
@@ -430,7 +437,10 @@ pub fn process_pth_in_dir(site_dir: &Path) {
                         } else {
                             site_dir.join(line)
                         };
-                        if path.is_dir() && !search_paths.contains(&path) && !new_paths.contains(&path) {
+                        if path.is_dir()
+                            && !search_paths.contains(&path)
+                            && !new_paths.contains(&path)
+                        {
                             new_paths.push(path);
                         }
                     }

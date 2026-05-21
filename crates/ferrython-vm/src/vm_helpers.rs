@@ -5,9 +5,9 @@ use crate::frame::{Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
-    AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, FxAttrMap,
+use ferrython_core::object::{
+    AsyncGenAction, FxAttrMap, GeneratorState, IteratorData, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -28,9 +28,8 @@ static GEN_FRAME_POOL: GenFramePool = GenFramePool(std::cell::UnsafeCell::new(Ve
 fn gen_frame_alloc() -> *mut Frame {
     unsafe {
         let pool = &mut *GEN_FRAME_POOL.0.get();
-        pool.pop().unwrap_or_else(|| {
-            std::alloc::alloc(std::alloc::Layout::new::<Frame>()) as *mut Frame
-        })
+        pool.pop()
+            .unwrap_or_else(|| std::alloc::alloc(std::alloc::Layout::new::<Frame>()) as *mut Frame)
     }
 }
 
@@ -50,7 +49,9 @@ fn gen_frame_recycle(ptr: *mut Frame) {
 /// Free a generator frame when generator is dropped (e.g. GC).
 /// Must drop the Frame's contents properly before recycling the buffer.
 pub(crate) fn drop_generator_frame(ptr: *mut u8) {
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let frame_ptr = ptr as *mut Frame;
     unsafe {
         std::ptr::drop_in_place(frame_ptr);
@@ -86,10 +87,12 @@ impl VirtualMachine {
 
         // Register VM call dispatch so NativeClosures can call Python functions
         let vm_ptr3 = self as *mut VirtualMachine;
-        ferrython_core::object::register_vm_call_dispatch(move |func: PyObjectRef, args: Vec<PyObjectRef>| {
-            let vm = unsafe { &mut *vm_ptr3 };
-            vm.call_object(func, args)
-        });
+        ferrython_core::object::register_vm_call_dispatch(
+            move |func: PyObjectRef, args: Vec<PyObjectRef>| {
+                let vm = unsafe { &mut *vm_ptr3 };
+                vm.call_object(func, args)
+            },
+        );
     }
 
     pub(crate) fn is_exception_class(cls: &PyObjectRef) -> bool {
@@ -149,23 +152,26 @@ impl VirtualMachine {
 
     /// Bind a class-level attribute for instance access: wrap functions as BoundMethod,
     /// and leave descriptors (Instance with __get__) as-is for the VM to invoke __get__.
-    fn bind_class_val_for_instance(obj: &PyObjectRef, inst: &ferrython_core::object::InstanceData, class_val: PyObjectRef) -> PyObjectRef {
+    fn bind_class_val_for_instance(
+        obj: &PyObjectRef,
+        inst: &ferrython_core::object::InstanceData,
+        class_val: PyObjectRef,
+    ) -> PyObjectRef {
         match &class_val.payload {
-            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)
-            | PyObjectPayload::NativeClosure { .. } => {
-                PyObjectRef::new(PyObject {
-                    payload: PyObjectPayload::BoundMethod {
-                        receiver: obj.clone(),
-                        method: class_val,
-                    }
-                })
-            }
+            PyObjectPayload::Function(_)
+            | PyObjectPayload::NativeFunction(_)
+            | PyObjectPayload::NativeClosure { .. } => PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: obj.clone(),
+                    method: class_val,
+                },
+            }),
             PyObjectPayload::StaticMethod(func) => func.clone(),
             PyObjectPayload::ClassMethod(func) => PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: inst.class.clone(),
                     method: func.clone(),
-                }
+                },
             }),
             // For Instance values (including descriptors like _ProxyLookup),
             // return raw — caller must invoke __get__ via the VM if needed.
@@ -175,7 +181,11 @@ impl VirtualMachine {
 
     /// Invoke __get__ on a descriptor to get the actual callable.
     /// Returns the original value if it's not a descriptor.
-    pub(crate) fn resolve_descriptor(&mut self, val: &PyObjectRef, instance: &PyObjectRef) -> PyResult<PyObjectRef> {
+    pub(crate) fn resolve_descriptor(
+        &mut self,
+        val: &PyObjectRef,
+        instance: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
         use ferrython_core::object::has_descriptor_get;
         if has_descriptor_get(val) {
             if let Some(get_method) = val.get_attr("__get__") {
@@ -191,7 +201,7 @@ impl VirtualMachine {
                         payload: PyObjectPayload::BoundMethod {
                             receiver: val.clone(),
                             method: get_method,
-                        }
+                        },
                     })
                 };
                 return self.call_object(bound, vec![instance.clone(), owner]);
@@ -215,7 +225,9 @@ impl VirtualMachine {
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let method = self.resolve_descriptor(&str_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
+                            vec![obj.clone()]
+                        }
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -226,7 +238,9 @@ impl VirtualMachine {
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
+                            vec![obj.clone()]
+                        }
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -257,9 +271,11 @@ impl VirtualMachine {
                 self.vm_repr(obj)
             }
             // For containers, str() is same as repr() (elements use repr)
-            PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) |
-            PyObjectPayload::Dict(_) | PyObjectPayload::Set(_) |
-            PyObjectPayload::FrozenSet(_) => self.vm_repr(obj),
+            PyObjectPayload::List(_)
+            | PyObjectPayload::Tuple(_)
+            | PyObjectPayload::Dict(_)
+            | PyObjectPayload::Set(_)
+            | PyObjectPayload::FrozenSet(_) => self.vm_repr(obj),
             _ => Ok(obj.py_to_string()),
         }
     }
@@ -275,7 +291,12 @@ impl VirtualMachine {
     }
 
     /// Format a single replacement field value with optional conversion and format spec.
-    fn vm_format_field(&mut self, val: &PyObjectRef, conversion: Option<&str>, spec: Option<&str>) -> PyResult<String> {
+    fn vm_format_field(
+        &mut self,
+        val: &PyObjectRef,
+        conversion: Option<&str>,
+        spec: Option<&str>,
+    ) -> PyResult<String> {
         match conversion {
             Some("r") | Some("a") => {
                 let text = self.vm_format_obj_repr(val)?;
@@ -318,12 +339,12 @@ impl VirtualMachine {
     /// Parse a field spec like "name!r:>10" into (field_name, conversion, format_spec).
     fn parse_format_field(field_spec: &str) -> (&str, Option<&str>, Option<&str>) {
         let (field_part, format_spec) = if let Some(cp) = field_spec.find(':') {
-            (&field_spec[..cp], Some(&field_spec[cp+1..]))
+            (&field_spec[..cp], Some(&field_spec[cp + 1..]))
         } else {
             (field_spec, None)
         };
         let (field_name, conversion) = if let Some(bp) = field_part.find('!') {
-            (&field_part[..bp], Some(&field_part[bp+1..]))
+            (&field_part[..bp], Some(&field_part[bp + 1..]))
         } else {
             (field_part, None)
         };
@@ -331,7 +352,11 @@ impl VirtualMachine {
     }
 
     /// VM-aware str.format() with positional args only.
-    pub(crate) fn vm_str_format(&mut self, fmt: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    pub(crate) fn vm_str_format(
+        &mut self,
+        fmt: &str,
+        args: &[PyObjectRef],
+    ) -> PyResult<PyObjectRef> {
         let mut result = String::new();
         let mut chars = fmt.chars().peekable();
         let mut auto_idx = 0usize;
@@ -344,11 +369,18 @@ impl VirtualMachine {
                     let mut field_spec = String::new();
                     let mut depth = 1;
                     for c in chars.by_ref() {
-                        if c == '{' { depth += 1; }
-                        else if c == '}' { depth -= 1; if depth == 0 { break; } }
+                        if c == '{' {
+                            depth += 1;
+                        } else if c == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
                         field_spec.push(c);
                     }
-                    let (field_name, conversion, format_spec) = Self::parse_format_field(&field_spec);
+                    let (field_name, conversion, format_spec) =
+                        Self::parse_format_field(&field_spec);
                     // Resolve value
                     let val = if field_name.is_empty() {
                         let v = args.get(auto_idx).cloned();
@@ -376,7 +408,8 @@ impl VirtualMachine {
 
     /// VM-aware str.format() with keyword args.
     pub(crate) fn vm_str_format_kw(
-        &mut self, fmt: &str,
+        &mut self,
+        fmt: &str,
         pos_args: &[PyObjectRef],
         kwargs: &[(CompactString, PyObjectRef)],
     ) -> PyResult<PyObjectRef> {
@@ -392,8 +425,14 @@ impl VirtualMachine {
                     let mut field_spec = String::new();
                     let mut depth = 1;
                     for c in chars.by_ref() {
-                        if c == '{' { depth += 1; }
-                        else if c == '}' { depth -= 1; if depth == 0 { break; } }
+                        if c == '{' {
+                            depth += 1;
+                        } else if c == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
                         field_spec.push(c);
                     }
                     // Resolve nested braces in format spec
@@ -408,7 +447,10 @@ impl VirtualMachine {
                     } else if let Ok(idx) = field_name.parse::<usize>() {
                         pos_args.get(idx).cloned()
                     } else {
-                        kwargs.iter().find(|(k, _)| k.as_str() == field_name).map(|(_, v)| v.clone())
+                        kwargs
+                            .iter()
+                            .find(|(k, _)| k.as_str() == field_name)
+                            .map(|(_, v)| v.clone())
                     };
                     if let Some(val) = val {
                         result.push_str(&self.vm_format_field(&val, conversion, format_spec)?);
@@ -426,29 +468,37 @@ impl VirtualMachine {
 
     /// Resolve nested {name}/{idx} references inside a format spec.
     fn resolve_nested_spec(
-        &mut self, spec: &str,
+        &mut self,
+        spec: &str,
         pos_args: &[PyObjectRef],
         kwargs: &[(CompactString, PyObjectRef)],
     ) -> Option<String> {
-        if !spec.contains('{') { return None; }
+        if !spec.contains('{') {
+            return None;
+        }
         // Only resolve nested refs in the format_spec part (after ':')
         if let Some(colon_pos) = spec.find(':') {
-            let format_part = &spec[colon_pos+1..];
-            if !format_part.contains('{') { return None; }
+            let format_part = &spec[colon_pos + 1..];
+            if !format_part.contains('{') {
+                return None;
+            }
             let mut r = spec[..=colon_pos].to_string();
             let mut sc = format_part.chars().peekable();
             while let Some(ch) = sc.next() {
                 if ch == '{' {
                     let mut ref_name = String::new();
                     for ch in sc.by_ref() {
-                        if ch == '}' { break; }
+                        if ch == '}' {
+                            break;
+                        }
                         ref_name.push(ch);
                     }
                     if let Ok(idx) = ref_name.parse::<usize>() {
                         if let Some(v) = pos_args.get(idx) {
                             r.push_str(&v.py_to_string());
                         }
-                    } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == ref_name) {
+                    } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == ref_name)
+                    {
                         r.push_str(&v.py_to_string());
                     }
                 } else {
@@ -463,13 +513,16 @@ impl VirtualMachine {
 
     /// Resolve attribute/item access in format fields like "{0.name}" or "{obj.attr}".
     fn resolve_format_field(
-        &mut self, field_name: &str,
+        &mut self,
+        field_name: &str,
         pos_args: &[PyObjectRef],
         auto_idx: usize,
         _kwargs: &[(CompactString, PyObjectRef)],
     ) -> Option<PyObjectRef> {
         // Parse base name: everything before first '.' or '['
-        let base_end = field_name.find(|c: char| c == '.' || c == '[').unwrap_or(field_name.len());
+        let base_end = field_name
+            .find(|c: char| c == '.' || c == '[')
+            .unwrap_or(field_name.len());
         let base = &field_name[..base_end];
         let rest = &field_name[base_end..];
 
@@ -488,7 +541,9 @@ impl VirtualMachine {
                 chars.next();
                 let mut attr = String::new();
                 while let Some(&nc) = chars.peek() {
-                    if nc == '.' || nc == '[' { break; }
+                    if nc == '.' || nc == '[' {
+                        break;
+                    }
                     attr.push(nc);
                     chars.next();
                 }
@@ -497,7 +552,9 @@ impl VirtualMachine {
                 chars.next();
                 let mut key = String::new();
                 for nc in chars.by_ref() {
-                    if nc == ']' { break; }
+                    if nc == ']' {
+                        break;
+                    }
                     key.push(nc);
                 }
                 if let Ok(idx) = key.parse::<i64>() {
@@ -525,7 +582,7 @@ impl VirtualMachine {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),
                         method: close_fn,
-                    }
+                    },
                 });
                 let _ = self.call_object(bound, vec![])?;
             }
@@ -542,7 +599,9 @@ impl VirtualMachine {
                     // If it's a descriptor (Instance with __get__), invoke __get__
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
+                            vec![obj.clone()]
+                        }
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -550,13 +609,16 @@ impl VirtualMachine {
                 }
                 // Dataclass auto-repr (before __builtin_value__ delegation)
                 let class = &inst.class;
-                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__dataclass__")) {
+                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__dataclass__"))
+                {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
                         let field_names = crate::vm_dataclass_utils::extract_field_names(&fields);
                         if !field_names.is_empty() {
                             let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
                                 cd.name.to_string()
-                            } else { "?".to_string() };
+                            } else {
+                                "?".to_string()
+                            };
                             let mut parts = Vec::new();
                             let attrs = inst.attrs.read();
                             for name in &field_names {
@@ -570,12 +632,15 @@ impl VirtualMachine {
                     }
                 }
                 // Namedtuple auto-repr (before __builtin_value__ delegation)
-                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__")) {
+                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__"))
+                {
                     if let Some(fields) = class.get_attr("_fields") {
                         if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                             let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
                                 cd.name.to_string()
-                            } else { "?".to_string() };
+                            } else {
+                                "?".to_string()
+                            };
                             let mut parts = Vec::new();
                             let attrs = inst.attrs.read();
                             for field in field_names.iter() {
@@ -597,7 +662,9 @@ impl VirtualMachine {
             }
             PyObjectPayload::List(items) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
-                if !ferrython_core::object::repr_enter(ptr) { return Ok("[...]".to_string()); }
+                if !ferrython_core::object::repr_enter(ptr) {
+                    return Ok("[...]".to_string());
+                }
                 let items = items.read().clone();
                 let mut parts = Vec::new();
                 for item in &items {
@@ -619,11 +686,15 @@ impl VirtualMachine {
             }
             PyObjectPayload::Dict(m) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
-                if !ferrython_core::object::repr_enter(ptr) { return Ok("{...}".to_string()); }
+                if !ferrython_core::object::repr_enter(ptr) {
+                    return Ok("{...}".to_string());
+                }
                 let m = m.read().clone();
                 let mut parts = Vec::new();
                 for (k, v) in &m {
-                    if ferrython_core::object::is_hidden_dict_key(k) { continue; }
+                    if ferrython_core::object::is_hidden_dict_key(k) {
+                        continue;
+                    }
                     let kr = self.vm_repr(&k.to_object())?;
                     let vr = self.vm_repr(v)?;
                     parts.push(format!("{}: {}", kr, vr));
@@ -633,9 +704,14 @@ impl VirtualMachine {
             }
             PyObjectPayload::Set(m) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
-                if !ferrython_core::object::repr_enter(ptr) { return Ok("set(...)".to_string()); }
+                if !ferrython_core::object::repr_enter(ptr) {
+                    return Ok("set(...)".to_string());
+                }
                 let m = m.read().clone();
-                if m.is_empty() { ferrython_core::object::repr_leave(ptr); return Ok("set()".to_string()); }
+                if m.is_empty() {
+                    ferrython_core::object::repr_leave(ptr);
+                    return Ok("set()".to_string());
+                }
                 let mut parts = Vec::new();
                 for v in m.values() {
                     parts.push(self.vm_repr(v)?);
@@ -655,7 +731,11 @@ impl VirtualMachine {
 
     /// Call a Python object (function, builtin, class).
     pub(crate) fn vm_functools_reduce(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.len() < 2 { return Err(PyException::type_error("reduce() requires at least 2 arguments")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error(
+                "reduce() requires at least 2 arguments",
+            ));
+        }
         let func = args[0].clone();
         let items = self.collect_iterable(&args[1])?;
         let has_initial = args.len() > 2;
@@ -664,7 +744,9 @@ impl VirtualMachine {
         } else if !items.is_empty() {
             items[0].clone()
         } else {
-            return Err(PyException::type_error("reduce() of empty sequence with no initial value"));
+            return Err(PyException::type_error(
+                "reduce() of empty sequence with no initial value",
+            ));
         };
         let start_idx = if has_initial { 0 } else { 1 };
         for item in &items[start_idx..] {
@@ -674,12 +756,19 @@ impl VirtualMachine {
     }
 
     /// VM-level singledispatch call: dispatch based on first arg's type
-    pub(crate) fn vm_singledispatch_call_instance(&mut self, dispatcher: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    pub(crate) fn vm_singledispatch_call_instance(
+        &mut self,
+        dispatcher: &PyObjectRef,
+        args: &[PyObjectRef],
+    ) -> PyResult<PyObjectRef> {
         if args.is_empty() {
-            return Err(PyException::type_error("singledispatch function requires at least 1 argument"));
+            return Err(PyException::type_error(
+                "singledispatch function requires at least 1 argument",
+            ));
         }
         let type_name_str = args[0].type_name();
-        let default = dispatcher.get_attr("__default__")
+        let default = dispatcher
+            .get_attr("__default__")
             .ok_or_else(|| PyException::runtime_error("singledispatch: no default function"))?;
         let registry = dispatcher.get_attr("__registry__");
 
@@ -701,22 +790,28 @@ impl VirtualMachine {
     }
 
     /// VM-level singledispatch.register: register(type) returns decorator
-    pub(crate) fn vm_singledispatch_register(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    pub(crate) fn vm_singledispatch_register(
+        &mut self,
+        args: &[PyObjectRef],
+    ) -> PyResult<PyObjectRef> {
         // args[0] = self (dispatcher), args[1] = type, args[2..] = optional func
         if args.len() < 2 {
-            return Err(PyException::type_error("register() requires a type argument"));
+            return Err(PyException::type_error(
+                "register() requires a type argument",
+            ));
         }
         let dispatcher = args[0].clone();
         let type_obj = &args[1];
         // Extract the actual type name: check for __name__ first (for class types),
         // then fall back to py_to_string
-        let type_name = type_obj.get_attr("__name__")
+        let type_name = type_obj
+            .get_attr("__name__")
             .map(|n| n.py_to_string().to_string())
             .unwrap_or_else(|| {
                 let s = type_obj.py_to_string().to_string();
                 // Strip "<class '...'>" wrapper if present
                 if s.starts_with("<class '") && s.ends_with("'>") {
-                    s[8..s.len()-2].to_string()
+                    s[8..s.len() - 2].to_string()
                 } else {
                     s
                 }
@@ -727,7 +822,10 @@ impl VirtualMachine {
             let func = args[2].clone();
             if let Some(reg) = dispatcher.get_attr("__registry__") {
                 if let PyObjectPayload::Dict(ref map) = reg.payload {
-                    map.write().insert(HashableKey::str_key(CompactString::from(&*type_name)), func.clone());
+                    map.write().insert(
+                        HashableKey::str_key(CompactString::from(&*type_name)),
+                        func.clone(),
+                    );
                 }
             }
             return Ok(func);
@@ -739,12 +837,15 @@ impl VirtualMachine {
             "singledispatch.register_decorator",
             move |deco_args| {
                 if deco_args.is_empty() {
-                    return Err(PyException::type_error("register decorator requires 1 argument"));
+                    return Err(PyException::type_error(
+                        "register decorator requires 1 argument",
+                    ));
                 }
                 let func = deco_args[0].clone();
                 if let Some(reg) = dispatcher.get_attr("__registry__") {
                     if let PyObjectPayload::Dict(ref map) = reg.payload {
-                        map.write().insert(HashableKey::str_key(CompactString::from(&tn)), func.clone());
+                        map.write()
+                            .insert(HashableKey::str_key(CompactString::from(&tn)), func.clone());
                     }
                 }
                 Ok(func)
@@ -755,21 +856,47 @@ impl VirtualMachine {
     /// VM-level itertools.islice: lazily takes items from any iterable (including generators).
     pub(crate) fn vm_itertools_islice(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
-            return Err(PyException::type_error("islice() requires at least 2 arguments"));
+            return Err(PyException::type_error(
+                "islice() requires at least 2 arguments",
+            ));
         }
         let iterable = &args[0];
         // None stop means no limit (use usize::MAX as sentinel)
         let (start, stop, step) = if args.len() == 2 {
-            let stop = if matches!(&args[1].payload, PyObjectPayload::None) { usize::MAX } else { args[1].to_int()? as usize };
+            let stop = if matches!(&args[1].payload, PyObjectPayload::None) {
+                usize::MAX
+            } else {
+                args[1].to_int()? as usize
+            };
             (0usize, stop, 1usize)
         } else if args.len() == 3 {
-            let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-            let stop = if matches!(&args[2].payload, PyObjectPayload::None) { usize::MAX } else { args[2].to_int()? as usize };
+            let s = if matches!(&args[1].payload, PyObjectPayload::None) {
+                0
+            } else {
+                args[1].to_int()? as usize
+            };
+            let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
+                usize::MAX
+            } else {
+                args[2].to_int()? as usize
+            };
             (s, stop, 1usize)
         } else {
-            let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-            let stop = if matches!(&args[2].payload, PyObjectPayload::None) { usize::MAX } else { args[2].to_int()? as usize };
-            let st = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
+            let s = if matches!(&args[1].payload, PyObjectPayload::None) {
+                0
+            } else {
+                args[1].to_int()? as usize
+            };
+            let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
+                usize::MAX
+            } else {
+                args[2].to_int()? as usize
+            };
+            let st = if matches!(&args[3].payload, PyObjectPayload::None) {
+                1
+            } else {
+                args[3].to_int()? as usize
+            };
             (s, stop, st.max(1))
         };
 
@@ -780,8 +907,12 @@ impl VirtualMachine {
             let mut idx = 0usize;
             let mut next_yield = start;
             loop {
-                if result.len() >= stop.saturating_sub(start) { break; }
-                if idx >= stop { break; }
+                if result.len() >= stop.saturating_sub(start) {
+                    break;
+                }
+                if idx >= stop {
+                    break;
+                }
                 match self.resume_generator(&gen_arc, PyObject::none()) {
                     Ok(value) => {
                         if idx == next_yield {
@@ -794,18 +925,27 @@ impl VirtualMachine {
                     Err(e) => return Err(e),
                 }
             }
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
-            )));
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
+                    items: result,
+                    index: 0,
+                }),
+            ))));
         }
 
         // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &iterable.payload {
+        if let PyObjectPayload::Iterator(_)
+        | PyObjectPayload::RangeIter(..)
+        | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::RefIter { .. } = &iterable.payload
+        {
             let mut result = Vec::new();
             let mut idx = 0usize;
             let mut next_yield = start;
             loop {
-                if idx >= stop { break; }
+                if idx >= stop {
+                    break;
+                }
                 match self.advance_lazy_iterator(iterable) {
                     Ok(Some(value)) => {
                         if idx == next_yield {
@@ -831,9 +971,12 @@ impl VirtualMachine {
                     }
                 }
             }
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
-            )));
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
+                    items: result,
+                    index: 0,
+                }),
+            ))));
         }
 
         // For Instance with __iter__/__next__: iterate through VM
@@ -849,14 +992,18 @@ impl VirtualMachine {
 
         // Fallback: eagerly collect then slice (works for lists, tuples, etc.)
         let items = iterable.to_list()?;
-        let result: Vec<PyObjectRef> = items.into_iter()
+        let result: Vec<PyObjectRef> = items
+            .into_iter()
             .skip(start)
             .take(stop.saturating_sub(start))
             .step_by(step)
             .collect();
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
-        )))
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: result,
+                index: 0,
+            }),
+        ))))
     }
 
     /// Resolve an iterable object to its iterator by calling __iter__ if needed.
@@ -885,14 +1032,17 @@ impl VirtualMachine {
             }
             // Has __getitem__: use sequence protocol — return a lazy SeqIter
             if obj.get_attr("__getitem__").is_some() {
-                return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                    Rc::new(PyCell::new(IteratorData::SeqIter {
-                        obj: obj.clone(), index: 0, exhausted: false,
-                    }))
-                )));
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::SeqIter {
+                        obj: obj.clone(),
+                        index: 0,
+                        exhausted: false,
+                    }),
+                ))));
             }
             return Err(PyException::type_error(format!(
-                "'{}' object is not iterable", obj.type_name()
+                "'{}' object is not iterable",
+                obj.type_name()
             )));
         }
         builtins::get_iter_from_obj_pub(obj)
@@ -921,6 +1071,19 @@ impl VirtualMachine {
                 Ok(items)
             }
             PyObjectPayload::Instance(inst) => {
+                if inst.attrs.read().contains_key("__chainmap__") {
+                    if let Some(maps_obj) = obj.get_attr("maps") {
+                        let maps = maps_obj.to_list()?;
+                        let mut combined = IndexMap::new();
+                        for mapping in maps.iter().rev() {
+                            for key in mapping.to_list()? {
+                                let hk = key.to_hashable_key()?;
+                                combined.insert(hk, key);
+                            }
+                        }
+                        return Ok(combined.keys().map(|k| k.to_object()).collect());
+                    }
+                }
                 // Dict subclass: iterate over keys
                 if let Some(ref ds) = inst.dict_storage {
                     return Ok(ds.read().keys().map(|k| k.to_object()).collect());
@@ -928,11 +1091,20 @@ impl VirtualMachine {
                 if let Some(iter_method) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_method, vec![])?;
                     // If __iter__ returned a list/tuple, convert directly
-                    if matches!(&iter_obj.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                    if matches!(
+                        &iter_obj.payload,
+                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)
+                    ) {
                         return iter_obj.to_list();
                     }
                     // If __iter__ returned a builtin Iterator, use iter_advance
-                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
+                    if matches!(
+                        &iter_obj.payload,
+                        PyObjectPayload::Iterator(_)
+                            | PyObjectPayload::RangeIter(..)
+                            | PyObjectPayload::VecIter(_)
+                            | PyObjectPayload::RefIter { .. }
+                    ) {
                         let mut items = Vec::new();
                         loop {
                             match builtins::iter_advance(&iter_obj)? {
@@ -964,7 +1136,9 @@ impl VirtualMachine {
                                 Err(e) if e.kind == ExceptionKind::StopIteration => break,
                                 Err(e) => return Err(e),
                             }
-                        } else { break; }
+                        } else {
+                            break;
+                        }
                     }
                     Ok(items)
                 } else if let Some(getitem) = obj.get_attr("__getitem__") {
@@ -973,7 +1147,10 @@ impl VirtualMachine {
                     let mut idx: i64 = 0;
                     loop {
                         match self.call_object(getitem.clone(), vec![PyObject::int(idx)]) {
-                            Ok(val) => { items.push(val); idx += 1; }
+                            Ok(val) => {
+                                items.push(val);
+                                idx += 1;
+                            }
                             Err(e) if e.kind == ExceptionKind::IndexError => break,
                             Err(e) => return Err(e),
                         }
@@ -997,13 +1174,17 @@ impl VirtualMachine {
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
                         let items = unsafe { &*cell.data_ptr() };
-                        if idx >= items.len() { return Ok(vec![]); }
+                        if idx >= items.len() {
+                            return Ok(vec![]);
+                        }
                         let result = items[idx..].to_vec();
                         index.set(usize::MAX);
                         Ok(result)
                     }
                     PyObjectPayload::Tuple(items) => {
-                        if idx >= items.len() { return Ok(vec![]); }
+                        if idx >= items.len() {
+                            return Ok(vec![]);
+                        }
                         let result = items[idx..].to_vec();
                         index.set(usize::MAX);
                         Ok(result)
@@ -1015,19 +1196,24 @@ impl VirtualMachine {
                 // Check for lazy iterators that need VM context
                 let is_lazy = {
                     let data = iter_data_arc.read();
-                    matches!(&*data, IteratorData::Enumerate { .. }
-                        | IteratorData::Zip { .. }
-                        | IteratorData::Map { .. }
-                        | IteratorData::Filter { .. }
-                        | IteratorData::Sentinel { .. }
-                        | IteratorData::TakeWhile { .. }
-                        | IteratorData::DropWhile { .. }
-                        | IteratorData::Count { .. }
-                        | IteratorData::Cycle { .. }
-                        | IteratorData::Repeat { .. }
-                        | IteratorData::Chain { .. }
-                        | IteratorData::SeqIter { .. }
-                        | IteratorData::Starmap { .. })
+                    matches!(
+                        &*data,
+                        IteratorData::Enumerate { .. }
+                            | IteratorData::Zip { .. }
+                            | IteratorData::Map { .. }
+                            | IteratorData::Filter { .. }
+                            | IteratorData::FilterFalse { .. }
+                            | IteratorData::Sentinel { .. }
+                            | IteratorData::TakeWhile { .. }
+                            | IteratorData::DropWhile { .. }
+                            | IteratorData::Count { .. }
+                            | IteratorData::Cycle { .. }
+                            | IteratorData::Repeat { .. }
+                            | IteratorData::Chain { .. }
+                            | IteratorData::SeqIter { .. }
+                            | IteratorData::Starmap { .. }
+                            | IteratorData::Tee { .. }
+                    )
                 };
                 if is_lazy {
                     let mut items = Vec::new();
@@ -1136,11 +1322,7 @@ impl VirtualMachine {
             // Copy frame from call_stack to a heap buffer (1 memcpy, reuses freelist)
             let buf = gen_frame_alloc();
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    frame_ref as *const Frame,
-                    buf,
-                    1,
-                );
+                std::ptr::copy_nonoverlapping(frame_ref as *const Frame, buf, 1);
                 self.call_stack.set_len(cs_len - 1); // "pop" without drop
             }
             gen.set_frame_ptr(buf as *mut u8);
@@ -1271,7 +1453,8 @@ impl VirtualMachine {
             exc.original = Some(orig.clone());
         }
         let exc_result = Err(exc);
-        let exc_obj = original_value.clone()
+        let exc_obj = original_value
+            .clone()
             .unwrap_or_else(|| PyObject::exception_instance(kind, msg.clone()));
         let exc_type = PyObject::exception_type(kind);
         let tb = PyObject::none();
@@ -1312,7 +1495,10 @@ impl VirtualMachine {
                     return Err(e);
                 }
                 let return_val = result.ok();
-                let msg = return_val.as_ref().map(|v| v.py_to_string()).unwrap_or_default();
+                let msg = return_val
+                    .as_ref()
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_default();
                 let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
                 exc.value = return_val;
                 Err(exc)
@@ -1330,7 +1516,11 @@ impl VirtualMachine {
 
     /// Parse the arguments to generator.throw() / coroutine.throw() into (ExceptionKind, message).
     pub(crate) fn parse_throw_args(args: &[PyObjectRef]) -> (ExceptionKind, CompactString) {
-        let msg: CompactString = if args.len() >= 2 { args[1].py_to_string().into() } else { CompactString::new("") };
+        let msg: CompactString = if args.len() >= 2 {
+            args[1].py_to_string().into()
+        } else {
+            CompactString::new("")
+        };
         let kind = if !args.is_empty() {
             match &args[0].payload {
                 PyObjectPayload::ExceptionType(k) => *k,
@@ -1373,7 +1563,10 @@ impl VirtualMachine {
                     }
                     Err(e) if e.kind == ExceptionKind::StopIteration => {
                         // Async generator returned (exhausted) — raise StopAsyncIteration
-                        Err(PyException::new(ExceptionKind::StopAsyncIteration, String::new()))
+                        Err(PyException::new(
+                            ExceptionKind::StopAsyncIteration,
+                            String::new(),
+                        ))
                     }
                     Err(e) => Err(e),
                 }
@@ -1387,15 +1580,14 @@ impl VirtualMachine {
                         exc.value = Some(yielded);
                         Err(exc)
                     }
-                    Err(e) if e.kind == ExceptionKind::StopIteration => {
-                        Err(PyException::new(ExceptionKind::StopAsyncIteration, String::new()))
-                    }
+                    Err(e) if e.kind == ExceptionKind::StopIteration => Err(PyException::new(
+                        ExceptionKind::StopAsyncIteration,
+                        String::new(),
+                    )),
                     Err(e) => Err(e),
                 }
             }
-            AsyncGenAction::Throw(exc_kind, msg) => {
-                self.gen_throw(gen, *exc_kind, msg.clone())
-            }
+            AsyncGenAction::Throw(exc_kind, msg) => self.gen_throw(gen, *exc_kind, msg.clone()),
             AsyncGenAction::Close => {
                 // Like generator.close(): throw GeneratorExit, expect finish
                 let g = gen.read();
@@ -1405,12 +1597,14 @@ impl VirtualMachine {
                 }
                 drop(g);
                 match self.gen_throw(gen, ExceptionKind::GeneratorExit, CompactString::new("")) {
-                    Ok(_yielded) => {
-                        Err(PyException::runtime_error("async generator ignored GeneratorExit"))
-                    }
-                    Err(e) if e.kind == ExceptionKind::GeneratorExit
-                           || e.kind == ExceptionKind::StopIteration
-                           || e.kind == ExceptionKind::StopAsyncIteration => {
+                    Ok(_yielded) => Err(PyException::runtime_error(
+                        "async generator ignored GeneratorExit",
+                    )),
+                    Err(e)
+                        if e.kind == ExceptionKind::GeneratorExit
+                            || e.kind == ExceptionKind::StopIteration
+                            || e.kind == ExceptionKind::StopAsyncIteration =>
+                    {
                         let mut g = gen.write();
                         g.finished = true;
                         g.clear_frame();
@@ -1450,7 +1644,10 @@ impl VirtualMachine {
                     }
                 }
             }
-            PyObjectPayload::DeferredSleep { secs, result: sleep_result } => {
+            PyObjectPayload::DeferredSleep {
+                secs,
+                result: sleep_result,
+            } => {
                 // Perform the deferred sleep now, respecting wait_for deadline
                 let secs = *secs;
                 let sleep_result = sleep_result.clone();
@@ -1511,7 +1708,8 @@ impl VirtualMachine {
                     }
                 } else {
                     Err(PyException::type_error(format!(
-                        "'{}' object is not an iterator", iter_obj.type_name()
+                        "'{}' object is not an iterator",
+                        iter_obj.type_name()
                     )))
                 }
             }
@@ -1524,6 +1722,7 @@ impl VirtualMachine {
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
                         | IteratorData::Filter { .. }
+                        | IteratorData::FilterFalse { .. }
                         | IteratorData::Sentinel { .. }
                         | IteratorData::TakeWhile { .. }
                         | IteratorData::DropWhile { .. }
@@ -1532,7 +1731,8 @@ impl VirtualMachine {
                         | IteratorData::Repeat { .. }
                         | IteratorData::Chain { .. }
                         | IteratorData::SeqIter { .. }
-                        | IteratorData::Starmap { .. } => {
+                        | IteratorData::Starmap { .. }
+                        | IteratorData::Tee { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
                         }
@@ -1577,7 +1777,9 @@ impl VirtualMachine {
                             Ok(None)
                         }
                     }
-                    PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                    PyObjectPayload::Dict(cell)
+                    | PyObjectPayload::MappingProxy(cell)
+                    | PyObjectPayload::DictKeys(cell) => {
                         let map = unsafe { &*cell.data_ptr() };
                         if idx < map.len() {
                             let v = map.get_index(idx).unwrap().0.to_object();
@@ -1591,13 +1793,17 @@ impl VirtualMachine {
                 }
             }
             _ => Err(PyException::type_error(format!(
-                "'{}' object is not an iterator", iter_obj.type_name()
+                "'{}' object is not an iterator",
+                iter_obj.type_name()
             ))),
         }
     }
 
     /// Advance lazy iterator variants (Enumerate, Zip, Map, Filter).
-    pub(crate) fn advance_lazy_iterator(&mut self, iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    pub(crate) fn advance_lazy_iterator(
+        &mut self,
+        iter_obj: &PyObjectRef,
+    ) -> PyResult<Option<PyObjectRef>> {
         let iter_data_arc = match &iter_obj.payload {
             PyObjectPayload::Iterator(arc) => arc.clone(),
             _ => return Err(PyException::type_error("not an iterator")),
@@ -1614,7 +1820,9 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
-            IteratorData::Zip { sources, strict, .. } => {
+            IteratorData::Zip {
+                sources, strict, ..
+            } => {
                 let srcs: Vec<PyObjectRef> = sources.clone();
                 let is_strict = *strict;
                 drop(data);
@@ -1637,24 +1845,26 @@ impl VirtualMachine {
                 if is_strict && !exhausted.is_empty() {
                     if exhausted.len() != srcs.len() {
                         return Err(PyException::value_error(
-                            "zip() has arguments with different lengths"
+                            "zip() has arguments with different lengths",
                         ));
                     }
                     return Ok(None); // All exhausted at same time
                 }
                 Ok(Some(PyObject::tuple(items)))
             }
-            IteratorData::Map { func, source } => {
+            IteratorData::Map { func, sources } => {
                 let f = func.clone();
-                let src = source.clone();
+                let srcs = sources.clone();
                 drop(data);
-                match self.vm_iter_next(&src)? {
-                    Some(val) => {
-                        let result = self.call_object(f, vec![val])?;
-                        Ok(Some(result))
+                let mut call_args = Vec::with_capacity(srcs.len());
+                for src in &srcs {
+                    match self.vm_iter_next(src)? {
+                        Some(val) => call_args.push(val),
+                        None => return Ok(None),
                     }
-                    None => Ok(None),
                 }
+                let result = self.call_object(f, call_args)?;
+                Ok(Some(result))
             }
             IteratorData::Filter { func, source } => {
                 let f = func.clone();
@@ -1677,6 +1887,27 @@ impl VirtualMachine {
                     }
                 }
             }
+            IteratorData::FilterFalse { func, source } => {
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                loop {
+                    match self.vm_iter_next(&src)? {
+                        Some(val) => {
+                            let test_result = if matches!(&f.payload, PyObjectPayload::None) {
+                                self.vm_is_truthy(&val)?
+                            } else {
+                                let r = self.call_object(f.clone(), vec![val.clone()])?;
+                                self.vm_is_truthy(&r)?
+                            };
+                            if !test_result {
+                                return Ok(Some(val));
+                            }
+                        }
+                        None => return Ok(None),
+                    }
+                }
+            }
             IteratorData::Sentinel { callable, sentinel } => {
                 let f = callable.clone();
                 let s = sentinel.clone();
@@ -1690,7 +1921,10 @@ impl VirtualMachine {
                 }
             }
             IteratorData::TakeWhile { func, source, done } => {
-                if *done { drop(data); return Ok(None); }
+                if *done {
+                    drop(data);
+                    return Ok(None);
+                }
                 let f = func.clone();
                 let src = source.clone();
                 drop(data);
@@ -1712,7 +1946,11 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
-            IteratorData::DropWhile { func, source, dropping } => {
+            IteratorData::DropWhile {
+                func,
+                source,
+                dropping,
+            } => {
                 let f = func.clone();
                 let src = source.clone();
                 let is_dropping = *dropping;
@@ -1725,7 +1963,9 @@ impl VirtualMachine {
                                 if !self.vm_is_truthy(&test)? {
                                     // Stop dropping, mark state
                                     if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
-                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.write() {
+                                        if let IteratorData::DropWhile { dropping, .. } =
+                                            &mut *arc.write()
+                                        {
                                             *dropping = false;
                                         }
                                     }
@@ -1757,25 +1997,23 @@ impl VirtualMachine {
                 drop(data);
                 Ok(Some(val))
             }
-            IteratorData::Repeat { item, remaining } => {
-                match remaining {
-                    Some(0) => {
-                        drop(data);
-                        Ok(None)
-                    }
-                    Some(ref mut n) => {
-                        let val = item.clone();
-                        *n -= 1;
-                        drop(data);
-                        Ok(Some(val))
-                    }
-                    None => {
-                        let val = item.clone();
-                        drop(data);
-                        Ok(Some(val))
-                    }
+            IteratorData::Repeat { item, remaining } => match remaining {
+                Some(0) => {
+                    drop(data);
+                    Ok(None)
                 }
-            }
+                Some(ref mut n) => {
+                    let val = item.clone();
+                    *n -= 1;
+                    drop(data);
+                    Ok(Some(val))
+                }
+                None => {
+                    let val = item.clone();
+                    drop(data);
+                    Ok(Some(val))
+                }
+            },
             IteratorData::Chain { sources, current } => {
                 // Clone what we need, then drop lock
                 let srcs = sources.clone();
@@ -1809,15 +2047,62 @@ impl VirtualMachine {
                 drop(data);
                 match self.vm_iter_next(&src)? {
                     Some(args_tuple) => {
-                        let call_args = args_tuple.to_list().unwrap_or_else(|_| vec![args_tuple.clone()]);
+                        let call_args = args_tuple
+                            .to_list()
+                            .unwrap_or_else(|_| vec![args_tuple.clone()]);
                         let result = self.call_object(f, call_args)?;
                         Ok(Some(result))
                     }
                     None => Ok(None),
                 }
             }
-            IteratorData::SeqIter { obj, index, exhausted } => {
-                if *exhausted { drop(data); return Ok(None); }
+            IteratorData::Tee {
+                source,
+                buffer,
+                index,
+            } => {
+                let src_cell = Rc::clone(source);
+                let buf_cell = Rc::clone(buffer);
+                let idx = *index;
+                drop(data);
+
+                // Fast path: item already in shared buffer
+                {
+                    let buf = buf_cell.read();
+                    if idx < buf.len() {
+                        let val = buf[idx].clone();
+                        drop(buf);
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::Tee { index, .. } = &mut *d {
+                            *index = idx + 1;
+                        }
+                        return Ok(Some(val));
+                    }
+                }
+
+                // Need to pull from source; we own the right to pull item `idx`
+                let src = src_cell.read().clone();
+                match self.vm_iter_next(&src)? {
+                    Some(val) => {
+                        buf_cell.write().push(val.clone());
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::Tee { index, .. } = &mut *d {
+                            *index = idx + 1;
+                        }
+                        Ok(Some(val))
+                    }
+                    None => Ok(None),
+                }
+            }
+            IteratorData::SeqIter {
+                obj,
+                index,
+                exhausted,
+            } => {
+                if *exhausted {
+                    drop(data);
+                    return Ok(None);
+                }
                 let src = obj.clone();
                 let idx = *index;
                 drop(data);
@@ -1825,20 +2110,28 @@ impl VirtualMachine {
                     Some(f) => f,
                     None => {
                         let mut d = iter_data_arc.write();
-                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d { *exhausted = true; }
+                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d {
+                            *exhausted = true;
+                        }
                         return Ok(None);
                     }
                 };
                 match self.call_object(getitem, vec![PyObject::int(idx)]) {
                     Ok(val) => {
                         let mut d = iter_data_arc.write();
-                        if let IteratorData::SeqIter { index, .. } = &mut *d { *index = idx.wrapping_add(1); }
+                        if let IteratorData::SeqIter { index, .. } = &mut *d {
+                            *index = idx.wrapping_add(1);
+                        }
                         Ok(Some(val))
                     }
-                    Err(e) if e.kind == ExceptionKind::StopIteration
-                        || e.kind == ExceptionKind::IndexError => {
+                    Err(e)
+                        if e.kind == ExceptionKind::StopIteration
+                            || e.kind == ExceptionKind::IndexError =>
+                    {
                         let mut d = iter_data_arc.write();
-                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d { *exhausted = true; }
+                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d {
+                            *exhausted = true;
+                        }
                         Ok(None)
                     }
                     Err(e) => Err(e),
@@ -1864,7 +2157,11 @@ impl VirtualMachine {
         }
         // Get an iterator and collect via VM
         let iter_obj = match &obj.payload {
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Iterator(_)
+            | PyObjectPayload::RangeIter(..)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let result = self.call_object(iter_fn, vec![])?;
@@ -1876,13 +2173,15 @@ impl VirtualMachine {
                     result
                 } else {
                     return Err(PyException::type_error(format!(
-                        "cannot unpack non-iterable {} object", obj.type_name()
+                        "cannot unpack non-iterable {} object",
+                        obj.type_name()
                     )));
                 }
             }
             _ => {
                 return Err(PyException::type_error(format!(
-                    "cannot unpack non-iterable {} object", obj.type_name()
+                    "cannot unpack non-iterable {} object",
+                    obj.type_name()
                 )));
             }
         };
@@ -1900,18 +2199,42 @@ impl VirtualMachine {
     /// Uses insertion sort to allow &mut self access during comparisons.
     pub fn vm_sort(&mut self, items: &mut Vec<PyObjectRef>) -> PyResult<()> {
         let n = items.len();
-        if n <= 1 { return Ok(()); }
+        if n <= 1 {
+            return Ok(());
+        }
         // Fast check: peek first element to decide sort strategy.
         // If first is not an Instance, likely all are homogeneous primitives.
         let first_is_instance = matches!(&items[0].payload, PyObjectPayload::Instance(_));
         if !first_is_instance {
             // Homogeneous small-int: extract i64, sort natively, skip per-comparison matching
-            if matches!(&items[0].payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))) {
-                let all_small = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+            if matches!(
+                &items[0].payload,
+                PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))
+            ) {
+                let all_small = items.iter().all(|x| {
+                    matches!(
+                        &x.payload,
+                        PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))
+                    )
+                });
                 if all_small {
                     items.sort_unstable_by(|a, b| {
-                        let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
-                        let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
+                        let av =
+                            if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) =
+                                &a.payload
+                            {
+                                *v
+                            } else {
+                                0
+                            };
+                        let bv =
+                            if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) =
+                                &b.payload
+                            {
+                                *v
+                            } else {
+                                0
+                            };
                         av.cmp(&bv)
                     });
                     return Ok(());
@@ -1954,7 +2277,12 @@ impl VirtualMachine {
         use ferrython_core::object::CompareOp;
         if let PyObjectPayload::Instance(_inst) = &a.payload {
             if let Some(method) = a.get_attr("__lt__") {
-                let call_res = if matches!(&method.payload, PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
+                let call_res = if matches!(
+                    &method.payload,
+                    PyObjectPayload::NativeFunction(_)
+                        | PyObjectPayload::NativeClosure(_)
+                        | PyObjectPayload::Function(_)
+                ) {
                     self.call_object(method, vec![a.clone(), b.clone()])
                 } else {
                     self.call_object(method, vec![b.clone()])
@@ -1966,7 +2294,10 @@ impl VirtualMachine {
                 // where __lt__ isn't wired for Instance receivers). Fall through
                 // to generic compare, which handles tuple-subclass ordering.
             }
-            return Ok(a.compare(b, CompareOp::Lt).map(|v| v.is_truthy()).unwrap_or(false));
+            return Ok(a
+                .compare(b, CompareOp::Lt)
+                .map(|v| v.is_truthy())
+                .unwrap_or(false));
         }
         Ok(builtins::partial_cmp_for_sort(a, b) == Some(std::cmp::Ordering::Less))
     }
@@ -2027,13 +2358,17 @@ impl VirtualMachine {
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
             Rc::clone(co)
         } else {
-            let code_str = args[0].as_str().ok_or_else(||
-                PyException::type_error("exec() arg 1 must be a string or code object"))?;
+            let code_str = args[0].as_str().ok_or_else(|| {
+                PyException::type_error("exec() arg 1 must be a string or code object")
+            })?;
             let module = ferrython_parser::parse(code_str, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            Rc::new(compiler.compile_module(&module)
-                .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?)
+            Rc::new(
+                compiler
+                    .compile_module(&module)
+                    .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?,
+            )
         };
         if args.len() >= 2 {
             // Accept both Dict and InstanceDict (returned by globals())
@@ -2047,7 +2382,8 @@ impl VirtualMachine {
                 if let Some(ld) = locals_dict {
                     // Merge locals into a copy, execute, then write back
                     let mut new_globals = shared_globals.read().clone();
-                    let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
+                    let original_global_keys: Vec<CompactString> =
+                        new_globals.keys().cloned().collect();
                     Self::merge_dict_into_attrmap(ld, &mut new_globals);
                     let exec_shared = Rc::new(PyCell::new(new_globals));
                     self.execute_with_globals(code, exec_shared.clone())?;
@@ -2078,7 +2414,8 @@ impl VirtualMachine {
                 drop(m);
                 // Merge locals dict into globals for execution scope
                 // Track original global keys so we can separate results later
-                let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
+                let original_global_keys: Vec<CompactString> =
+                    new_globals.keys().cloned().collect();
                 if args.len() >= 3 {
                     Self::merge_dict_into_attrmap(&args[2], &mut new_globals);
                 }
@@ -2131,11 +2468,17 @@ impl VirtualMachine {
         }
     }
 
-    fn write_back_locals(locals_obj: &PyObjectRef, results: &FxAttrMap, original_global_keys: &[CompactString]) {
+    fn write_back_locals(
+        locals_obj: &PyObjectRef,
+        results: &FxAttrMap,
+        original_global_keys: &[CompactString],
+    ) {
         if let PyObjectPayload::Dict(ref lmap) = locals_obj.payload {
             let mut lm = lmap.write();
             for (k, v) in results.iter() {
-                if !original_global_keys.contains(k) || lm.contains_key(&HashableKey::str_key(k.clone())) {
+                if !original_global_keys.contains(k)
+                    || lm.contains_key(&HashableKey::str_key(k.clone()))
+                {
                     lm.insert(HashableKey::str_key(k.clone()), v.clone());
                 }
             }
@@ -2157,104 +2500,121 @@ impl VirtualMachine {
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
             Rc::clone(co)
         } else {
-            let code_str = args[0].as_str().ok_or_else(||
-                PyException::type_error("eval() arg 1 must be a string, bytes or code object"))?;
+            let code_str = args[0].as_str().ok_or_else(|| {
+                PyException::type_error("eval() arg 1 must be a string, bytes or code object")
+            })?;
             let wrapped = format!("__eval_result__ = ({})", code_str);
             let module = ferrython_parser::parse(&wrapped, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            Rc::new(compiler.compile_module(&module)
-                .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?)
+            Rc::new(
+                compiler
+                    .compile_module(&module)
+                    .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?,
+            )
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
             // Extract globals as FxAttrMap, whether Dict or InstanceDict
-            let (new_globals, globals_source) = if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
-                let g = shared_g.read().clone();
-                (g, Some(args[1].clone()))
-            } else if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {
-                let mut ng = FxAttrMap::default();
-                let gm = globs_map.read();
-                for (k, v) in gm.iter() {
-                    let key_str = match k {
-                        HashableKey::Str(s) => s.as_ref().clone(),
-                        _ => CompactString::from(format!("{:?}", k)),
-                    };
-                    ng.insert(key_str, v.clone());
-                }
-                (ng, Some(args[1].clone()))
-            } else {
-                return Err(PyException::type_error("eval() globals must be a dict"));
-            };
+            let (new_globals, globals_source) =
+                if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {
+                    let g = shared_g.read().clone();
+                    (g, Some(args[1].clone()))
+                } else if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {
+                    let mut ng = FxAttrMap::default();
+                    let gm = globs_map.read();
+                    for (k, v) in gm.iter() {
+                        let key_str = match k {
+                            HashableKey::Str(s) => s.as_ref().clone(),
+                            _ => CompactString::from(format!("{:?}", k)),
+                        };
+                        ng.insert(key_str, v.clone());
+                    }
+                    (ng, Some(args[1].clone()))
+                } else {
+                    return Err(PyException::type_error("eval() globals must be a dict"));
+                };
 
             let mut exec_globals = new_globals;
 
-                // Check if we have a separate locals dict (args[2] that is not None)
-                let has_separate_locals = args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None);
+            // Check if we have a separate locals dict (args[2] that is not None)
+            let has_separate_locals =
+                args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None);
 
-                // Merge locals entries into globals for name resolution
-                let original_global_keys: std::collections::HashSet<CompactString> =
-                    exec_globals.keys().cloned().collect();
-                if has_separate_locals {
-                    Self::merge_dict_into_attrmap(&args[2], &mut exec_globals);
-                }
+            // Merge locals entries into globals for name resolution
+            let original_global_keys: std::collections::HashSet<CompactString> =
+                exec_globals.keys().cloned().collect();
+            if has_separate_locals {
+                Self::merge_dict_into_attrmap(&args[2], &mut exec_globals);
+            }
 
-                let shared = Rc::new(PyCell::new(exec_globals));
-                let exec_result = self.execute_with_globals(code, shared.clone())?;
+            let shared = Rc::new(PyCell::new(exec_globals));
+            let exec_result = self.execute_with_globals(code, shared.clone())?;
 
-                // Check for __eval_result__ (compile(mode='eval') wrapping)
-                let eval_result = shared.read().get("__eval_result__").cloned();
+            // Check for __eval_result__ (compile(mode='eval') wrapping)
+            let eval_result = shared.read().get("__eval_result__").cloned();
 
-                // Write results back to the appropriate dicts
-                let results = shared.read();
-                if has_separate_locals {
-                    // Write back globals
-                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = sg.write();
-                        for (k, v) in results.iter() {
-                            if original_global_keys.contains(k) {
-                                gm.insert(k.clone(), v.clone());
-                            }
-                        }
-                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = globs_map.write();
-                        for (k, v) in results.iter() {
-                            if original_global_keys.contains(k) {
-                                gm.insert(HashableKey::str_key(k.clone()), v.clone());
-                            }
-                        }
-                    }
-                    // Write back locals
-                    let ogk: Vec<CompactString> = original_global_keys.into_iter().collect();
-                    Self::write_back_locals(&args[2], &results, &ogk);
-                } else {
-                    // No separate locals: write everything back to globals
-                    if let PyObjectPayload::InstanceDict(ref sg) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = sg.write();
-                        for (k, v) in results.iter() {
+            // Write results back to the appropriate dicts
+            let results = shared.read();
+            if has_separate_locals {
+                // Write back globals
+                if let PyObjectPayload::InstanceDict(ref sg) =
+                    globals_source.as_ref().unwrap().payload
+                {
+                    let mut gm = sg.write();
+                    for (k, v) in results.iter() {
+                        if original_global_keys.contains(k) {
                             gm.insert(k.clone(), v.clone());
                         }
-                    } else if let PyObjectPayload::Dict(ref globs_map) = globals_source.as_ref().unwrap().payload {
-                        let mut gm = globs_map.write();
-                        for (k, v) in results.iter() {
+                    }
+                } else if let PyObjectPayload::Dict(ref globs_map) =
+                    globals_source.as_ref().unwrap().payload
+                {
+                    let mut gm = globs_map.write();
+                    for (k, v) in results.iter() {
+                        if original_global_keys.contains(k) {
                             gm.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                     }
                 }
-                drop(results);
+                // Write back locals
+                let ogk: Vec<CompactString> = original_global_keys.into_iter().collect();
+                Self::write_back_locals(&args[2], &results, &ogk);
+            } else {
+                // No separate locals: write everything back to globals
+                if let PyObjectPayload::InstanceDict(ref sg) =
+                    globals_source.as_ref().unwrap().payload
+                {
+                    let mut gm = sg.write();
+                    for (k, v) in results.iter() {
+                        gm.insert(k.clone(), v.clone());
+                    }
+                } else if let PyObjectPayload::Dict(ref globs_map) =
+                    globals_source.as_ref().unwrap().payload
+                {
+                    let mut gm = globs_map.write();
+                    for (k, v) in results.iter() {
+                        gm.insert(HashableKey::str_key(k.clone()), v.clone());
+                    }
+                }
+            }
+            drop(results);
 
-                if let Some(val) = eval_result {
-                    return Ok(val);
-                }
-                if is_code_obj {
-                    return Ok(exec_result);
-                }
-                Ok(PyObject::none())
+            if let Some(val) = eval_result {
+                return Ok(val);
+            }
+            if is_code_obj {
+                return Ok(exec_result);
+            }
+            Ok(PyObject::none())
         } else {
             let globals = self.call_stack.last().unwrap().globals.clone();
             // Merge in locals so names defined in the enclosing function scope are visible to eval().
             // Only needed for non-module frames; at module level, locals == globals.
-            let is_module = matches!(self.call_stack.last().unwrap().scope_kind, ScopeKind::Module);
+            let is_module = matches!(
+                self.call_stack.last().unwrap().scope_kind,
+                ScopeKind::Module
+            );
             let shared = if is_module {
                 globals
             } else {
@@ -2268,7 +2628,13 @@ impl VirtualMachine {
                 for (k, v) in frame.local_names_iter() {
                     merged.insert(k.clone(), v.clone());
                 }
-                for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+                for (i, name) in frame
+                    .code
+                    .cellvars
+                    .iter()
+                    .chain(frame.code.freevars.iter())
+                    .enumerate()
+                {
                     if let Some(cell) = frame.cells.get(i) {
                         if let Some(val) = cell.read().as_ref() {
                             merged.insert(name.clone(), val.clone());
@@ -2285,7 +2651,10 @@ impl VirtualMachine {
             if is_code_obj {
                 return Ok(exec_result);
             }
-            let result = shared.read().get("__eval_result__").cloned()
+            let result = shared
+                .read()
+                .get("__eval_result__")
+                .cloned()
                 .unwrap_or_else(PyObject::none);
             Ok(result)
         }
@@ -2293,7 +2662,9 @@ impl VirtualMachine {
 
     pub(crate) fn builtin_compile(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 3 {
-            return Err(PyException::type_error("compile() requires at least 3 arguments"));
+            return Err(PyException::type_error(
+                "compile() requires at least 3 arguments",
+            ));
         }
         let filename = args[1].py_to_string();
         let mode = args[2].py_to_string();
@@ -2307,45 +2678,65 @@ impl VirtualMachine {
             // that can't survive source-code roundtrip.
             let has_stored_source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 let attrs = inst.attrs.read();
-                attrs.get("__source__").map(|s| !s.py_to_string().is_empty()).unwrap_or(false)
-            } else { false };
+                attrs
+                    .get("__source__")
+                    .map(|s| !s.py_to_string().is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
 
             if has_stored_source {
                 // Has original source from ast.parse() — use it (fast path)
                 let source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
                     inst.attrs.read().get("__source__").unwrap().py_to_string()
-                } else { unreachable!() };
+                } else {
+                    unreachable!()
+                };
                 let effective = if mode == "eval" {
                     format!("__eval_result__ = ({})", source)
-                } else { source };
+                } else {
+                    source
+                };
                 let module = ferrython_parser::parse(&effective, &filename)
                     .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
                 let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                let code = compiler.compile_module(&module)
+                let code = compiler
+                    .compile_module(&module)
                     .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-                return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
+                return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
+                    code,
+                ))));
             }
 
             // No stored source — convert AST objects directly to Rust AST
             match ferrython_stdlib::pyobj_ast_to_module(&args[0]) {
                 Ok(module) => {
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                    let code = compiler.compile_module(&module)
+                    let code = compiler
+                        .compile_module(&module)
                         .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
+                        code,
+                    ))));
                 }
                 Err(_e) => {
                     // Fallback: try unparse → reparse
                     let source = ferrython_stdlib::ast_unparse_module(&args[0]);
                     let effective = if mode == "eval" {
                         format!("__eval_result__ = ({})", source)
-                    } else { source };
+                    } else {
+                        source
+                    };
                     let module = ferrython_parser::parse(&effective, &filename)
                         .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                    let code = compiler.compile_module(&module)
+                    let code = compiler
+                        .compile_module(&module)
                         .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
+                        code,
+                    ))));
                 }
             }
         }
@@ -2355,7 +2746,8 @@ impl VirtualMachine {
             s.to_string()
         } else {
             return Err(PyException::type_error(
-                "compile() arg 1 must be a string, bytes, or AST object"));
+                "compile() arg 1 must be a string, bytes, or AST object",
+            ));
         };
         let effective_source = if mode == "eval" {
             format!("__eval_result__ = ({})", source)
@@ -2365,24 +2757,35 @@ impl VirtualMachine {
         let module = ferrython_parser::parse(&effective_source, &filename)
             .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
         let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-        let code = compiler.compile_module(&module)
+        let code = compiler
+            .compile_module(&module)
             .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-        Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))))
+        Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
+            code,
+        ))))
     }
 
     // ── Regex helpers (moved from vm_call.rs) ──
 
     /// Handle re.sub/re.subn when the replacement is a callable
-    pub(crate) fn re_sub_with_callable(&mut self, args: &[PyObjectRef], return_count: bool) -> PyResult<PyObjectRef> {
+    pub(crate) fn re_sub_with_callable(
+        &mut self,
+        args: &[PyObjectRef],
+        return_count: bool,
+    ) -> PyResult<PyObjectRef> {
         let pattern = args[0].py_to_string();
         let repl_fn = args[1].clone();
         let text = args[2].py_to_string();
         let max_count = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
             args[3].to_int().unwrap_or(0) as usize
-        } else { 0 };
+        } else {
+            0
+        };
         let mut flags = if args.len() > 4 && !matches!(&args[4].payload, PyObjectPayload::Dict(_)) {
             args[4].to_int().unwrap_or(0)
-        } else { 0 };
+        } else {
+            0
+        };
         // Check trailing kwargs dict
         let mut max_count_kw = max_count;
         if let Some(last) = args.last() {
@@ -2399,21 +2802,30 @@ impl VirtualMachine {
                 }
             }
         }
-        let max_count = if max_count_kw > 0 { max_count_kw } else { max_count };
+        let max_count = if max_count_kw > 0 {
+            max_count_kw
+        } else {
+            max_count
+        };
 
         let mut re_pattern = pattern.clone();
         re_pattern = re_pattern.replace("(?P<", "(?P<");
         let re = if flags & 2 != 0 {
-            regex::RegexBuilder::new(&re_pattern).case_insensitive(true).build()
+            regex::RegexBuilder::new(&re_pattern)
+                .case_insensitive(true)
+                .build()
         } else {
             regex::Regex::new(&re_pattern)
-        }.map_err(|e| PyException::runtime_error(format!("regex error: {}", e)))?;
+        }
+        .map_err(|e| PyException::runtime_error(format!("regex error: {}", e)))?;
 
         let mut result = String::new();
         let mut last_end = 0;
         let mut count = 0;
         for caps in re.captures_iter(&text) {
-            if max_count > 0 && count >= max_count { break; }
+            if max_count > 0 && count >= max_count {
+                break;
+            }
             let whole = caps.get(0).unwrap();
             result.push_str(&text[last_end..whole.start()]);
 
@@ -2441,19 +2853,70 @@ impl VirtualMachine {
             let groupindex = PyObject::dict(groupindex_map);
 
             let mut match_attrs = IndexMap::new();
-            match_attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(match_text.clone())));
+            match_attrs.insert(
+                CompactString::from("_match"),
+                PyObject::str_val(CompactString::from(match_text.clone())),
+            );
             match_attrs.insert(CompactString::from("_groups"), groups_tuple.clone());
             match_attrs.insert(CompactString::from("_groupindex"), groupindex);
-            match_attrs.insert(CompactString::from("_start"), PyObject::int(whole.start() as i64));
-            match_attrs.insert(CompactString::from("_end"), PyObject::int(whole.end() as i64));
-            match_attrs.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text.clone())));
-            match_attrs.insert(CompactString::from("group"), PyObject::native_function("Match.group", ferrython_stdlib::text_modules::match_group_fn));
-            match_attrs.insert(CompactString::from("groups"), PyObject::native_function("Match.groups", ferrython_stdlib::text_modules::match_groups_fn));
-            match_attrs.insert(CompactString::from("groupdict"), PyObject::native_function("Match.groupdict", ferrython_stdlib::text_modules::match_groupdict_fn));
-            match_attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", ferrython_stdlib::text_modules::match_start_fn));
-            match_attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", ferrython_stdlib::text_modules::match_end_fn));
-            match_attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", ferrython_stdlib::text_modules::match_span_fn));
-            match_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+            match_attrs.insert(
+                CompactString::from("_start"),
+                PyObject::int(whole.start() as i64),
+            );
+            match_attrs.insert(
+                CompactString::from("_end"),
+                PyObject::int(whole.end() as i64),
+            );
+            match_attrs.insert(
+                CompactString::from("_text"),
+                PyObject::str_val(CompactString::from(text.clone())),
+            );
+            match_attrs.insert(
+                CompactString::from("group"),
+                PyObject::native_function(
+                    "Match.group",
+                    ferrython_stdlib::text_modules::match_group_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("groups"),
+                PyObject::native_function(
+                    "Match.groups",
+                    ferrython_stdlib::text_modules::match_groups_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("groupdict"),
+                PyObject::native_function(
+                    "Match.groupdict",
+                    ferrython_stdlib::text_modules::match_groupdict_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("start"),
+                PyObject::native_function(
+                    "Match.start",
+                    ferrython_stdlib::text_modules::match_start_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("end"),
+                PyObject::native_function(
+                    "Match.end",
+                    ferrython_stdlib::text_modules::match_end_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("span"),
+                PyObject::native_function(
+                    "Match.span",
+                    ferrython_stdlib::text_modules::match_span_fn,
+                ),
+            );
+            match_attrs.insert(
+                CompactString::from("_bind_methods"),
+                PyObject::bool_val(true),
+            );
             let match_obj = PyObject::module_with_attrs(CompactString::from("Match"), match_attrs);
 
             let replacement = self.call_object(repl_fn.clone(), vec![match_obj])?;
@@ -2476,15 +2939,22 @@ impl VirtualMachine {
 
     // ── Itertools helpers (moved from vm_call.rs) ──
 
-    pub(crate) fn vm_itertools_groupby(&mut self, args: &[PyObjectRef], key_fn: Option<PyObjectRef>) -> PyResult<PyObjectRef> {
+    pub(crate) fn vm_itertools_groupby(
+        &mut self,
+        args: &[PyObjectRef],
+        key_fn: Option<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
         if args.is_empty() {
             return Err(PyException::type_error("groupby requires iterable"));
         }
         let items = args[0].to_list()?;
         if items.is_empty() {
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List { items: vec![], index: 0 }
-            )))));
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
+                    items: vec![],
+                    index: 0,
+                }),
+            ))));
         }
 
         let mut result = Vec::new();
@@ -2506,7 +2976,10 @@ impl VirtualMachine {
                 current_group.push(item.clone());
             } else {
                 let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                    IteratorData::List { items: current_group, index: 0 }
+                    IteratorData::List {
+                        items: current_group,
+                        index: 0,
+                    },
                 ))));
                 result.push(PyObject::tuple(vec![current_key, group_iter]));
                 current_key = k;
@@ -2514,49 +2987,52 @@ impl VirtualMachine {
             }
         }
         let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: current_group, index: 0 }
+            IteratorData::List {
+                items: current_group,
+                index: 0,
+            },
         ))));
         result.push(PyObject::tuple(vec![current_key, group_iter]));
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: result, index: 0 }
-        )))))
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: result,
+                index: 0,
+            }),
+        ))))
     }
 
-    pub(crate) fn vm_itertools_filterfalse(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let pred = args[0].clone();
-        let items = self.collect_iterable(&args[1])?;
-        let mut result = Vec::new();
-        let is_none = matches!(&pred.payload, PyObjectPayload::None);
-        for item in &items {
-            let val = if is_none {
-                item.is_truthy()
-            } else {
-                let r = self.call_object(pred.clone(), vec![item.clone()])?;
-                r.is_truthy()
-            };
-            if !val {
-                result.push(item.clone());
-            }
-        }
-        Ok(PyObject::list(result))
+    pub(crate) fn vm_itertools_filterfalse(
+        &mut self,
+        args: &[PyObjectRef],
+    ) -> PyResult<PyObjectRef> {
+        let func = args[0].clone();
+        let source = args[1].get_iter()?;
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::FilterFalse { func, source }),
+        ))))
     }
 
     pub(crate) fn vm_itertools_starmap(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let func = args[0].clone();
-        let items = self.collect_iterable(&args[1])?;
-        let mut result = Vec::new();
-        for item in &items {
-            let call_args = item.to_list().unwrap_or_else(|_| vec![item.clone()]);
-            let r = self.call_object(func.clone(), call_args)?;
-            result.push(r);
-        }
-        Ok(PyObject::list(result))
+        let source = args[1].get_iter()?;
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::Starmap { func, source }),
+        ))))
     }
 
-    pub(crate) fn vm_itertools_accumulate(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    pub(crate) fn vm_itertools_accumulate(
+        &mut self,
+        args: &[PyObjectRef],
+    ) -> PyResult<PyObjectRef> {
         let items = args[0].to_list()?;
-        if items.is_empty() { return Ok(PyObject::list(vec![])); }
-        let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None | PyObjectPayload::Dict(_)) {
+        if items.is_empty() {
+            return Ok(PyObject::list(vec![]));
+        }
+        let func = if args.len() >= 2
+            && !matches!(
+                &args[1].payload,
+                PyObjectPayload::None | PyObjectPayload::Dict(_)
+            ) {
             Some(args[1].clone())
         } else {
             None
@@ -2576,11 +3052,18 @@ impl VirtualMachine {
     }
 
     /// RawIOBase.read(size=-1): calls self.readinto() to read data.
-    pub(crate) fn rawiobase_read(&mut self, this: &PyObjectRef, size: i64) -> PyResult<PyObjectRef> {
+    pub(crate) fn rawiobase_read(
+        &mut self,
+        this: &PyObjectRef,
+        size: i64,
+    ) -> PyResult<PyObjectRef> {
         if size < 0 {
             return self.rawiobase_readall(this);
         }
-        let buf = PyObject::wrap(PyObjectPayload::ByteArray(Box::new(vec![0u8; size as usize])));
+        let buf = PyObject::wrap(PyObjectPayload::ByteArray(Box::new(vec![
+            0u8;
+            size as usize
+        ])));
         let readinto = self.exec_load_attr_value(this, "readinto")?;
         let n_obj = self.call_object(readinto, vec![buf.clone()])?;
         let n = n_obj.as_int().unwrap_or(0).max(0) as usize;
@@ -2599,7 +3082,9 @@ impl VirtualMachine {
             let buf = PyObject::wrap(PyObjectPayload::ByteArray(Box::new(vec![0u8; 8192])));
             let n_obj = self.call_object(readinto.clone(), vec![buf.clone()])?;
             let n = n_obj.as_int().unwrap_or(0).max(0) as usize;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             if let PyObjectPayload::ByteArray(data) = &buf.payload {
                 result.extend_from_slice(&data[..n.min(data.len())]);
             }
@@ -2613,16 +3098,28 @@ impl VirtualMachine {
         if let Some(val) = obj.get_attr(name) {
             return Ok(val);
         }
-        Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", obj.type_name(), name)))
+        Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'",
+            obj.type_name(),
+            name
+        )))
     }
 }
 
 /// Convert a parser `ParseError` into a `SyntaxError` (or `IndentationError`)
 /// `PyException` carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
-pub(crate) fn parse_error_to_syntax_exc(filename: &str, e: ferrython_parser::ParseError) -> PyException {
+pub(crate) fn parse_error_to_syntax_exc(
+    filename: &str,
+    e: ferrython_parser::ParseError,
+) -> PyException {
     let (kind, msg) = match &e.kind {
-        ferrython_parser::ParseErrorKind::IndentationError(m) => (ExceptionKind::IndentationError, m.to_string()),
-        ferrython_parser::ParseErrorKind::TabError => (ExceptionKind::TabError, "inconsistent use of tabs and spaces in indentation".to_string()),
+        ferrython_parser::ParseErrorKind::IndentationError(m) => {
+            (ExceptionKind::IndentationError, m.to_string())
+        }
+        ferrython_parser::ParseErrorKind::TabError => (
+            ExceptionKind::TabError,
+            "inconsistent use of tabs and spaces in indentation".to_string(),
+        ),
         _ => (ExceptionKind::SyntaxError, format!("{}", e.kind)),
     };
     let lineno = e.span.start_line as i64;
@@ -2632,21 +3129,49 @@ pub(crate) fn parse_error_to_syntax_exc(filename: &str, e: ferrython_parser::Par
 
 /// Convert a compiler `CompileError` into a `SyntaxError` `PyException`
 /// carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
-pub(crate) fn compile_error_to_syntax_exc(filename: &str, e: ferrython_compiler::CompileError) -> PyException {
+pub(crate) fn compile_error_to_syntax_exc(
+    filename: &str,
+    e: ferrython_compiler::CompileError,
+) -> PyException {
     use ferrython_compiler::CompileError;
     let (msg, loc) = match &e {
         CompileError::SyntaxError { message, location } => (message.clone(), Some(*location)),
-        CompileError::Unsupported { feature, location } => (format!("unsupported: {}", feature), Some(*location)),
-        CompileError::InvalidAssignTarget { location } => ("cannot assign to expression".to_string(), Some(*location)),
-        CompileError::BreakOutsideLoop { location } => ("'break' outside loop".to_string(), Some(*location)),
-        CompileError::ContinueOutsideLoop { location } => ("'continue' not properly in loop".to_string(), Some(*location)),
-        CompileError::ReturnOutsideFunction { location } => ("'return' outside function".to_string(), Some(*location)),
-        CompileError::YieldOutsideFunction { location } => ("'yield' outside function".to_string(), Some(*location)),
-        CompileError::CannotDeleteCall { location } => ("cannot delete function call".to_string(), Some(*location)),
-        CompileError::CannotDeleteLiteral { location } => ("cannot delete literal".to_string(), Some(*location)),
-        CompileError::CannotDeleteExpression { location } => ("cannot delete expression".to_string(), Some(*location)),
-        CompileError::ParameterAndGlobal { name, location } => (format!("name '{}' is parameter and global", name), Some(*location)),
-        CompileError::ParameterAndNonlocal { name, location } => (format!("name '{}' is parameter and nonlocal", name), Some(*location)),
+        CompileError::Unsupported { feature, location } => {
+            (format!("unsupported: {}", feature), Some(*location))
+        }
+        CompileError::InvalidAssignTarget { location } => {
+            ("cannot assign to expression".to_string(), Some(*location))
+        }
+        CompileError::BreakOutsideLoop { location } => {
+            ("'break' outside loop".to_string(), Some(*location))
+        }
+        CompileError::ContinueOutsideLoop { location } => (
+            "'continue' not properly in loop".to_string(),
+            Some(*location),
+        ),
+        CompileError::ReturnOutsideFunction { location } => {
+            ("'return' outside function".to_string(), Some(*location))
+        }
+        CompileError::YieldOutsideFunction { location } => {
+            ("'yield' outside function".to_string(), Some(*location))
+        }
+        CompileError::CannotDeleteCall { location } => {
+            ("cannot delete function call".to_string(), Some(*location))
+        }
+        CompileError::CannotDeleteLiteral { location } => {
+            ("cannot delete literal".to_string(), Some(*location))
+        }
+        CompileError::CannotDeleteExpression { location } => {
+            ("cannot delete expression".to_string(), Some(*location))
+        }
+        CompileError::ParameterAndGlobal { name, location } => (
+            format!("name '{}' is parameter and global", name),
+            Some(*location),
+        ),
+        CompileError::ParameterAndNonlocal { name, location } => (
+            format!("name '{}' is parameter and nonlocal", name),
+            Some(*location),
+        ),
         CompileError::NameError { message } => (message.clone(), None),
         CompileError::Internal(s) => (s.clone(), None),
     };
@@ -2657,14 +3182,26 @@ pub(crate) fn compile_error_to_syntax_exc(filename: &str, e: ferrython_compiler:
     build_syntax_exception(ExceptionKind::SyntaxError, &msg, filename, lineno, offset)
 }
 
-fn build_syntax_exception(kind: ExceptionKind, msg: &str, filename: &str, lineno: i64, offset: i64) -> PyException {
+fn build_syntax_exception(
+    kind: ExceptionKind,
+    msg: &str,
+    filename: &str,
+    lineno: i64,
+    offset: i64,
+) -> PyException {
     let instance = PyObject::exception_instance(kind, CompactString::from(msg));
     if let PyObjectPayload::ExceptionInstance(ref ei) = instance.payload {
         let mut w = ei.ensure_attrs().write();
-        w.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename)));
+        w.insert(
+            CompactString::from("filename"),
+            PyObject::str_val(CompactString::from(filename)),
+        );
         w.insert(CompactString::from("lineno"), PyObject::int(lineno));
         w.insert(CompactString::from("offset"), PyObject::int(offset));
-        w.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg)));
+        w.insert(
+            CompactString::from("msg"),
+            PyObject::str_val(CompactString::from(msg)),
+        );
         w.insert(CompactString::from("text"), PyObject::none());
     }
     PyException::with_original(kind, CompactString::from(msg), instance)

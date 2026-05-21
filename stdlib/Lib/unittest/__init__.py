@@ -3,7 +3,7 @@
 __all__ = [
     'TestCase', 'TestResult', 'TestSuite', 'TestLoader', 'TextTestRunner',
     'main', 'skip', 'skipIf', 'skipUnless', 'expectedFailure', 'SkipTest',
-    'installHandler', 'registerResult', 'removeResult',
+    'installHandler', 'registerResult', 'removeResult', 'makeSuite',
 ]
 
 
@@ -170,6 +170,8 @@ class TestCase:
         if first != second:
             m = msg or ("%r != %r" % (first, second))
             raise AssertionError(m)
+
+    assertEquals = assertEqual
 
     def assertNotEqual(self, first, second, msg=None):
         if first == second:
@@ -648,6 +650,14 @@ class TestLoader:
     def loadTestsFromName(self, name, module=None):
         """Load tests by name (dotted module.Class.method)."""
         import sys
+        if type(name) is not str:
+            if type(name) is type and issubclass(name, TestCase):
+                return self.loadTestsFromTestCase(name)
+            if callable(name):
+                suite = TestSuite()
+                suite.addTest(name())
+                return suite
+            return TestSuite()
         parts = name.split('.')
         if module is None:
             # Try to import the module
@@ -675,6 +685,24 @@ class TestLoader:
 
     def discover(self, start_dir, pattern='test*.py', top_level_dir=None):
         return TestSuite()
+
+
+def makeSuite(testCaseClass, prefix='test'):
+    """Compatibility wrapper for older unittest code paths."""
+    loader = TestLoader()
+    if prefix == 'test':
+        return loader.loadTestsFromTestCase(testCaseClass)
+    names = []
+    for name in dir(testCaseClass):
+        if name.startswith(prefix):
+            obj = getattr(testCaseClass, name)
+            if callable(obj):
+                names.append(name)
+    names.sort()
+    suite = TestSuite()
+    for name in names:
+        suite.addTest(testCaseClass(name))
+    return suite
 
 
 class TextTestRunner:

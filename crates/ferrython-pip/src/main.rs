@@ -10,14 +10,14 @@
 //! - `ferryip show <package>` — package metadata
 //! - Recursive dependency resolution with version specifiers
 
-mod pypi;
+mod cli;
 mod installer;
+pub mod metadata;
+mod pypi;
 mod registry;
 mod resolver;
-pub mod version;
-pub mod metadata;
 pub mod setup_cfg;
-mod cli;
+pub mod version;
 
 fn main() {
     cli::run();

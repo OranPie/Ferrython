@@ -48,12 +48,9 @@ pub fn create_venv(venv_dir: &Path, opts: &VenvOptions) -> Result<(), String> {
     }
 
     // Create directory structure
-    fs::create_dir_all(&layout.bin_dir)
-        .map_err(|e| format!("mkdir bin: {}", e))?;
-    fs::create_dir_all(&layout.site_packages)
-        .map_err(|e| format!("mkdir site-packages: {}", e))?;
-    fs::create_dir_all(&layout.include_dir)
-        .map_err(|e| format!("mkdir include: {}", e))?;
+    fs::create_dir_all(&layout.bin_dir).map_err(|e| format!("mkdir bin: {}", e))?;
+    fs::create_dir_all(&layout.site_packages).map_err(|e| format!("mkdir site-packages: {}", e))?;
+    fs::create_dir_all(&layout.include_dir).map_err(|e| format!("mkdir include: {}", e))?;
 
     // Write pyvenv.cfg
     write_pyvenv_cfg(venv_dir, &host, opts)?;
@@ -73,14 +70,22 @@ pub fn create_venv(venv_dir: &Path, opts: &VenvOptions) -> Result<(), String> {
 }
 
 /// Write the pyvenv.cfg file in the venv root.
-fn write_pyvenv_cfg(venv_dir: &Path, host: &InstallLayout, opts: &VenvOptions) -> Result<(), String> {
+fn write_pyvenv_cfg(
+    venv_dir: &Path,
+    host: &InstallLayout,
+    opts: &VenvOptions,
+) -> Result<(), String> {
     let cfg_path = venv_dir.join("pyvenv.cfg");
     let mut content = String::new();
 
     content.push_str(&format!("home = {}\n", host.bin_dir.display()));
     content.push_str(&format!(
         "include-system-site-packages = {}\n",
-        if opts.system_site_packages { "true" } else { "false" }
+        if opts.system_site_packages {
+            "true"
+        } else {
+            "false"
+        }
     ));
     content.push_str("version = 3.11.0\n");
     content.push_str("implementation = ferrython\n");
@@ -92,40 +97,37 @@ fn write_pyvenv_cfg(venv_dir: &Path, host: &InstallLayout, opts: &VenvOptions) -
         content.push_str(&format!("prompt = {}\n", prompt));
     }
 
-    fs::write(&cfg_path, content)
-        .map_err(|e| format!("Write pyvenv.cfg: {}", e))
+    fs::write(&cfg_path, content).map_err(|e| format!("Write pyvenv.cfg: {}", e))
 }
 
 /// Install the ferrython binary into the venv (symlink or copy).
-fn install_binary(layout: &InstallLayout, host: &InstallLayout, symlinks: bool) -> Result<(), String> {
+fn install_binary(
+    layout: &InstallLayout,
+    host: &InstallLayout,
+    symlinks: bool,
+) -> Result<(), String> {
     let host_exe = host.bin_dir.join("ferrython");
     let venv_exe = layout.bin_dir.join("ferrython");
 
     if !host_exe.exists() {
         // Try current_exe as fallback
-        let current = std::env::current_exe()
-            .map_err(|e| format!("current_exe: {}", e))?;
+        let current = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
         if symlinks {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&current, &venv_exe)
                 .map_err(|e| format!("symlink: {}", e))?;
             #[cfg(not(unix))]
-            fs::copy(&current, &venv_exe)
-                .map_err(|e| format!("copy: {}", e))?;
+            fs::copy(&current, &venv_exe).map_err(|e| format!("copy: {}", e))?;
         } else {
-            fs::copy(&current, &venv_exe)
-                .map_err(|e| format!("copy: {}", e))?;
+            fs::copy(&current, &venv_exe).map_err(|e| format!("copy: {}", e))?;
         }
     } else if symlinks {
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&host_exe, &venv_exe)
-            .map_err(|e| format!("symlink: {}", e))?;
+        std::os::unix::fs::symlink(&host_exe, &venv_exe).map_err(|e| format!("symlink: {}", e))?;
         #[cfg(not(unix))]
-        fs::copy(&host_exe, &venv_exe)
-            .map_err(|e| format!("copy: {}", e))?;
+        fs::copy(&host_exe, &venv_exe).map_err(|e| format!("copy: {}", e))?;
     } else {
-        fs::copy(&host_exe, &venv_exe)
-            .map_err(|e| format!("copy: {}", e))?;
+        fs::copy(&host_exe, &venv_exe).map_err(|e| format!("copy: {}", e))?;
     }
 
     // Also create python/python3 symlinks for compatibility
@@ -141,9 +143,14 @@ fn install_binary(layout: &InstallLayout, host: &InstallLayout, symlinks: bool) 
 }
 
 /// Write bash/fish/PowerShell activation scripts.
-fn write_activation_scripts(layout: &InstallLayout, venv_dir: &Path, opts: &VenvOptions) -> Result<(), String> {
+fn write_activation_scripts(
+    layout: &InstallLayout,
+    venv_dir: &Path,
+    opts: &VenvOptions,
+) -> Result<(), String> {
     let venv_name = opts.prompt.as_deref().unwrap_or_else(|| {
-        venv_dir.file_name()
+        venv_dir
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("venv")
     });
@@ -151,7 +158,7 @@ fn write_activation_scripts(layout: &InstallLayout, venv_dir: &Path, opts: &Venv
 
     // Bash/Zsh activate script
     let activate_bash = format!(
-r#"# This file must be used with "source bin/activate" *from bash*
+        r#"# This file must be used with "source bin/activate" *from bash*
 # You cannot run it directly.
 
 deactivate () {{
@@ -196,7 +203,7 @@ export VIRTUAL_ENV_PROMPT
 
     // Fish activate script
     let activate_fish = format!(
-r#"# This file must be used with "source bin/activate.fish" *from fish*
+        r#"# This file must be used with "source bin/activate.fish" *from fish*
 
 function deactivate -d "Exit virtual environment"
     if set -q _OLD_VIRTUAL_PATH
@@ -242,7 +249,7 @@ end
 
     // PowerShell activation script
     let activate_ps1 = format!(
-r#"# This file must be used with ". bin/Activate.ps1" from PowerShell.
+        r#"# This file must be used with ". bin/Activate.ps1" from PowerShell.
 
 function global:deactivate ([switch]$NonDestructive) {{
     if (Test-Path variable:_OLD_VIRTUAL_PATH) {{
@@ -351,10 +358,7 @@ fn install_pip_into_venv(layout: &InstallLayout, host: &InstallLayout) -> Result
     }
 
     // Write a pip.conf that sets the target to the venv's site-packages
-    let pip_conf = format!(
-        "[global]\ntarget = {}\n",
-        layout.site_packages.display()
-    );
+    let pip_conf = format!("[global]\ntarget = {}\n", layout.site_packages.display());
     let _ = fs::create_dir_all(layout.prefix.join("pip"));
     let _ = fs::write(layout.prefix.join("pip").join("pip.conf"), pip_conf);
 

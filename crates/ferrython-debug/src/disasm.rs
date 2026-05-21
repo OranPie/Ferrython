@@ -16,8 +16,10 @@ pub fn dis_code(code: &CodeObject, indent: usize) {
         println!("{}  freevars: {:?}", pad, code.freevars);
     }
     println!("{}  flags: {:?}", pad, code.flags);
-    println!("{}  arg_count: {}, kwonly: {}, posonly: {}",
-        pad, code.arg_count, code.kwonlyarg_count, code.posonlyarg_count);
+    println!(
+        "{}  arg_count: {}, kwonly: {}, posonly: {}",
+        pad, code.arg_count, code.kwonlyarg_count, code.posonlyarg_count
+    );
     println!("{}  consts: {} items", pad, code.constants.len());
     for (i, c) in code.constants.iter().enumerate() {
         let desc = match c {
@@ -28,8 +30,11 @@ pub fn dis_code(code: &CodeObject, indent: usize) {
             ConstantValue::Float(f) => format!("{}", f),
             ConstantValue::Complex { real, imag } => format!("{}+{}j", real, imag),
             ConstantValue::Str(s) => {
-                if s.len() > 40 { format!("'{:.37}...'", s) }
-                else { format!("'{}'", s) }
+                if s.len() > 40 {
+                    format!("'{:.37}...'", s)
+                } else {
+                    format!("'{}'", s)
+                }
             }
             ConstantValue::Bytes(b) => format!("b'...' ({} bytes)", b.len()),
             ConstantValue::Ellipsis => "...".to_string(),
@@ -53,7 +58,14 @@ pub fn dis_code(code: &CodeObject, indent: usize) {
         };
 
         let arg_desc = format_arg_desc(code, instr.op, instr.arg);
-        println!("{}{} {:4} {:24} {}", pad, line_marker, i, format!("{:?}", instr.op), arg_desc);
+        println!(
+            "{}{} {:4} {:24} {}",
+            pad,
+            line_marker,
+            i,
+            format!("{:?}", instr.op),
+            arg_desc
+        );
     }
 
     // Recurse into nested code objects
@@ -78,8 +90,10 @@ pub fn dis_code_stderr(code: &CodeObject, indent: usize) {
         eprintln!("{}  freevars: {:?}", pad, code.freevars);
     }
     eprintln!("{}  flags: {:?}", pad, code.flags);
-    eprintln!("{}  arg_count: {}, kwonly: {}, posonly: {}",
-        pad, code.arg_count, code.kwonlyarg_count, code.posonlyarg_count);
+    eprintln!(
+        "{}  arg_count: {}, kwonly: {}, posonly: {}",
+        pad, code.arg_count, code.kwonlyarg_count, code.posonlyarg_count
+    );
     eprintln!("{}  consts: {} items", pad, code.constants.len());
     for (i, c) in code.constants.iter().enumerate() {
         let desc = match c {
@@ -90,8 +104,11 @@ pub fn dis_code_stderr(code: &CodeObject, indent: usize) {
             ConstantValue::Float(f) => format!("{}", f),
             ConstantValue::Complex { real, imag } => format!("{}+{}j", real, imag),
             ConstantValue::Str(s) => {
-                if s.len() > 40 { format!("'{:.37}...'", s) }
-                else { format!("'{}'", s) }
+                if s.len() > 40 {
+                    format!("'{:.37}...'", s)
+                } else {
+                    format!("'{}'", s)
+                }
             }
             ConstantValue::Bytes(b) => format!("b'...' ({} bytes)", b.len()),
             ConstantValue::Ellipsis => "...".to_string(),
@@ -114,7 +131,14 @@ pub fn dis_code_stderr(code: &CodeObject, indent: usize) {
         };
 
         let arg_desc = format_arg_desc(code, instr.op, instr.arg);
-        eprintln!("{}{} {:4} {:24} {}", pad, line_marker, i, format!("{:?}", instr.op), arg_desc);
+        eprintln!(
+            "{}{} {:4} {:24} {}",
+            pad,
+            line_marker,
+            i,
+            format!("{:?}", instr.op),
+            arg_desc
+        );
     }
 
     for c in &code.constants {
@@ -132,8 +156,11 @@ fn format_arg_desc(code: &CodeObject, op: Opcode, arg: u32) -> String {
             if let Some(c) = code.constants.get(arg as usize) {
                 match c {
                     ConstantValue::Str(s) => {
-                        if s.len() > 30 { format!("('{:.27}...')", s) }
-                        else { format!("('{}')", s) }
+                        if s.len() > 30 {
+                            format!("('{:.27}...')", s)
+                        } else {
+                            format!("('{}')", s)
+                        }
                     }
                     ConstantValue::Integer(n) => format!("({})", n),
                     ConstantValue::Float(f) => format!("({})", f),
@@ -148,10 +175,17 @@ fn format_arg_desc(code: &CodeObject, op: Opcode, arg: u32) -> String {
                 format!("(?{}?)", arg)
             }
         }
-        Opcode::LoadName | Opcode::StoreName | Opcode::DeleteName
-        | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
-        | Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr
-        | Opcode::ImportName | Opcode::ImportFrom => {
+        Opcode::LoadName
+        | Opcode::StoreName
+        | Opcode::DeleteName
+        | Opcode::LoadGlobal
+        | Opcode::StoreGlobal
+        | Opcode::DeleteGlobal
+        | Opcode::LoadAttr
+        | Opcode::StoreAttr
+        | Opcode::DeleteAttr
+        | Opcode::ImportName
+        | Opcode::ImportFrom => {
             if let Some(n) = code.names.get(arg as usize) {
                 format!("({})", n)
             } else {
@@ -182,23 +216,38 @@ fn format_arg_desc(code: &CodeObject, op: Opcode, arg: u32) -> String {
         }
         Opcode::CompareOp => {
             let op_name = match arg {
-                0 => "<", 1 => "<=", 2 => "==", 3 => "!=", 4 => ">", 5 => ">=",
-                6 => "in", 7 => "not in", 8 => "is", 9 => "is not",
+                0 => "<",
+                1 => "<=",
+                2 => "==",
+                3 => "!=",
+                4 => ">",
+                5 => ">=",
+                6 => "in",
+                7 => "not in",
+                8 => "is",
+                9 => "is not",
                 10 => "exception match",
                 _ => "?",
             };
             format!("({})", op_name)
         }
-        Opcode::JumpAbsolute | Opcode::JumpForward
-        | Opcode::PopJumpIfTrue | Opcode::PopJumpIfFalse
-        | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
-        | Opcode::SetupExcept | Opcode::SetupFinally
+        Opcode::JumpAbsolute
+        | Opcode::JumpForward
+        | Opcode::PopJumpIfTrue
+        | Opcode::PopJumpIfFalse
+        | Opcode::JumpIfTrueOrPop
+        | Opcode::JumpIfFalseOrPop
+        | Opcode::SetupExcept
+        | Opcode::SetupFinally
         | Opcode::ForIter => {
             format!("(to {})", arg)
         }
         _ => {
-            if arg != 0 { format!("{}", arg) }
-            else { String::new() }
+            if arg != 0 {
+                format!("{}", arg)
+            } else {
+                String::new()
+            }
         }
     }
 }

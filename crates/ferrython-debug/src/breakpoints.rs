@@ -53,24 +53,30 @@ impl BreakpointManager {
     pub fn add(&mut self, filename: &str, lineno: u32, action: BreakpointAction) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.breakpoints.insert(id, Breakpoint {
+        self.breakpoints.insert(
             id,
-            filename: filename.to_string(),
-            lineno,
-            function: None,
-            condition: None,
-            action,
-            hit_count: 0,
-            enabled: true,
-        });
+            Breakpoint {
+                id,
+                filename: filename.to_string(),
+                lineno,
+                function: None,
+                condition: None,
+                action,
+                hit_count: 0,
+                enabled: true,
+            },
+        );
         self.any_enabled = true;
         id
     }
 
     /// Add a conditional breakpoint.
     pub fn add_conditional(
-        &mut self, filename: &str, lineno: u32,
-        condition: &str, action: BreakpointAction,
+        &mut self,
+        filename: &str,
+        lineno: u32,
+        condition: &str,
+        action: BreakpointAction,
     ) -> u32 {
         let id = self.add(filename, lineno, action);
         if let Some(bp) = self.breakpoints.get_mut(&id) {
@@ -102,21 +108,36 @@ impl BreakpointManager {
 
     /// Check if a breakpoint matches the current execution location.
     /// Returns the action to take, or None if no breakpoint matches.
-    pub fn check(&mut self, filename: &str, lineno: u32, function: &str) -> Option<BreakpointAction> {
+    pub fn check(
+        &mut self,
+        filename: &str,
+        lineno: u32,
+        function: &str,
+    ) -> Option<BreakpointAction> {
         // Handle builtin breakpoint() call
         if self.builtin_breakpoint_pending {
             self.builtin_breakpoint_pending = false;
             return Some(BreakpointAction::Break);
         }
 
-        if !self.any_enabled { return None; }
+        if !self.any_enabled {
+            return None;
+        }
 
         for bp in self.breakpoints.values_mut() {
-            if !bp.enabled { continue; }
-            if bp.lineno != lineno { continue; }
-            if bp.filename != filename { continue; }
+            if !bp.enabled {
+                continue;
+            }
+            if bp.lineno != lineno {
+                continue;
+            }
+            if bp.filename != filename {
+                continue;
+            }
             if let Some(ref func) = bp.function {
-                if func != function { continue; }
+                if func != function {
+                    continue;
+                }
             }
             bp.hit_count += 1;
             return Some(bp.action.clone());
@@ -144,5 +165,7 @@ impl BreakpointManager {
 }
 
 impl Default for BreakpointManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

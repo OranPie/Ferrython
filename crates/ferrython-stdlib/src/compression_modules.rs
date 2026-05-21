@@ -4,8 +4,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args,
+    check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -27,13 +26,19 @@ fn extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn create_gzip_module() -> PyObjectRef {
-    make_module("gzip", vec![
-        ("compress", make_builtin(gzip_compress)),
-        ("decompress", make_builtin(gzip_decompress)),
-        ("open", make_builtin(gzip_open)),
-        ("GzipFile", make_builtin(gzip_file_constructor)),
-        ("BadGzipFile", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-    ])
+    make_module(
+        "gzip",
+        vec![
+            ("compress", make_builtin(gzip_compress)),
+            ("decompress", make_builtin(gzip_decompress)),
+            ("open", make_builtin(gzip_open)),
+            ("GzipFile", make_builtin(gzip_file_constructor)),
+            (
+                "BadGzipFile",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+        ],
+    )
 }
 
 fn gzip_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -52,12 +57,12 @@ fn gzip_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let compression = flate2::Compression::new(level.min(9));
 
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), compression);
-    encoder.write_all(&data).map_err(|e| {
-        PyException::runtime_error(&format!("gzip.compress: {}", e))
-    })?;
-    let compressed = encoder.finish().map_err(|e| {
-        PyException::runtime_error(&format!("gzip.compress: {}", e))
-    })?;
+    encoder
+        .write_all(&data)
+        .map_err(|e| PyException::runtime_error(&format!("gzip.compress: {}", e)))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| PyException::runtime_error(&format!("gzip.compress: {}", e)))?;
 
     Ok(PyObject::bytes(compressed))
 }
@@ -72,9 +77,9 @@ fn gzip_decompress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     let mut decoder = flate2::read::GzDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed).map_err(|e| {
-        PyException::runtime_error(&format!("gzip.decompress: {}", e))
-    })?;
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| PyException::runtime_error(&format!("gzip.decompress: {}", e)))?;
 
     Ok(PyObject::bytes(decompressed))
 }
@@ -89,38 +94,54 @@ struct GzipFileInner {
 
 fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    attrs.insert(CompactString::from("__gzipfile__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__gzipfile__"),
+        PyObject::bool_val(true),
+    );
 
     // name attribute
     {
         let g = inner.lock().unwrap();
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
-        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(g.filepath.as_str())),
+        );
+        attrs.insert(
+            CompactString::from("mode"),
+            PyObject::str_val(CompactString::from(g.mode.as_str())),
+        );
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
     }
 
     // read(size=-1)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("read"),
+        attrs.insert(
+            CompactString::from("read"),
             PyObject::native_closure("read", move |args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
                     return Err(PyException::runtime_error("I/O operation on closed file"));
                 }
-                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                let size = if !args.is_empty() {
+                    args[0].as_int().unwrap_or(-1)
+                } else {
+                    -1
+                };
                 if size < 0 || size as usize >= guard.buffer.len() {
                     Ok(PyObject::bytes(guard.buffer.clone()))
                 } else {
                     Ok(PyObject::bytes(guard.buffer[..size as usize].to_vec()))
                 }
-            }));
+            }),
+        );
     }
 
     // readline()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readline"),
+        attrs.insert(
+            CompactString::from("readline"),
             PyObject::native_closure("readline", move |_args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
@@ -131,13 +152,15 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                     Some(i) => Ok(PyObject::bytes(guard.buffer[..=i].to_vec())),
                     None => Ok(PyObject::bytes(guard.buffer.clone())),
                 }
-            }));
+            }),
+        );
     }
 
     // readlines()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readlines"),
+        attrs.insert(
+            CompactString::from("readlines"),
             PyObject::native_closure("readlines", move |_args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
@@ -155,13 +178,15 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                     lines.push(PyObject::bytes(guard.buffer[start..].to_vec()));
                 }
                 Ok(PyObject::list(lines))
-            }));
+            }),
+        );
     }
 
     // write(data)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("write"),
+        attrs.insert(
+            CompactString::from("write"),
             PyObject::native_closure("write", move |args| {
                 if args.is_empty() {
                     return Err(PyException::type_error("write() requires a data argument"));
@@ -174,70 +199,89 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                 let len = data.len();
                 guard.buffer.extend(data);
                 Ok(PyObject::int(len as i64))
-            }));
+            }),
+        );
     }
 
     // flush()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("flush"),
+        attrs.insert(
+            CompactString::from("flush"),
             PyObject::native_closure("flush", move |_args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
                     return Err(PyException::runtime_error("I/O operation on closed file"));
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // seek(offset, whence=0)
     {
-        attrs.insert(CompactString::from("seek"),
+        attrs.insert(
+            CompactString::from("seek"),
             PyObject::native_closure("seek", move |_args| {
-                Err(PyException::runtime_error("seek() not supported on gzip files"))
-            }));
+                Err(PyException::runtime_error(
+                    "seek() not supported on gzip files",
+                ))
+            }),
+        );
     }
 
     // tell()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("tell"),
+        attrs.insert(
+            CompactString::from("tell"),
             PyObject::native_closure("tell", move |_args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
                     return Err(PyException::runtime_error("I/O operation on closed file"));
                 }
                 Ok(PyObject::int(guard.buffer.len() as i64))
-            }));
+            }),
+        );
     }
 
     // seekable()
-    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    attrs.insert(
+        CompactString::from("seekable"),
+        make_builtin(|_| Ok(PyObject::bool_val(false))),
+    );
 
     // readable()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readable"),
+        attrs.insert(
+            CompactString::from("readable"),
             PyObject::native_closure("readable", move |_args| {
                 let guard = st.lock().unwrap();
                 Ok(PyObject::bool_val(guard.mode.contains('r')))
-            }));
+            }),
+        );
     }
 
     // writable()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("writable"),
+        attrs.insert(
+            CompactString::from("writable"),
             PyObject::native_closure("writable", move |_args| {
                 let guard = st.lock().unwrap();
-                Ok(PyObject::bool_val(guard.mode.contains('w') || guard.mode.contains('a')))
-            }));
+                Ok(PyObject::bool_val(
+                    guard.mode.contains('w') || guard.mode.contains('a'),
+                ))
+            }),
+        );
     }
 
     // close()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("close"),
+        attrs.insert(
+            CompactString::from("close"),
             PyObject::native_closure("close", move |_args| {
                 let mut guard = st.lock().unwrap();
                 if guard.closed {
@@ -247,35 +291,36 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                 if guard.mode.contains('w') {
                     let compression = flate2::Compression::new(9);
                     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), compression);
-                    encoder.write_all(&guard.buffer).map_err(|e| {
-                        PyException::runtime_error(&format!("gzip close: {}", e))
-                    })?;
-                    let compressed = encoder.finish().map_err(|e| {
-                        PyException::runtime_error(&format!("gzip close: {}", e))
-                    })?;
-                    std::fs::write(&guard.filepath, &compressed).map_err(|e| {
-                        PyException::runtime_error(&format!("gzip close: {}", e))
-                    })?;
+                    encoder
+                        .write_all(&guard.buffer)
+                        .map_err(|e| PyException::runtime_error(&format!("gzip close: {}", e)))?;
+                    let compressed = encoder
+                        .finish()
+                        .map_err(|e| PyException::runtime_error(&format!("gzip close: {}", e)))?;
+                    std::fs::write(&guard.filepath, &compressed)
+                        .map_err(|e| PyException::runtime_error(&format!("gzip close: {}", e)))?;
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // __enter__
     {
-        attrs.insert(CompactString::from("__enter__"),
+        attrs.insert(
+            CompactString::from("__enter__"),
             PyObject::native_closure("__enter__", {
                 let st = inner.clone();
-                move |_args| {
-                    Ok(build_gzip_file_object(st.clone()))
-                }
-            }));
+                move |_args| Ok(build_gzip_file_object(st.clone()))
+            }),
+        );
     }
 
     // __exit__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__exit__"),
+        attrs.insert(
+            CompactString::from("__exit__"),
             PyObject::native_closure("__exit__", move |_args| {
                 let mut guard = st.lock().unwrap();
                 if !guard.closed {
@@ -290,7 +335,8 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                     }
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     let cls = PyObject::class(CompactString::from("GzipFile"), vec![], IndexMap::new());
@@ -324,17 +370,25 @@ fn gzip_file_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Dict(kw_map) = &arg.payload {
             let r = kw_map.read();
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("filename"))) {
-                if !matches!(&v.payload, PyObjectPayload::None) { filepath = v.py_to_string(); }
+                if !matches!(&v.payload, PyObjectPayload::None) {
+                    filepath = v.py_to_string();
+                }
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("mode"))) {
                 mode = v.py_to_string();
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("fileobj"))) {
-                if !matches!(&v.payload, PyObjectPayload::None) { fileobj = Some(v.clone()); }
+                if !matches!(&v.payload, PyObjectPayload::None) {
+                    fileobj = Some(v.clone());
+                }
             }
         } else {
             match i {
-                0 => if !matches!(&arg.payload, PyObjectPayload::None) { filepath = arg.py_to_string(); }
+                0 => {
+                    if !matches!(&arg.payload, PyObjectPayload::None) {
+                        filepath = arg.py_to_string();
+                    }
+                }
                 1 => mode = arg.py_to_string(),
                 _ => {}
             }
@@ -360,9 +414,9 @@ fn gzip_file_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let decompressed = if mode.contains('r') && !buffer.is_empty() {
             let mut decoder = flate2::read::GzDecoder::new(&buffer[..]);
             let mut out = Vec::new();
-            decoder.read_to_end(&mut out).map_err(|e| {
-                PyException::runtime_error(&format!("GzipFile: {}", e))
-            })?;
+            decoder
+                .read_to_end(&mut out)
+                .map_err(|e| PyException::runtime_error(&format!("GzipFile: {}", e)))?;
             out
         } else {
             buffer
@@ -380,21 +434,22 @@ fn gzip_file_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // File-path based (same as gzip.open)
     if filepath.is_empty() {
-        return Err(PyException::type_error("GzipFile requires filename or fileobj"));
+        return Err(PyException::type_error(
+            "GzipFile requires filename or fileobj",
+        ));
     }
     gzip_open_with(&filepath, &mode)
 }
 
 fn gzip_open_with(filepath: &str, mode: &str) -> PyResult<PyObjectRef> {
     let buffer = if mode.contains('r') {
-        let raw = std::fs::read(filepath).map_err(|e| {
-            PyException::runtime_error(&format!("GzipFile: {}", e))
-        })?;
+        let raw = std::fs::read(filepath)
+            .map_err(|e| PyException::runtime_error(&format!("GzipFile: {}", e)))?;
         let mut decoder = flate2::read::GzDecoder::new(&raw[..]);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).map_err(|e| {
-            PyException::runtime_error(&format!("GzipFile: {}", e))
-        })?;
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| PyException::runtime_error(&format!("GzipFile: {}", e)))?;
         decompressed
     } else {
         Vec::new()
@@ -415,12 +470,15 @@ fn gzip_open_with(filepath: &str, mode: &str) -> PyResult<PyObjectRef> {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn create_zipfile_module() -> PyObjectRef {
-    make_module("zipfile", vec![
-        ("ZipFile", make_builtin(zipfile_constructor)),
-        ("ZipInfo", make_builtin(zipinfo_constructor)),
-        ("ZIP_STORED", PyObject::int(0)),
-        ("ZIP_DEFLATED", PyObject::int(8)),
-    ])
+    make_module(
+        "zipfile",
+        vec![
+            ("ZipFile", make_builtin(zipfile_constructor)),
+            ("ZipInfo", make_builtin(zipinfo_constructor)),
+            ("ZIP_STORED", PyObject::int(0)),
+            ("ZIP_DEFLATED", PyObject::int(8)),
+        ],
+    )
 }
 
 /// Internal state for a zip archive.
@@ -434,9 +492,15 @@ struct ZipInner {
 fn build_zipinfo(filename: &str, size: usize) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     attrs.insert(CompactString::from("__zipinfo__"), PyObject::bool_val(true));
-    attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename)));
+    attrs.insert(
+        CompactString::from("filename"),
+        PyObject::str_val(CompactString::from(filename)),
+    );
     attrs.insert(CompactString::from("file_size"), PyObject::int(size as i64));
-    attrs.insert(CompactString::from("compress_size"), PyObject::int(size as i64));
+    attrs.insert(
+        CompactString::from("compress_size"),
+        PyObject::int(size as i64),
+    );
     attrs.insert(CompactString::from("compress_type"), PyObject::int(0));
     let cls = PyObject::class(CompactString::from("ZipInfo"), vec![], IndexMap::new());
     PyObject::instance_with_attrs(cls, attrs)
@@ -449,10 +513,13 @@ fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
     // write(filename, arcname=None)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("write"),
+        attrs.insert(
+            CompactString::from("write"),
             PyObject::native_closure("write", move |args| {
                 if args.is_empty() {
-                    return Err(PyException::type_error("write() requires a filename argument"));
+                    return Err(PyException::type_error(
+                        "write() requires a filename argument",
+                    ));
                 }
                 let filename = args[0].py_to_string();
                 let arcname = if args.len() > 1 {
@@ -460,57 +527,68 @@ fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
                 } else {
                     filename.clone()
                 };
-                let data = std::fs::read(&filename).map_err(|e| {
-                    PyException::runtime_error(&format!("zipfile.write: {}", e))
-                })?;
+                let data = std::fs::read(&filename)
+                    .map_err(|e| PyException::runtime_error(&format!("zipfile.write: {}", e)))?;
                 let mut guard = st.lock().unwrap();
                 if guard.closed {
-                    return Err(PyException::runtime_error("zipfile: I/O operation on closed file"));
+                    return Err(PyException::runtime_error(
+                        "zipfile: I/O operation on closed file",
+                    ));
                 }
                 guard.entries.insert(arcname, data);
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // writestr(arcname, data)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("writestr"),
+        attrs.insert(
+            CompactString::from("writestr"),
             PyObject::native_closure("writestr", move |args| {
                 if args.len() < 2 {
-                    return Err(PyException::type_error("writestr() requires arcname and data"));
+                    return Err(PyException::type_error(
+                        "writestr() requires arcname and data",
+                    ));
                 }
                 let arcname = args[0].py_to_string();
-                let data = extract_bytes(&args[1]).unwrap_or_else(|_| {
-                    args[1].py_to_string().into_bytes()
-                });
+                let data =
+                    extract_bytes(&args[1]).unwrap_or_else(|_| args[1].py_to_string().into_bytes());
                 let mut guard = st.lock().unwrap();
                 if guard.closed {
-                    return Err(PyException::runtime_error("zipfile: I/O operation on closed file"));
+                    return Err(PyException::runtime_error(
+                        "zipfile: I/O operation on closed file",
+                    ));
                 }
                 guard.entries.insert(arcname, data);
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // namelist()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("namelist"),
+        attrs.insert(
+            CompactString::from("namelist"),
             PyObject::native_closure("namelist", move |_args| {
                 let guard = st.lock().unwrap();
-                let names: Vec<PyObjectRef> = guard.entries
+                let names: Vec<PyObjectRef> = guard
+                    .entries
                     .keys()
                     .map(|k| PyObject::str_val(CompactString::from(k.as_str())))
                     .collect();
                 Ok(PyObject::list(names))
-            }));
+            }),
+        );
     }
 
     // read(name)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("read"),
+        attrs.insert(
+            CompactString::from("read"),
             PyObject::native_closure("read", move |args| {
                 if args.is_empty() {
                     return Err(PyException::type_error("read() requires a name argument"));
@@ -520,49 +598,60 @@ fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
                 match guard.entries.get(&name) {
                     Some(data) => Ok(PyObject::bytes(data.clone())),
                     None => Err(PyException::key_error(&format!(
-                        "There is no item named '{}' in the archive", name
+                        "There is no item named '{}' in the archive",
+                        name
                     ))),
                 }
-            }));
+            }),
+        );
     }
 
     // infolist()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("infolist"),
+        attrs.insert(
+            CompactString::from("infolist"),
             PyObject::native_closure("infolist", move |_args| {
                 let guard = st.lock().unwrap();
-                let infos: Vec<PyObjectRef> = guard.entries
+                let infos: Vec<PyObjectRef> = guard
+                    .entries
                     .iter()
                     .map(|(name, data)| build_zipinfo(name, data.len()))
                     .collect();
                 Ok(PyObject::list(infos))
-            }));
+            }),
+        );
     }
 
     // getinfo(name)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("getinfo"),
+        attrs.insert(
+            CompactString::from("getinfo"),
             PyObject::native_closure("getinfo", move |args| {
                 if args.is_empty() {
-                    return Err(PyException::type_error("getinfo() requires a name argument"));
+                    return Err(PyException::type_error(
+                        "getinfo() requires a name argument",
+                    ));
                 }
                 let name = args[0].py_to_string();
                 let guard = st.lock().unwrap();
                 match guard.entries.get(&name) {
                     Some(data) => Ok(build_zipinfo(&name, data.len())),
                     None => Err(PyException::key_error(&format!(
-                        "There is no item named '{}' in the archive", name
+                        "There is no item named '{}' in the archive",
+                        name
                     ))),
                 }
-            }));
+            }),
+        );
     }
 
     // extractall(path='.')
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("extractall"),
+        attrs.insert(
+            CompactString::from("extractall"),
             PyObject::native_closure("extractall", move |args| {
                 let dest = if !args.is_empty() {
                     args[0].py_to_string()
@@ -575,42 +664,44 @@ fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    std::fs::write(&path, data).map_err(|e| {
-                        PyException::runtime_error(&format!("extractall: {}", e))
-                    })?;
+                    std::fs::write(&path, data)
+                        .map_err(|e| PyException::runtime_error(&format!("extractall: {}", e)))?;
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // close()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("close"),
-            PyObject::native_closure("close", move |_args| {
-                zip_close_inner(&st)
-            }));
+        attrs.insert(
+            CompactString::from("close"),
+            PyObject::native_closure("close", move |_args| zip_close_inner(&st)),
+        );
     }
 
     // __enter__
     {
-        attrs.insert(CompactString::from("__enter__"),
+        attrs.insert(
+            CompactString::from("__enter__"),
             PyObject::native_closure("__enter__", {
                 let st = inner.clone();
-                move |_args| {
-                    Ok(build_zipfile_object(st.clone()))
-                }
-            }));
+                move |_args| Ok(build_zipfile_object(st.clone()))
+            }),
+        );
     }
 
     // __exit__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__exit__"),
+        attrs.insert(
+            CompactString::from("__exit__"),
             PyObject::native_closure("__exit__", move |_args| {
                 let _ = zip_close_inner(&st);
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     let cls = PyObject::class(CompactString::from("ZipFile"), vec![], IndexMap::new());
@@ -625,23 +716,22 @@ fn zip_close_inner(st: &Arc<Mutex<ZipInner>>) -> PyResult<PyObjectRef> {
     }
     guard.closed = true;
     if guard.mode.contains('w') {
-        let file = std::fs::File::create(&guard.filepath).map_err(|e| {
-            PyException::runtime_error(&format!("zipfile.close: {}", e))
-        })?;
+        let file = std::fs::File::create(&guard.filepath)
+            .map_err(|e| PyException::runtime_error(&format!("zipfile.close: {}", e)))?;
         let mut writer = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         for (name, data) in guard.entries.iter() {
-            writer.start_file(name, options).map_err(|e| {
-                PyException::runtime_error(&format!("zipfile.close: {}", e))
-            })?;
-            writer.write_all(data).map_err(|e| {
-                PyException::runtime_error(&format!("zipfile.close: {}", e))
-            })?;
+            writer
+                .start_file(name, options)
+                .map_err(|e| PyException::runtime_error(&format!("zipfile.close: {}", e)))?;
+            writer
+                .write_all(data)
+                .map_err(|e| PyException::runtime_error(&format!("zipfile.close: {}", e)))?;
         }
-        writer.finish().map_err(|e| {
-            PyException::runtime_error(&format!("zipfile.close: {}", e))
-        })?;
+        writer
+            .finish()
+            .map_err(|e| PyException::runtime_error(&format!("zipfile.close: {}", e)))?;
     }
     Ok(PyObject::none())
 }
@@ -660,22 +750,20 @@ fn zipfile_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
 
     let entries = if mode.contains('r') {
-        let file = std::fs::File::open(&filepath).map_err(|e| {
-            PyException::runtime_error(&format!("zipfile: {}", e))
-        })?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| {
-            PyException::runtime_error(&format!("zipfile: {}", e))
-        })?;
+        let file = std::fs::File::open(&filepath)
+            .map_err(|e| PyException::runtime_error(&format!("zipfile: {}", e)))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| PyException::runtime_error(&format!("zipfile: {}", e)))?;
         let mut map = IndexMap::new();
         for i in 0..archive.len() {
-            let mut entry = archive.by_index(i).map_err(|e| {
-                PyException::runtime_error(&format!("zipfile: {}", e))
-            })?;
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| PyException::runtime_error(&format!("zipfile: {}", e)))?;
             let name = entry.name().to_string();
             let mut data = Vec::new();
-            entry.read_to_end(&mut data).map_err(|e| {
-                PyException::runtime_error(&format!("zipfile: {}", e))
-            })?;
+            entry
+                .read_to_end(&mut data)
+                .map_err(|e| PyException::runtime_error(&format!("zipfile: {}", e)))?;
             map.insert(name, data);
         }
         map
@@ -707,13 +795,16 @@ fn zipinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn create_bz2_module() -> PyObjectRef {
-    make_module("bz2", vec![
-        ("compress", make_builtin(bz2_compress)),
-        ("decompress", make_builtin(bz2_decompress)),
-        ("open", make_builtin(bz2_open)),
-        ("BZ2Compressor", make_builtin(bz2_compressor_ctor)),
-        ("BZ2Decompressor", make_builtin(bz2_decompressor_ctor)),
-    ])
+    make_module(
+        "bz2",
+        vec![
+            ("compress", make_builtin(bz2_compress)),
+            ("decompress", make_builtin(bz2_decompress)),
+            ("open", make_builtin(bz2_open)),
+            ("BZ2Compressor", make_builtin(bz2_compressor_ctor)),
+            ("BZ2Decompressor", make_builtin(bz2_decompressor_ctor)),
+        ],
+    )
 }
 
 fn bz2_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -729,16 +820,14 @@ fn bz2_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         9
     };
 
-    let mut encoder = bzip2::write::BzEncoder::new(
-        Vec::new(),
-        bzip2::Compression::new(level.min(9)),
-    );
-    encoder.write_all(&data).map_err(|e| {
-        PyException::runtime_error(&format!("bz2.compress: {e}"))
-    })?;
-    let compressed = encoder.finish().map_err(|e| {
-        PyException::runtime_error(&format!("bz2.compress: {e}"))
-    })?;
+    let mut encoder =
+        bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(level.min(9)));
+    encoder
+        .write_all(&data)
+        .map_err(|e| PyException::runtime_error(&format!("bz2.compress: {e}")))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| PyException::runtime_error(&format!("bz2.compress: {e}")))?;
     Ok(PyObject::bytes(compressed))
 }
 
@@ -751,9 +840,9 @@ fn bz2_decompress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let data = extract_bytes(&args[0])?;
     let mut decoder = bzip2::read::BzDecoder::new(&data[..]);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out).map_err(|e| {
-        PyException::runtime_error(&format!("bz2.decompress: {e}"))
-    })?;
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| PyException::runtime_error(&format!("bz2.decompress: {e}")))?;
     Ok(PyObject::bytes(out))
 }
 
@@ -771,48 +860,69 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
     // name / mode / closed attributes
     {
         let g = inner.lock().unwrap();
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
-        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(g.filepath.as_str())),
+        );
+        attrs.insert(
+            CompactString::from("mode"),
+            PyObject::str_val(CompactString::from(g.mode.as_str())),
+        );
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
     }
 
     // read(size=-1)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("read"),
+        attrs.insert(
+            CompactString::from("read"),
             PyObject::native_closure("read", move |args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
-                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                let size = if !args.is_empty() {
+                    args[0].as_int().unwrap_or(-1)
+                } else {
+                    -1
+                };
                 if size < 0 || size as usize >= g.buffer.len() {
                     Ok(PyObject::bytes(g.buffer.clone()))
                 } else {
                     Ok(PyObject::bytes(g.buffer[..size as usize].to_vec()))
                 }
-            }));
+            }),
+        );
     }
 
     // readline()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readline"),
+        attrs.insert(
+            CompactString::from("readline"),
             PyObject::native_closure("readline", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 match g.buffer.iter().position(|&b| b == b'\n') {
                     Some(i) => Ok(PyObject::bytes(g.buffer[..=i].to_vec())),
                     None => Ok(PyObject::bytes(g.buffer.clone())),
                 }
-            }));
+            }),
+        );
     }
 
     // readlines()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readlines"),
+        attrs.insert(
+            CompactString::from("readlines"),
             PyObject::native_closure("readlines", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 let mut lines = Vec::new();
                 let mut start = 0;
                 for (i, &b) in g.buffer.iter().enumerate() {
@@ -825,118 +935,147 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
                     lines.push(PyObject::bytes(g.buffer[start..].to_vec()));
                 }
                 Ok(PyObject::list(lines))
-            }));
+            }),
+        );
     }
 
     // write(data)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("write"),
+        attrs.insert(
+            CompactString::from("write"),
             PyObject::native_closure("write", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("write() requires data")); }
+                if args.is_empty() {
+                    return Err(PyException::type_error("write() requires data"));
+                }
                 let data = extract_bytes(&args[0])?;
                 let mut g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 let len = data.len();
                 g.buffer.extend(data);
                 Ok(PyObject::int(len as i64))
-            }));
+            }),
+        );
     }
 
     // flush()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("flush"),
+        attrs.insert(
+            CompactString::from("flush"),
             PyObject::native_closure("flush", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // tell()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("tell"),
+        attrs.insert(
+            CompactString::from("tell"),
             PyObject::native_closure("tell", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 Ok(PyObject::int(g.buffer.len() as i64))
-            }));
+            }),
+        );
     }
 
     // seek()
-    attrs.insert(CompactString::from("seek"),
+    attrs.insert(
+        CompactString::from("seek"),
         PyObject::native_closure("seek", move |_args| {
-            Err(PyException::runtime_error("seek() not supported on bz2 files"))
-        }));
+            Err(PyException::runtime_error(
+                "seek() not supported on bz2 files",
+            ))
+        }),
+    );
 
     // seekable() / readable() / writable()
-    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    attrs.insert(
+        CompactString::from("seekable"),
+        make_builtin(|_| Ok(PyObject::bool_val(false))),
+    );
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readable"),
+        attrs.insert(
+            CompactString::from("readable"),
             PyObject::native_closure("readable", move |_args| {
                 let g = st.lock().unwrap();
                 Ok(PyObject::bool_val(g.mode.contains('r')))
-            }));
+            }),
+        );
     }
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("writable"),
+        attrs.insert(
+            CompactString::from("writable"),
             PyObject::native_closure("writable", move |_args| {
                 let g = st.lock().unwrap();
-                Ok(PyObject::bool_val(g.mode.contains('w') || g.mode.contains('a')))
-            }));
+                Ok(PyObject::bool_val(
+                    g.mode.contains('w') || g.mode.contains('a'),
+                ))
+            }),
+        );
     }
 
     // close()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("close"),
+        attrs.insert(
+            CompactString::from("close"),
             PyObject::native_closure("close", move |_args| {
                 let mut g = st.lock().unwrap();
-                if g.closed { return Ok(PyObject::none()); }
+                if g.closed {
+                    return Ok(PyObject::none());
+                }
                 g.closed = true;
                 if g.mode.contains('w') {
-                    let mut enc = bzip2::write::BzEncoder::new(
-                        Vec::new(), bzip2::Compression::new(9),
-                    );
-                    enc.write_all(&g.buffer).map_err(|e| {
-                        PyException::runtime_error(&format!("bz2 close: {e}"))
-                    })?;
-                    let compressed = enc.finish().map_err(|e| {
-                        PyException::runtime_error(&format!("bz2 close: {e}"))
-                    })?;
-                    std::fs::write(&g.filepath, &compressed).map_err(|e| {
-                        PyException::runtime_error(&format!("bz2 close: {e}"))
-                    })?;
+                    let mut enc =
+                        bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(9));
+                    enc.write_all(&g.buffer)
+                        .map_err(|e| PyException::runtime_error(&format!("bz2 close: {e}")))?;
+                    let compressed = enc
+                        .finish()
+                        .map_err(|e| PyException::runtime_error(&format!("bz2 close: {e}")))?;
+                    std::fs::write(&g.filepath, &compressed)
+                        .map_err(|e| PyException::runtime_error(&format!("bz2 close: {e}")))?;
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // __enter__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__enter__"),
-            PyObject::native_closure("__enter__", move |_args| {
-                Ok(build_bz2_file(st.clone()))
-            }));
+        attrs.insert(
+            CompactString::from("__enter__"),
+            PyObject::native_closure("__enter__", move |_args| Ok(build_bz2_file(st.clone()))),
+        );
     }
 
     // __exit__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__exit__"),
+        attrs.insert(
+            CompactString::from("__exit__"),
             PyObject::native_closure("__exit__", move |_args| {
                 let mut g = st.lock().unwrap();
                 if !g.closed {
                     g.closed = true;
                     if g.mode.contains('w') {
-                        let mut enc = bzip2::write::BzEncoder::new(
-                            Vec::new(), bzip2::Compression::new(9),
-                        );
+                        let mut enc =
+                            bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(9));
                         let _ = enc.write_all(&g.buffer);
                         if let Ok(c) = enc.finish() {
                             let _ = std::fs::write(&g.filepath, &c);
@@ -944,7 +1083,8 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
                     }
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     let cls = PyObject::class(CompactString::from("BZ2File"), vec![], IndexMap::new());
@@ -958,24 +1098,29 @@ fn bz2_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let filepath = args[0].py_to_string();
-    let mode = if args.len() > 1 { args[1].py_to_string() } else { "rb".to_string() };
+    let mode = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        "rb".to_string()
+    };
 
     let buffer = if mode.contains('r') {
-        let raw = std::fs::read(&filepath).map_err(|e| {
-            PyException::runtime_error(&format!("bz2.open: {e}"))
-        })?;
+        let raw = std::fs::read(&filepath)
+            .map_err(|e| PyException::runtime_error(&format!("bz2.open: {e}")))?;
         let mut dec = bzip2::read::BzDecoder::new(&raw[..]);
         let mut out = Vec::new();
-        dec.read_to_end(&mut out).map_err(|e| {
-            PyException::runtime_error(&format!("bz2.open: {e}"))
-        })?;
+        dec.read_to_end(&mut out)
+            .map_err(|e| PyException::runtime_error(&format!("bz2.open: {e}")))?;
         out
     } else {
         Vec::new()
     };
 
     Ok(build_bz2_file(Arc::new(Mutex::new(Bz2FileInner {
-        mode, filepath, buffer, closed: false,
+        mode,
+        filepath,
+        buffer,
+        closed: false,
     }))))
 }
 
@@ -990,29 +1135,41 @@ fn bz2_compressor_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     {
         let b = buf.clone();
-        attrs.insert(CompactString::from("compress"),
+        attrs.insert(
+            CompactString::from("compress"),
             PyObject::native_closure("compress", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("compress() requires data")); }
+                if args.is_empty() {
+                    return Err(PyException::type_error("compress() requires data"));
+                }
                 let data = extract_bytes(&args[0])?;
-                let mut enc = bzip2::write::BzEncoder::new(
-                    Vec::new(), bzip2::Compression::new(level.min(9)),
-                );
-                enc.write_all(&data).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
-                let out = enc.finish().map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                let mut enc =
+                    bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(level.min(9)));
+                enc.write_all(&data)
+                    .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                let out = enc
+                    .finish()
+                    .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
                 b.lock().unwrap().extend(&out);
                 Ok(PyObject::bytes(out))
-            }));
+            }),
+        );
     }
     {
         let b = buf.clone();
-        attrs.insert(CompactString::from("flush"),
+        attrs.insert(
+            CompactString::from("flush"),
             PyObject::native_closure("flush", move |_args| {
                 let data = b.lock().unwrap().clone();
                 Ok(PyObject::bytes(data))
-            }));
+            }),
+        );
     }
 
-    let cls = PyObject::class(CompactString::from("BZ2Compressor"), vec![], IndexMap::new());
+    let cls = PyObject::class(
+        CompactString::from("BZ2Compressor"),
+        vec![],
+        IndexMap::new(),
+    );
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
@@ -1022,22 +1179,31 @@ fn bz2_decompressor_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     {
         let b = buf.clone();
-        attrs.insert(CompactString::from("decompress"),
+        attrs.insert(
+            CompactString::from("decompress"),
             PyObject::native_closure("decompress", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("decompress() requires data")); }
+                if args.is_empty() {
+                    return Err(PyException::type_error("decompress() requires data"));
+                }
                 let data = extract_bytes(&args[0])?;
                 let mut dec = bzip2::read::BzDecoder::new(&data[..]);
                 let mut out = Vec::new();
-                dec.read_to_end(&mut out).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                dec.read_to_end(&mut out)
+                    .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
                 b.lock().unwrap().extend(&out);
                 Ok(PyObject::bytes(out))
-            }));
+            }),
+        );
     }
     attrs.insert(CompactString::from("eof"), PyObject::bool_val(false));
     attrs.insert(CompactString::from("needs_input"), PyObject::bool_val(true));
     attrs.insert(CompactString::from("unused_data"), PyObject::bytes(vec![]));
 
-    let cls = PyObject::class(CompactString::from("BZ2Decompressor"), vec![], IndexMap::new());
+    let cls = PyObject::class(
+        CompactString::from("BZ2Decompressor"),
+        vec![],
+        IndexMap::new(),
+    );
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
@@ -1046,21 +1212,24 @@ fn bz2_decompressor_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn create_lzma_module() -> PyObjectRef {
-    make_module("lzma", vec![
-        ("compress", make_builtin(lzma_compress)),
-        ("decompress", make_builtin(lzma_decompress)),
-        ("open", make_builtin(lzma_open)),
-        ("LZMACompressor", make_builtin(lzma_compressor_ctor)),
-        ("LZMADecompressor", make_builtin(lzma_decompressor_ctor)),
-        ("FORMAT_AUTO", PyObject::int(0)),
-        ("FORMAT_XZ", PyObject::int(1)),
-        ("FORMAT_ALONE", PyObject::int(2)),
-        ("FORMAT_RAW", PyObject::int(3)),
-        ("CHECK_NONE", PyObject::int(0)),
-        ("CHECK_CRC32", PyObject::int(1)),
-        ("CHECK_CRC64", PyObject::int(4)),
-        ("CHECK_SHA256", PyObject::int(10)),
-    ])
+    make_module(
+        "lzma",
+        vec![
+            ("compress", make_builtin(lzma_compress)),
+            ("decompress", make_builtin(lzma_decompress)),
+            ("open", make_builtin(lzma_open)),
+            ("LZMACompressor", make_builtin(lzma_compressor_ctor)),
+            ("LZMADecompressor", make_builtin(lzma_decompressor_ctor)),
+            ("FORMAT_AUTO", PyObject::int(0)),
+            ("FORMAT_XZ", PyObject::int(1)),
+            ("FORMAT_ALONE", PyObject::int(2)),
+            ("FORMAT_RAW", PyObject::int(3)),
+            ("CHECK_NONE", PyObject::int(0)),
+            ("CHECK_CRC32", PyObject::int(1)),
+            ("CHECK_CRC64", PyObject::int(4)),
+            ("CHECK_SHA256", PyObject::int(10)),
+        ],
+    )
 }
 
 fn lzma_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1076,12 +1245,12 @@ fn lzma_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         6
     };
     let mut encoder = xz2::write::XzEncoder::new(Vec::new(), preset.min(9));
-    encoder.write_all(&data).map_err(|e| {
-        PyException::runtime_error(&format!("lzma.compress: {e}"))
-    })?;
-    let compressed = encoder.finish().map_err(|e| {
-        PyException::runtime_error(&format!("lzma.compress: {e}"))
-    })?;
+    encoder
+        .write_all(&data)
+        .map_err(|e| PyException::runtime_error(&format!("lzma.compress: {e}")))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| PyException::runtime_error(&format!("lzma.compress: {e}")))?;
     Ok(PyObject::bytes(compressed))
 }
 
@@ -1094,9 +1263,9 @@ fn lzma_decompress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let data = extract_bytes(&args[0])?;
     let mut decoder = xz2::read::XzDecoder::new(&data[..]);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out).map_err(|e| {
-        PyException::runtime_error(&format!("lzma.decompress: {e}"))
-    })?;
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| PyException::runtime_error(&format!("lzma.decompress: {e}")))?;
     Ok(PyObject::bytes(out))
 }
 
@@ -1109,53 +1278,77 @@ struct LzmaFileInner {
 
 fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    attrs.insert(CompactString::from("__lzmafile__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__lzmafile__"),
+        PyObject::bool_val(true),
+    );
 
     // name / mode / closed attributes
     {
         let g = inner.lock().unwrap();
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
-        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(g.filepath.as_str())),
+        );
+        attrs.insert(
+            CompactString::from("mode"),
+            PyObject::str_val(CompactString::from(g.mode.as_str())),
+        );
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
     }
 
     // read(size=-1)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("read"),
+        attrs.insert(
+            CompactString::from("read"),
             PyObject::native_closure("read", move |args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
-                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                let size = if !args.is_empty() {
+                    args[0].as_int().unwrap_or(-1)
+                } else {
+                    -1
+                };
                 if size < 0 || size as usize >= g.buffer.len() {
                     Ok(PyObject::bytes(g.buffer.clone()))
                 } else {
                     Ok(PyObject::bytes(g.buffer[..size as usize].to_vec()))
                 }
-            }));
+            }),
+        );
     }
 
     // readline()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readline"),
+        attrs.insert(
+            CompactString::from("readline"),
             PyObject::native_closure("readline", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 match g.buffer.iter().position(|&b| b == b'\n') {
                     Some(i) => Ok(PyObject::bytes(g.buffer[..=i].to_vec())),
                     None => Ok(PyObject::bytes(g.buffer.clone())),
                 }
-            }));
+            }),
+        );
     }
 
     // readlines()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readlines"),
+        attrs.insert(
+            CompactString::from("readlines"),
             PyObject::native_closure("readlines", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 let mut lines = Vec::new();
                 let mut start = 0;
                 for (i, &b) in g.buffer.iter().enumerate() {
@@ -1168,108 +1361,139 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
                     lines.push(PyObject::bytes(g.buffer[start..].to_vec()));
                 }
                 Ok(PyObject::list(lines))
-            }));
+            }),
+        );
     }
 
     // write(data)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("write"),
+        attrs.insert(
+            CompactString::from("write"),
             PyObject::native_closure("write", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("write() requires data")); }
+                if args.is_empty() {
+                    return Err(PyException::type_error("write() requires data"));
+                }
                 let data = extract_bytes(&args[0])?;
                 let mut g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 let len = data.len();
                 g.buffer.extend(data);
                 Ok(PyObject::int(len as i64))
-            }));
+            }),
+        );
     }
 
     // flush()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("flush"),
+        attrs.insert(
+            CompactString::from("flush"),
             PyObject::native_closure("flush", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // tell()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("tell"),
+        attrs.insert(
+            CompactString::from("tell"),
             PyObject::native_closure("tell", move |_args| {
                 let g = st.lock().unwrap();
-                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                if g.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
                 Ok(PyObject::int(g.buffer.len() as i64))
-            }));
+            }),
+        );
     }
 
     // seek()
-    attrs.insert(CompactString::from("seek"),
+    attrs.insert(
+        CompactString::from("seek"),
         PyObject::native_closure("seek", move |_args| {
-            Err(PyException::runtime_error("seek() not supported on lzma files"))
-        }));
+            Err(PyException::runtime_error(
+                "seek() not supported on lzma files",
+            ))
+        }),
+    );
 
     // seekable() / readable() / writable()
-    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    attrs.insert(
+        CompactString::from("seekable"),
+        make_builtin(|_| Ok(PyObject::bool_val(false))),
+    );
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("readable"),
+        attrs.insert(
+            CompactString::from("readable"),
             PyObject::native_closure("readable", move |_args| {
                 let g = st.lock().unwrap();
                 Ok(PyObject::bool_val(g.mode.contains('r')))
-            }));
+            }),
+        );
     }
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("writable"),
+        attrs.insert(
+            CompactString::from("writable"),
             PyObject::native_closure("writable", move |_args| {
                 let g = st.lock().unwrap();
-                Ok(PyObject::bool_val(g.mode.contains('w') || g.mode.contains('a')))
-            }));
+                Ok(PyObject::bool_val(
+                    g.mode.contains('w') || g.mode.contains('a'),
+                ))
+            }),
+        );
     }
 
     // close()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("close"),
+        attrs.insert(
+            CompactString::from("close"),
             PyObject::native_closure("close", move |_args| {
                 let mut g = st.lock().unwrap();
-                if g.closed { return Ok(PyObject::none()); }
+                if g.closed {
+                    return Ok(PyObject::none());
+                }
                 g.closed = true;
                 if g.mode.contains('w') {
                     let mut enc = xz2::write::XzEncoder::new(Vec::new(), 6);
-                    enc.write_all(&g.buffer).map_err(|e| {
-                        PyException::runtime_error(&format!("lzma close: {e}"))
-                    })?;
-                    let compressed = enc.finish().map_err(|e| {
-                        PyException::runtime_error(&format!("lzma close: {e}"))
-                    })?;
-                    std::fs::write(&g.filepath, &compressed).map_err(|e| {
-                        PyException::runtime_error(&format!("lzma close: {e}"))
-                    })?;
+                    enc.write_all(&g.buffer)
+                        .map_err(|e| PyException::runtime_error(&format!("lzma close: {e}")))?;
+                    let compressed = enc
+                        .finish()
+                        .map_err(|e| PyException::runtime_error(&format!("lzma close: {e}")))?;
+                    std::fs::write(&g.filepath, &compressed)
+                        .map_err(|e| PyException::runtime_error(&format!("lzma close: {e}")))?;
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // __enter__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__enter__"),
-            PyObject::native_closure("__enter__", move |_args| {
-                Ok(build_lzma_file(st.clone()))
-            }));
+        attrs.insert(
+            CompactString::from("__enter__"),
+            PyObject::native_closure("__enter__", move |_args| Ok(build_lzma_file(st.clone()))),
+        );
     }
 
     // __exit__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__exit__"),
+        attrs.insert(
+            CompactString::from("__exit__"),
             PyObject::native_closure("__exit__", move |_args| {
                 let mut g = st.lock().unwrap();
                 if !g.closed {
@@ -1283,7 +1507,8 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
                     }
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     let cls = PyObject::class(CompactString::from("LZMAFile"), vec![], IndexMap::new());
@@ -1297,24 +1522,29 @@ fn lzma_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let filepath = args[0].py_to_string();
-    let mode = if args.len() > 1 { args[1].py_to_string() } else { "rb".to_string() };
+    let mode = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        "rb".to_string()
+    };
 
     let buffer = if mode.contains('r') {
-        let raw = std::fs::read(&filepath).map_err(|e| {
-            PyException::runtime_error(&format!("lzma.open: {e}"))
-        })?;
+        let raw = std::fs::read(&filepath)
+            .map_err(|e| PyException::runtime_error(&format!("lzma.open: {e}")))?;
         let mut dec = xz2::read::XzDecoder::new(&raw[..]);
         let mut out = Vec::new();
-        dec.read_to_end(&mut out).map_err(|e| {
-            PyException::runtime_error(&format!("lzma.open: {e}"))
-        })?;
+        dec.read_to_end(&mut out)
+            .map_err(|e| PyException::runtime_error(&format!("lzma.open: {e}")))?;
         out
     } else {
         Vec::new()
     };
 
     Ok(build_lzma_file(Arc::new(Mutex::new(LzmaFileInner {
-        mode, filepath, buffer, closed: false,
+        mode,
+        filepath,
+        buffer,
+        closed: false,
     }))))
 }
 
@@ -1329,48 +1559,70 @@ fn lzma_compressor_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     {
         let b = buf.clone();
-        attrs.insert(CompactString::from("compress"),
+        attrs.insert(
+            CompactString::from("compress"),
             PyObject::native_closure("compress", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("compress() requires data")); }
+                if args.is_empty() {
+                    return Err(PyException::type_error("compress() requires data"));
+                }
                 let data = extract_bytes(&args[0])?;
                 let mut enc = xz2::write::XzEncoder::new(Vec::new(), preset.min(9));
-                enc.write_all(&data).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
-                let out = enc.finish().map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                enc.write_all(&data)
+                    .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                let out = enc
+                    .finish()
+                    .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
                 b.lock().unwrap().extend(&out);
                 Ok(PyObject::bytes(out))
-            }));
+            }),
+        );
     }
     {
         let b = buf.clone();
-        attrs.insert(CompactString::from("flush"),
+        attrs.insert(
+            CompactString::from("flush"),
             PyObject::native_closure("flush", move |_args| {
                 let data = b.lock().unwrap().clone();
                 Ok(PyObject::bytes(data))
-            }));
+            }),
+        );
     }
 
-    let cls = PyObject::class(CompactString::from("LZMACompressor"), vec![], IndexMap::new());
+    let cls = PyObject::class(
+        CompactString::from("LZMACompressor"),
+        vec![],
+        IndexMap::new(),
+    );
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
 fn lzma_decompressor_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
 
-    attrs.insert(CompactString::from("decompress"),
+    attrs.insert(
+        CompactString::from("decompress"),
         PyObject::native_closure("decompress", move |args| {
-            if args.is_empty() { return Err(PyException::type_error("decompress() requires data")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("decompress() requires data"));
+            }
             let data = extract_bytes(&args[0])?;
             let mut dec = xz2::read::XzDecoder::new(&data[..]);
             let mut out = Vec::new();
-            dec.read_to_end(&mut out).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+            dec.read_to_end(&mut out)
+                .map_err(|e| PyException::runtime_error(&format!("{e}")))?;
             Ok(PyObject::bytes(out))
-        }));
+        }),
+    );
     attrs.insert(CompactString::from("eof"), PyObject::bool_val(false));
     attrs.insert(CompactString::from("needs_input"), PyObject::bool_val(true));
     attrs.insert(CompactString::from("check"), PyObject::int(0));
     attrs.insert(CompactString::from("unused_data"), PyObject::bytes(vec![]));
 
-    let cls = PyObject::class(CompactString::from("LZMADecompressor"), vec![], IndexMap::new());
+    let cls = PyObject::class(
+        CompactString::from("LZMADecompressor"),
+        vec![],
+        IndexMap::new(),
+    );
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
@@ -1379,31 +1631,37 @@ fn lzma_decompressor_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn create_tarfile_module() -> PyObjectRef {
-    make_module("tarfile", vec![
-        ("open", make_builtin(tarfile_open)),
-        ("TarFile", make_builtin(tarfile_open)),
-        ("TarInfo", make_builtin(tarinfo_constructor)),
-        ("is_tarfile", make_builtin(|args: &[PyObjectRef]| {
-            check_args("tarfile.is_tarfile", args, 1)?;
-            let path = args[0].py_to_string();
-            // Try to open and read magic bytes
-            match std::fs::File::open(&path) {
-                Ok(mut f) => {
-                    let mut buf = [0u8; 263];
-                    use std::io::Read;
-                    let n = f.read(&mut buf).unwrap_or(0);
-                    // tar magic at offset 257: "ustar"
-                    Ok(PyObject::bool_val(n >= 262 && &buf[257..262] == b"ustar"))
-                }
-                Err(_) => Ok(PyObject::bool_val(false)),
-            }
-        })),
-        ("ENCODING", PyObject::str_val(CompactString::from("utf-8"))),
-        ("DEFAULT_FORMAT", PyObject::int(1)),  // GNU_FORMAT
-        ("USTAR_FORMAT", PyObject::int(0)),
-        ("GNU_FORMAT", PyObject::int(1)),
-        ("PAX_FORMAT", PyObject::int(2)),
-    ])
+    make_module(
+        "tarfile",
+        vec![
+            ("open", make_builtin(tarfile_open)),
+            ("TarFile", make_builtin(tarfile_open)),
+            ("TarInfo", make_builtin(tarinfo_constructor)),
+            (
+                "is_tarfile",
+                make_builtin(|args: &[PyObjectRef]| {
+                    check_args("tarfile.is_tarfile", args, 1)?;
+                    let path = args[0].py_to_string();
+                    // Try to open and read magic bytes
+                    match std::fs::File::open(&path) {
+                        Ok(mut f) => {
+                            let mut buf = [0u8; 263];
+                            use std::io::Read;
+                            let n = f.read(&mut buf).unwrap_or(0);
+                            // tar magic at offset 257: "ustar"
+                            Ok(PyObject::bool_val(n >= 262 && &buf[257..262] == b"ustar"))
+                        }
+                        Err(_) => Ok(PyObject::bool_val(false)),
+                    }
+                }),
+            ),
+            ("ENCODING", PyObject::str_val(CompactString::from("utf-8"))),
+            ("DEFAULT_FORMAT", PyObject::int(1)), // GNU_FORMAT
+            ("USTAR_FORMAT", PyObject::int(0)),
+            ("GNU_FORMAT", PyObject::int(1)),
+            ("PAX_FORMAT", PyObject::int(2)),
+        ],
+    )
 }
 
 struct TarEntry {
@@ -1424,29 +1682,45 @@ struct TarInner {
 
 fn build_tarinfo(name: &str, size: u64, is_dir: bool) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+    attrs.insert(
+        CompactString::from("name"),
+        PyObject::str_val(CompactString::from(name)),
+    );
     attrs.insert(CompactString::from("size"), PyObject::int(size as i64));
     attrs.insert(CompactString::from("mtime"), PyObject::int(0));
     attrs.insert(CompactString::from("mode"), PyObject::int(0o644));
     attrs.insert(CompactString::from("uid"), PyObject::int(0));
     attrs.insert(CompactString::from("gid"), PyObject::int(0));
-    attrs.insert(CompactString::from("uname"), PyObject::str_val(CompactString::from("")));
-    attrs.insert(CompactString::from("gname"), PyObject::str_val(CompactString::from("")));
-    attrs.insert(CompactString::from("type"), if is_dir {
-        PyObject::str_val(CompactString::from("5"))  // DIRTYPE
-    } else {
-        PyObject::str_val(CompactString::from("0"))  // REGTYPE
-    });
-    attrs.insert(CompactString::from("isdir"),
+    attrs.insert(
+        CompactString::from("uname"),
+        PyObject::str_val(CompactString::from("")),
+    );
+    attrs.insert(
+        CompactString::from("gname"),
+        PyObject::str_val(CompactString::from("")),
+    );
+    attrs.insert(
+        CompactString::from("type"),
+        if is_dir {
+            PyObject::str_val(CompactString::from("5")) // DIRTYPE
+        } else {
+            PyObject::str_val(CompactString::from("0")) // REGTYPE
+        },
+    );
+    attrs.insert(
+        CompactString::from("isdir"),
         PyObject::native_closure("isdir", {
             let d = is_dir;
             move |_args| Ok(PyObject::bool_val(d))
-        }));
-    attrs.insert(CompactString::from("isfile"),
+        }),
+    );
+    attrs.insert(
+        CompactString::from("isfile"),
         PyObject::native_closure("isfile", {
             let d = is_dir;
             move |_args| Ok(PyObject::bool_val(!d))
-        }));
+        }),
+    );
 
     let cls = PyObject::class(CompactString::from("TarInfo"), vec![], IndexMap::new());
     PyObject::instance_with_attrs(cls, attrs)
@@ -1459,36 +1733,47 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
     // getnames()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("getnames"),
+        attrs.insert(
+            CompactString::from("getnames"),
             PyObject::native_closure("getnames", move |_args| {
                 let g = st.lock().unwrap();
-                let names: Vec<PyObjectRef> = g.entries.iter()
+                let names: Vec<PyObjectRef> = g
+                    .entries
+                    .iter()
                     .map(|e| PyObject::str_val(CompactString::from(e.name.as_str())))
                     .collect();
                 Ok(PyObject::list(names))
-            }));
+            }),
+        );
     }
 
     // getmembers()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("getmembers"),
+        attrs.insert(
+            CompactString::from("getmembers"),
             PyObject::native_closure("getmembers", move |_args| {
                 let g = st.lock().unwrap();
-                let members: Vec<PyObjectRef> = g.entries.iter()
+                let members: Vec<PyObjectRef> = g
+                    .entries
+                    .iter()
                     .map(|e| build_tarinfo(&e.name, e.size, e.is_dir))
                     .collect();
                 Ok(PyObject::list(members))
-            }));
+            }),
+        );
     }
 
     // getmember(name) → TarInfo
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("getmember"),
+        attrs.insert(
+            CompactString::from("getmember"),
             PyObject::native_closure("getmember", move |args| {
                 if args.is_empty() {
-                    return Err(PyException::type_error("getmember() requires name argument"));
+                    return Err(PyException::type_error(
+                        "getmember() requires name argument",
+                    ));
                 }
                 let name = args[0].py_to_string();
                 let g = st.lock().unwrap();
@@ -1498,13 +1783,15 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     }
                 }
                 Err(PyException::key_error(&format!("KeyError: '{name}'")))
-            }));
+            }),
+        );
     }
 
     // extractall(path='.')
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("extractall"),
+        attrs.insert(
+            CompactString::from("extractall"),
             PyObject::native_closure("extractall", move |args| {
                 let dest = if !args.is_empty() {
                     args[0].py_to_string()
@@ -1526,13 +1813,15 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     }
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // extractfile(member)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("extractfile"),
+        attrs.insert(
+            CompactString::from("extractfile"),
             PyObject::native_closure("extractfile", move |args| {
                 if args.is_empty() {
                     return Err(PyException::type_error("extractfile() requires member arg"));
@@ -1548,7 +1837,8 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                         {
                             let d = data.clone();
                             let p = pos.clone();
-                            file_attrs.insert(CompactString::from("read"),
+                            file_attrs.insert(
+                                CompactString::from("read"),
                                 PyObject::native_closure("read", move |args| {
                                     let mut cur = p.lock().unwrap();
                                     let n = if !args.is_empty() {
@@ -1564,20 +1854,27 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                                     };
                                     *cur += chunk.len();
                                     Ok(PyObject::bytes(chunk))
-                                }));
+                                }),
+                            );
                         }
-                        let cls = PyObject::class(CompactString::from("ExFileObject"), vec![], IndexMap::new());
+                        let cls = PyObject::class(
+                            CompactString::from("ExFileObject"),
+                            vec![],
+                            IndexMap::new(),
+                        );
                         return Ok(PyObject::instance_with_attrs(cls, file_attrs));
                     }
                 }
                 Err(PyException::key_error(&format!("KeyError: '{name}'")))
-            }));
+            }),
+        );
     }
 
     // add(name, arcname=None)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("add"),
+        attrs.insert(
+            CompactString::from("add"),
             PyObject::native_closure("add", move |args| {
                 if args.is_empty() {
                     return Err(PyException::type_error("add() requires name argument"));
@@ -1609,9 +1906,8 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                         is_dir: true,
                     });
                 } else {
-                    let data = std::fs::read(&filepath).map_err(|e| {
-                        PyException::runtime_error(&format!("tarfile.add: {e}"))
-                    })?;
+                    let data = std::fs::read(&filepath)
+                        .map_err(|e| PyException::runtime_error(&format!("tarfile.add: {e}")))?;
                     let size = data.len() as u64;
                     g.entries.push(TarEntry {
                         name: arcname,
@@ -1621,18 +1917,21 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     });
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // addfile(tarinfo, fileobj=None)
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("addfile"),
+        attrs.insert(
+            CompactString::from("addfile"),
             PyObject::native_closure("addfile", move |args| {
                 if args.is_empty() {
                     return Err(PyException::type_error("addfile() requires tarinfo"));
                 }
-                let name = args[0].get_attr("name")
+                let name = args[0]
+                    .get_attr("name")
                     .map(|n| n.py_to_string())
                     .unwrap_or_default();
                 let data = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -1648,38 +1947,49 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                 let size = data.len() as u64;
                 let mut g = st.lock().unwrap();
                 g.entries.push(TarEntry {
-                    name, data, size, is_dir: false,
+                    name,
+                    data,
+                    size,
+                    is_dir: false,
                 });
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // close()
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("close"),
+        attrs.insert(
+            CompactString::from("close"),
             PyObject::native_closure("close", move |_args| {
                 let mut g = st.lock().unwrap();
-                if g.closed { return Ok(PyObject::none()); }
+                if g.closed {
+                    return Ok(PyObject::none());
+                }
                 g.closed = true;
                 if g.mode.contains('w') {
                     write_tar_to_disk(&g)?;
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // __enter__ / __exit__
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__enter__"),
+        attrs.insert(
+            CompactString::from("__enter__"),
             PyObject::native_closure("__enter__", move |_args| {
                 Ok(build_tarfile_object(st.clone()))
-            }));
+            }),
+        );
     }
     {
         let st = inner.clone();
-        attrs.insert(CompactString::from("__exit__"),
+        attrs.insert(
+            CompactString::from("__exit__"),
             PyObject::native_closure("__exit__", move |_args| {
                 let mut g = st.lock().unwrap();
                 if !g.closed {
@@ -1689,13 +1999,17 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     }
                 }
                 Ok(PyObject::none())
-            }));
+            }),
+        );
     }
 
     // name attribute
     {
         let path = inner.lock().unwrap().filepath.clone();
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path.as_str())));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(path.as_str())),
+        );
     }
 
     let cls = PyObject::class(CompactString::from("TarFile"), vec![], IndexMap::new());
@@ -1713,23 +2027,23 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
                 header.set_size(0);
                 header.set_mode(0o755);
                 header.set_cksum();
-                tar_builder.append_data(&mut header, &entry.name, &[][..]).map_err(|e| {
-                    PyException::runtime_error(&format!("tarfile: {e}"))
-                })?;
+                tar_builder
+                    .append_data(&mut header, &entry.name, &[][..])
+                    .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
             } else {
                 let mut header = tar::Header::new_gnu();
                 header.set_entry_type(tar::EntryType::Regular);
                 header.set_size(entry.data.len() as u64);
                 header.set_mode(0o644);
                 header.set_cksum();
-                tar_builder.append_data(&mut header, &entry.name, &entry.data[..]).map_err(|e| {
-                    PyException::runtime_error(&format!("tarfile: {e}"))
-                })?;
+                tar_builder
+                    .append_data(&mut header, &entry.name, &entry.data[..])
+                    .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
             }
         }
-        let cursor = tar_builder.into_inner().map_err(|e| {
-            PyException::runtime_error(&format!("tarfile: {e}"))
-        })?;
+        let cursor = tar_builder
+            .into_inner()
+            .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
         Ok(cursor.into_inner())
     };
 
@@ -1751,8 +2065,12 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
         // Seek back to beginning
         if let Some(seek_fn) = fobj.get_attr("seek") {
             match &seek_fn.payload {
-                PyObjectPayload::NativeFunction(nf) => { let _ = (nf.func)(&[PyObject::int(0)]); }
-                PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[PyObject::int(0)]); }
+                PyObjectPayload::NativeFunction(nf) => {
+                    let _ = (nf.func)(&[PyObject::int(0)]);
+                }
+                PyObjectPayload::NativeClosure(nc) => {
+                    let _ = (nc.func)(&[PyObject::int(0)]);
+                }
                 _ => {}
             }
         }
@@ -1760,14 +2078,19 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
     }
 
     let filepath = &inner.filepath;
-    let file = std::fs::File::create(filepath).map_err(|e| {
-        PyException::runtime_error(&format!("tarfile.close: {e}"))
-    })?;
+    let file = std::fs::File::create(filepath)
+        .map_err(|e| PyException::runtime_error(&format!("tarfile.close: {e}")))?;
 
     let writer: Box<dyn Write> = if filepath.ends_with(".gz") || filepath.ends_with(".tgz") {
-        Box::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()))
+        Box::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ))
     } else if filepath.ends_with(".bz2") {
-        Box::new(bzip2::write::BzEncoder::new(file, bzip2::Compression::default()))
+        Box::new(bzip2::write::BzEncoder::new(
+            file,
+            bzip2::Compression::default(),
+        ))
     } else if filepath.ends_with(".xz") {
         Box::new(xz2::write::XzEncoder::new(file, 6))
     } else {
@@ -1776,24 +2099,30 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
 
     let data = build_tar_bytes(&inner.entries)?;
     let mut writer = writer;
-    writer.write_all(&data).map_err(|e| {
-        PyException::runtime_error(&format!("tarfile: {e}"))
-    })?;
+    writer
+        .write_all(&data)
+        .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
     Ok(())
 }
 
 fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Parse kwargs from last arg if it's a Dict
     let kwargs = args.last().and_then(|a| {
-        if let PyObjectPayload::Dict(kw) = &a.payload { Some(kw.clone()) } else { None }
+        if let PyObjectPayload::Dict(kw) = &a.payload {
+            Some(kw.clone())
+        } else {
+            None
+        }
     });
     let fileobj = kwargs.as_ref().and_then(|kw| {
         let r = kw.read();
-        r.get(&HashableKey::str_key(CompactString::from("fileobj"))).cloned()
+        r.get(&HashableKey::str_key(CompactString::from("fileobj")))
+            .cloned()
     });
     let mode_kwarg = kwargs.as_ref().and_then(|kw| {
         let r = kw.read();
-        r.get(&HashableKey::str_key(CompactString::from("mode"))).map(|v| v.py_to_string())
+        r.get(&HashableKey::str_key(CompactString::from("mode")))
+            .map(|v| v.py_to_string())
     });
 
     // Determine mode: positional arg[1] > kwarg > default "r"
@@ -1813,7 +2142,10 @@ fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Vec::new()
         };
         return Ok(build_tarfile_object(Arc::new(Mutex::new(TarInner {
-            filepath: String::new(), mode, entries, closed: false,
+            filepath: String::new(),
+            mode,
+            entries,
+            closed: false,
             fileobj: Some(fobj),
         }))));
     }
@@ -1832,7 +2164,11 @@ fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
 
     Ok(build_tarfile_object(Arc::new(Mutex::new(TarInner {
-        filepath, mode, entries, closed: false, fileobj: None,
+        filepath,
+        mode,
+        entries,
+        closed: false,
+        fileobj: None,
     }))))
 }
 
@@ -1864,39 +2200,47 @@ fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
             }
         }
     }
-    Err(PyException::type_error("fileobj must be a BytesIO or bytes-like object"))
+    Err(PyException::type_error(
+        "fileobj must be a BytesIO or bytes-like object",
+    ))
 }
 
 fn read_tar_entries_from_bytes(data: &[u8]) -> PyResult<Vec<TarEntry>> {
     let reader = std::io::Cursor::new(data);
     let mut archive = tar::Archive::new(reader);
     let mut entries = Vec::new();
-    for entry_result in archive.entries().map_err(|e| {
-        PyException::runtime_error(&format!("tarfile: {e}"))
-    })? {
-        let mut entry = entry_result.map_err(|e| {
-            PyException::runtime_error(&format!("tarfile: {e}"))
-        })?;
-        let name = entry.path().map_err(|e| {
-            PyException::runtime_error(&format!("tarfile: {e}"))
-        })?.to_string_lossy().to_string();
+    for entry_result in archive
+        .entries()
+        .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?
+    {
+        let mut entry =
+            entry_result.map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
+        let name = entry
+            .path()
+            .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?
+            .to_string_lossy()
+            .to_string();
         let is_dir = entry.header().entry_type().is_dir();
         let size = entry.size();
         let mut edata = Vec::new();
         if !is_dir {
-            entry.read_to_end(&mut edata).map_err(|e| {
-                PyException::runtime_error(&format!("tarfile: {e}"))
-            })?;
+            entry
+                .read_to_end(&mut edata)
+                .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
         }
-        entries.push(TarEntry { name, data: edata, size, is_dir });
+        entries.push(TarEntry {
+            name,
+            data: edata,
+            size,
+            is_dir,
+        });
     }
     Ok(entries)
 }
 
 fn read_tar_entries(filepath: &str) -> PyResult<Vec<TarEntry>> {
-    let file = std::fs::File::open(filepath).map_err(|e| {
-        PyException::runtime_error(&format!("tarfile.open: {e}"))
-    })?;
+    let file = std::fs::File::open(filepath)
+        .map_err(|e| PyException::runtime_error(&format!("tarfile.open: {e}")))?;
 
     let reader: Box<dyn Read> = if filepath.ends_with(".gz") || filepath.ends_with(".tgz") {
         Box::new(flate2::read::GzDecoder::new(file))
@@ -1910,24 +2254,31 @@ fn read_tar_entries(filepath: &str) -> PyResult<Vec<TarEntry>> {
 
     let mut archive = tar::Archive::new(reader);
     let mut entries = Vec::new();
-    for entry_result in archive.entries().map_err(|e| {
-        PyException::runtime_error(&format!("tarfile.open: {e}"))
-    })? {
-        let mut entry = entry_result.map_err(|e| {
-            PyException::runtime_error(&format!("tarfile: {e}"))
-        })?;
-        let name = entry.path().map_err(|e| {
-            PyException::runtime_error(&format!("tarfile: {e}"))
-        })?.to_string_lossy().to_string();
+    for entry_result in archive
+        .entries()
+        .map_err(|e| PyException::runtime_error(&format!("tarfile.open: {e}")))?
+    {
+        let mut entry =
+            entry_result.map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
+        let name = entry
+            .path()
+            .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?
+            .to_string_lossy()
+            .to_string();
         let is_dir = entry.header().entry_type().is_dir();
         let size = entry.size();
         let mut data = Vec::new();
         if !is_dir {
-            entry.read_to_end(&mut data).map_err(|e| {
-                PyException::runtime_error(&format!("tarfile: {e}"))
-            })?;
+            entry
+                .read_to_end(&mut data)
+                .map_err(|e| PyException::runtime_error(&format!("tarfile: {e}")))?;
         }
-        entries.push(TarEntry { name, data, size, is_dir });
+        entries.push(TarEntry {
+            name,
+            data,
+            size,
+            is_dir,
+        });
     }
     Ok(entries)
 }
@@ -1937,10 +2288,12 @@ fn tarinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (name, size) = if !args.is_empty() {
         if let PyObjectPayload::Dict(kw) = &args[0].payload {
             let r = kw.read();
-            let n = r.get(&HashableKey::str_key(CompactString::from("name")))
+            let n = r
+                .get(&HashableKey::str_key(CompactString::from("name")))
                 .map(|v| v.py_to_string())
                 .unwrap_or_default();
-            let s = r.get(&HashableKey::str_key(CompactString::from("size")))
+            let s = r
+                .get(&HashableKey::str_key(CompactString::from("size")))
                 .and_then(|v| v.as_int())
                 .unwrap_or(0) as u64;
             (n, s)
@@ -1955,7 +2308,9 @@ fn tarinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 } else {
                     args[1].as_int().unwrap_or(0) as u64
                 }
-            } else { 0 };
+            } else {
+                0
+            };
             (n, s)
         }
     } else {

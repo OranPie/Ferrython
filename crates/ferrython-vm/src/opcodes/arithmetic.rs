@@ -3,7 +3,7 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -13,7 +13,10 @@ use indexmap::IndexMap;
 
 // ── Group 4: Unary operations ────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_unary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_unary_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::UnaryPositive => {
                 let v = self.vm_pop();
@@ -30,15 +33,13 @@ impl VirtualMachine {
                 let v = self.vm_pop();
                 // Inline fast path for int/float
                 let fast = match &v.payload {
-                    PyObjectPayload::Int(PyInt::Small(n)) => {
-                        Some(match n.checked_neg() {
-                            Some(r) => PyObject::int(r),
-                            None => {
-                                use num_bigint::BigInt;
-                                PyObject::big_int(-BigInt::from(*n))
-                            }
-                        })
-                    }
+                    PyObjectPayload::Int(PyInt::Small(n)) => Some(match n.checked_neg() {
+                        Some(r) => PyObject::int(r),
+                        None => {
+                            use num_bigint::BigInt;
+                            PyObject::big_int(-BigInt::from(*n))
+                        }
+                    }),
                     PyObjectPayload::Float(f) => Some(PyObject::float(-f)),
                     _ => None,
                 };
@@ -79,7 +80,11 @@ impl VirtualMachine {
                 } else {
                     None
                 };
-                if let Some(r) = resolved.or_else(|| self.try_call_dunder(&v, "__invert__", vec![]).ok().flatten()) {
+                if let Some(r) = resolved.or_else(|| {
+                    self.try_call_dunder(&v, "__invert__", vec![])
+                        .ok()
+                        .flatten()
+                }) {
                     self.vm_push(r);
                 } else {
                     self.vm_push(v.invert()?);
@@ -94,8 +99,11 @@ impl VirtualMachine {
 // ── Group 5: Binary / inplace arithmetic ─────────────────────────────
 impl VirtualMachine {
     pub(crate) fn try_binary_dunder(
-        &mut self, a: &PyObjectRef, b: &PyObjectRef,
-        dunder: &str, rdunder: Option<&str>,
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+        dunder: &str,
+        rdunder: Option<&str>,
     ) -> Result<Option<PyObjectRef>, PyException> {
         // Look up dunder via class MRO (not instance get_attr) for proper inheritance
         if let PyObjectPayload::Instance(inst) = &a.payload {
@@ -125,7 +133,11 @@ impl VirtualMachine {
     /// Python-aware addition: dispatches `__add__`/`__radd__` for Instance types,
     /// falls back to Rust-level `py_add` for primitives. Used by `sum()` and other
     /// builtins that need to support non-numeric `__add__`.
-    pub(crate) fn vm_add(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+    pub(crate) fn vm_add(
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+    ) -> Result<PyObjectRef, PyException> {
         if let Some(result) = self.try_binary_dunder(a, b, "__add__", Some("__radd__"))? {
             return Ok(result);
         }
@@ -133,8 +145,11 @@ impl VirtualMachine {
     }
 
     fn try_inplace_dunder(
-        &mut self, a: &PyObjectRef, b: &PyObjectRef,
-        idunder: &str, dunder: &str,
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+        idunder: &str,
+        dunder: &str,
     ) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &a.payload {
             let method = lookup_in_class_mro(&inst.class, idunder)
@@ -155,12 +170,15 @@ impl VirtualMachine {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: receiver.clone(),
                     method,
-                }
+                },
             }),
         }
     }
 
-    pub(crate) fn exec_binary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_binary_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
 
         // ── Fast paths for primitive types ──
@@ -193,7 +211,8 @@ impl VirtualMachine {
             Opcode::BinaryAdd | Opcode::InplaceAdd => {
                 fast_int_op!(a, b, checked_add, +);
                 // Also fast-path str + str
-                if let (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) = (&a.payload, &b.payload) {
+                if let (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) = (&a.payload, &b.payload)
+                {
                     let mut s = x.to_compact_string();
                     s.push_str(y);
                     self.vm_push(PyObject::str_val(s));
@@ -208,25 +227,41 @@ impl VirtualMachine {
             }
             // Fast paths for bitwise/shift/power on small ints
             Opcode::BinaryAnd | Opcode::InplaceAnd => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     self.vm_push(PyObject::int(*x & *y));
                     return Ok(None);
                 }
             }
             Opcode::BinaryOr | Opcode::InplaceOr => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     self.vm_push(PyObject::int(*x | *y));
                     return Ok(None);
                 }
             }
             Opcode::BinaryXor | Opcode::InplaceXor => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     self.vm_push(PyObject::int(*x ^ *y));
                     return Ok(None);
                 }
             }
             Opcode::BinaryLshift | Opcode::InplaceLshift => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     if *y >= 0 && *y < 64 {
                         if let Some(r) = x.checked_shl(*y as u32) {
                             self.vm_push(PyObject::int(r));
@@ -236,7 +271,11 @@ impl VirtualMachine {
                 }
             }
             Opcode::BinaryRshift | Opcode::InplaceRshift => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     if *y >= 0 && *y < 64 {
                         self.vm_push(PyObject::int(*x >> *y as u32));
                         return Ok(None);
@@ -244,14 +283,21 @@ impl VirtualMachine {
                 }
             }
             Opcode::BinaryPower | Opcode::InplacePower => {
-                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                if let (
+                    PyObjectPayload::Int(PyInt::Small(x)),
+                    PyObjectPayload::Int(PyInt::Small(y)),
+                ) = (&a.payload, &b.payload)
+                {
                     if *y >= 0 && *y <= 63 {
                         let mut r: i64 = 1;
                         let mut overflow = false;
                         for _ in 0..*y {
                             match r.checked_mul(*x) {
                                 Some(v) => r = v,
-                                None => { overflow = true; break; }
+                                None => {
+                                    overflow = true;
+                                    break;
+                                }
                             }
                         }
                         if !overflow {
@@ -284,34 +330,48 @@ impl VirtualMachine {
         }
         let result = match instr.op {
             Opcode::BinaryAdd => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? { r }
-                else { with_enum_fallback!(a, b, add) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, add)
+                }
             }
             Opcode::InplaceAdd => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__iadd__", "__add__")? { r }
-                else if let PyObjectPayload::List(items) = &a.payload {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__iadd__", "__add__")? {
+                    r
+                } else if let PyObjectPayload::List(items) = &a.payload {
                     // list += iterable → extend in-place (same identity)
                     let new_items = b.to_list()?;
                     items.write().extend(new_items);
                     a.clone()
-                }
-                else if let PyObjectPayload::Set(set) = &a.payload {
+                } else if let PyObjectPayload::Set(set) = &a.payload {
                     // set |= iterable → update in-place
                     if let PyObjectPayload::Set(other) = &b.payload {
-                        let other_items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let other_items: Vec<_> = other
+                            .read()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         set.write().extend(other_items);
                     }
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, add)
                 }
-                else { with_enum_fallback!(a, b, add) }
             }
             Opcode::BinarySubtract => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? { r }
-                else { with_enum_fallback!(a, b, sub) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, sub)
+                }
             }
             Opcode::InplaceSubtract => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__isub__", "__sub__")? { r }
-                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__isub__", "__sub__")? {
+                    r
+                } else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) =
+                    (&a.payload, &b.payload)
+                {
                     let keys_to_remove: Vec<_> = other.read().keys().cloned().collect();
                     let mut w = set.write();
                     for k in keys_to_remove {
@@ -319,16 +379,23 @@ impl VirtualMachine {
                     }
                     drop(w);
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, sub)
                 }
-                else { with_enum_fallback!(a, b, sub) }
             }
             Opcode::BinaryMultiply => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__mul__", Some("__rmul__"))? { r }
-                else { with_enum_fallback!(a, b, mul) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__mul__", Some("__rmul__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, mul)
+                }
             }
             Opcode::InplaceMultiply => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imul__", "__mul__")? { r }
-                else if let (PyObjectPayload::List(items), PyObjectPayload::Int(n)) = (&a.payload, &b.payload) {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imul__", "__mul__")? {
+                    r
+                } else if let (PyObjectPayload::List(items), PyObjectPayload::Int(n)) =
+                    (&a.payload, &b.payload)
+                {
                     // list *= n → repeat in-place
                     let n = n.to_i64().unwrap_or(0).max(0) as usize;
                     let mut w = items.write();
@@ -339,24 +406,41 @@ impl VirtualMachine {
                     }
                     drop(w);
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, mul)
                 }
-                else { with_enum_fallback!(a, b, mul) }
             }
             Opcode::BinaryTrueDivide => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__truediv__", Some("__rtruediv__"))? { r }
-                else { with_enum_fallback!(a, b, true_div) }
+                if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__truediv__", Some("__rtruediv__"))?
+                {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, true_div)
+                }
             }
             Opcode::InplaceTrueDivide => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__itruediv__", "__truediv__")? { r }
-                else { with_enum_fallback!(a, b, true_div) }
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__itruediv__", "__truediv__")? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, true_div)
+                }
             }
             Opcode::BinaryFloorDivide => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__floordiv__", Some("__rfloordiv__"))? { r }
-                else { with_enum_fallback!(a, b, floor_div) }
+                if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__floordiv__", Some("__rfloordiv__"))?
+                {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, floor_div)
+                }
             }
             Opcode::InplaceFloorDivide => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ifloordiv__", "__floordiv__")? { r }
-                else { with_enum_fallback!(a, b, floor_div) }
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ifloordiv__", "__floordiv__")? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, floor_div)
+                }
             }
             Opcode::BinaryModulo | Opcode::InplaceModulo => {
                 // str % val → Python printf-style formatting
@@ -364,66 +448,108 @@ impl VirtualMachine {
                     self.vm_string_percent_format(fmt_str, &b)?
                 } else if let PyObjectPayload::Bytes(fmt_bytes) = &a.payload {
                     self.vm_bytes_percent_format(fmt_bytes, &b)?
-                } else if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
-                else { with_enum_fallback!(a, b, modulo) }
+                } else if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))?
+                {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, modulo)
+                }
             }
             Opcode::BinaryPower | Opcode::InplacePower => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__pow__", Some("__rpow__"))? { r }
-                else { with_enum_fallback!(a, b, power) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__pow__", Some("__rpow__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, power)
+                }
             }
             Opcode::BinaryLshift | Opcode::InplaceLshift => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))? { r }
-                else { with_enum_fallback!(a, b, lshift) }
+                if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))?
+                {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, lshift)
+                }
             }
             Opcode::BinaryRshift | Opcode::InplaceRshift => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))? { r }
-                else { with_enum_fallback!(a, b, rshift) }
+                if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))?
+                {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, rshift)
+                }
             }
             Opcode::BinaryAnd => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", Some("__rand__"))? { r }
-                else { with_enum_fallback!(a, b, bit_and) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", Some("__rand__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, bit_and)
+                }
             }
             Opcode::InplaceAnd => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__iand__", "__and__")? { r }
-                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__iand__", "__and__")? {
+                    r
+                } else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) =
+                    (&a.payload, &b.payload)
+                {
                     let other_keys: indexmap::IndexSet<_> = other.read().keys().cloned().collect();
                     set.write().retain(|k, _| other_keys.contains(k));
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, bit_and)
                 }
-                else { with_enum_fallback!(a, b, bit_and) }
             }
             Opcode::BinaryOr => {
                 // PEP 604: type | type → UnionType for isinstance checks
-                if Self::is_type_like(&a) && Self::is_type_like(&b)
-                {
+                if Self::is_type_like(&a) && Self::is_type_like(&b) {
                     self.make_union_type(&a, &b)?
-                }
-                else if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
-                else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) = (&a.payload, &b.payload) {
+                } else if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? {
+                    r
+                } else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) =
+                    (&a.payload, &b.payload)
+                {
                     // Delegate to py_bit_or which handles Counter union (max) vs regular dict merge
                     a.bit_or(&b)?
+                } else {
+                    with_enum_fallback!(a, b, bit_or)
                 }
-                else { with_enum_fallback!(a, b, bit_or) }
             }
             Opcode::InplaceOr => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ior__", "__or__")? { r }
-                else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) = (&a.payload, &b.payload) {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ior__", "__or__")? {
+                    r
+                } else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) =
+                    (&a.payload, &b.payload)
+                {
                     a.bit_or(&b)?
-                }
-                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
-                    let items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                } else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) =
+                    (&a.payload, &b.payload)
+                {
+                    let items: Vec<_> = other
+                        .read()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
                     set.write().extend(items);
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, bit_or)
                 }
-                else { with_enum_fallback!(a, b, bit_or) }
             }
             Opcode::BinaryXor => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", Some("__rxor__"))? { r }
-                else { with_enum_fallback!(a, b, bit_xor) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", Some("__rxor__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, bit_xor)
+                }
             }
             Opcode::InplaceXor => {
-                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ixor__", "__xor__")? { r }
-                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ixor__", "__xor__")? {
+                    r
+                } else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) =
+                    (&a.payload, &b.payload)
+                {
                     let other_read = other.read();
                     let other_keys: indexmap::IndexSet<_> = other_read.keys().cloned().collect();
                     let mut s = set.write();
@@ -437,41 +563,55 @@ impl VirtualMachine {
                     }
                     drop(s);
                     a.clone()
+                } else {
+                    with_enum_fallback!(a, b, bit_xor)
                 }
-                else { with_enum_fallback!(a, b, bit_xor) }
             }
             Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))? { r }
-                else {
+                if let Some(r) =
+                    self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))?
+                {
+                    r
+                } else {
                     return Err(PyException::type_error(format!(
                         "unsupported operand type(s) for @: '{}' and '{}'",
-                        a.type_name(), b.type_name()
+                        a.type_name(),
+                        b.type_name()
                     )));
                 }
             }
             // LoadFastLoadConstBinarySub fallback: operands already on stack, treat as subtract
             Opcode::LoadFastLoadConstBinarySub => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? { r }
-                else { with_enum_fallback!(a, b, sub) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, sub)
+                }
             }
             // LoadFastLoadConstBinaryAdd fallback: operands already on stack, treat as add
-            Opcode::LoadFastLoadConstBinaryAdd | Opcode::LoadFastLoadFastBinaryAdd
+            Opcode::LoadFastLoadConstBinaryAdd
+            | Opcode::LoadFastLoadFastBinaryAdd
             | Opcode::LoadFastLoadFastBinaryAddStoreFast
             | Opcode::LoadFastLoadConstBinaryAddStoreFast => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? { r }
-                else { with_enum_fallback!(a, b, add) }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, add)
+                }
             }
             _ => unreachable!(),
         };
         self.vm_push(result);
         Ok(None)
     }
-
 }
 
 // ── Group 6: Subscript operations ────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_subscript_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_subscript_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::BinarySubscr => {
                 let raw_key = self.vm_pop();
@@ -506,16 +646,28 @@ impl VirtualMachine {
                     if let Some(typing_name) = obj.get_attr("__typing_name__") {
                         let name = typing_name.py_to_string();
                         let params = match &key.payload {
-                            PyObjectPayload::Tuple(items) => {
-                                items.iter().map(|i| i.type_name().to_string()).collect::<Vec<_>>().join(", ")
-                            }
+                            PyObjectPayload::Tuple(items) => items
+                                .iter()
+                                .map(|i| i.type_name().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
                             _ => key.type_name().to_string(),
                         };
                         let repr = format!("{}[{}]", name, params);
-                        let alias_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                        let alias_cls = PyObject::class(
+                            CompactString::from("_GenericAlias"),
+                            vec![],
+                            IndexMap::new(),
+                        );
                         let mut attrs = IndexMap::new();
-                        attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
-                        attrs.insert(intern_or_new("__str__"), PyObject::str_val(CompactString::from(&repr)));
+                        attrs.insert(
+                            intern_or_new("__typing_repr__"),
+                            PyObject::str_val(CompactString::from(&repr)),
+                        );
+                        attrs.insert(
+                            intern_or_new("__str__"),
+                            PyObject::str_val(CompactString::from(&repr)),
+                        );
                         self.vm_push(PyObject::instance_with_attrs(alias_cls, attrs));
                         return Ok(None);
                     }
@@ -527,17 +679,26 @@ impl VirtualMachine {
                 if let PyObjectPayload::BuiltinType(bt) = &obj.payload {
                     let type_name = bt.as_str();
                     let params = match &key.payload {
-                        PyObjectPayload::Tuple(items) => {
-                            items.iter().map(|i| self.format_type_param(i)).collect::<Vec<_>>().join(", ")
-                        }
+                        PyObjectPayload::Tuple(items) => items
+                            .iter()
+                            .map(|i| self.format_type_param(i))
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         _ => self.format_type_param(&key),
                     };
                     let repr = format!("{}[{}]", type_name, params);
-                    let alias_cls = PyObject::class(CompactString::from("types.GenericAlias"), vec![], IndexMap::new());
+                    let alias_cls = PyObject::class(
+                        CompactString::from("types.GenericAlias"),
+                        vec![],
+                        IndexMap::new(),
+                    );
                     let mut attrs = IndexMap::new();
                     attrs.insert(intern_or_new("__origin__"), obj.clone());
                     attrs.insert(intern_or_new("__args__"), key.clone());
-                    attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                    attrs.insert(
+                        intern_or_new("__typing_repr__"),
+                        PyObject::str_val(CompactString::from(&repr)),
+                    );
                     let alias = PyObject::instance_with_attrs(alias_cls, attrs);
                     self.vm_push(alias);
                     return Ok(None);
@@ -547,19 +708,31 @@ impl VirtualMachine {
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
                         if cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias") {
-                            let base_repr = inst.attrs.read().get("__typing_repr__")
+                            let base_repr = inst
+                                .attrs
+                                .read()
+                                .get("__typing_repr__")
                                 .map(|r| r.py_to_string())
                                 .unwrap_or_else(|| obj.py_to_string());
                             let params = match &key.payload {
-                                PyObjectPayload::Tuple(items) => {
-                                    items.iter().map(|i| self.format_type_param(i)).collect::<Vec<_>>().join(", ")
-                                }
+                                PyObjectPayload::Tuple(items) => items
+                                    .iter()
+                                    .map(|i| self.format_type_param(i))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
                                 _ => self.format_type_param(&key),
                             };
                             let repr = format!("{}[{}]", base_repr, params);
-                            let alias_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                            let alias_cls = PyObject::class(
+                                CompactString::from("_GenericAlias"),
+                                vec![],
+                                IndexMap::new(),
+                            );
                             let mut attrs = IndexMap::new();
-                            attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                            attrs.insert(
+                                intern_or_new("__typing_repr__"),
+                                PyObject::str_val(CompactString::from(&repr)),
+                            );
                             if let Some(origin) = inst.attrs.read().get("__origin__").cloned() {
                                 attrs.insert(intern_or_new("__origin__"), origin);
                             }
@@ -571,9 +744,33 @@ impl VirtualMachine {
                 }
                 // If the subclass defines its own __getitem__, call it instead of dict_storage
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    let is_chainmap = inst.attrs.read().contains_key("__chainmap__");
+                    if is_chainmap {
+                        if let Some(maps_obj) = obj.get_attr("maps") {
+                            let maps = maps_obj.to_list()?;
+                            for mapping in maps {
+                                match mapping.get_item(&key) {
+                                    Ok(val) => {
+                                        self.vm_push(val);
+                                        return Ok(None);
+                                    }
+                                    Err(e) if e.kind == ExceptionKind::KeyError => continue,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            if let Some(missing) = obj.get_attr("__missing__") {
+                                let result = self.call_object(missing, vec![key])?;
+                                self.vm_push(result);
+                            } else {
+                                return Err(PyException::key_error(key.py_to_string()));
+                            }
+                            return Ok(None);
+                        }
+                    }
                     if let Some(ref ds) = inst.dict_storage {
-                        let has_user_getitem = Self::class_has_user_override(&inst.class, "__getitem__");
-                        if has_user_getitem {
+                        let has_user_getitem =
+                            Self::class_has_user_override(&inst.class, "__getitem__");
+                        if has_user_getitem || is_chainmap {
                             // Let dunder dispatch handle it below
                         } else {
                             let hk = self.vm_to_hashable_key(&key)?;
@@ -614,7 +811,8 @@ impl VirtualMachine {
                     if let Some(val) = existing {
                         self.vm_push(val);
                     } else {
-                        let factory_key = HashableKey::str_key(intern_or_new("__defaultdict_factory__"));
+                        let factory_key =
+                            HashableKey::str_key(intern_or_new("__defaultdict_factory__"));
                         let factory = map.read().get(&factory_key).cloned();
                         if let Some(factory) = factory {
                             let default = self.call_object(factory, vec![])?;
@@ -643,35 +841,75 @@ impl VirtualMachine {
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
-                            let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                            let step_val = sd
+                                .step
+                                .as_ref()
+                                .map(|v| v.as_int().unwrap_or(1))
+                                .unwrap_or(1);
                             let new_items = value.to_list()?;
                             let mut w = items.write();
                             let len = w.len() as i64;
-                            
+
                             if step_val == 1 || step_val == 0 {
                                 // Contiguous slice assignment: a[s:e] = items
-                                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
-                                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
-                                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                                let s_val = sd
+                                    .start
+                                    .as_ref()
+                                    .map(|v| v.as_int().unwrap_or(0))
+                                    .unwrap_or(0);
+                                let e_val = sd
+                                    .stop
+                                    .as_ref()
+                                    .map(|v| v.as_int().unwrap_or(len))
+                                    .unwrap_or(len);
+                                let s = (if s_val < 0 {
+                                    (len + s_val).max(0)
+                                } else {
+                                    s_val.min(len)
+                                }) as usize;
+                                let e = (if e_val < 0 {
+                                    (len + e_val).max(0)
+                                } else {
+                                    e_val.min(len)
+                                }) as usize;
                                 let e = e.max(s);
                                 w.splice(s..e, new_items);
                             } else {
                                 // Extended slice assignment: a[s:e:step] = items
                                 let s_val = if step_val > 0 {
-                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                                    sd.start
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(0))
+                                        .unwrap_or(0)
                                 } else {
-                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                                    sd.start
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(len - 1))
+                                        .unwrap_or(len - 1)
                                 };
                                 let e_val = if step_val > 0 {
-                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                                    sd.stop
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(len))
+                                        .unwrap_or(len)
                                 } else {
-                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                                    sd.stop
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(-len - 1))
+                                        .unwrap_or(-len - 1)
                                 };
                                 // Collect indices
                                 let mut indices = Vec::new();
-                                let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
-                                let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
+                                let mut i = if s_val < 0 {
+                                    (len + s_val).max(0)
+                                } else {
+                                    s_val.min(len)
+                                };
+                                let end = if e_val < 0 {
+                                    (len + e_val).max(-1)
+                                } else {
+                                    e_val.min(len)
+                                };
                                 if step_val > 0 {
                                     while i < end {
                                         indices.push(i as usize);
@@ -699,7 +937,9 @@ impl VirtualMachine {
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
                             if actual < 0 || actual >= len {
-                                return Err(PyException::index_error("list assignment index out of range"));
+                                return Err(PyException::index_error(
+                                    "list assignment index out of range",
+                                ));
                             }
                             w[actual as usize] = value;
                         }
@@ -712,22 +952,48 @@ impl VirtualMachine {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
                             // Slice assignment on bytearray
                             let len = bytes.len() as i64;
-                            let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
-                            let new_bytes: Vec<u8> = if let PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) = &value.payload {
+                            let step_val = sd
+                                .step
+                                .as_ref()
+                                .map(|v| v.as_int().unwrap_or(1))
+                                .unwrap_or(1);
+                            let new_bytes: Vec<u8> = if let PyObjectPayload::Bytes(b)
+                            | PyObjectPayload::ByteArray(b) =
+                                &value.payload
+                            {
                                 (**b).clone()
                             } else if let Some(n) = value.as_int() {
                                 vec![0u8; n.max(0) as usize]
                             } else {
                                 // Try to collect as list of ints
                                 let items = value.to_list()?;
-                                items.iter().map(|v| v.to_int().unwrap_or(0) as u8).collect()
+                                items
+                                    .iter()
+                                    .map(|v| v.to_int().unwrap_or(0) as u8)
+                                    .collect()
                             };
-                            
+
                             if step_val == 1 || step_val == 0 {
-                                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
-                                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
-                                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                                let s_val = sd
+                                    .start
+                                    .as_ref()
+                                    .map(|v| v.as_int().unwrap_or(0))
+                                    .unwrap_or(0);
+                                let e_val = sd
+                                    .stop
+                                    .as_ref()
+                                    .map(|v| v.as_int().unwrap_or(len))
+                                    .unwrap_or(len);
+                                let s = (if s_val < 0 {
+                                    (len + s_val).max(0)
+                                } else {
+                                    s_val.min(len)
+                                }) as usize;
+                                let e = (if e_val < 0 {
+                                    (len + e_val).max(0)
+                                } else {
+                                    e_val.min(len)
+                                }) as usize;
                                 let e = e.max(s);
                                 // Build new bytearray and replace contents
                                 let mut result = bytes[..s].to_vec();
@@ -738,32 +1004,66 @@ impl VirtualMachine {
                                 unsafe {
                                     // Resize the backing buffer if needed
                                     if result.len() == bytes.len() {
-                                        std::ptr::copy_nonoverlapping(result.as_ptr(), ptr, result.len());
+                                        std::ptr::copy_nonoverlapping(
+                                            result.as_ptr(),
+                                            ptr,
+                                            result.len(),
+                                        );
                                     } else {
                                         // For now, just copy what fits (bytearray slice assign with same-length replacement)
                                         let copy_len = result.len().min(bytes.len());
-                                        std::ptr::copy_nonoverlapping(result.as_ptr(), ptr, copy_len);
+                                        std::ptr::copy_nonoverlapping(
+                                            result.as_ptr(),
+                                            ptr,
+                                            copy_len,
+                                        );
                                     }
                                 }
                             } else {
                                 // Extended slice: collect indices
                                 let mut indices = Vec::new();
                                 let s_val = if step_val > 0 {
-                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                                    sd.start
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(0))
+                                        .unwrap_or(0)
                                 } else {
-                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                                    sd.start
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(len - 1))
+                                        .unwrap_or(len - 1)
                                 };
                                 let e_val = if step_val > 0 {
-                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                                    sd.stop
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(len))
+                                        .unwrap_or(len)
                                 } else {
-                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                                    sd.stop
+                                        .as_ref()
+                                        .map(|v| v.as_int().unwrap_or(-len - 1))
+                                        .unwrap_or(-len - 1)
                                 };
-                                let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
-                                let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
-                                if step_val > 0 {
-                                    while i < end { indices.push(i as usize); i += step_val; }
+                                let mut i = if s_val < 0 {
+                                    (len + s_val).max(0)
                                 } else {
-                                    while i > end { indices.push(i as usize); i += step_val; }
+                                    s_val.min(len)
+                                };
+                                let end = if e_val < 0 {
+                                    (len + e_val).max(-1)
+                                } else {
+                                    e_val.min(len)
+                                };
+                                if step_val > 0 {
+                                    while i < end {
+                                        indices.push(i as usize);
+                                        i += step_val;
+                                    }
+                                } else {
+                                    while i > end {
+                                        indices.push(i as usize);
+                                        i += step_val;
+                                    }
                                 }
                                 if indices.len() != new_bytes.len() {
                                     return Err(PyException::value_error(format!(
@@ -784,7 +1084,9 @@ impl VirtualMachine {
                             let len = bytes.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
                             if actual < 0 || actual >= len {
-                                return Err(PyException::index_error("bytearray index out of range"));
+                                return Err(PyException::index_error(
+                                    "bytearray index out of range",
+                                ));
                             }
                             unsafe {
                                 let ptr = bytes.as_ptr() as *mut u8;
@@ -799,7 +1101,8 @@ impl VirtualMachine {
                     PyObjectPayload::Instance(inst) => {
                         // Dict subclass: use dict_storage if no user override
                         if let Some(ref ds) = inst.dict_storage {
-                            let has_user_setitem = Self::class_has_user_override(&inst.class, "__setitem__");
+                            let has_user_setitem =
+                                Self::class_has_user_override(&inst.class, "__setitem__");
                             if has_user_setitem {
                                 if let Some(m) = obj.get_attr("__setitem__") {
                                     self.call_object(m, vec![key, value])?;
@@ -813,7 +1116,9 @@ impl VirtualMachine {
                             return Ok(None);
                         } else {
                             return Err(PyException::type_error(format!(
-                                "'{}' object does not support item assignment", obj.type_name())));
+                                "'{}' object does not support item assignment",
+                                obj.type_name()
+                            )));
                         }
                     }
                     PyObjectPayload::Module(ref md) => {
@@ -823,11 +1128,17 @@ impl VirtualMachine {
                             self.call_object(m, vec![key, value])?;
                         } else {
                             return Err(PyException::type_error(format!(
-                                "'{}' object does not support item assignment", obj.type_name())));
+                                "'{}' object does not support item assignment",
+                                obj.type_name()
+                            )));
                         }
                     }
-                    _ => return Err(PyException::type_error(format!(
-                        "'{}' object does not support item assignment", obj.type_name()))),
+                    _ => {
+                        return Err(PyException::type_error(format!(
+                            "'{}' object does not support item assignment",
+                            obj.type_name()
+                        )))
+                    }
                 }
             }
             Opcode::DeleteSubscr => {
@@ -838,25 +1149,47 @@ impl VirtualMachine {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
                             let mut w = items.write();
                             let len = w.len() as i64;
-                            let s = sd.start.as_ref().map(|v| v.to_int().unwrap_or(0)).unwrap_or(0);
-                            let e = sd.stop.as_ref().map(|v| v.to_int().unwrap_or(len)).unwrap_or(len);
-                            let st = sd.step.as_ref().map(|v| v.to_int().unwrap_or(1)).unwrap_or(1);
+                            let s = sd
+                                .start
+                                .as_ref()
+                                .map(|v| v.to_int().unwrap_or(0))
+                                .unwrap_or(0);
+                            let e = sd
+                                .stop
+                                .as_ref()
+                                .map(|v| v.to_int().unwrap_or(len))
+                                .unwrap_or(len);
+                            let st = sd
+                                .step
+                                .as_ref()
+                                .map(|v| v.to_int().unwrap_or(1))
+                                .unwrap_or(1);
                             let s = if s < 0 { (len + s).max(0) } else { s.min(len) };
                             let e = if e < 0 { (len + e).max(0) } else { e.min(len) };
                             if st == 1 && s <= e {
                                 w.drain(s as usize..e as usize);
                             } else if st == -1 && s >= e {
-                                let mut indices: Vec<usize> = ((e + 1) as usize..=(s) as usize).collect();
+                                let mut indices: Vec<usize> =
+                                    ((e + 1) as usize..=(s) as usize).collect();
                                 indices.reverse();
                                 for idx in indices {
-                                    if idx < w.len() { w.remove(idx); }
+                                    if idx < w.len() {
+                                        w.remove(idx);
+                                    }
                                 }
                             } else if st > 1 {
                                 let mut indices = Vec::new();
                                 let mut i = s;
-                                while i < e { indices.push(i as usize); i += st; }
+                                while i < e {
+                                    indices.push(i as usize);
+                                    i += st;
+                                }
                                 indices.reverse();
-                                for idx in indices { if idx < w.len() { w.remove(idx); } }
+                                for idx in indices {
+                                    if idx < w.len() {
+                                        w.remove(idx);
+                                    }
+                                }
                             }
                         } else {
                             let idx = key.to_int()?;
@@ -864,7 +1197,9 @@ impl VirtualMachine {
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
                             if actual < 0 || actual >= len {
-                                return Err(PyException::index_error("list assignment index out of range"));
+                                return Err(PyException::index_error(
+                                    "list assignment index out of range",
+                                ));
                             }
                             w.remove(actual as usize);
                         }
@@ -894,7 +1229,9 @@ impl VirtualMachine {
                             return Ok(None);
                         }
                         return Err(PyException::type_error(format!(
-                            "'{}'  object does not support item deletion", obj.type_name())));
+                            "'{}'  object does not support item deletion",
+                            obj.type_name()
+                        )));
                     }
                     PyObjectPayload::Module(ref md) => {
                         let delitem = md.attrs.read().get("__delitem__").cloned();
@@ -902,11 +1239,17 @@ impl VirtualMachine {
                             self.call_object(m, vec![key])?;
                         } else {
                             return Err(PyException::type_error(format!(
-                                "'{}' object does not support item deletion", obj.type_name())));
+                                "'{}' object does not support item deletion",
+                                obj.type_name()
+                            )));
                         }
                     }
-                    _ => return Err(PyException::type_error(format!(
-                        "'{}' object does not support item deletion", obj.type_name()))),
+                    _ => {
+                        return Err(PyException::type_error(format!(
+                            "'{}' object does not support item deletion",
+                            obj.type_name()
+                        )))
+                    }
                 }
             }
             _ => unreachable!(),
@@ -939,19 +1282,28 @@ impl VirtualMachine {
         let mut args = Vec::new();
         Self::collect_union_args(a, &mut args);
         Self::collect_union_args(b, &mut args);
-        let repr = args.iter().map(|a| {
-            match &a.payload {
+        let repr = args
+            .iter()
+            .map(|a| match &a.payload {
                 PyObjectPayload::BuiltinType(bt) => bt.as_str().to_string(),
                 PyObjectPayload::Class(cls) => cls.name.to_string(),
                 PyObjectPayload::None => "None".to_string(),
                 _ => a.type_name().to_string(),
-            }
-        }).collect::<Vec<_>>().join(" | ");
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
         let args_tuple = PyObject::tuple(args);
-        let union_cls = PyObject::class(CompactString::from("types.UnionType"), vec![], IndexMap::new());
+        let union_cls = PyObject::class(
+            CompactString::from("types.UnionType"),
+            vec![],
+            IndexMap::new(),
+        );
         let mut attrs = IndexMap::new();
         attrs.insert(intern_or_new("__args__"), args_tuple);
-        attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+        attrs.insert(
+            intern_or_new("__typing_repr__"),
+            PyObject::str_val(CompactString::from(&repr)),
+        );
         attrs.insert(intern_or_new("__union_params__"), PyObject::bool_val(true));
         Ok(PyObject::instance_with_attrs(union_cls, attrs))
     }
@@ -975,7 +1327,11 @@ impl VirtualMachine {
 impl VirtualMachine {
     /// VM-aware string % formatting. Uses vm_repr/vm_str to properly call user
     /// __repr__/__str__ dunders that need VM context.
-    fn vm_string_percent_format(&mut self, fmt: &str, args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+    fn vm_string_percent_format(
+        &mut self,
+        fmt: &str,
+        args: &PyObjectRef,
+    ) -> Result<PyObjectRef, PyException> {
         let arg_list: Vec<PyObjectRef> = match &args.payload {
             PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
@@ -991,14 +1347,20 @@ impl VirtualMachine {
                 continue;
             }
             match chars.peek() {
-                Some(&'%') => { chars.next(); result.push('%'); }
+                Some(&'%') => {
+                    chars.next();
+                    result.push('%');
+                }
                 Some(_) => {
                     // Check for %(name) dict-keyed format
                     let dict_key = if chars.peek() == Some(&'(') {
                         chars.next();
                         let mut key = String::new();
                         while let Some(&c) = chars.peek() {
-                            if c == ')' { chars.next(); break; }
+                            if c == ')' {
+                                chars.next();
+                                break;
+                            }
                             key.push(c);
                             chars.next();
                         }
@@ -1010,8 +1372,11 @@ impl VirtualMachine {
                     let mut flags = String::new();
                     while let Some(&c) = chars.peek() {
                         if c == '-' || c == '+' || c == '0' || c == ' ' || c == '#' {
-                            flags.push(c); chars.next();
-                        } else { break; }
+                            flags.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
                     }
                     let mut width = 0usize;
                     if let Some(&'*') = chars.peek() {
@@ -1022,8 +1387,12 @@ impl VirtualMachine {
                         }
                     } else {
                         while let Some(&c) = chars.peek() {
-                            if c.is_ascii_digit() { width = width * 10 + (c as usize - '0' as usize); chars.next(); }
-                            else { break; }
+                            if c.is_ascii_digit() {
+                                width = width * 10 + (c as usize - '0' as usize);
+                                chars.next();
+                            } else {
+                                break;
+                            }
                         }
                     }
                     let mut precision: Option<usize> = None;
@@ -1031,8 +1400,12 @@ impl VirtualMachine {
                         chars.next();
                         let mut p = 0usize;
                         while let Some(&c) = chars.peek() {
-                            if c.is_ascii_digit() { p = p * 10 + (c as usize - '0' as usize); chars.next(); }
-                            else { break; }
+                            if c.is_ascii_digit() {
+                                p = p * 10 + (c as usize - '0' as usize);
+                                chars.next();
+                            } else {
+                                break;
+                            }
                         }
                         precision = Some(p);
                     }
@@ -1043,7 +1416,9 @@ impl VirtualMachine {
                         args.get_item(&key_obj)?
                     } else {
                         if arg_idx >= arg_list.len() {
-                            return Err(PyException::type_error("not enough arguments for format string"));
+                            return Err(PyException::type_error(
+                                "not enough arguments for format string",
+                            ));
                         }
                         let a = arg_list[arg_idx].clone();
                         arg_idx += 1;
@@ -1054,9 +1429,13 @@ impl VirtualMachine {
                         's' => self.vm_str(&arg)?,
                         'r' => self.vm_repr(&arg)?,
                         'd' | 'i' => {
-                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
-                                &format!("%{} format: a number is required, not {}", spec, arg.type_name())
-                            ))?;
+                            let n = arg.as_int().ok_or_else(|| {
+                                PyException::type_error(&format!(
+                                    "%{} format: a number is required, not {}",
+                                    spec,
+                                    arg.type_name()
+                                ))
+                            })?;
                             format!("{}", n)
                         }
                         'f' | 'F' => {
@@ -1067,51 +1446,75 @@ impl VirtualMachine {
                         'e' | 'E' => {
                             let v = arg.to_float().unwrap_or(0.0);
                             let p = precision.unwrap_or(6);
-                            let raw = if spec == 'e' { format!("{:.prec$e}", v, prec = p) }
-                            else { format!("{:.prec$E}", v, prec = p) };
+                            let raw = if spec == 'e' {
+                                format!("{:.prec$e}", v, prec = p)
+                            } else {
+                                format!("{:.prec$E}", v, prec = p)
+                            };
                             normalize_sci_exp(&raw, spec)
                         }
                         'g' | 'G' => {
                             let v = arg.to_float().unwrap_or(0.0);
                             let p = precision.unwrap_or(6);
                             let abs_v = v.abs();
-                            let use_sci = abs_v != 0.0 && (abs_v >= 10f64.powi(p as i32) || abs_v < 1e-4);
+                            let use_sci =
+                                abs_v != 0.0 && (abs_v >= 10f64.powi(p as i32) || abs_v < 1e-4);
                             if use_sci {
                                 let sp = if p > 0 { p - 1 } else { 0 };
                                 let ec = if spec == 'g' { 'e' } else { 'E' };
-                                let raw = if ec == 'e' { format!("{:.prec$e}", v, prec = sp) }
-                                else { format!("{:.prec$E}", v, prec = sp) };
+                                let raw = if ec == 'e' {
+                                    format!("{:.prec$e}", v, prec = sp)
+                                } else {
+                                    format!("{:.prec$E}", v, prec = sp)
+                                };
                                 normalize_sci_exp(&raw, ec)
                             } else {
                                 let s = format!("{:.prec$}", v, prec = p);
                                 if s.contains('.') {
                                     s.trim_end_matches('0').trim_end_matches('.').to_string()
-                                } else { s }
+                                } else {
+                                    s
+                                }
                             }
                         }
                         'x' => {
-                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
-                                &format!("%x format: an integer is required, not {}", arg.type_name())
-                            ))?;
+                            let n = arg.as_int().ok_or_else(|| {
+                                PyException::type_error(&format!(
+                                    "%x format: an integer is required, not {}",
+                                    arg.type_name()
+                                ))
+                            })?;
                             format!("{:x}", n)
                         }
                         'X' => {
-                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
-                                &format!("%X format: an integer is required, not {}", arg.type_name())
-                            ))?;
+                            let n = arg.as_int().ok_or_else(|| {
+                                PyException::type_error(&format!(
+                                    "%X format: an integer is required, not {}",
+                                    arg.type_name()
+                                ))
+                            })?;
                             format!("{:X}", n)
                         }
                         'o' => {
-                            let n = arg.as_int().ok_or_else(|| PyException::type_error(
-                                &format!("%o format: an integer is required, not {}", arg.type_name())
-                            ))?;
+                            let n = arg.as_int().ok_or_else(|| {
+                                PyException::type_error(&format!(
+                                    "%o format: an integer is required, not {}",
+                                    arg.type_name()
+                                ))
+                            })?;
                             format!("{:o}", n)
                         }
                         'c' => {
                             if let Some(n) = arg.as_int() {
-                                char::from_u32(n as u32).map(|c| c.to_string()).unwrap_or_default()
+                                char::from_u32(n as u32)
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_default()
                             } else {
-                                arg.py_to_string().chars().next().map(|c| c.to_string()).unwrap_or_default()
+                                arg.py_to_string()
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_default()
                             }
                         }
                         _ => format!("%{}", spec),
@@ -1120,24 +1523,34 @@ impl VirtualMachine {
                     if width > 0 && formatted.len() < width {
                         if flags.contains('-') {
                             result.push_str(&formatted);
-                            for _ in 0..(width - formatted.len()) { result.push(' '); }
+                            for _ in 0..(width - formatted.len()) {
+                                result.push(' ');
+                            }
                         } else {
                             let pad = if flags.contains('0') { '0' } else { ' ' };
-                            for _ in 0..(width - formatted.len()) { result.push(pad); }
+                            for _ in 0..(width - formatted.len()) {
+                                result.push(pad);
+                            }
                             result.push_str(&formatted);
                         }
                     } else {
                         result.push_str(&formatted);
                     }
                 }
-                None => { result.push('%'); }
+                None => {
+                    result.push('%');
+                }
             }
         }
         Ok(PyObject::str_val(CompactString::from(result)))
     }
 
     /// Bytes % formatting (PEP 461)
-    fn vm_bytes_percent_format(&mut self, fmt: &[u8], args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+    fn vm_bytes_percent_format(
+        &mut self,
+        fmt: &[u8],
+        args: &PyObjectRef,
+    ) -> Result<PyObjectRef, PyException> {
         let arg_list: Vec<PyObjectRef> = match &args.payload {
             PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
@@ -1154,15 +1567,25 @@ impl VirtualMachine {
                 continue;
             }
             i += 1;
-            if i >= fmt.len() { break; }
-            if fmt[i] == b'%' { result.push(b'%'); i += 1; continue; }
+            if i >= fmt.len() {
+                break;
+            }
+            if fmt[i] == b'%' {
+                result.push(b'%');
+                i += 1;
+                continue;
+            }
 
             // Parse flags
             let mut zero_pad = false;
             let mut left_align = false;
             while i < fmt.len() && matches!(fmt[i], b'-' | b'+' | b'0' | b' ' | b'#') {
-                if fmt[i] == b'0' { zero_pad = true; }
-                if fmt[i] == b'-' { left_align = true; }
+                if fmt[i] == b'0' {
+                    zero_pad = true;
+                }
+                if fmt[i] == b'-' {
+                    left_align = true;
+                }
                 i += 1;
             }
             // Parse width
@@ -1183,27 +1606,29 @@ impl VirtualMachine {
                 _precision = Some(p);
             }
 
-            if i >= fmt.len() { break; }
+            if i >= fmt.len() {
+                break;
+            }
             let spec = fmt[i];
             i += 1;
 
             if arg_idx >= arg_list.len() {
-                return Err(PyException::type_error("not enough arguments for format string"));
+                return Err(PyException::type_error(
+                    "not enough arguments for format string",
+                ));
             }
             let arg = &arg_list[arg_idx];
             arg_idx += 1;
 
             let formatted: Vec<u8> = match spec {
-                b's' | b'b' => {
-                    match &arg.payload {
-                        PyObjectPayload::Bytes(b) => (**b).clone(),
-                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                        _ => {
-                            let s = self.vm_str(arg)?;
-                            s.into_bytes()
-                        }
+                b's' | b'b' => match &arg.payload {
+                    PyObjectPayload::Bytes(b) => (**b).clone(),
+                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                    _ => {
+                        let s = self.vm_str(arg)?;
+                        s.into_bytes()
                     }
-                }
+                },
                 b'r' | b'a' => {
                     let s = self.vm_repr(arg)?;
                     s.into_bytes()

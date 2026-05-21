@@ -2,11 +2,11 @@
 //!
 //! Converts Python source code into an AST.
 
-pub mod token;
+mod error;
 pub mod lexer;
 pub mod parser;
-mod error;
 mod string_parser;
+pub mod token;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use parser::parse;

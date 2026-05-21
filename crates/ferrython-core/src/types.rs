@@ -1,17 +1,17 @@
 //! Auxiliary Python types: `PyInt`, `PyFunction`, `HashableKey`.
 
-use std::rc::Rc;
 use crate::error::{PyException, PyResult};
-use crate::object::{PyObject, PyObjectMethods, PyObjectRef, PyCell, new_fx_hashkey_map};
+use crate::object::{new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef};
 use compact_str::CompactString;
-use ferrython_bytecode::CodeObject;
 use ferrython_bytecode::code::CodeFlags;
+use ferrython_bytecode::CodeObject;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
-use std::hash::{Hash, Hasher};
-use std::cell::RefCell;
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
 /// The VM sets this before any dict/set operation that may compare Custom keys.
@@ -88,21 +88,36 @@ pub enum PyInt {
 
 impl PyInt {
     pub fn is_zero(&self) -> bool {
-        match self { PyInt::Small(n) => *n == 0, PyInt::Big(n) => n.is_zero() }
+        match self {
+            PyInt::Small(n) => *n == 0,
+            PyInt::Big(n) => n.is_zero(),
+        }
     }
     #[inline]
     pub fn to_i64(&self) -> Option<i64> {
-        match self { PyInt::Small(n) => Some(*n), PyInt::Big(n) => n.to_i64() }
+        match self {
+            PyInt::Small(n) => Some(*n),
+            PyInt::Big(n) => n.to_i64(),
+        }
     }
     pub fn to_f64(&self) -> f64 {
-        match self { PyInt::Small(n) => *n as f64, PyInt::Big(n) => n.to_f64().unwrap_or(f64::INFINITY) }
+        match self {
+            PyInt::Small(n) => *n as f64,
+            PyInt::Big(n) => n.to_f64().unwrap_or(f64::INFINITY),
+        }
     }
     #[inline(always)]
     pub fn to_object(&self) -> PyObjectRef {
-        match self { PyInt::Small(n) => PyObject::int(*n), PyInt::Big(n) => PyObject::big_int(n.as_ref().clone()) }
+        match self {
+            PyInt::Small(n) => PyObject::int(*n),
+            PyInt::Big(n) => PyObject::big_int(n.as_ref().clone()),
+        }
     }
     fn to_bigint(&self) -> BigInt {
-        match self { PyInt::Small(n) => BigInt::from(*n), PyInt::Big(n) => n.as_ref().clone() }
+        match self {
+            PyInt::Small(n) => BigInt::from(*n),
+            PyInt::Big(n) => n.as_ref().clone(),
+        }
     }
 
     pub fn add_op(a: &PyInt, b: &PyInt) -> PyInt {
@@ -136,10 +151,15 @@ impl PyInt {
         match (a, b) {
             (PyInt::Small(a), PyInt::Small(b)) => {
                 let (q, r) = (*a / *b, *a % *b);
-                if (r != 0) && (r ^ *b) < 0 { PyInt::Small(q - 1) } else { PyInt::Small(q) }
+                if (r != 0) && (r ^ *b) < 0 {
+                    PyInt::Small(q - 1)
+                } else {
+                    PyInt::Small(q)
+                }
             }
             _ => {
-                let ba = a.to_bigint(); let bb = b.to_bigint();
+                let ba = a.to_bigint();
+                let bb = b.to_bigint();
                 use num_integer::Integer;
                 PyInt::Big(Box::new(ba.div_floor(&bb)))
             }
@@ -149,10 +169,15 @@ impl PyInt {
         match (a, b) {
             (PyInt::Small(a), PyInt::Small(b)) => {
                 let r = *a % *b;
-                if (r != 0) && (r ^ *b) < 0 { PyInt::Small(r + *b) } else { PyInt::Small(r) }
+                if (r != 0) && (r ^ *b) < 0 {
+                    PyInt::Small(r + *b)
+                } else {
+                    PyInt::Small(r)
+                }
             }
             _ => {
-                let ba = a.to_bigint(); let bb = b.to_bigint();
+                let ba = a.to_bigint();
+                let bb = b.to_bigint();
                 use num_integer::Integer;
                 PyInt::Big(Box::new(ba.mod_floor(&bb)))
             }
@@ -195,7 +220,10 @@ impl PyInt {
 
 impl std::fmt::Display for PyInt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { PyInt::Small(n) => write!(f, "{}", n), PyInt::Big(n) => write!(f, "{}", n) }
+        match self {
+            PyInt::Small(n) => write!(f, "{}", n),
+            PyInt::Big(n) => write!(f, "{}", n),
+        }
     }
 }
 impl PartialEq for PyInt {
@@ -208,7 +236,9 @@ impl PartialEq for PyInt {
 }
 impl Eq for PyInt {}
 impl PartialOrd for PyInt {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for PyInt {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -223,8 +253,13 @@ impl Hash for PyInt {
         match self {
             PyInt::Small(n) => n.hash(state),
             PyInt::Big(n) => {
-                if let Some(small) = n.to_i64() { small.hash(state); }
-                else { let (sign, digits) = n.to_bytes_le(); sign.hash(state); digits.hash(state); }
+                if let Some(small) = n.to_i64() {
+                    small.hash(state);
+                } else {
+                    let (sign, digits) = n.to_bytes_le();
+                    sign.hash(state);
+                    digits.hash(state);
+                }
             }
         }
     }
@@ -272,7 +307,10 @@ impl PyFunction {
 
     /// Public static version for external construction sites.
     #[inline]
-    pub fn compute_is_simple_static(code: &CodeObject, closure: &[Rc<PyCell<Option<PyObjectRef>>>]) -> bool {
+    pub fn compute_is_simple_static(
+        code: &CodeObject,
+        closure: &[Rc<PyCell<Option<PyObjectRef>>>],
+    ) -> bool {
         Self::compute_is_simple(code, closure)
     }
 
@@ -281,10 +319,15 @@ impl PyFunction {
         let constant_cache = Self::get_or_build_constant_cache(&code);
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
-            qualname: name.clone(), name, code, constant_cache,
-            defaults: Vec::new(), kw_defaults: IndexMap::new(),
+            qualname: name.clone(),
+            name,
+            code,
+            constant_cache,
+            defaults: Vec::new(),
+            kw_defaults: IndexMap::new(),
             globals: Rc::new(PyCell::new(FxAttrMap::default())),
-            closure: Vec::new(), annotations: IndexMap::new(),
+            closure: Vec::new(),
+            annotations: IndexMap::new(),
             attrs: Rc::new(PyCell::new(FxAttrMap::default())),
             is_simple,
         }
@@ -295,10 +338,15 @@ impl PyFunction {
         let constant_cache = Self::get_or_build_constant_cache(&code);
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
-            qualname: name.clone(), name, code, constant_cache,
-            defaults: Vec::new(), kw_defaults: IndexMap::new(),
+            qualname: name.clone(),
+            name,
+            code,
+            constant_cache,
+            defaults: Vec::new(),
+            kw_defaults: IndexMap::new(),
             globals: Rc::new(PyCell::new(FxAttrMap::default())),
-            closure: Vec::new(), annotations: IndexMap::new(),
+            closure: Vec::new(),
+            annotations: IndexMap::new(),
             attrs: Rc::new(PyCell::new(FxAttrMap::default())),
             is_simple,
         }
@@ -325,8 +373,8 @@ impl PyFunction {
 
     /// Pre-convert all constants to PyObjectRef once.
     pub fn build_constant_cache(code: &CodeObject) -> Vec<PyObjectRef> {
-        use ferrython_bytecode::code::ConstantValue;
         use crate::object::PyObjectPayload;
+        use ferrython_bytecode::code::ConstantValue;
         fn convert(c: &ConstantValue) -> PyObjectRef {
             match c {
                 ConstantValue::None => PyObject::none(),
@@ -416,19 +464,25 @@ impl HashableKey {
                 } else {
                     let rb = real.to_bits() as i64;
                     let ib = imag.to_bits() as i64;
-                    Ok(HashableKey::Int(PyInt::Small(rb ^ ib.wrapping_mul(1_000_003))))
+                    Ok(HashableKey::Int(PyInt::Small(
+                        rb ^ ib.wrapping_mul(1_000_003),
+                    )))
                 }
             }
             PyObjectPayload::Str(s) => Ok(HashableKey::str_key(s.to_compact_string())),
             PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
             PyObjectPayload::Tuple(items) => {
                 let mut keys = Vec::with_capacity(items.len());
-                for item in items.iter() { keys.push(HashableKey::from_object(item)?); }
+                for item in items.iter() {
+                    keys.push(HashableKey::from_object(item)?);
+                }
                 Ok(HashableKey::Tuple(Box::new(keys)))
             }
             PyObjectPayload::FrozenSet(m) => {
                 let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
-                for (k, _) in m.iter() { keys.push(k.clone()); }
+                for (k, _) in m.iter() {
+                    keys.push(k.clone());
+                }
                 // Sort by hash value for deterministic ordering without heap allocation
                 keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
                 Ok(HashableKey::FrozenSet(Box::new(keys)))
@@ -447,9 +501,12 @@ impl HashableKey {
                 }
             }
             // Functions/methods are hashable by identity in CPython
-            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) |
-            PyObjectPayload::NativeClosure(_) | PyObjectPayload::BuiltinFunction(_) |
-            PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod(_) => {
+            PyObjectPayload::Function(_)
+            | PyObjectPayload::NativeFunction(_)
+            | PyObjectPayload::NativeClosure(_)
+            | PyObjectPayload::BuiltinFunction(_)
+            | PyObjectPayload::BoundMethod { .. }
+            | PyObjectPayload::BuiltinBoundMethod(_) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
@@ -464,9 +521,9 @@ impl HashableKey {
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
             // BuiltinType: hash by type name so type(42) matches int as dict key
-            PyObjectPayload::BuiltinType(name) => {
-                Ok(HashableKey::str_key(CompactString::from(format!("<type:{}>", name))))
-            }
+            PyObjectPayload::BuiltinType(name) => Ok(HashableKey::str_key(CompactString::from(
+                format!("<type:{}>", name),
+            ))),
             // Module objects: hashable if they have __hash__ (e.g. re.Pattern objects),
             // otherwise use identity (CPython modules are hashable by identity)
             PyObjectPayload::Module(_) => {
@@ -480,7 +537,10 @@ impl HashableKey {
                     Ok(HashableKey::Identity(ptr, obj.clone()))
                 }
             }
-            _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
+            _ => Err(PyException::type_error(format!(
+                "unhashable type: '{}'",
+                obj.type_name()
+            ))),
         }
     }
     #[inline]
@@ -492,12 +552,16 @@ impl HashableKey {
             HashableKey::Bool(b) => PyObject::bool_val(*b),
             HashableKey::Float(f) => PyObject::float(f.0),
             HashableKey::Bytes(b) => PyObject::bytes(Vec::clone(b)),
-            HashableKey::Tuple(keys) => PyObject::tuple(keys.iter().map(|k| k.to_object()).collect()),
+            HashableKey::Tuple(keys) => {
+                PyObject::tuple(keys.iter().map(|k| k.to_object()).collect())
+            }
             HashableKey::FrozenSet(keys) => {
                 let mut map = new_fx_hashkey_map();
-                for k in keys.iter() { map.insert(k.clone(), k.to_object()); }
+                for k in keys.iter() {
+                    map.insert(k.clone(), k.to_object());
+                }
                 PyObject::frozenset(map)
-            },
+            }
             HashableKey::Identity(_ptr, obj) => obj.clone(),
             HashableKey::Custom { object, .. } => object.clone(),
         }
@@ -534,23 +598,33 @@ impl PartialEq for HashableKey {
             // FrozenSet/FrozenSet
             (HashableKey::FrozenSet(a), HashableKey::FrozenSet(b)) => a == b,
             // Bool/Int cross-comparison (True == 1, False == 0)
-            (HashableKey::Bool(b), HashableKey::Int(n)) | (HashableKey::Int(n), HashableKey::Bool(b)) => {
-                *n == PyInt::Small(*b as i64)
-            }
+            (HashableKey::Bool(b), HashableKey::Int(n))
+            | (HashableKey::Int(n), HashableKey::Bool(b)) => *n == PyInt::Small(*b as i64),
             // Int/Float cross-comparison (0 == 0.0, 1 == 1.0, etc.)
-            (HashableKey::Int(n), HashableKey::Float(f)) | (HashableKey::Float(f), HashableKey::Int(n)) => {
+            (HashableKey::Int(n), HashableKey::Float(f))
+            | (HashableKey::Float(f), HashableKey::Int(n)) => {
                 let nv = n.to_i64().unwrap_or(i64::MIN);
                 f.0.is_finite() && f.0 == nv as f64 && (nv as f64) as i64 == nv
             }
             // Bool/Float cross-comparison (True == 1.0, False == 0.0)
-            (HashableKey::Bool(b), HashableKey::Float(f)) | (HashableKey::Float(f), HashableKey::Bool(b)) => {
-                f.0 == (*b as i64 as f64)
-            }
+            (HashableKey::Bool(b), HashableKey::Float(f))
+            | (HashableKey::Float(f), HashableKey::Bool(b)) => f.0 == (*b as i64 as f64),
             // Identity
             (HashableKey::Identity(a, _), HashableKey::Identity(b, _)) => a == b,
             // Custom
-            (HashableKey::Custom { hash_value: ha, object: oa }, HashableKey::Custom { hash_value: hb, object: ob }) => {
-                if ha != hb { return false; }
+            (
+                HashableKey::Custom {
+                    hash_value: ha,
+                    object: oa,
+                },
+                HashableKey::Custom {
+                    hash_value: hb,
+                    object: ob,
+                },
+            ) => {
+                if ha != hb {
+                    return false;
+                }
                 if let Some(result) = call_eq_dispatch(oa, ob) {
                     return result;
                 }
@@ -570,10 +644,18 @@ impl Hash for HashableKey {
         // produce different hashes from their content.
         // None uses a unique constant to avoid colliding with Int(0).
         match self {
-            HashableKey::None => { state.write_u64(0x517cc1b727220a95); },
-            HashableKey::Bool(b) => { (*b as i64).hash(state); },
-            HashableKey::Int(PyInt::Small(v)) => { v.hash(state); },
-            HashableKey::Int(PyInt::Big(n)) => { n.to_i64().unwrap_or(0).hash(state); },
+            HashableKey::None => {
+                state.write_u64(0x517cc1b727220a95);
+            }
+            HashableKey::Bool(b) => {
+                (*b as i64).hash(state);
+            }
+            HashableKey::Int(PyInt::Small(v)) => {
+                v.hash(state);
+            }
+            HashableKey::Int(PyInt::Big(n)) => {
+                n.to_i64().unwrap_or(0).hash(state);
+            }
             HashableKey::Float(f) => {
                 let fv = f.0;
                 if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
@@ -584,13 +666,31 @@ impl Hash for HashableKey {
                     2u8.hash(state);
                     f.hash(state);
                 }
-            },
-            HashableKey::Str(s) => { 3u8.hash(state); s.hash(state); },
-            HashableKey::Bytes(b) => { 4u8.hash(state); b.hash(state); },
-            HashableKey::Tuple(items) => { 5u8.hash(state); items.hash(state); },
-            HashableKey::FrozenSet(items) => { 6u8.hash(state); items.hash(state); },
-            HashableKey::Identity(ptr, _) => { 7u8.hash(state); ptr.hash(state); },
-            HashableKey::Custom { hash_value, .. } => { 8u8.hash(state); hash_value.hash(state); },
+            }
+            HashableKey::Str(s) => {
+                3u8.hash(state);
+                s.hash(state);
+            }
+            HashableKey::Bytes(b) => {
+                4u8.hash(state);
+                b.hash(state);
+            }
+            HashableKey::Tuple(items) => {
+                5u8.hash(state);
+                items.hash(state);
+            }
+            HashableKey::FrozenSet(items) => {
+                6u8.hash(state);
+                items.hash(state);
+            }
+            HashableKey::Identity(ptr, _) => {
+                7u8.hash(state);
+                ptr.hash(state);
+            }
+            HashableKey::Custom { hash_value, .. } => {
+                8u8.hash(state);
+                hash_value.hash(state);
+            }
         }
     }
 }
@@ -618,7 +718,9 @@ impl indexmap::Equivalent<HashableKey> for BorrowedStrKey<'_> {
 }
 
 impl PartialEq for BorrowedStrKey<'_> {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 impl Eq for BorrowedStrKey<'_> {}
 
@@ -644,7 +746,9 @@ impl indexmap::Equivalent<HashableKey> for BorrowedIntKey {
 }
 
 impl PartialEq for BorrowedIntKey {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 impl Eq for BorrowedIntKey {}
 
@@ -652,9 +756,29 @@ impl Eq for BorrowedIntKey {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct OrderedFloat(pub f64);
-impl PartialEq for OrderedFloat { fn eq(&self, other: &Self) -> bool { self.0.to_bits() == other.0.to_bits() } }
+impl PartialEq for OrderedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
 impl Eq for OrderedFloat {}
-impl Hash for OrderedFloat { fn hash<H: Hasher>(&self, state: &mut H) { self.0.to_bits().hash(state); } }
-impl PartialOrd for OrderedFloat { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
-impl Ord for OrderedFloat { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) } }
-impl std::fmt::Display for OrderedFloat { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) } }
+impl Hash for OrderedFloat {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+impl std::fmt::Display for OrderedFloat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

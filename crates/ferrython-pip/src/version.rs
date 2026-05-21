@@ -43,7 +43,13 @@ impl Version {
             return None;
         }
 
-        Some(Version { epoch, release, pre, post, dev })
+        Some(Version {
+            epoch,
+            release,
+            pre,
+            post,
+            dev,
+        })
     }
 
     /// PEP 440 pre-release comparison key.
@@ -96,7 +102,8 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.epoch.cmp(&other.epoch)
+        self.epoch
+            .cmp(&other.epoch)
             .then_with(|| cmp_release(&self.release, &other.release))
             .then_with(|| self.pre_cmp_key().cmp(&other.pre_cmp_key()))
             .then_with(|| self.post_cmp_key().cmp(&other.post_cmp_key()))
@@ -156,7 +163,12 @@ fn parse_suffixes(s: &str) -> (&str, Option<PreRelease>, Option<u32>, Option<u32
         end = end.min(pos);
     } else if let Some(pos) = s_lower.find("dev") {
         if pos > 0 && !bytes[pos - 1].is_ascii_alphabetic() {
-            dev = Some(s_lower[pos + 3..end].trim_start_matches('.').parse().unwrap_or(0));
+            dev = Some(
+                s_lower[pos + 3..end]
+                    .trim_start_matches('.')
+                    .parse()
+                    .unwrap_or(0),
+            );
             end = end.min(pos);
         }
     }
@@ -176,8 +188,12 @@ fn parse_suffixes(s: &str) -> (&str, Option<PreRelease>, Option<u32>, Option<u32
     // Look for pre-release
     let check = &s_lower[..end];
     let patterns: &[(&str, u8)] = &[
-        ("alpha", 1), ("beta", 2), ("rc", 3),
-        ("a", 1), ("b", 2), ("c", 3),
+        ("alpha", 1),
+        ("beta", 2),
+        ("rc", 3),
+        ("a", 1),
+        ("b", 2),
+        ("c", 3),
     ];
     for &(tag, kind) in patterns {
         if let Some(pos) = check.rfind(tag) {
@@ -208,13 +224,13 @@ pub struct VersionSpec {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecOp {
-    Eq,       // ==
-    Ne,       // !=
-    Ge,       // >=
-    Le,       // <=
-    Gt,       // >
-    Lt,       // <
-    Compat,   // ~=
+    Eq,     // ==
+    Ne,     // !=
+    Ge,     // >=
+    Le,     // <=
+    Gt,     // >
+    Lt,     // <
+    Compat, // ~=
 }
 
 impl VersionSpec {
@@ -241,10 +257,18 @@ impl VersionSpec {
         };
 
         let wildcard = rest.ends_with(".*");
-        let ver_str = if wildcard { &rest[..rest.len() - 2] } else { rest };
+        let ver_str = if wildcard {
+            &rest[..rest.len() - 2]
+        } else {
+            rest
+        };
         let version = Version::parse(ver_str)?;
 
-        Some(VersionSpec { op, version, wildcard })
+        Some(VersionSpec {
+            op,
+            version,
+            wildcard,
+        })
     }
 
     /// Check if a candidate version satisfies this specifier.
@@ -330,7 +354,9 @@ pub fn version_matches(version_str: &str, specs_str: &str) -> bool {
 /// Excludes pre-release and dev versions unless explicitly matched by a spec.
 pub fn find_best_version<'a>(versions: &[&'a str], specs_str: &str) -> Option<&'a str> {
     let specs = parse_version_specs(specs_str);
-    let allow_pre = specs.iter().any(|s| s.version.pre.is_some() || s.version.dev.is_some());
+    let allow_pre = specs
+        .iter()
+        .any(|s| s.version.pre.is_some() || s.version.dev.is_some());
 
     let mut candidates: Vec<(&str, Version)> = versions
         .iter()
@@ -513,15 +539,25 @@ mod tests {
             "1.0a1",
             "1.0.dev0",
         ];
-        let mut parsed: Vec<Version> = versions.iter()
+        let mut parsed: Vec<Version> = versions
+            .iter()
             .map(|v| Version::parse(v).unwrap())
             .collect();
         parsed.sort();
         let sorted: Vec<String> = parsed.iter().map(|v| format!("{}", v)).collect();
-        assert_eq!(sorted, vec![
-            "1.0.dev0", "1.0a1", "1.0a2", "1.0b1", "1.0rc1",
-            "1.0", "1.0.post1.dev0", "1.0.post1"
-        ]);
+        assert_eq!(
+            sorted,
+            vec![
+                "1.0.dev0",
+                "1.0a1",
+                "1.0a2",
+                "1.0b1",
+                "1.0rc1",
+                "1.0",
+                "1.0.post1.dev0",
+                "1.0.post1"
+            ]
+        );
     }
 
     #[test]

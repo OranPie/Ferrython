@@ -69,7 +69,9 @@ pub fn optimize(code: &mut CodeObject) {
 fn fold_constants(code: &mut CodeObject) -> bool {
     let mut changed = false;
     let n = code.instructions.len();
-    if n < 3 { return false; }
+    if n < 3 {
+        return false;
+    }
 
     let mut i = 0;
     while i + 2 < n {
@@ -145,7 +147,9 @@ fn fold_constants(code: &mut CodeObject) -> bool {
 fn fold_constant_comparisons(code: &mut CodeObject) -> bool {
     let mut changed = false;
     let n = code.instructions.len();
-    if n < 3 { return false; }
+    if n < 3 {
+        return false;
+    }
 
     let mut i = 0;
     while i + 2 < n {
@@ -185,7 +189,9 @@ fn fold_constant_comparisons(code: &mut CodeObject) -> bool {
 fn fold_constant_conditionals(code: &mut CodeObject) -> bool {
     let mut changed = false;
     let n = code.instructions.len();
-    if n < 2 { return false; }
+    if n < 2 {
+        return false;
+    }
 
     let mut i = 0;
     while i + 1 < n {
@@ -227,7 +233,8 @@ fn fold_constant_tuples(code: &mut CodeObject) -> bool {
             if count > 0 && count <= 16 && i >= count {
                 // Check if all preceding `count` instructions are LOAD_CONST
                 let start = i - count;
-                let all_const = (0..count).all(|j| code.instructions[start + j].op == Opcode::LoadConst);
+                let all_const =
+                    (0..count).all(|j| code.instructions[start + j].op == Opcode::LoadConst);
                 if all_const {
                     let elements: Vec<ConstantValue> = (0..count)
                         .map(|j| code.constants[code.instructions[start + j].arg as usize].clone())
@@ -282,7 +289,9 @@ fn eliminate_dead_stores(code: &mut CodeObject) -> bool {
 /// until the next jump target or exception handler.
 fn eliminate_dead_code(code: &mut CodeObject) -> bool {
     let n = code.instructions.len();
-    if n < 2 { return false; }
+    if n < 2 {
+        return false;
+    }
 
     // Collect all possible jump targets (any instruction that could be branched to)
     let mut live_targets = std::collections::HashSet::new();
@@ -307,8 +316,10 @@ fn eliminate_dead_code(code: &mut CodeObject) -> bool {
 
         if !dead {
             match code.instructions[i].op {
-                Opcode::ReturnValue | Opcode::JumpAbsolute
-                | Opcode::RaiseVarargs | Opcode::JumpForward => {
+                Opcode::ReturnValue
+                | Opcode::JumpAbsolute
+                | Opcode::RaiseVarargs
+                | Opcode::JumpForward => {
                     dead = true;
                 }
                 _ => {}
@@ -332,7 +343,8 @@ fn collapse_jump_chains(code: &mut CodeObject) -> bool {
                     if target_instr.op == Opcode::JumpAbsolute {
                         let final_target = target_instr.arg;
                         if code.instructions[i].arg != final_target {
-                            code.instructions[i] = Instruction::new(Opcode::JumpAbsolute, final_target);
+                            code.instructions[i] =
+                                Instruction::new(Opcode::JumpAbsolute, final_target);
                             changed = true;
                         }
                     }
@@ -353,7 +365,8 @@ fn eliminate_safe_try_blocks(code: &mut CodeObject) -> bool {
     let n = code.instructions.len();
     for i in 0..n {
         if code.instructions[i].op != Opcode::SetupFinally
-            && code.instructions[i].op != Opcode::SetupExcept {
+            && code.instructions[i].op != Opcode::SetupExcept
+        {
             continue;
         }
         // Find matching POP_BLOCK
@@ -384,7 +397,8 @@ fn eliminate_safe_try_blocks(code: &mut CodeObject) -> bool {
 
 /// Returns true if the opcode cannot raise an exception (is "safe" in a try body).
 fn is_safe_opcode(op: Opcode) -> bool {
-    matches!(op,
+    matches!(
+        op,
         Opcode::LoadConst | Opcode::StoreFast | Opcode::LoadFast
         | Opcode::Nop | Opcode::PopTop | Opcode::DupTop
         | Opcode::RotTwo | Opcode::RotThree
@@ -397,7 +411,9 @@ fn is_safe_opcode(op: Opcode) -> bool {
 /// Remove NOP instructions and rewrite jump targets accordingly.
 fn remove_nops(code: &mut CodeObject) {
     let n = code.instructions.len();
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     // Build mapping: old_index → new_index (after NOP removal)
     let mut old_to_new: Vec<usize> = Vec::with_capacity(n);
@@ -459,9 +475,7 @@ fn fold_add(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
         (ConstantValue::Integer(x), ConstantValue::Integer(y)) => {
             x.checked_add(*y).map(ConstantValue::Integer)
         }
-        (ConstantValue::Float(x), ConstantValue::Float(y)) => {
-            Some(ConstantValue::Float(x + y))
-        }
+        (ConstantValue::Float(x), ConstantValue::Float(y)) => Some(ConstantValue::Float(x + y)),
         (ConstantValue::Integer(x), ConstantValue::Float(y)) => {
             Some(ConstantValue::Float(*x as f64 + y))
         }
@@ -483,8 +497,12 @@ fn fold_sub(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
             x.checked_sub(*y).map(ConstantValue::Integer)
         }
         (ConstantValue::Float(x), ConstantValue::Float(y)) => Some(ConstantValue::Float(x - y)),
-        (ConstantValue::Integer(x), ConstantValue::Float(y)) => Some(ConstantValue::Float(*x as f64 - y)),
-        (ConstantValue::Float(x), ConstantValue::Integer(y)) => Some(ConstantValue::Float(x - *y as f64)),
+        (ConstantValue::Integer(x), ConstantValue::Float(y)) => {
+            Some(ConstantValue::Float(*x as f64 - y))
+        }
+        (ConstantValue::Float(x), ConstantValue::Integer(y)) => {
+            Some(ConstantValue::Float(x - *y as f64))
+        }
         _ => None,
     }
 }
@@ -495,8 +513,12 @@ fn fold_mul(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
             x.checked_mul(*y).map(ConstantValue::Integer)
         }
         (ConstantValue::Float(x), ConstantValue::Float(y)) => Some(ConstantValue::Float(x * y)),
-        (ConstantValue::Integer(x), ConstantValue::Float(y)) => Some(ConstantValue::Float(*x as f64 * y)),
-        (ConstantValue::Float(x), ConstantValue::Integer(y)) => Some(ConstantValue::Float(x * *y as f64)),
+        (ConstantValue::Integer(x), ConstantValue::Float(y)) => {
+            Some(ConstantValue::Float(*x as f64 * y))
+        }
+        (ConstantValue::Float(x), ConstantValue::Integer(y)) => {
+            Some(ConstantValue::Float(x * *y as f64))
+        }
         // String repetition: "abc" * 3 → "abcabcabc" (limit to reasonable sizes)
         (ConstantValue::Str(s), ConstantValue::Integer(n)) if *n >= 0 && *n <= 20 => {
             Some(ConstantValue::Str(s.repeat(*n as usize).into()))
@@ -557,7 +579,11 @@ fn fold_pow(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
         }
         (ConstantValue::Float(x), ConstantValue::Float(y)) => {
             let r = x.powf(*y);
-            if r.is_finite() { Some(ConstantValue::Float(r)) } else { None }
+            if r.is_finite() {
+                Some(ConstantValue::Float(r))
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -583,21 +609,27 @@ fn fold_rshift(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
 
 fn fold_bitand(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
     match (a, b) {
-        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => Some(ConstantValue::Integer(x & y)),
+        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => {
+            Some(ConstantValue::Integer(x & y))
+        }
         _ => None,
     }
 }
 
 fn fold_bitor(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
     match (a, b) {
-        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => Some(ConstantValue::Integer(x | y)),
+        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => {
+            Some(ConstantValue::Integer(x | y))
+        }
         _ => None,
     }
 }
 
 fn fold_bitxor(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
     match (a, b) {
-        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => Some(ConstantValue::Integer(x ^ y)),
+        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => {
+            Some(ConstantValue::Integer(x ^ y))
+        }
         _ => None,
     }
 }
@@ -647,17 +679,15 @@ fn fold_compare(a: &ConstantValue, b: &ConstantValue, cmp: u32) -> Option<bool> 
                 _ => return None,
             })
         }
-        (ConstantValue::Float(x), ConstantValue::Float(y)) => {
-            Some(match cmp {
-                0 => x < y,
-                1 => x <= y,
-                2 => x == y,
-                3 => x != y,
-                4 => x > y,
-                5 => x >= y,
-                _ => return None,
-            })
-        }
+        (ConstantValue::Float(x), ConstantValue::Float(y)) => Some(match cmp {
+            0 => x < y,
+            1 => x <= y,
+            2 => x == y,
+            3 => x != y,
+            4 => x > y,
+            5 => x >= y,
+            _ => return None,
+        }),
         (ConstantValue::Str(x), ConstantValue::Str(y)) if cmp == 2 || cmp == 3 => {
             let eq = x == y;
             Some(if cmp == 2 { eq } else { !eq })
@@ -689,7 +719,9 @@ fn const_is_truthy(val: &ConstantValue) -> Option<bool> {
 /// Superinstructions pack two small args into one u32: (arg1 << 16) | arg2.
 fn fuse_superinstructions(code: &mut CodeObject) {
     let n = code.instructions.len();
-    if n < 2 { return; }
+    if n < 2 {
+        return;
+    }
 
     // Collect all jump targets so we don't fuse across them
     let mut jump_targets = vec![false; n];
@@ -723,12 +755,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // 4-way fusion: LoadFast + LoadConst + CompareOp + PopJumpIfFalse → LoadFastCompareConstJump
         // Zero-clone: reads local and constant by reference, compares, jumps if false.
         // Encoding: (cmp_op << 28) | (local_idx << 20) | (const_idx << 12) | jump_target
-        if i + 3 < n && !jump_targets[i + 2] && !jump_targets[i + 3]
-            && !is_nop[i + 2] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 2]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::CompareOp
             && code.instructions[i + 3].op == Opcode::PopJumpIfFalse
-            && a.arg < 256 && b.arg < 256
+            && a.arg < 256
+            && b.arg < 256
             && code.instructions[i + 2].arg < 16
             && code.instructions[i + 3].arg < 4096
         {
@@ -744,10 +781,14 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadConst + BinarySubtract → LoadFastLoadConstBinarySub
-        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+        if i + 2 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::BinarySubtract
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed_arg = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinarySub, packed_arg);
@@ -759,17 +800,31 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
         // 6-way fusion: LoadFast + LoadConst + BinaryMul + LoadConst + BinaryMod + StoreFast → LoadFastMulModStoreFast
         // Hot pattern: x = (x * c1) % c2
-        if i + 5 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && !jump_targets[i + 3] && !is_nop[i + 3]
-            && !jump_targets[i + 4] && !is_nop[i + 4]
-            && !jump_targets[i + 5] && !is_nop[i + 5]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+        if i + 5 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 3]
+            && !jump_targets[i + 4]
+            && !is_nop[i + 4]
+            && !jump_targets[i + 5]
+            && !is_nop[i + 5]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinaryMultiply | Opcode::InplaceMultiply
+            )
             && code.instructions[i + 3].op == Opcode::LoadConst
-            && matches!(code.instructions[i + 4].op, Opcode::BinaryModulo | Opcode::InplaceModulo)
+            && matches!(
+                code.instructions[i + 4].op,
+                Opcode::BinaryModulo | Opcode::InplaceModulo
+            )
             && code.instructions[i + 5].op == Opcode::StoreFast
-            && a.arg <= 0xFF && b.arg <= 0xFF
-            && code.instructions[i + 3].arg <= 0xFF && code.instructions[i + 5].arg <= 0xFF
+            && a.arg <= 0xFF
+            && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF
+            && code.instructions[i + 5].arg <= 0xFF
         {
             let const2_idx = code.instructions[i + 3].arg;
             let store_idx = code.instructions[i + 5].arg;
@@ -785,16 +840,26 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 4-way fusion: LoadFast + LoadConst + BinaryAdd/InplaceAdd + StoreFast → LoadFastLoadConstBinaryAddStoreFast
-        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && !jump_targets[i + 3] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinaryAdd | Opcode::InplaceAdd
+            )
             && code.instructions[i + 3].op == Opcode::StoreFast
-            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+            && a.arg <= 0xFF
+            && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF
         {
             let store_idx = code.instructions[i + 3].arg;
             let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
-            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryAddStoreFast, packed);
+            code.instructions[i] =
+                Instruction::new(Opcode::LoadFastLoadConstBinaryAddStoreFast, packed);
             is_nop[i + 1] = true;
             is_nop[i + 2] = true;
             is_nop[i + 3] = true;
@@ -803,16 +868,26 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 4-way fusion: LoadFast + LoadConst + BinaryMultiply/InplaceMultiply + StoreFast → LoadFastLoadConstBinaryMulStoreFast
-        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && !jump_targets[i + 3] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinaryMultiply | Opcode::InplaceMultiply
+            )
             && code.instructions[i + 3].op == Opcode::StoreFast
-            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+            && a.arg <= 0xFF
+            && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF
         {
             let store_idx = code.instructions[i + 3].arg;
             let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
-            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryMulStoreFast, packed);
+            code.instructions[i] =
+                Instruction::new(Opcode::LoadFastLoadConstBinaryMulStoreFast, packed);
             is_nop[i + 1] = true;
             is_nop[i + 2] = true;
             is_nop[i + 3] = true;
@@ -821,16 +896,26 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 4-way fusion: LoadFast + LoadConst + BinarySubtract/InplaceSubtract + StoreFast → LoadFastLoadConstBinarySubStoreFast
-        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && !jump_targets[i + 3] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && matches!(code.instructions[i + 2].op, Opcode::BinarySubtract | Opcode::InplaceSubtract)
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinarySubtract | Opcode::InplaceSubtract
+            )
             && code.instructions[i + 3].op == Opcode::StoreFast
-            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+            && a.arg <= 0xFF
+            && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF
         {
             let store_idx = code.instructions[i + 3].arg;
             let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
-            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinarySubStoreFast, packed);
+            code.instructions[i] =
+                Instruction::new(Opcode::LoadFastLoadConstBinarySubStoreFast, packed);
             is_nop[i + 1] = true;
             is_nop[i + 2] = true;
             is_nop[i + 3] = true;
@@ -839,10 +924,14 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadConst + BinaryMultiply → LoadFastLoadConstBinaryMul
-        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+        if i + 2 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::BinaryMultiply
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed_arg = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryMul, packed_arg);
@@ -853,10 +942,14 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadConst + BinaryAdd → LoadFastLoadConstBinaryAdd
-        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+        if i + 2 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::BinaryAdd
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed_arg = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryAdd, packed_arg);
@@ -868,16 +961,26 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
         // 4-way fusion: LoadFast + LoadFast + BinaryAdd/InplaceAdd + StoreFast → LoadFastLoadFastBinaryAddStoreFast
         // Hot accumulator pattern: x = x + i
-        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && !jump_targets[i + 3] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinaryAdd | Opcode::InplaceAdd
+            )
             && code.instructions[i + 3].op == Opcode::StoreFast
-            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+            && a.arg <= 0xFF
+            && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF
         {
             let store_idx = code.instructions[i + 3].arg;
             let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
-            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastBinaryAddStoreFast, packed);
+            code.instructions[i] =
+                Instruction::new(Opcode::LoadFastLoadFastBinaryAddStoreFast, packed);
             is_nop[i + 1] = true;
             is_nop[i + 2] = true;
             is_nop[i + 3] = true;
@@ -886,10 +989,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadFast + BinaryAdd/InplaceAdd → LoadFastLoadFastBinaryAdd
-        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if i + 2 < n
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
+            && matches!(
+                code.instructions[i + 2].op,
+                Opcode::BinaryAdd | Opcode::InplaceAdd
+            )
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed_arg = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastBinaryAdd, packed_arg);
@@ -901,8 +1011,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
         // CompareOp + PopJumpIfFalse → CompareOpPopJumpIfFalse
         // Special encoding: (cmp_op << 24) | jump_target
-        if a.op == Opcode::CompareOp && b.op == Opcode::PopJumpIfFalse
-            && a.arg <= 255 && b.arg <= 0x00FF_FFFF
+        if a.op == Opcode::CompareOp
+            && b.op == Opcode::PopJumpIfFalse
+            && a.arg <= 255
+            && b.arg <= 0x00FF_FFFF
         {
             let packed = (a.arg << 24) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::CompareOpPopJumpIfFalse, packed);
@@ -914,12 +1026,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // 4-way fusion: LoadFast + LoadFast + CompareOp + PopJumpIfFalse → LoadFastLoadFastCompareJump
         // Zero-clone: reads both locals by reference, no stack ops.
         // Encoding: (cmp_op << 28) | (idx1 << 20) | (idx2 << 12) | jump_target
-        if i + 3 < n && !jump_targets[i + 2] && !jump_targets[i + 3]
-            && !is_nop[i + 2] && !is_nop[i + 3]
-            && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
+        if i + 3 < n
+            && !jump_targets[i + 2]
+            && !jump_targets[i + 3]
+            && !is_nop[i + 2]
+            && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
             && code.instructions[i + 2].op == Opcode::CompareOp
             && code.instructions[i + 3].op == Opcode::PopJumpIfFalse
-            && a.arg < 256 && b.arg < 256
+            && a.arg < 256
+            && b.arg < 256
             && code.instructions[i + 2].arg < 16
             && code.instructions[i + 3].arg < 4096
         {
@@ -953,8 +1070,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // ForIter + StoreFast → ForIterStoreFast
         // Encoding: (jump_target << 16) | store_idx
         // jump_target must fit in 16 bits
-        if a.op == Opcode::ForIter && b.op == Opcode::StoreFast
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::ForIter
+            && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::ForIterStoreFast, packed);
@@ -965,8 +1084,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
         // LoadGlobal + CallFunction → LoadGlobalCallFunction
         // Encoding: (name_idx << 16) | arg_count
-        if a.op == Opcode::LoadGlobal && b.op == Opcode::CallFunction
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::LoadGlobal
+            && b.op == Opcode::CallFunction
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadGlobalCallFunction, packed);
@@ -978,8 +1099,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadGlobal + StoreFast → LoadGlobalStoreFast
         // Stores global directly to local, skipping stack.
         // Encoding: (name_idx << 16) | store_idx
-        if a.op == Opcode::LoadGlobal && b.op == Opcode::StoreFast
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::LoadGlobal
+            && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadGlobalStoreFast, packed);
@@ -991,20 +1114,22 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadConst + LoadFast + CompareOp(in/not_in) + StoreFast → LoadConstLoadFastContainsStoreFast
         // Zero-Arc: reads constant and local by reference, does containment check, stores bool in-place.
         // Encoding: (not_in_flag << 31) | (const_idx << 20) | (fast_idx << 10) | store_idx
-        if i + 3 < n && a.op == Opcode::LoadConst && b.op == Opcode::LoadFast
-            && !jump_targets[i + 2] && !is_nop[i + 2]
+        if i + 3 < n
+            && a.op == Opcode::LoadConst
+            && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
         {
             let c = &code.instructions[i + 2];
             if c.op == Opcode::CompareOp && (c.arg == 6 || c.arg == 7) // in / not in
                 && !jump_targets[i + 3] && !is_nop[i + 3]
             {
                 let d = &code.instructions[i + 3];
-                if d.op == Opcode::StoreFast
-                    && a.arg < 1024 && b.arg < 1024 && d.arg < 1024
-                {
+                if d.op == Opcode::StoreFast && a.arg < 1024 && b.arg < 1024 && d.arg < 1024 {
                     let not_in_flag = if c.arg == 7 { 1u32 << 31 } else { 0 };
                     let packed = not_in_flag | (a.arg << 20) | (b.arg << 10) | d.arg;
-                    code.instructions[i] = Instruction::new(Opcode::LoadConstLoadFastContainsStoreFast, packed);
+                    code.instructions[i] =
+                        Instruction::new(Opcode::LoadConstLoadFastContainsStoreFast, packed);
                     is_nop[i + 1] = true;
                     is_nop[i + 2] = true;
                     is_nop[i + 3] = true;
@@ -1017,19 +1142,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadFast + LoadConst + BinarySubscr + StoreFast → LoadFastLoadConstSubscrStoreFast
         // Zero-Arc for container and index: reads local and const by reference.
         // Encoding: (fast_idx << 20) | (const_idx << 10) | store_idx
-        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
-            && !jump_targets[i + 2] && !is_nop[i + 2]
+        if i + 3 < n
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadConst
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
         {
             let c = &code.instructions[i + 2];
-            if c.op == Opcode::BinarySubscr
-                && !jump_targets[i + 3] && !is_nop[i + 3]
-            {
+            if c.op == Opcode::BinarySubscr && !jump_targets[i + 3] && !is_nop[i + 3] {
                 let d = &code.instructions[i + 3];
-                if d.op == Opcode::StoreFast
-                    && a.arg < 1024 && b.arg < 1024 && d.arg < 1024
-                {
+                if d.op == Opcode::StoreFast && a.arg < 1024 && b.arg < 1024 && d.arg < 1024 {
                     let packed = (a.arg << 20) | (b.arg << 10) | d.arg;
-                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstSubscrStoreFast, packed);
+                    code.instructions[i] =
+                        Instruction::new(Opcode::LoadFastLoadConstSubscrStoreFast, packed);
                     is_nop[i + 1] = true;
                     is_nop[i + 2] = true;
                     is_nop[i + 3] = true;
@@ -1042,19 +1167,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadFast + LoadFast + BinarySubscr + StoreFast → LoadFastLoadFastSubscrStoreFast
         // Zero-Arc: reads container and key from locals by reference.
         // Encoding: (container_idx << 24) | (key_idx << 16) | (store_idx << 8)
-        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && !jump_targets[i + 2] && !is_nop[i + 2]
+        if i + 3 < n
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
         {
             let c = &code.instructions[i + 2];
-            if c.op == Opcode::BinarySubscr
-                && !jump_targets[i + 3] && !is_nop[i + 3]
-            {
+            if c.op == Opcode::BinarySubscr && !jump_targets[i + 3] && !is_nop[i + 3] {
                 let d = &code.instructions[i + 3];
-                if d.op == Opcode::StoreFast
-                    && a.arg < 256 && b.arg < 256 && d.arg < 256
-                {
+                if d.op == Opcode::StoreFast && a.arg < 256 && b.arg < 256 && d.arg < 256 {
                     let packed = (a.arg << 24) | (b.arg << 16) | (d.arg << 8);
-                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastSubscrStoreFast, packed);
+                    code.instructions[i] =
+                        Instruction::new(Opcode::LoadFastLoadFastSubscrStoreFast, packed);
                     is_nop[i + 1] = true;
                     is_nop[i + 2] = true;
                     is_nop[i + 3] = true;
@@ -1067,19 +1192,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadFast + LoadFast + LoadFast + StoreSubscr → LoadFastLoadFastLoadFastStoreSubscr
         // Pattern: value = LOAD_FAST val_idx; container = LOAD_FAST cont_idx; key = LOAD_FAST key_idx; STORE_SUBSCR
         // Encoding: (val_idx << 24) | (container_idx << 16) | (key_idx << 8)
-        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && !jump_targets[i + 2] && !is_nop[i + 2]
+        if i + 3 < n
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
         {
             let c = &code.instructions[i + 2];
-            if c.op == Opcode::LoadFast
-                && !jump_targets[i + 3] && !is_nop[i + 3]
-            {
+            if c.op == Opcode::LoadFast && !jump_targets[i + 3] && !is_nop[i + 3] {
                 let d = &code.instructions[i + 3];
-                if d.op == Opcode::StoreSubscr
-                    && a.arg < 256 && b.arg < 256 && c.arg < 256
-                {
+                if d.op == Opcode::StoreSubscr && a.arg < 256 && b.arg < 256 && c.arg < 256 {
                     let packed = (a.arg << 24) | (b.arg << 16) | (c.arg << 8);
-                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastLoadFastStoreSubscr, packed);
+                    code.instructions[i] =
+                        Instruction::new(Opcode::LoadFastLoadFastLoadFastStoreSubscr, packed);
                     is_nop[i + 1] = true;
                     is_nop[i + 2] = true;
                     is_nop[i + 3] = true;
@@ -1092,20 +1217,24 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // LoadFast + LoadFast + CompareOp(in/not_in) + StoreFast → LoadFastLoadFastContainsStoreFast
         // Zero-Arc: borrows needle/haystack from locals, stores bool in dest local.
         // Encoding: (needle_idx << 24) | (haystack_idx << 16) | (store_idx << 8) | in_flag
-        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
-            && !jump_targets[i + 2] && !is_nop[i + 2]
+        if i + 3 < n
+            && a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2]
+            && !is_nop[i + 2]
         {
             let c = &code.instructions[i + 2];
-            if c.op == Opcode::CompareOp && (c.arg == 6 || c.arg == 7)
-                && !jump_targets[i + 3] && !is_nop[i + 3]
+            if c.op == Opcode::CompareOp
+                && (c.arg == 6 || c.arg == 7)
+                && !jump_targets[i + 3]
+                && !is_nop[i + 3]
             {
                 let d = &code.instructions[i + 3];
-                if d.op == Opcode::StoreFast
-                    && a.arg < 256 && b.arg < 256 && d.arg < 256
-                {
+                if d.op == Opcode::StoreFast && a.arg < 256 && b.arg < 256 && d.arg < 256 {
                     let in_flag = if c.arg == 7 { 1u32 } else { 0u32 };
                     let packed = (a.arg << 24) | (b.arg << 16) | (d.arg << 8) | in_flag;
-                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastContainsStoreFast, packed);
+                    code.instructions[i] =
+                        Instruction::new(Opcode::LoadFastLoadFastContainsStoreFast, packed);
                     is_nop[i + 1] = true;
                     is_nop[i + 2] = true;
                     is_nop[i + 3] = true;
@@ -1117,13 +1246,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
         // LoadFast + LoadAttr → LoadFastLoadAttr
         // Encoding: (local_idx << 16) | name_idx
-        if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadAttr
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             // Try 3-way: LoadFast + LoadAttr + StoreFast → LoadFastLoadAttrStoreFast
-            if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+            if i + 2 < n
+                && !jump_targets[i + 2]
+                && !is_nop[i + 2]
                 && code.instructions[i + 2].op == Opcode::StoreFast
-                && a.arg < 1024 && b.arg < 1024 && code.instructions[i + 2].arg < 1024
+                && a.arg < 1024
+                && b.arg < 1024
+                && code.instructions[i + 2].arg < 1024
             {
                 let store_idx = code.instructions[i + 2].arg;
                 let packed = (a.arg << 20) | (b.arg << 10) | store_idx;
@@ -1141,8 +1276,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // StoreFast + JumpAbsolute → StoreFastJumpAbsolute (hot at loop body end)
-        if a.op == Opcode::StoreFast && b.op == Opcode::JumpAbsolute
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::StoreFast
+            && b.op == Opcode::JumpAbsolute
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::StoreFastJumpAbsolute, packed);
@@ -1160,8 +1297,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // LoadFast + LoadMethod → LoadFastLoadMethod
-        if a.op == Opcode::LoadFast && b.op == Opcode::LoadMethod
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::LoadFast
+            && b.op == Opcode::LoadMethod
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadMethod, packed);
@@ -1187,8 +1326,10 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // LoadConst + StoreFast → LoadConstStoreFast (variable initialization)
-        if a.op == Opcode::LoadConst && b.op == Opcode::StoreFast
-            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        if a.op == Opcode::LoadConst
+            && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF
+            && b.arg <= 0xFFFF
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadConstStoreFast, packed);
@@ -1232,12 +1373,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
     let mut new_idx: usize = 0;
     for nop in &is_nop {
         old_to_new.push(new_idx);
-        if !nop { new_idx += 1; }
+        if !nop {
+            new_idx += 1;
+        }
     }
     // Sentinel for targets pointing past the end
     let final_len = new_idx;
 
-    if final_len == n { return; } // nothing was fused
+    if final_len == n {
+        return;
+    } // nothing was fused
 
     // Phase 3: Rewrite all jump targets
     for instr in &mut code.instructions {
@@ -1328,8 +1473,12 @@ fn compute_max_stack_size(code: &mut CodeObject) {
     let mut max_depth: i32 = 0;
     for instr in &code.instructions {
         depth += instr.op.stack_effect(instr.arg);
-        if depth > max_depth { max_depth = depth; }
-        if depth < 0 { depth = 0; } // safety: branches may converge at different depths
+        if depth > max_depth {
+            max_depth = depth;
+        }
+        if depth < 0 {
+            depth = 0;
+        } // safety: branches may converge at different depths
     }
     // Small margin for exception-handler entry (+3 values pushed: type/value/traceback)
     // and for any other stack effects not captured by the linear simulation.

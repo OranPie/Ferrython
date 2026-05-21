@@ -37,23 +37,24 @@ pub fn create_project(dir: &Path, opts: &ProjectOptions) -> Result<(), String> {
     let package_name = opts.name.replace('-', "_");
 
     // Create directory structure
-    fs::create_dir_all(dir.join("src").join(&package_name))
-        .map_err(|e| format!("mkdir: {}", e))?;
+    fs::create_dir_all(dir.join("src").join(&package_name)).map_err(|e| format!("mkdir: {}", e))?;
 
     if opts.with_tests {
-        fs::create_dir_all(dir.join("tests"))
-            .map_err(|e| format!("mkdir tests: {}", e))?;
+        fs::create_dir_all(dir.join("tests")).map_err(|e| format!("mkdir tests: {}", e))?;
     }
 
     // Write pyproject.toml
     let author_line = match (&opts.author, &opts.email) {
-        (Some(name), Some(email)) => format!("authors = [{{name = \"{}\", email = \"{}\"}}]\n", name, email),
+        (Some(name), Some(email)) => format!(
+            "authors = [{{name = \"{}\", email = \"{}\"}}]\n",
+            name, email
+        ),
         (Some(name), None) => format!("authors = [{{name = \"{}\"}}]\n", name),
         _ => String::new(),
     };
 
     let pyproject = format!(
-r#"[build-system]
+        r#"[build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
@@ -87,18 +88,21 @@ where = ["src"]
 
     // Write __init__.py
     let init_py = format!(
-r#""""{}"""
+        r#""""{}"""
 
 __version__ = "0.1.0"
 "#,
         opts.description
     );
-    fs::write(dir.join("src").join(&package_name).join("__init__.py"), init_py)
-        .map_err(|e| format!("Write __init__.py: {}", e))?;
+    fs::write(
+        dir.join("src").join(&package_name).join("__init__.py"),
+        init_py,
+    )
+    .map_err(|e| format!("Write __init__.py: {}", e))?;
 
     // Write __main__.py
     let main_py = format!(
-r#""""Entry point for `ferrython -m {package_name}`."""
+        r#""""Entry point for `ferrython -m {package_name}`."""
 
 
 def main():
@@ -111,21 +115,22 @@ if __name__ == "__main__":
         name = opts.name,
         package_name = package_name,
     );
-    fs::write(dir.join("src").join(&package_name).join("__main__.py"), main_py)
-        .map_err(|e| format!("Write __main__.py: {}", e))?;
+    fs::write(
+        dir.join("src").join(&package_name).join("__main__.py"),
+        main_py,
+    )
+    .map_err(|e| format!("Write __main__.py: {}", e))?;
 
     // Write README.md
     let readme = format!(
         "# {}\n\n{}\n\n## Installation\n\n```bash\nferryip install -e .\n```\n\n## Usage\n\n```python\nimport {}\n```\n",
         opts.name, opts.description, package_name
     );
-    fs::write(dir.join("README.md"), readme)
-        .map_err(|e| format!("Write README.md: {}", e))?;
+    fs::write(dir.join("README.md"), readme).map_err(|e| format!("Write README.md: {}", e))?;
 
     // Write .gitignore
     let gitignore = "__pycache__/\n*.py[cod]\n*$py.class\n*.egg-info/\ndist/\nbuild/\n.venv/\n*.egg\n.pytest_cache/\n";
-    fs::write(dir.join(".gitignore"), gitignore)
-        .map_err(|e| format!("Write .gitignore: {}", e))?;
+    fs::write(dir.join(".gitignore"), gitignore).map_err(|e| format!("Write .gitignore: {}", e))?;
 
     // Write tests/__init__.py and tests/test_basic.py
     if opts.with_tests {
@@ -133,7 +138,7 @@ if __name__ == "__main__":
             .map_err(|e| format!("Write tests/__init__.py: {}", e))?;
 
         let test_file = format!(
-r#""""Basic tests for {name}."""
+            r#""""Basic tests for {name}."""
 
 import {package_name}
 

@@ -25,13 +25,11 @@ impl Compiler {
                 self.emit_arg(Opcode::LoadConst, idx);
             }
 
-            ExpressionKind::Name { id, ctx } => {
-                match ctx {
-                    ExprContext::Load => self.load_name(id),
-                    ExprContext::Store => self.store_name(id),
-                    ExprContext::Del => self.delete_name(id),
-                }
-            }
+            ExpressionKind::Name { id, ctx } => match ctx {
+                ExprContext::Load => self.load_name(id),
+                ExprContext::Store => self.store_name(id),
+                ExprContext::Del => self.delete_name(id),
+            },
 
             ExpressionKind::BinOp { left, op, right } => {
                 self.compile_expression(left)?;
@@ -91,30 +89,30 @@ impl Compiler {
                 }
             }
 
-            ExpressionKind::Subscript { value, slice, ctx } => {
-                match ctx {
-                    ExprContext::Load => {
-                        self.compile_expression(value)?;
-                        self.compile_expression(slice)?;
-                        self.emit_op(Opcode::BinarySubscr);
-                    }
-                    ExprContext::Store => {
-                        self.compile_expression(value)?;
-                        self.compile_expression(slice)?;
-                        self.emit_op(Opcode::StoreSubscr);
-                    }
-                    ExprContext::Del => {
-                        self.compile_expression(value)?;
-                        self.compile_expression(slice)?;
-                        self.emit_op(Opcode::DeleteSubscr);
-                    }
+            ExpressionKind::Subscript { value, slice, ctx } => match ctx {
+                ExprContext::Load => {
+                    self.compile_expression(value)?;
+                    self.compile_expression(slice)?;
+                    self.emit_op(Opcode::BinarySubscr);
                 }
-            }
+                ExprContext::Store => {
+                    self.compile_expression(value)?;
+                    self.compile_expression(slice)?;
+                    self.emit_op(Opcode::StoreSubscr);
+                }
+                ExprContext::Del => {
+                    self.compile_expression(value)?;
+                    self.compile_expression(slice)?;
+                    self.emit_op(Opcode::DeleteSubscr);
+                }
+            },
 
             ExpressionKind::List { elts, ctx } => {
                 match ctx {
                     ExprContext::Load => {
-                        let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                        let has_star = elts
+                            .iter()
+                            .any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
                         if has_star {
                             // Build list then extend with starred elements
                             let mut regular_count = 0u32;
@@ -162,7 +160,9 @@ impl Compiler {
             ExpressionKind::Tuple { elts, ctx } => {
                 match ctx {
                     ExprContext::Load => {
-                        let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                        let has_star = elts
+                            .iter()
+                            .any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
                         if has_star {
                             // Build list, extend, convert to tuple
                             let mut regular_count = 0u32;
@@ -207,7 +207,9 @@ impl Compiler {
             }
 
             ExpressionKind::Set { elts } => {
-                let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                let has_star = elts
+                    .iter()
+                    .any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
                 if has_star {
                     // Build empty set, then add regular elements and update with starred
                     self.emit_arg(Opcode::BuildSet, 0);
@@ -280,11 +282,7 @@ impl Compiler {
                 }
             }
 
-            ExpressionKind::IfExp {
-                test,
-                body,
-                orelse,
-            } => {
+            ExpressionKind::IfExp { test, body, orelse } => {
                 self.compile_expression(test)?;
                 let else_label = self.emit_jump(Opcode::PopJumpIfFalse);
                 self.compile_expression(body)?;
@@ -300,17 +298,39 @@ impl Compiler {
 
             ExpressionKind::ListComp { elt, generators } => {
                 if generators.iter().any(|g| g.is_async) {
-                    self.compile_async_comprehension_inline(elt, None, generators, ComprehensionKind::List)?;
+                    self.compile_async_comprehension_inline(
+                        elt,
+                        None,
+                        generators,
+                        ComprehensionKind::List,
+                    )?;
                 } else {
-                    self.compile_comprehension("<listcomp>", elt, None, generators, ComprehensionKind::List)?;
+                    self.compile_comprehension(
+                        "<listcomp>",
+                        elt,
+                        None,
+                        generators,
+                        ComprehensionKind::List,
+                    )?;
                 }
             }
 
             ExpressionKind::SetComp { elt, generators } => {
                 if generators.iter().any(|g| g.is_async) {
-                    self.compile_async_comprehension_inline(elt, None, generators, ComprehensionKind::Set)?;
+                    self.compile_async_comprehension_inline(
+                        elt,
+                        None,
+                        generators,
+                        ComprehensionKind::Set,
+                    )?;
                 } else {
-                    self.compile_comprehension("<setcomp>", elt, None, generators, ComprehensionKind::Set)?;
+                    self.compile_comprehension(
+                        "<setcomp>",
+                        elt,
+                        None,
+                        generators,
+                        ComprehensionKind::Set,
+                    )?;
                 }
             }
 
@@ -320,14 +340,31 @@ impl Compiler {
                 generators,
             } => {
                 if generators.iter().any(|g| g.is_async) {
-                    self.compile_async_comprehension_inline(key, Some(value), generators, ComprehensionKind::Dict)?;
+                    self.compile_async_comprehension_inline(
+                        key,
+                        Some(value),
+                        generators,
+                        ComprehensionKind::Dict,
+                    )?;
                 } else {
-                    self.compile_comprehension("<dictcomp>", key, Some(value), generators, ComprehensionKind::Dict)?;
+                    self.compile_comprehension(
+                        "<dictcomp>",
+                        key,
+                        Some(value),
+                        generators,
+                        ComprehensionKind::Dict,
+                    )?;
                 }
             }
 
             ExpressionKind::GeneratorExp { elt, generators } => {
-                self.compile_comprehension("<genexpr>", elt, None, generators, ComprehensionKind::Generator)?;
+                self.compile_comprehension(
+                    "<genexpr>",
+                    elt,
+                    None,
+                    generators,
+                    ComprehensionKind::Generator,
+                )?;
             }
 
             ExpressionKind::Yield { value } => {
@@ -372,11 +409,7 @@ impl Compiler {
                 self.compile_expression(value)?;
             }
 
-            ExpressionKind::Slice {
-                lower,
-                upper,
-                step,
-            } => {
+            ExpressionKind::Slice { lower, upper, step } => {
                 let argc = if step.is_some() { 3 } else { 2 };
                 if let Some(l) = lower {
                     self.compile_expression(l)?;
@@ -542,7 +575,9 @@ impl Compiler {
         keywords: &[Keyword],
     ) -> Result<()> {
         // Check if any arg is starred or any keyword has None arg (** unpacking)
-        let has_star_args = args.iter().any(|a| matches!(a.node, ExpressionKind::Starred { .. }));
+        let has_star_args = args
+            .iter()
+            .any(|a| matches!(a.node, ExpressionKind::Starred { .. }));
         let has_double_star = keywords.iter().any(|k| k.arg.is_none());
 
         if has_star_args || has_double_star {
@@ -572,7 +607,12 @@ impl Compiler {
             self.emit_arg(Opcode::LoadConst, tuple_idx);
             let total = (args.len() + keywords.len()) as u32;
             self.emit_arg(Opcode::CallFunctionKw, total);
-        } else if let ExpressionKind::Attribute { value, attr, ctx: ExprContext::Load } = &func.node {
+        } else if let ExpressionKind::Attribute {
+            value,
+            attr,
+            ctx: ExprContext::Load,
+        } = &func.node
+        {
             // Optimization: obj.method(args) → LoadMethod + CallMethod
             // Avoids creating a BoundMethod wrapper on every call
             self.compile_expression(value)?;
@@ -597,7 +637,8 @@ impl Compiler {
     pub(super) fn compile_star_args(&mut self, args: &[Expression]) -> Result<()> {
         // Count segments: contiguous regular args form one tuple segment,
         // each starred arg is its own segment.
-        let star_count = args.iter()
+        let star_count = args
+            .iter()
             .filter(|a| matches!(a.node, ExpressionKind::Starred { .. }))
             .count();
 
@@ -610,7 +651,11 @@ impl Compiler {
             return Ok(());
         }
 
-        if star_count == 1 && !args.iter().any(|a| !matches!(a.node, ExpressionKind::Starred { .. })) {
+        if star_count == 1
+            && !args
+                .iter()
+                .any(|a| !matches!(a.node, ExpressionKind::Starred { .. }))
+        {
             // Single starred arg, no regular args: just compile the value
             if let ExpressionKind::Starred { value, .. } = &args[0].node {
                 self.compile_expression(value)?;
@@ -677,8 +722,7 @@ impl Compiler {
                 self.compile_expression(&kw.value)?;
                 segments += 1;
             } else {
-                let key_idx =
-                    self.add_const(ConstantValue::Str(kw.arg.as_ref().unwrap().clone()));
+                let key_idx = self.add_const(ConstantValue::Str(kw.arg.as_ref().unwrap().clone()));
                 self.emit_arg(Opcode::LoadConst, key_idx);
                 self.compile_expression(&kw.value)?;
                 n_regular += 1;
@@ -735,35 +779,59 @@ impl Compiler {
         // Set up argument info
         {
             let unit = self.current_unit_mut();
-            unit.code.arg_count =
-                (args.posonlyargs.len() + args.args.len()) as u32;
+            unit.code.arg_count = (args.posonlyargs.len() + args.args.len()) as u32;
             unit.code.posonlyarg_count = args.posonlyargs.len() as u32;
             unit.code.kwonlyarg_count = args.kwonlyargs.len() as u32;
 
             for arg in &args.posonlyargs {
-                if !unit.code.varnames.iter().any(|v| v.as_str() == arg.arg.as_str()) {
+                if !unit
+                    .code
+                    .varnames
+                    .iter()
+                    .any(|v| v.as_str() == arg.arg.as_str())
+                {
                     unit.code.varnames.push(arg.arg.clone());
                 }
             }
             for arg in &args.args {
-                if !unit.code.varnames.iter().any(|v| v.as_str() == arg.arg.as_str()) {
+                if !unit
+                    .code
+                    .varnames
+                    .iter()
+                    .any(|v| v.as_str() == arg.arg.as_str())
+                {
                     unit.code.varnames.push(arg.arg.clone());
                 }
             }
             if let Some(ref vararg) = args.vararg {
                 unit.code.flags |= CodeFlags::VARARGS;
-                if !unit.code.varnames.iter().any(|v| v.as_str() == vararg.arg.as_str()) {
+                if !unit
+                    .code
+                    .varnames
+                    .iter()
+                    .any(|v| v.as_str() == vararg.arg.as_str())
+                {
                     unit.code.varnames.push(vararg.arg.clone());
                 }
             }
             for arg in &args.kwonlyargs {
-                if !unit.code.varnames.iter().any(|v| v.as_str() == arg.arg.as_str()) {
+                if !unit
+                    .code
+                    .varnames
+                    .iter()
+                    .any(|v| v.as_str() == arg.arg.as_str())
+                {
                     unit.code.varnames.push(arg.arg.clone());
                 }
             }
             if let Some(ref kwarg) = args.kwarg {
                 unit.code.flags |= CodeFlags::VARKEYWORDS;
-                if !unit.code.varnames.iter().any(|v| v.as_str() == kwarg.arg.as_str()) {
+                if !unit
+                    .code
+                    .varnames
+                    .iter()
+                    .any(|v| v.as_str() == kwarg.arg.as_str())
+                {
                     unit.code.varnames.push(kwarg.arg.clone());
                 }
             }
@@ -1029,7 +1097,14 @@ impl Compiler {
             }
 
             if idx + 1 < generators.len() {
-                self.compile_async_comp_generator(generators, idx + 1, elt, value, kind, result_idx)?;
+                self.compile_async_comp_generator(
+                    generators,
+                    idx + 1,
+                    elt,
+                    value,
+                    kind,
+                    result_idx,
+                )?;
             } else {
                 // Innermost: load result, append element, store back
                 match kind {
@@ -1053,7 +1128,7 @@ impl Compiler {
                         // StoreSubscr stack: TOS=key, TOS1=obj, TOS2=value
                         self.compile_expression(value.unwrap())?; // value
                         self.emit_arg(Opcode::LoadFast, result_idx); // dict
-                        self.compile_expression(elt)?;   // key
+                        self.compile_expression(elt)?; // key
                         self.emit_op(Opcode::StoreSubscr);
                     }
                     ComprehensionKind::Generator => {
@@ -1082,7 +1157,14 @@ impl Compiler {
             }
 
             if idx + 1 < generators.len() {
-                self.compile_async_comp_generator(generators, idx + 1, elt, value, kind, result_idx)?;
+                self.compile_async_comp_generator(
+                    generators,
+                    idx + 1,
+                    elt,
+                    value,
+                    kind,
+                    result_idx,
+                )?;
             } else {
                 match kind {
                     ComprehensionKind::List => {
@@ -1104,7 +1186,7 @@ impl Compiler {
                     ComprehensionKind::Dict => {
                         self.compile_expression(value.unwrap())?; // value
                         self.emit_arg(Opcode::LoadFast, result_idx); // dict
-                        self.compile_expression(elt)?;   // key
+                        self.compile_expression(elt)?; // key
                         self.emit_op(Opcode::StoreSubscr);
                     }
                     ComprehensionKind::Generator => {
@@ -1150,7 +1232,10 @@ impl Compiler {
         match &expr.node {
             ExpressionKind::Constant { value } => Some(value.clone()),
             // Fold through unary minus on literals: e.g., -1 in `(-1) + 2`
-            ExpressionKind::UnaryOp { op: UnaryOperator::USub, operand } => {
+            ExpressionKind::UnaryOp {
+                op: UnaryOperator::USub,
+                operand,
+            } => {
                 if let ExpressionKind::Constant { value } = &operand.node {
                     match value {
                         Constant::Int(BigInt::Small(i)) => Some(Constant::Int(BigInt::Small(-i))),
@@ -1170,18 +1255,12 @@ impl Compiler {
             (UnaryOperator::USub, Constant::Int(BigInt::Small(i))) => {
                 Some(ConstantValue::Integer(-i))
             }
-            (UnaryOperator::USub, Constant::Float(f)) => {
-                Some(ConstantValue::Float(-f))
-            }
+            (UnaryOperator::USub, Constant::Float(f)) => Some(ConstantValue::Float(-f)),
             (UnaryOperator::UAdd, Constant::Int(BigInt::Small(i))) => {
                 Some(ConstantValue::Integer(*i))
             }
-            (UnaryOperator::UAdd, Constant::Float(f)) => {
-                Some(ConstantValue::Float(*f))
-            }
-            (UnaryOperator::Not, Constant::Bool(b)) => {
-                Some(ConstantValue::Bool(!b))
-            }
+            (UnaryOperator::UAdd, Constant::Float(f)) => Some(ConstantValue::Float(*f)),
+            (UnaryOperator::Not, Constant::Bool(b)) => Some(ConstantValue::Bool(!b)),
             (UnaryOperator::Invert, Constant::Int(BigInt::Small(i))) => {
                 Some(ConstantValue::Integer(!i))
             }
@@ -1194,9 +1273,7 @@ impl Compiler {
             (Constant::Int(BigInt::Small(a)), Constant::Int(BigInt::Small(b))) => {
                 Self::fold_int_binop(*a, op, *b)
             }
-            (Constant::Float(a), Constant::Float(b)) => {
-                Self::fold_float_binop(*a, op, *b)
-            }
+            (Constant::Float(a), Constant::Float(b)) => Self::fold_float_binop(*a, op, *b),
             (Constant::Int(BigInt::Small(a)), Constant::Float(b)) => {
                 Self::fold_float_binop(*a as f64, op, *b)
             }
@@ -1223,26 +1300,46 @@ impl Compiler {
             Operator::Sub => a.checked_sub(b)?,
             Operator::Mult => a.checked_mul(b)?,
             Operator::FloorDiv => {
-                if b == 0 { return None; }
+                if b == 0 {
+                    return None;
+                }
                 let (q, r) = (a / b, a % b);
-                if (r != 0) && ((r ^ b) < 0) { Some(q - 1) } else { Some(q) }
+                if (r != 0) && ((r ^ b) < 0) {
+                    Some(q - 1)
+                } else {
+                    Some(q)
+                }
             }?,
             Operator::Mod => {
-                if b == 0 { return None; }
+                if b == 0 {
+                    return None;
+                }
                 let r = a % b;
-                if (r != 0) && ((r ^ b) < 0) { Some(r + b) } else { Some(r) }
+                if (r != 0) && ((r ^ b) < 0) {
+                    Some(r + b)
+                } else {
+                    Some(r)
+                }
             }?,
             Operator::Pow => {
-                if b < 0 { return None; } // negative power → float
-                if b > 63 { return None; } // prevent huge results
+                if b < 0 {
+                    return None;
+                } // negative power → float
+                if b > 63 {
+                    return None;
+                } // prevent huge results
                 a.checked_pow(b as u32)?
             }
             Operator::LShift => {
-                if b < 0 || b > 63 { return None; }
+                if b < 0 || b > 63 {
+                    return None;
+                }
                 a.checked_shl(b as u32)?
             }
             Operator::RShift => {
-                if b < 0 || b > 63 { return None; }
+                if b < 0 || b > 63 {
+                    return None;
+                }
                 Some(a >> b as u32)
             }?,
             Operator::BitOr => a | b,
@@ -1259,21 +1356,29 @@ impl Compiler {
             Operator::Sub => a - b,
             Operator::Mult => a * b,
             Operator::Div => {
-                if b == 0.0 { return None; }
+                if b == 0.0 {
+                    return None;
+                }
                 a / b
             }
             Operator::FloorDiv => {
-                if b == 0.0 { return None; }
+                if b == 0.0 {
+                    return None;
+                }
                 (a / b).floor()
             }
             Operator::Mod => {
-                if b == 0.0 { return None; }
+                if b == 0.0 {
+                    return None;
+                }
                 a % b
             }
             Operator::Pow => a.powf(b),
             _ => return None,
         };
-        if result.is_nan() || result.is_infinite() { return None; }
+        if result.is_nan() || result.is_infinite() {
+            return None;
+        }
         Some(ConstantValue::Float(result))
     }
 
@@ -1284,9 +1389,7 @@ impl Compiler {
             Constant::None => ConstantValue::None,
             Constant::Bool(b) => ConstantValue::Bool(*b),
             Constant::Int(BigInt::Small(i)) => ConstantValue::Integer(*i),
-            Constant::Int(BigInt::Big(b)) => {
-                ConstantValue::BigInteger(b.clone())
-            }
+            Constant::Int(BigInt::Big(b)) => ConstantValue::BigInteger(b.clone()),
             Constant::Float(f) => ConstantValue::Float(*f),
             Constant::Complex { real, imag } => ConstantValue::Complex {
                 real: *real,
@@ -1329,7 +1432,9 @@ pub(super) fn compare_op_arg(op: CompareOperator) -> u32 {
 /// Only checks the direct body — does NOT recurse into nested function/class defs.
 pub(super) fn body_contains_yield(stmts: &[Statement]) -> bool {
     for stmt in stmts {
-        if stmt_contains_yield(stmt) { return true; }
+        if stmt_contains_yield(stmt) {
+            return true;
+        }
     }
     false
 }
@@ -1346,12 +1451,19 @@ pub(super) fn stmt_contains_yield(stmt: &Statement) -> bool {
         StatementKind::While { test, body, orelse } => {
             expr_contains_yield(test) || body_contains_yield(body) || body_contains_yield(orelse)
         }
-        StatementKind::For { body, orelse, iter, .. } => {
-            expr_contains_yield(iter) || body_contains_yield(body) || body_contains_yield(orelse)
-        }
-        StatementKind::Try { body, handlers, orelse, finalbody } => {
-            body_contains_yield(body) || body_contains_yield(orelse) || body_contains_yield(finalbody)
-            || handlers.iter().any(|h| body_contains_yield(&h.body))
+        StatementKind::For {
+            body, orelse, iter, ..
+        } => expr_contains_yield(iter) || body_contains_yield(body) || body_contains_yield(orelse),
+        StatementKind::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+        } => {
+            body_contains_yield(body)
+                || body_contains_yield(orelse)
+                || body_contains_yield(finalbody)
+                || handlers.iter().any(|h| body_contains_yield(&h.body))
         }
         StatementKind::With { body, .. } => body_contains_yield(body),
         // Do NOT recurse into nested function/class definitions
@@ -1368,26 +1480,33 @@ pub(super) fn expr_contains_yield(expr: &Expression) -> bool {
         }
         ExpressionKind::UnaryOp { operand, .. } => expr_contains_yield(operand),
         ExpressionKind::BoolOp { values, .. } => values.iter().any(|v| expr_contains_yield(v)),
-        ExpressionKind::Call { func, args, keywords } => {
-            expr_contains_yield(func) || args.iter().any(|a| expr_contains_yield(a))
-            || keywords.iter().any(|k| expr_contains_yield(&k.value))
+        ExpressionKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_contains_yield(func)
+                || args.iter().any(|a| expr_contains_yield(a))
+                || keywords.iter().any(|k| expr_contains_yield(&k.value))
         }
         ExpressionKind::IfExp { test, body, orelse } => {
             expr_contains_yield(test) || expr_contains_yield(body) || expr_contains_yield(orelse)
         }
-        ExpressionKind::Tuple { elts, .. } | ExpressionKind::List { elts, .. } | ExpressionKind::Set { elts } => {
-            elts.iter().any(|e| expr_contains_yield(e))
-        }
+        ExpressionKind::Tuple { elts, .. }
+        | ExpressionKind::List { elts, .. }
+        | ExpressionKind::Set { elts } => elts.iter().any(|e| expr_contains_yield(e)),
         ExpressionKind::Dict { keys, values } => {
-            keys.iter().any(|k| k.as_ref().map_or(false, |k| expr_contains_yield(k))) || values.iter().any(|v| expr_contains_yield(v))
+            keys.iter()
+                .any(|k| k.as_ref().map_or(false, |k| expr_contains_yield(k)))
+                || values.iter().any(|v| expr_contains_yield(v))
         }
         ExpressionKind::Attribute { value, .. } => expr_contains_yield(value),
         ExpressionKind::Subscript { value, slice, .. } => {
             expr_contains_yield(value) || expr_contains_yield(slice)
         }
-        ExpressionKind::Compare { left, comparators, .. } => {
-            expr_contains_yield(left) || comparators.iter().any(|c| expr_contains_yield(c))
-        }
+        ExpressionKind::Compare {
+            left, comparators, ..
+        } => expr_contains_yield(left) || comparators.iter().any(|c| expr_contains_yield(c)),
         _ => false,
     }
 }

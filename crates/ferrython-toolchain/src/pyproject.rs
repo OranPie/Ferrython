@@ -71,8 +71,8 @@ pub fn parse_pyproject(path: &Path) -> Result<PyProject, String> {
 
 /// Parse pyproject.toml from a string.
 pub fn parse_pyproject_str(content: &str) -> Result<PyProject, String> {
-    let raw: RawPyProject = toml::from_str(content)
-        .map_err(|e| format!("TOML parse error: {}", e))?;
+    let raw: RawPyProject =
+        toml::from_str(content).map_err(|e| format!("TOML parse error: {}", e))?;
 
     Ok(PyProject {
         build_system: raw.build_system,
@@ -84,9 +84,11 @@ pub fn parse_pyproject_str(content: &str) -> Result<PyProject, String> {
 impl PyProject {
     /// Get the project name (normalized).
     pub fn name(&self) -> Option<String> {
-        self.project.as_ref()?.name.as_ref().map(|n| {
-            n.to_lowercase().replace('-', "_").replace('.', "_")
-        })
+        self.project
+            .as_ref()?
+            .name
+            .as_ref()
+            .map(|n| n.to_lowercase().replace('-', "_").replace('.', "_"))
     }
 
     /// Get the project version.
@@ -96,7 +98,8 @@ impl PyProject {
 
     /// Get the list of dependencies.
     pub fn dependencies(&self) -> Vec<String> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.dependencies.as_ref())
             .cloned()
             .unwrap_or_default()
@@ -104,7 +107,8 @@ impl PyProject {
 
     /// Get build-system requirements.
     pub fn build_requires(&self) -> Vec<String> {
-        self.build_system.as_ref()
+        self.build_system
+            .as_ref()
             .and_then(|bs| bs.requires.as_ref())
             .cloned()
             .unwrap_or_default()
@@ -117,10 +121,12 @@ impl PyProject {
 
     /// Get console_scripts entry points.
     pub fn scripts(&self) -> Option<Vec<(String, String)>> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.scripts.as_ref())
             .map(|table| {
-                table.iter()
+                table
+                    .iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
@@ -138,10 +144,12 @@ impl PyProject {
 
     /// Get project authors.
     pub fn authors(&self) -> Vec<(Option<String>, Option<String>)> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.authors.as_ref())
             .map(|authors| {
-                authors.iter()
+                authors
+                    .iter()
                     .map(|a| (a.name.clone(), a.email.clone()))
                     .collect()
             })
@@ -150,7 +158,8 @@ impl PyProject {
 
     /// Get project classifiers.
     pub fn classifiers(&self) -> Vec<String> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.classifiers.as_ref())
             .cloned()
             .unwrap_or_default()
@@ -158,7 +167,8 @@ impl PyProject {
 
     /// Get project keywords.
     pub fn keywords(&self) -> Vec<String> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.keywords.as_ref())
             .cloned()
             .unwrap_or_default()
@@ -166,10 +176,12 @@ impl PyProject {
 
     /// Get project URLs (homepage, documentation, etc.).
     pub fn urls(&self) -> Vec<(String, String)> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.urls.as_ref())
             .map(|table| {
-                table.iter()
+                table
+                    .iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
@@ -178,7 +190,8 @@ impl PyProject {
 
     /// Get optional dependency group names.
     pub fn extras(&self) -> Vec<String> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.optional_dependencies.as_ref())
             .map(|table| table.keys().cloned().collect())
             .unwrap_or_default()
@@ -186,7 +199,8 @@ impl PyProject {
 
     /// Get dependencies for a specific optional group.
     pub fn extra_deps(&self, group: &str) -> Vec<String> {
-        self.project.as_ref()
+        self.project
+            .as_ref()
             .and_then(|p| p.optional_dependencies.as_ref())
             .and_then(|table| table.get(group))
             .and_then(|v| v.as_array())

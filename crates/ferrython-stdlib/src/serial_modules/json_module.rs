@@ -1,11 +1,10 @@
-use indexmap::IndexMap;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
+use indexmap::IndexMap;
 use std::cell::Cell;
 
 thread_local! {
@@ -49,65 +48,96 @@ fn json_escape_string(s: &str) -> String {
 pub fn create_json_module() -> PyObjectRef {
     // Build JSONEncoder as a proper class with methods in the namespace
     let mut enc_ns = IndexMap::new();
-    enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("JSONEncoder.encode() missing argument"));
-        }
-        let s = py_to_json(&args[0])?;
-        Ok(PyObject::str_val(CompactString::from(s)))
-    }));
-    enc_ns.insert(CompactString::from("default"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() { return Ok(PyObject::none()); }
-        Err(PyException::type_error(format!(
-            "Object of type {} is not JSON serializable", args[0].type_name()
-        )))
-    }));
+    enc_ns.insert(
+        CompactString::from("encode"),
+        PyObject::native_closure("encode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "JSONEncoder.encode() missing argument",
+                ));
+            }
+            let s = py_to_json(&args[0])?;
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }),
+    );
+    enc_ns.insert(
+        CompactString::from("default"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            Err(PyException::type_error(format!(
+                "Object of type {} is not JSON serializable",
+                args[0].type_name()
+            )))
+        }),
+    );
     let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
 
     // Build JSONDecoder as a proper class with methods in the namespace
     let mut dec_ns = IndexMap::new();
-    dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("JSONDecoder.decode() missing argument"));
-        }
-        let s = match &args[0].payload {
-            PyObjectPayload::Str(s) => s.to_string(),
-            _ => return Err(PyException::type_error("JSONDecoder.decode requires a string")),
-        };
-        parse_json_value(&s, &mut 0)
-    }));
-    dec_ns.insert(CompactString::from("raw_decode"), PyObject::native_closure("raw_decode", |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("raw_decode() missing argument"));
-        }
-        let s = match &args[0].payload {
-            PyObjectPayload::Str(s) => s.to_string(),
-            _ => return Err(PyException::type_error("raw_decode requires a string")),
-        };
-        let mut pos = 0;
-        let val = parse_json_value(&s, &mut pos)?;
-        Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
-    }));
+    dec_ns.insert(
+        CompactString::from("decode"),
+        PyObject::native_closure("decode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "JSONDecoder.decode() missing argument",
+                ));
+            }
+            let s = match &args[0].payload {
+                PyObjectPayload::Str(s) => s.to_string(),
+                _ => {
+                    return Err(PyException::type_error(
+                        "JSONDecoder.decode requires a string",
+                    ))
+                }
+            };
+            parse_json_value(&s, &mut 0)
+        }),
+    );
+    dec_ns.insert(
+        CompactString::from("raw_decode"),
+        PyObject::native_closure("raw_decode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("raw_decode() missing argument"));
+            }
+            let s = match &args[0].payload {
+                PyObjectPayload::Str(s) => s.to_string(),
+                _ => return Err(PyException::type_error("raw_decode requires a string")),
+            };
+            let mut pos = 0;
+            let val = parse_json_value(&s, &mut pos)?;
+            Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
+        }),
+    );
     let json_decoder_cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], dec_ns);
 
-    make_module("json", vec![
-        ("dumps", PyObject::native_function("json.dumps", json_dumps)),
-        ("loads", PyObject::native_function("json.loads", json_loads)),
-        ("dump", PyObject::native_function("json.dump", json_dump)),
-        ("load", PyObject::native_function("json.load", json_load)),
-        ("JSONEncoder", json_encoder_cls),
-        ("JSONDecoder", json_decoder_cls),
-        ("JSONDecodeError", PyObject::class(
-            CompactString::from("JSONDecodeError"),
-            vec![],
-            IndexMap::new(),
-        )),
-    ])
+    make_module(
+        "json",
+        vec![
+            ("dumps", PyObject::native_function("json.dumps", json_dumps)),
+            ("loads", PyObject::native_function("json.loads", json_loads)),
+            ("dump", PyObject::native_function("json.dump", json_dump)),
+            ("load", PyObject::native_function("json.load", json_load)),
+            ("JSONEncoder", json_encoder_cls),
+            ("JSONDecoder", json_decoder_cls),
+            (
+                "JSONDecodeError",
+                PyObject::class(
+                    CompactString::from("JSONDecodeError"),
+                    vec![],
+                    IndexMap::new(),
+                ),
+            ),
+        ],
+    )
 }
 
 pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("json.dumps() missing 1 required positional argument: 'obj'"));
+        return Err(PyException::type_error(
+            "json.dumps() missing 1 required positional argument: 'obj'",
+        ));
     }
     // kwargs may be passed as a trailing dict by the VM
     let mut indent: Option<usize> = None;
@@ -150,7 +180,8 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if let Some(default_method) = cls.get_attr("default") {
                         match &default_method.payload {
                             // Native default method — can call directly
-                            PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
+                            PyObjectPayload::NativeFunction(_)
+                            | PyObjectPayload::NativeClosure(_) => {
                                 default_fn = Some(PyObject::wrap(PyObjectPayload::BoundMethod {
                                     receiver: encoder_inst,
                                     method: default_method,
@@ -209,7 +240,8 @@ fn pre_convert_for_json(obj: &PyObjectRef) -> PyObjectRef {
     match &obj.payload {
         PyObjectPayload::Dict(map) => {
             let r = map.read();
-            let entries: Vec<_> = r.iter()
+            let entries: Vec<_> = r
+                .iter()
                 .map(|(k, v)| (k.clone(), pre_convert_for_json(v)))
                 .collect();
             drop(r);
@@ -234,12 +266,18 @@ fn pre_convert_for_json(obj: &PyObjectRef) -> PyObjectRef {
         }
         PyObjectPayload::Set(set) => {
             let r = set.read();
-            let items: Vec<_> = r.keys().map(|k| pre_convert_for_json(&k.to_object())).collect();
+            let items: Vec<_> = r
+                .keys()
+                .map(|k| pre_convert_for_json(&k.to_object()))
+                .collect();
             drop(r);
             PyObject::list(items)
         }
         PyObjectPayload::FrozenSet(set) => {
-            let items: Vec<_> = set.keys().map(|k| pre_convert_for_json(&k.to_object())).collect();
+            let items: Vec<_> = set
+                .keys()
+                .map(|k| pre_convert_for_json(&k.to_object()))
+                .collect();
             PyObject::list(items)
         }
         PyObjectPayload::Bytes(b) => {
@@ -255,10 +293,7 @@ fn pre_convert_for_json(obj: &PyObjectRef) -> PyObjectRef {
                 if let PyObjectPayload::Dict(new_map) = &new_dict.payload {
                     let mut w = new_map.write();
                     for (k, v) in attrs.iter() {
-                        w.insert(
-                            HashableKey::str_key(k.clone()),
-                            pre_convert_for_json(v),
-                        );
+                        w.insert(HashableKey::str_key(k.clone()), pre_convert_for_json(v));
                     }
                 }
                 new_dict
@@ -273,12 +308,21 @@ fn sort_dict_keys_recursive(obj: &PyObjectRef) -> PyObjectRef {
     match &obj.payload {
         PyObjectPayload::Dict(map) => {
             let r = map.read();
-            let mut entries: Vec<_> = r.iter()
+            let mut entries: Vec<_> = r
+                .iter()
                 .map(|(k, v)| (k.clone(), sort_dict_keys_recursive(v)))
                 .collect();
             entries.sort_by(|(a, _), (b, _)| {
-                let a_str = match a { HashableKey::Str(s) => s.to_string(), HashableKey::Int(n) => n.to_string(), _ => format!("{:?}", a) };
-                let b_str = match b { HashableKey::Str(s) => s.to_string(), HashableKey::Int(n) => n.to_string(), _ => format!("{:?}", b) };
+                let a_str = match a {
+                    HashableKey::Str(s) => s.to_string(),
+                    HashableKey::Int(n) => n.to_string(),
+                    _ => format!("{:?}", a),
+                };
+                let b_str = match b {
+                    HashableKey::Str(s) => s.to_string(),
+                    HashableKey::Int(n) => n.to_string(),
+                    _ => format!("{:?}", b),
+                };
                 a_str.cmp(&b_str)
             });
             drop(r);
@@ -305,7 +349,12 @@ fn sort_dict_keys_recursive(obj: &PyObjectRef) -> PyObjectRef {
     }
 }
 
-fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Option<&PyObjectRef>) -> PyResult<String> {
+fn py_to_json_pretty(
+    obj: &PyObjectRef,
+    depth: usize,
+    indent: usize,
+    default: Option<&PyObjectRef>,
+) -> PyResult<String> {
     let pad = " ".repeat(indent * (depth + 1));
     let pad_close = " ".repeat(indent * depth);
     match &obj.payload {
@@ -313,35 +362,71 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
         PyObjectPayload::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
         PyObjectPayload::Int(n) => Ok(n.to_string()),
         PyObjectPayload::Float(f) => {
-            if f.is_nan() { return Err(PyException::value_error("NaN is not JSON serializable")); }
-            if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
+            if f.is_nan() {
+                return Err(PyException::value_error("NaN is not JSON serializable"));
+            }
+            if f.is_infinite() {
+                return Err(PyException::value_error(
+                    "Infinity is not JSON serializable",
+                ));
+            }
             Ok(format!("{}", f))
         }
         PyObjectPayload::Str(s) => Ok(json_escape_string(s)),
         PyObjectPayload::List(items) => {
             let r = items.read();
-            if r.is_empty() { return Ok("[]".into()); }
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
-            Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+            if r.is_empty() {
+                return Ok("[]".into());
+            }
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|i| py_to_json_pretty(i, depth + 1, indent, default))
+                .collect();
+            Ok(format!(
+                "[\n{}{}\n{}]",
+                pad,
+                parts?.join(&format!(",\n{}", pad)),
+                pad_close
+            ))
         }
         PyObjectPayload::Tuple(items) => {
-            if items.is_empty() { return Ok("[]".into()); }
-            let parts: Result<Vec<String>, PyException> = items.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
-            Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+            if items.is_empty() {
+                return Ok("[]".into());
+            }
+            let parts: Result<Vec<String>, PyException> = items
+                .iter()
+                .map(|i| py_to_json_pretty(i, depth + 1, indent, default))
+                .collect();
+            Ok(format!(
+                "[\n{}{}\n{}]",
+                pad,
+                parts?.join(&format!(",\n{}", pad)),
+                pad_close
+            ))
         }
         PyObjectPayload::Dict(map) => {
             let r = map.read();
-            if r.is_empty() { return Ok("{}".into()); }
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = match k {
-                    HashableKey::Str(s) => json_escape_string(s),
-                    HashableKey::Int(n) => format!("\"{}\"", n),
-                    _ => return Err(PyException::type_error("keys must be str")),
-                };
-                let val_str = py_to_json_pretty(v, depth + 1, indent, default)?;
-                Ok(format!("{}: {}", key_str, val_str))
-            }).collect();
-            Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+            if r.is_empty() {
+                return Ok("{}".into());
+            }
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|(k, v)| {
+                    let key_str = match k {
+                        HashableKey::Str(s) => json_escape_string(s),
+                        HashableKey::Int(n) => format!("\"{}\"", n),
+                        _ => return Err(PyException::type_error("keys must be str")),
+                    };
+                    let val_str = py_to_json_pretty(v, depth + 1, indent, default)?;
+                    Ok(format!("{}: {}", key_str, val_str))
+                })
+                .collect();
+            Ok(format!(
+                "{{\n{}{}\n{}}}",
+                pad,
+                parts?.join(&format!(",\n{}", pad)),
+                pad_close
+            ))
         }
         PyObjectPayload::Set(map) => {
             if default.is_some() {
@@ -355,13 +440,23 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
         }
         PyObjectPayload::InstanceDict(attrs) => {
             let r = attrs.read();
-            if r.is_empty() { return Ok("{}".into()); }
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = json_escape_string(k);
-                let val_str = py_to_json_pretty(v, depth + 1, indent, default)?;
-                Ok(format!("{}: {}", key_str, val_str))
-            }).collect();
-            Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+            if r.is_empty() {
+                return Ok("{}".into());
+            }
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|(k, v)| {
+                    let key_str = json_escape_string(k);
+                    let val_str = py_to_json_pretty(v, depth + 1, indent, default)?;
+                    Ok(format!("{}: {}", key_str, val_str))
+                })
+                .collect();
+            Ok(format!(
+                "{{\n{}{}\n{}}}",
+                pad,
+                parts?.join(&format!(",\n{}", pad)),
+                pad_close
+            ))
         }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_pretty(o, depth, indent, d)),
     }
@@ -371,47 +466,70 @@ fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
     py_to_json_sep(obj, ", ", ": ", None)
 }
 
-fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Option<&PyObjectRef>) -> PyResult<String> {
+fn py_to_json_sep(
+    obj: &PyObjectRef,
+    item_sep: &str,
+    kv_sep: &str,
+    default: Option<&PyObjectRef>,
+) -> PyResult<String> {
     match &obj.payload {
         PyObjectPayload::None => Ok("null".into()),
         PyObjectPayload::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
         PyObjectPayload::Int(n) => Ok(n.to_string()),
         PyObjectPayload::Float(f) => {
-            if f.is_nan() { return Err(PyException::value_error("NaN is not JSON serializable")); }
-            if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
+            if f.is_nan() {
+                return Err(PyException::value_error("NaN is not JSON serializable"));
+            }
+            if f.is_infinite() {
+                return Err(PyException::value_error(
+                    "Infinity is not JSON serializable",
+                ));
+            }
             Ok(format!("{}", f))
         }
         PyObjectPayload::Str(s) => Ok(json_escape_string(s)),
         PyObjectPayload::List(items) => {
             let r = items.read();
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|i| py_to_json_sep(i, item_sep, kv_sep, default))
+                .collect();
             Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Tuple(items) => {
-            let parts: Result<Vec<String>, PyException> = items.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
+            let parts: Result<Vec<String>, PyException> = items
+                .iter()
+                .map(|i| py_to_json_sep(i, item_sep, kv_sep, default))
+                .collect();
             Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Dict(map) => {
             let r = map.read();
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = match k {
-                    HashableKey::Str(s) => json_escape_string(s),
-                    HashableKey::Int(n) => format!("\"{}\"", n),
-                    _ => return Err(PyException::type_error("keys must be str")),
-                };
-                let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
-                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
-            }).collect();
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|(k, v)| {
+                    let key_str = match k {
+                        HashableKey::Str(s) => json_escape_string(s),
+                        HashableKey::Int(n) => format!("\"{}\"", n),
+                        _ => return Err(PyException::type_error("keys must be str")),
+                    };
+                    let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
+                    Ok(format!("{}{}{}", key_str, kv_sep, val_str))
+                })
+                .collect();
             Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::InstanceDict(attrs) => {
             // InstanceDict is a dict representation — always serialize directly
             let r = attrs.read();
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = json_escape_string(k);
-                let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
-                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
-            }).collect();
+            let parts: Result<Vec<String>, PyException> = r
+                .iter()
+                .map(|(k, v)| {
+                    let key_str = json_escape_string(k);
+                    let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
+                    Ok(format!("{}{}{}", key_str, kv_sep, val_str))
+                })
+                .collect();
             Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::Set(map) => {
@@ -453,7 +571,8 @@ where
     }
 
     Err(PyException::type_error(format!(
-        "Object of type {} is not JSON serializable", obj.type_name()
+        "Object of type {} is not JSON serializable",
+        obj.type_name()
     )))
 }
 
@@ -465,7 +584,9 @@ fn instance_to_dict(obj: &PyObjectRef) -> Option<PyObjectRef> {
         for (k, v) in attrs_r.iter() {
             // Skip dunder attrs and callables
             let ks: &str = k.as_str();
-            if ks.starts_with("__") && ks.ends_with("__") { continue; }
+            if ks.starts_with("__") && ks.ends_with("__") {
+                continue;
+            }
             map.insert(HashableKey::str_key(CompactString::from(ks)), v.clone());
         }
         Some(PyObject::dict(map))
@@ -482,11 +603,18 @@ fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option
         PyObjectPayload::BoundMethod { receiver, method } => {
             // Call method(self, obj) — dispatch based on method type
             match &method.payload {
-                PyObjectPayload::NativeFunction(nf) => Ok(Some((nf.func)(&[receiver.clone(), obj.clone()])?)),
-                PyObjectPayload::NativeClosure(nc) => Ok(Some((nc.func)(&[receiver.clone(), obj.clone()])?)),
+                PyObjectPayload::NativeFunction(nf) => {
+                    Ok(Some((nf.func)(&[receiver.clone(), obj.clone()])?))
+                }
+                PyObjectPayload::NativeClosure(nc) => {
+                    Ok(Some((nc.func)(&[receiver.clone(), obj.clone()])?))
+                }
                 PyObjectPayload::Function(_) => {
                     // Python function — we need the VM. Use request_vm_call.
-                    ferrython_core::error::request_vm_call(method.clone(), vec![receiver.clone(), obj.clone()]);
+                    ferrython_core::error::request_vm_call(
+                        method.clone(),
+                        vec![receiver.clone(), obj.clone()],
+                    );
                     Ok(None) // signal that we need VM callback
                 }
                 _ => Ok(None),
@@ -503,30 +631,48 @@ fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option
 
 fn json_loads(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("json.loads requires a string argument"));
+        return Err(PyException::type_error(
+            "json.loads requires a string argument",
+        ));
     }
     let s = match &args[0].payload {
         PyObjectPayload::Str(s) => s.to_string(),
         PyObjectPayload::Bytes(b) => String::from_utf8_lossy(b).to_string(),
         _ => return Err(PyException::type_error("json.loads requires a string")),
     };
-    
+
     // Extract kwargs if present
     let kwargs = args.last().and_then(|a| {
-        if let PyObjectPayload::Dict(d) = &a.payload { Some(d.read().clone()) } else { None }
+        if let PyObjectPayload::Dict(d) = &a.payload {
+            Some(d.read().clone())
+        } else {
+            None
+        }
     });
-    let object_hook = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::str_key(CompactString::from("object_hook"))).cloned()
-    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
-    let parse_float = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::str_key(CompactString::from("parse_float"))).cloned()
-    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
-    let parse_int = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::str_key(CompactString::from("parse_int"))).cloned()
-    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
-    
+    let object_hook = kwargs
+        .as_ref()
+        .and_then(|kw| {
+            kw.get(&HashableKey::str_key(CompactString::from("object_hook")))
+                .cloned()
+        })
+        .filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+    let parse_float = kwargs
+        .as_ref()
+        .and_then(|kw| {
+            kw.get(&HashableKey::str_key(CompactString::from("parse_float")))
+                .cloned()
+        })
+        .filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+    let parse_int = kwargs
+        .as_ref()
+        .and_then(|kw| {
+            kw.get(&HashableKey::str_key(CompactString::from("parse_int")))
+                .cloned()
+        })
+        .filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+
     let result = parse_json_value(&s, &mut 0)?;
-    
+
     // Apply hooks if provided
     if object_hook.is_some() || parse_float.is_some() || parse_int.is_some() {
         apply_json_hooks(&result, &object_hook, &parse_float, &parse_int)
@@ -560,7 +706,8 @@ fn apply_json_hooks(
         }
         PyObjectPayload::List(items) => {
             let r = items.read();
-            let new_items: Vec<PyObjectRef> = r.iter()
+            let new_items: Vec<PyObjectRef> = r
+                .iter()
                 .map(|item| apply_json_hooks(item, object_hook, parse_float, parse_int))
                 .collect::<PyResult<Vec<_>>>()?;
             Ok(PyObject::list(new_items))
@@ -602,8 +749,12 @@ fn json_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fp = &args[1];
     if let Some(write_fn) = fp.get_attr("write") {
         match &write_fn.payload {
-            PyObjectPayload::NativeFunction(nf) => { (nf.func)(&[fp.clone(), json_str])?; }
-            PyObjectPayload::NativeClosure(nc) => { (nc.func)(&[json_str])?; }
+            PyObjectPayload::NativeFunction(nf) => {
+                (nf.func)(&[fp.clone(), json_str])?;
+            }
+            PyObjectPayload::NativeClosure(nc) => {
+                (nc.func)(&[json_str])?;
+            }
             _ => {} // user-defined write — best-effort
         }
     }
@@ -630,12 +781,16 @@ fn json_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         };
         return parse_json_value(&s, &mut 0);
     }
-    Err(PyException::attribute_error("'fp' object has no attribute 'read'"))
+    Err(PyException::attribute_error(
+        "'fp' object has no attribute 'read'",
+    ))
 }
 
 fn parse_json_value(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     skip_ws(s, pos);
-    if *pos >= s.len() { return Err(PyException::json_decode_error("Unexpected end of JSON")); }
+    if *pos >= s.len() {
+        return Err(PyException::json_decode_error("Unexpected end of JSON"));
+    }
     let ch = s.as_bytes()[*pos] as char;
     match ch {
         '"' => parse_json_string(s, pos),
@@ -648,7 +803,9 @@ fn parse_json_value(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
 }
 
 fn skip_ws(s: &str, pos: &mut usize) {
-    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_whitespace() { *pos += 1; }
+    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_whitespace() {
+        *pos += 1;
+    }
 }
 
 fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
@@ -656,10 +813,15 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     let mut result = String::new();
     while *pos < s.len() {
         let ch = s.as_bytes()[*pos] as char;
-        if ch == '"' { *pos += 1; return Ok(PyObject::str_val(CompactString::from(result))); }
+        if ch == '"' {
+            *pos += 1;
+            return Ok(PyObject::str_val(CompactString::from(result)));
+        }
         if ch == '\\' {
             *pos += 1;
-            if *pos >= s.len() { break; }
+            if *pos >= s.len() {
+                break;
+            }
             let esc = s.as_bytes()[*pos] as char;
             match esc {
                 'n' => result.push('\n'),
@@ -676,13 +838,16 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
                         return Err(PyException::json_decode_error("Incomplete \\uXXXX escape"));
                     }
                     let hex = &s[*pos + 1..*pos + 5];
-                    let cp = u32::from_str_radix(hex, 16).map_err(|_|
-                        PyException::json_decode_error("Invalid \\uXXXX escape"))?;
+                    let cp = u32::from_str_radix(hex, 16)
+                        .map_err(|_| PyException::json_decode_error("Invalid \\uXXXX escape"))?;
                     *pos += 4; // skip 4 hex digits (loop will +1 more)
-                    // Handle UTF-16 surrogate pairs: \uD800-\uDBFF followed by \uDC00-\uDFFF
+                               // Handle UTF-16 surrogate pairs: \uD800-\uDBFF followed by \uDC00-\uDFFF
                     if (0xD800..=0xDBFF).contains(&cp) {
                         // High surrogate — expect \uDCxx low surrogate
-                        if *pos + 6 < s.len() && s.as_bytes()[*pos + 1] == b'\\' && s.as_bytes()[*pos + 2] == b'u' {
+                        if *pos + 6 < s.len()
+                            && s.as_bytes()[*pos + 1] == b'\\'
+                            && s.as_bytes()[*pos + 2] == b'u'
+                        {
                             let lo_hex = &s[*pos + 3..*pos + 7];
                             if let Ok(lo) = u32::from_str_radix(lo_hex, 16) {
                                 if (0xDC00..=0xDFFF).contains(&lo) {
@@ -706,7 +871,10 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
                         result.push(char::REPLACEMENT_CHARACTER);
                     }
                 }
-                _ => { result.push('\\'); result.push(esc); }
+                _ => {
+                    result.push('\\');
+                    result.push(esc);
+                }
             }
         } else {
             result.push(ch);
@@ -717,36 +885,61 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
 }
 
 fn parse_json_bool(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
-    if s[*pos..].starts_with("true") { *pos += 4; return Ok(PyObject::bool_val(true)); }
-    if s[*pos..].starts_with("false") { *pos += 5; return Ok(PyObject::bool_val(false)); }
+    if s[*pos..].starts_with("true") {
+        *pos += 4;
+        return Ok(PyObject::bool_val(true));
+    }
+    if s[*pos..].starts_with("false") {
+        *pos += 5;
+        return Ok(PyObject::bool_val(false));
+    }
     Err(PyException::json_decode_error("Invalid JSON"))
 }
 
 fn parse_json_null(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
-    if s[*pos..].starts_with("null") { *pos += 4; return Ok(PyObject::none()); }
+    if s[*pos..].starts_with("null") {
+        *pos += 4;
+        return Ok(PyObject::none());
+    }
     Err(PyException::json_decode_error("Invalid JSON"))
 }
 
 fn parse_json_number(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     let start = *pos;
     let mut is_float = false;
-    if *pos < s.len() && s.as_bytes()[*pos] == b'-' { *pos += 1; }
-    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+    if *pos < s.len() && s.as_bytes()[*pos] == b'-' {
+        *pos += 1;
+    }
+    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() {
+        *pos += 1;
+    }
     if *pos < s.len() && s.as_bytes()[*pos] == b'.' {
-        is_float = true; *pos += 1;
-        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+        is_float = true;
+        *pos += 1;
+        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
     }
     if *pos < s.len() && (s.as_bytes()[*pos] == b'e' || s.as_bytes()[*pos] == b'E') {
-        is_float = true; *pos += 1;
-        if *pos < s.len() && (s.as_bytes()[*pos] == b'+' || s.as_bytes()[*pos] == b'-') { *pos += 1; }
-        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+        is_float = true;
+        *pos += 1;
+        if *pos < s.len() && (s.as_bytes()[*pos] == b'+' || s.as_bytes()[*pos] == b'-') {
+            *pos += 1;
+        }
+        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
     }
     let num_str = &s[start..*pos];
     if is_float {
-        let f: f64 = num_str.parse().map_err(|_| PyException::json_decode_error("Invalid number"))?;
+        let f: f64 = num_str
+            .parse()
+            .map_err(|_| PyException::json_decode_error("Invalid number"))?;
         Ok(PyObject::float(f))
     } else {
-        let i: i64 = num_str.parse().map_err(|_| PyException::json_decode_error("Invalid number"))?;
+        let i: i64 = num_str
+            .parse()
+            .map_err(|_| PyException::json_decode_error("Invalid number"))?;
         Ok(PyObject::int(i))
     }
 }
@@ -755,13 +948,25 @@ fn parse_json_array(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     *pos += 1; // skip [
     let mut items = Vec::new();
     skip_ws(s, pos);
-    if *pos < s.len() && s.as_bytes()[*pos] == b']' { *pos += 1; return Ok(PyObject::list(items)); }
+    if *pos < s.len() && s.as_bytes()[*pos] == b']' {
+        *pos += 1;
+        return Ok(PyObject::list(items));
+    }
     loop {
         items.push(parse_json_value(s, pos)?);
         skip_ws(s, pos);
-        if *pos >= s.len() { break; }
-        if s.as_bytes()[*pos] == b']' { *pos += 1; return Ok(PyObject::list(items)); }
-        if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
+        if *pos >= s.len() {
+            break;
+        }
+        if s.as_bytes()[*pos] == b']' {
+            *pos += 1;
+            return Ok(PyObject::list(items));
+        }
+        if s.as_bytes()[*pos] == b',' {
+            *pos += 1;
+        } else {
+            break;
+        }
     }
     Err(PyException::json_decode_error("Invalid JSON array"))
 }
@@ -771,23 +976,39 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     let pairs: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
     let dict = PyObject::dict_from_pairs(pairs);
     skip_ws(s, pos);
-    if *pos < s.len() && s.as_bytes()[*pos] == b'}' { *pos += 1; return Ok(dict); }
+    if *pos < s.len() && s.as_bytes()[*pos] == b'}' {
+        *pos += 1;
+        return Ok(dict);
+    }
     loop {
         skip_ws(s, pos);
         let key = parse_json_string(s, pos)?;
         skip_ws(s, pos);
-        if *pos >= s.len() || s.as_bytes()[*pos] != b':' { return Err(PyException::json_decode_error("Expected ':'")); }
+        if *pos >= s.len() || s.as_bytes()[*pos] != b':' {
+            return Err(PyException::json_decode_error("Expected ':'"));
+        }
         *pos += 1;
         let value = parse_json_value(s, pos)?;
         let hk = HashableKey::str_key(CompactString::from(key.py_to_string()));
         match &dict.payload {
-            PyObjectPayload::Dict(map) => { map.write().insert(hk, value); }
+            PyObjectPayload::Dict(map) => {
+                map.write().insert(hk, value);
+            }
             _ => unreachable!(),
         }
         skip_ws(s, pos);
-        if *pos >= s.len() { break; }
-        if s.as_bytes()[*pos] == b'}' { *pos += 1; return Ok(dict); }
-        if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
+        if *pos >= s.len() {
+            break;
+        }
+        if s.as_bytes()[*pos] == b'}' {
+            *pos += 1;
+            return Ok(dict);
+        }
+        if s.as_bytes()[*pos] == b',' {
+            *pos += 1;
+        } else {
+            break;
+        }
     }
     Err(PyException::json_decode_error("Invalid JSON object"))
 }
@@ -795,39 +1016,73 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
 /// json.decoder submodule — exposes JSONDecoder and JSONDecodeError
 pub fn create_json_decoder_module() -> PyObjectRef {
     let mut dec_ns = IndexMap::new();
-    dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
-        if args.is_empty() { return Err(PyException::type_error("JSONDecoder.decode() missing argument")); }
-        let s = args[0].py_to_string();
-        parse_json_value(&s, &mut 0)
-    }));
-    dec_ns.insert(CompactString::from("raw_decode"), PyObject::native_closure("raw_decode", |args| {
-        if args.is_empty() { return Err(PyException::type_error("raw_decode() missing argument")); }
-        let s = args[0].py_to_string();
-        let mut pos = 0;
-        let val = parse_json_value(&s, &mut pos)?;
-        Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
-    }));
+    dec_ns.insert(
+        CompactString::from("decode"),
+        PyObject::native_closure("decode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "JSONDecoder.decode() missing argument",
+                ));
+            }
+            let s = args[0].py_to_string();
+            parse_json_value(&s, &mut 0)
+        }),
+    );
+    dec_ns.insert(
+        CompactString::from("raw_decode"),
+        PyObject::native_closure("raw_decode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("raw_decode() missing argument"));
+            }
+            let s = args[0].py_to_string();
+            let mut pos = 0;
+            let val = parse_json_value(&s, &mut pos)?;
+            Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
+        }),
+    );
     let json_decoder_cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], dec_ns);
-    let json_decode_error = PyObject::class(CompactString::from("JSONDecodeError"), vec![], IndexMap::new());
+    let json_decode_error = PyObject::class(
+        CompactString::from("JSONDecodeError"),
+        vec![],
+        IndexMap::new(),
+    );
 
-    make_module("json.decoder", vec![
-        ("JSONDecoder", json_decoder_cls),
-        ("JSONDecodeError", json_decode_error),
-    ])
+    make_module(
+        "json.decoder",
+        vec![
+            ("JSONDecoder", json_decoder_cls),
+            ("JSONDecodeError", json_decode_error),
+        ],
+    )
 }
 
 /// json.encoder submodule — exposes JSONEncoder
 pub fn create_json_encoder_module() -> PyObjectRef {
     let mut enc_ns = IndexMap::new();
-    enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
-        if args.is_empty() { return Err(PyException::type_error("JSONEncoder.encode() missing argument")); }
-        let s = py_to_json(&args[0])?;
-        Ok(PyObject::str_val(CompactString::from(s)))
-    }));
-    enc_ns.insert(CompactString::from("default"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() { return Ok(PyObject::none()); }
-        Err(PyException::type_error(format!("Object of type {} is not JSON serializable", args[0].type_name())))
-    }));
+    enc_ns.insert(
+        CompactString::from("encode"),
+        PyObject::native_closure("encode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "JSONEncoder.encode() missing argument",
+                ));
+            }
+            let s = py_to_json(&args[0])?;
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }),
+    );
+    enc_ns.insert(
+        CompactString::from("default"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            Err(PyException::type_error(format!(
+                "Object of type {} is not JSON serializable",
+                args[0].type_name()
+            )))
+        }),
+    );
     let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
 
     // ESCAPE_DCT — mapping of control characters to escape sequences
@@ -837,12 +1092,21 @@ pub fn create_json_encoder_module() -> PyObjectRef {
         let val = PyObject::str_val(CompactString::from(format!("\\u{:04x}", i)));
         escape_dct.insert(key, val);
     }
-    escape_dct.insert(HashableKey::str_key(CompactString::from("\\")), PyObject::str_val(CompactString::from("\\\\")));
-    escape_dct.insert(HashableKey::str_key(CompactString::from("\"")), PyObject::str_val(CompactString::from("\\\"")));
+    escape_dct.insert(
+        HashableKey::str_key(CompactString::from("\\")),
+        PyObject::str_val(CompactString::from("\\\\")),
+    );
+    escape_dct.insert(
+        HashableKey::str_key(CompactString::from("\"")),
+        PyObject::str_val(CompactString::from("\\\"")),
+    );
 
-    make_module("json.encoder", vec![
-        ("JSONEncoder", json_encoder_cls),
-        ("ESCAPE_DCT", PyObject::dict(escape_dct)),
-        ("INFINITY", PyObject::float(f64::INFINITY)),
-    ])
+    make_module(
+        "json.encoder",
+        vec![
+            ("JSONEncoder", json_encoder_cls),
+            ("ESCAPE_DCT", PyObject::dict(escape_dct)),
+            ("INFINITY", PyObject::float(f64::INFINITY)),
+        ],
+    )
 }

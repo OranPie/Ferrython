@@ -7,10 +7,10 @@
 //! - Python `traceback` module API (format_exception, extract_tb, etc.)
 //! - Frame info extraction for introspection
 
-mod source_cache;
 mod formatting;
 mod module_api;
+mod source_cache;
 
-pub use source_cache::SourceCache;
-pub use formatting::{format_traceback, resolve_lineno, format_exception_only};
+pub use formatting::{format_exception_only, format_traceback, resolve_lineno};
 pub use module_api::create_traceback_module;
+pub use source_cache::SourceCache;

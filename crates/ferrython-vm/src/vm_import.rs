@@ -13,8 +13,8 @@ use crate::frame::Frame;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, FxAttrMap,
+use ferrython_core::object::{
+    FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
 use std::rc::Rc;
@@ -24,7 +24,11 @@ impl VirtualMachine {
 
     /// Import a single (possibly dotted) module name.
     /// Used by `__import__()` builtin and `importlib.import_module()`.
-    pub(crate) fn import_module_simple(&mut self, name: &str, level: usize) -> PyResult<PyObjectRef> {
+    pub(crate) fn import_module_simple(
+        &mut self,
+        name: &str,
+        level: usize,
+    ) -> PyResult<PyObjectRef> {
         self.ensure_sys_modules();
 
         // For simple (non-dotted) names, fast path
@@ -40,7 +44,9 @@ impl VirtualMachine {
         let mut last_module = None;
 
         for (i, part) in parts.iter().enumerate() {
-            if i > 0 { current_name.push('.'); }
+            if i > 0 {
+                current_name.push('.');
+            }
             current_name.push_str(part);
 
             let module = self.resolve_single_module_with_filename(
@@ -80,9 +86,7 @@ impl VirtualMachine {
                     return Ok(module.clone());
                 }
                 // Otherwise resolve it
-                return self.resolve_single_module_with_filename(
-                    &pkg_name, 0, importer_file,
-                );
+                return self.resolve_single_module_with_filename(&pkg_name, 0, importer_file);
             }
             // Fall through to the relative import resolver
             return self.resolve_single_module_with_filename("", level, importer_file);
@@ -98,13 +102,19 @@ impl VirtualMachine {
         // so "util" becomes "urllib3.util" for caching/naming.
         let fq_prefix = if level > 0 {
             let pkg = self.resolve_package_name(importer_file, level);
-            if pkg.is_empty() { String::new() } else { format!("{}.", pkg) }
+            if pkg.is_empty() {
+                String::new()
+            } else {
+                format!("{}.", pkg)
+            }
         } else {
             String::new()
         };
 
         for (i, part) in parts.iter().enumerate() {
-            if i > 0 { current_name.push('.'); }
+            if i > 0 {
+                current_name.push('.');
+            }
             current_name.push_str(part);
 
             // Build fully-qualified cache name for relative imports
@@ -147,8 +157,12 @@ impl VirtualMachine {
                 // Relative import: bypass bare-name cache, resolve from filesystem
                 let the_level = if i == 0 { level } else { 0 };
                 let resolved_mod = if the_level > 0 {
-                    ferrython_import::resolve_relative_import(&current_name, importer_file, the_level)
-                        .map_err(|e| { e })?
+                    ferrython_import::resolve_relative_import(
+                        &current_name,
+                        importer_file,
+                        the_level,
+                    )
+                    .map_err(|e| e)?
                 } else {
                     // For i > 0 in a dotted relative import (e.g., _backends.sync),
                     // resolve the full dotted path relative to the original base,
@@ -160,9 +174,16 @@ impl VirtualMachine {
                         self.cache_module(&fq_name, &m);
                         m
                     }
-                    ferrython_import::ResolvedModule::Source { code, name: _mod_name, file_path } => {
-                        self.exec_module_source(&fq_name, code, CompactString::from(fq_name.as_str()), file_path)?
-                    }
+                    ferrython_import::ResolvedModule::Source {
+                        code,
+                        name: _mod_name,
+                        file_path,
+                    } => self.exec_module_source(
+                        &fq_name,
+                        code,
+                        CompactString::from(fq_name.as_str()),
+                        file_path,
+                    )?,
                 };
                 module
             };
@@ -172,7 +193,9 @@ impl VirtualMachine {
                 self.attach_submodule(p, part, &module);
             }
 
-            if i == 0 { top_level = Some(module.clone()); }
+            if i == 0 {
+                top_level = Some(module.clone());
+            }
             parent = Some(module);
         }
 
@@ -189,14 +212,16 @@ impl VirtualMachine {
     pub(crate) fn reload_module(&mut self, module: PyObjectRef) -> PyResult<PyObjectRef> {
         let (mod_name, file_path) = if let PyObjectPayload::Module(ref md) = module.payload {
             let attrs = md.attrs.read();
-            let name = attrs.get("__name__")
+            let name = attrs
+                .get("__name__")
                 .map(|v| v.py_to_string())
                 .unwrap_or_else(|| md.name.to_string());
-            let file = attrs.get("__file__")
-                .map(|v| v.py_to_string());
+            let file = attrs.get("__file__").map(|v| v.py_to_string());
             (name, file)
         } else {
-            return Err(PyException::type_error("reload() argument must be a module"));
+            return Err(PyException::type_error(
+                "reload() argument must be a module",
+            ));
         };
 
         let file_str = file_path.unwrap_or_default();
@@ -207,7 +232,8 @@ impl VirtualMachine {
                 return Ok(fresh);
             }
             return Err(PyException::import_error(format!(
-                "module '{}' has no __file__ attribute (cannot reload)", mod_name
+                "module '{}' has no __file__ attribute (cannot reload)",
+                mod_name
             )));
         }
 
@@ -218,7 +244,11 @@ impl VirtualMachine {
                 self.cache_module(&mod_name, &m);
                 Ok(m)
             }
-            ferrython_import::ResolvedModule::Source { code, name: rmod_name, file_path: rfp } => {
+            ferrython_import::ResolvedModule::Source {
+                code,
+                name: rmod_name,
+                file_path: rfp,
+            } => {
                 self.modules.swap_remove(mod_name.as_str());
                 self.exec_module_source(&mod_name, code, rmod_name, rfp)
             }
@@ -254,7 +284,8 @@ impl VirtualMachine {
                 let key = HashableKey::str_key(CompactString::from(name));
                 if let Some(module) = d.read().get(&key).cloned() {
                     if !matches!(&module.payload, PyObjectPayload::None) {
-                        self.modules.insert(CompactString::from(name), module.clone());
+                        self.modules
+                            .insert(CompactString::from(name), module.clone());
                         return Ok(module);
                     }
                 }
@@ -285,9 +316,11 @@ impl VirtualMachine {
                 self.cache_module(name, &m);
                 Ok(m)
             }
-            ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
-                self.exec_module_source(name, code, mod_name, file_path)
-            }
+            ferrython_import::ResolvedModule::Source {
+                code,
+                name: mod_name,
+                file_path,
+            } => self.exec_module_source(name, code, mod_name, file_path),
         }
     }
 
@@ -303,13 +336,20 @@ impl VirtualMachine {
         let globals: SharedGlobals = Rc::new(PyCell::new(FxAttrMap::default()));
         {
             let mut g = globals.write();
-            g.insert(CompactString::from("__name__"), PyObject::str_val(mod_name.clone()));
+            g.insert(
+                CompactString::from("__name__"),
+                PyObject::str_val(mod_name.clone()),
+            );
             if let Some(ref fp) = file_path {
-                g.insert(CompactString::from("__file__"), PyObject::str_val(fp.clone()));
+                g.insert(
+                    CompactString::from("__file__"),
+                    PyObject::str_val(fp.clone()),
+                );
             }
             // __package__: for __init__.py, it's the module name itself;
             // for regular modules (foo.bar), it's the parent package (foo).
-            let is_init = file_path.as_ref()
+            let is_init = file_path
+                .as_ref()
                 .map(|fp| fp.ends_with("__init__.py"))
                 .unwrap_or(false);
             let pkg = if is_init {
@@ -319,7 +359,10 @@ impl VirtualMachine {
             } else {
                 ""
             };
-            g.insert(CompactString::from("__package__"), PyObject::str_val(CompactString::from(pkg)));
+            g.insert(
+                CompactString::from("__package__"),
+                PyObject::str_val(CompactString::from(pkg)),
+            );
             g.insert(CompactString::from("__doc__"), PyObject::none());
 
             // __path__: for packages (__init__.py), set to a list containing the
@@ -330,9 +373,9 @@ impl VirtualMachine {
                     if let Some(pkg_dir) = p.parent() {
                         g.insert(
                             CompactString::from("__path__"),
-                            PyObject::list(vec![PyObject::str_val(
-                                CompactString::from(pkg_dir.to_string_lossy().as_ref()),
-                            )]),
+                            PyObject::list(vec![PyObject::str_val(CompactString::from(
+                                pkg_dir.to_string_lossy().as_ref(),
+                            ))]),
                         );
                     }
                 }
@@ -363,13 +406,17 @@ impl VirtualMachine {
     /// Attach a submodule as an attribute of a parent module.
     fn attach_submodule(&self, parent: &PyObjectRef, name: &str, child: &PyObjectRef) {
         if let PyObjectPayload::Module(ref mod_data) = &parent.payload {
-            mod_data.attrs.write().insert(CompactString::from(name), child.clone());
+            mod_data
+                .attrs
+                .write()
+                .insert(CompactString::from(name), child.clone());
         }
     }
 
     /// Get the current frame's filename (for import resolution).
     fn current_filename(&self) -> String {
-        self.call_stack.last()
+        self.call_stack
+            .last()
             .map(|f| f.code.filename.as_str().to_string())
             .unwrap_or_default()
     }
@@ -397,7 +444,10 @@ impl VirtualMachine {
         }
         // Fallback: derive from file path
         let path = std::path::Path::new(importer_file);
-        let is_init = path.file_name().map(|f| f == "__init__.py").unwrap_or(false);
+        let is_init = path
+            .file_name()
+            .map(|f| f == "__init__.py")
+            .unwrap_or(false);
         let mut base = if is_init {
             path.parent().unwrap_or(path)
         } else {
@@ -408,7 +458,10 @@ impl VirtualMachine {
             base = base.parent().unwrap_or(base);
         }
         // Try to find the package name from the cached modules
-        let dir_name = base.file_name().map(|f| f.to_str().unwrap_or("")).unwrap_or("");
+        let dir_name = base
+            .file_name()
+            .map(|f| f.to_str().unwrap_or(""))
+            .unwrap_or("");
         if self.modules.contains_key(dir_name) {
             return dir_name.to_string();
         }
@@ -419,7 +472,8 @@ impl VirtualMachine {
 
     /// Cache a module in both VM.modules and sys.modules dict.
     pub(crate) fn cache_module(&mut self, name: &str, module: &PyObjectRef) {
-        self.modules.insert(CompactString::from(name), module.clone());
+        self.modules
+            .insert(CompactString::from(name), module.clone());
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
                 d.write().insert(
@@ -457,7 +511,9 @@ impl VirtualMachine {
     /// Initialize sys.modules reference from the sys module.
     /// Called lazily on first import to avoid circular initialization.
     pub(crate) fn ensure_sys_modules(&mut self) {
-        if self.sys_modules_dict.is_some() { return; }
+        if self.sys_modules_dict.is_some() {
+            return;
+        }
         let sys_mod = if let Some(m) = self.modules.get("sys") {
             m.clone()
         } else if let Some(m) = ferrython_stdlib::load_module("sys") {
@@ -471,10 +527,8 @@ impl VirtualMachine {
                 self.sys_modules_dict = Some(modules_dict.clone());
                 if let PyObjectPayload::Dict(ref d) = modules_dict.payload {
                     for (name, module) in &self.modules {
-                        d.write().insert(
-                            HashableKey::str_key(name.clone()),
-                            module.clone(),
-                        );
+                        d.write()
+                            .insert(HashableKey::str_key(name.clone()), module.clone());
                     }
                 }
             }
@@ -485,6 +539,56 @@ impl VirtualMachine {
     /// These need to be real Python functions so they can call self.__getitem__ etc.
     fn inject_collections_abc_mixins(&mut self, module: &PyObjectRef) {
         let code = r#"
+class _HashableMixin:
+    def __hash__(self):
+        return 0
+
+class _IterableMixin:
+    def __iter__(self):
+        return iter(())
+
+class _IteratorMixin(_IterableMixin):
+    def __iter__(self):
+        return self
+
+class _GeneratorMixin(_IteratorMixin):
+    def __next__(self):
+        return self.send(None)
+    def close(self):
+        try:
+            self.throw(GeneratorExit)
+        except (GeneratorExit, StopIteration):
+            return None
+        raise RuntimeError('generator ignored GeneratorExit')
+
+class _AwaitableMixin:
+    def __await__(self):
+        if False:
+            yield None
+        return self
+
+class _CoroutineMixin(_AwaitableMixin):
+    def close(self):
+        try:
+            self.throw(GeneratorExit)
+        except (GeneratorExit, StopIteration):
+            return None
+        raise RuntimeError('coroutine ignored GeneratorExit')
+
+class _AsyncIteratorMixin:
+    def __aiter__(self):
+        return self
+
+class _AsyncGeneratorMixin(_AsyncIteratorMixin):
+    async def __anext__(self):
+        return await self.asend(None)
+    async def aclose(self):
+        try:
+            await self.athrow(GeneratorExit)
+        except (GeneratorExit, StopAsyncIteration):
+            return None
+        raise RuntimeError('async generator ignored GeneratorExit')
+
 class _MappingMixin:
     def get(self, key, default=None):
         try:
@@ -570,6 +674,186 @@ class _MutableMappingMixin(_MappingMixin):
         value = self[key]
         del self[key]
         return key, value
+
+class _SequenceMixin:
+    def __iter__(self):
+        i = 0
+        while True:
+            try:
+                value = self[i]
+            except IndexError:
+                return
+            yield value
+            i += 1
+    def __contains__(self, value):
+        for item in self:
+            if item is value or item == value:
+                return True
+        return False
+    def __reversed__(self):
+        i = len(self) - 1
+        while i >= 0:
+            yield self[i]
+            i -= 1
+    def index(self, value, start=0, stop=None):
+        n = len(self)
+        if stop is None:
+            stop = n
+        if start < 0:
+            start += n
+        if stop < 0:
+            stop += n
+        if start < 0:
+            start = 0
+        if stop > n:
+            stop = n
+        i = start
+        while i < stop:
+            item = self[i]
+            if item is value or item == value:
+                return i
+            i += 1
+        raise ValueError
+    def count(self, value):
+        total = 0
+        for item in self:
+            if item is value or item == value:
+                total += 1
+        return total
+
+class _MutableSequenceMixin(_SequenceMixin):
+    def append(self, value):
+        self.insert(len(self), value)
+    def clear(self):
+        while len(self):
+            self.pop()
+    def extend(self, values):
+        for value in tuple(values):
+            self.append(value)
+    def reverse(self):
+        values = list(self)
+        values.reverse()
+        for i, value in enumerate(values):
+            self[i] = value
+    def pop(self, index=-1):
+        value = self[index]
+        del self[index]
+        return value
+    def remove(self, value):
+        del self[self.index(value)]
+    def __iadd__(self, values):
+        self.extend(values)
+        return self
+
+class _SetMixin:
+    @classmethod
+    def _from_iterable(cls, values):
+        return cls(values)
+    def __le__(self, other):
+        if not isinstance(other, Set):
+            return NotImplemented
+        for value in self:
+            if value not in other:
+                return False
+        return True
+    def __lt__(self, other):
+        if not isinstance(other, Set):
+            return NotImplemented
+        return len(self) < len(other) and self <= other
+    def __ge__(self, other):
+        if not isinstance(other, Set):
+            return NotImplemented
+        return other <= self
+    def __gt__(self, other):
+        if not isinstance(other, Set):
+            return NotImplemented
+        return other < self
+    def __eq__(self, other):
+        if not isinstance(other, Set):
+            return False
+        return len(self) == len(other) and self <= other
+    def __ne__(self, other):
+        return not self == other
+    def __and__(self, other):
+        if not isinstance(other, Iterable):
+            return NotImplemented
+        result = []
+        for value in self:
+            if value in other:
+                result.append(value)
+        return self._from_iterable(result)
+    def __or__(self, other):
+        if not isinstance(other, Iterable):
+            return NotImplemented
+        result = list(self)
+        for value in other:
+            if value not in self:
+                result.append(value)
+        return self._from_iterable(result)
+    def __sub__(self, other):
+        if not isinstance(other, Iterable):
+            return NotImplemented
+        other_values = tuple(other)
+        result = []
+        for value in self:
+            if value not in other_values:
+                result.append(value)
+        return self._from_iterable(result)
+    def __xor__(self, other):
+        if not isinstance(other, Iterable):
+            return NotImplemented
+        other_values = tuple(other)
+        result = []
+        for value in self:
+            if value not in other_values:
+                result.append(value)
+        for value in other_values:
+            if value not in self:
+                result.append(value)
+        return self._from_iterable(result)
+    def isdisjoint(self, other):
+        for value in other:
+            if value in self:
+                return False
+        return True
+    def _hash(self):
+        return hash(frozenset(self))
+
+class _MutableSetMixin(_SetMixin):
+    def pop(self):
+        for value in self:
+            self.discard(value)
+            return value
+        raise KeyError('pop from an empty set')
+    def clear(self):
+        for value in tuple(self):
+            self.discard(value)
+    def remove(self, value):
+        if value not in self:
+            raise KeyError(value)
+        self.discard(value)
+    def __ior__(self, other):
+        for value in other:
+            self.add(value)
+        return self
+    def __iand__(self, other):
+        other_values = tuple(other)
+        for value in tuple(self):
+            if value not in other_values:
+                self.discard(value)
+        return self
+    def __isub__(self, other):
+        for value in tuple(other):
+            if value in self:
+                self.discard(value)
+        return self
+    def __ixor__(self, other):
+        for value in tuple(other):
+            if value in self:
+                self.discard(value)
+            else:
+                self.add(value)
+        return self
 "#;
 
         // Compile and execute the mixin code
@@ -589,8 +873,14 @@ class _MutableMappingMixin(_MappingMixin):
             if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
                 g.insert(CompactString::from("__builtins__"), builtins_mod);
             }
+            if let PyObjectPayload::Module(mod_data) = &module.payload {
+                for (name, value) in mod_data.attrs.read().iter() {
+                    g.insert(name.clone(), value.clone());
+                }
+            }
         }
-        let frame = crate::frame::Frame::new(Rc::new(code_obj), globals.clone(), self.builtins.clone());
+        let frame =
+            crate::frame::Frame::new(Rc::new(code_obj), globals.clone(), self.builtins.clone());
         self.call_stack.push(frame);
         let _ = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
@@ -598,49 +888,42 @@ class _MutableMappingMixin(_MappingMixin):
         }
 
         let g = globals.read();
-        let mapping_mixin = g.get("_MappingMixin").cloned();
-        let mutable_mapping_mixin = g.get("_MutableMappingMixin").cloned();
+        let mixins: Vec<(Option<PyObjectRef>, &str)> = vec![
+            (g.get("_HashableMixin").cloned(), "Hashable"),
+            (g.get("_IterableMixin").cloned(), "Iterable"),
+            (g.get("_IteratorMixin").cloned(), "Iterator"),
+            (g.get("_GeneratorMixin").cloned(), "Generator"),
+            (g.get("_AwaitableMixin").cloned(), "Awaitable"),
+            (g.get("_CoroutineMixin").cloned(), "Coroutine"),
+            (g.get("_AsyncIteratorMixin").cloned(), "AsyncIterator"),
+            (g.get("_AsyncGeneratorMixin").cloned(), "AsyncGenerator"),
+            (g.get("_MappingMixin").cloned(), "Mapping"),
+            (g.get("_MutableMappingMixin").cloned(), "MutableMapping"),
+            (g.get("_SequenceMixin").cloned(), "Sequence"),
+            (g.get("_MutableSequenceMixin").cloned(), "MutableSequence"),
+            (g.get("_SetMixin").cloned(), "Set"),
+            (g.get("_MutableSetMixin").cloned(), "MutableSet"),
+        ];
         drop(g);
 
-        // Inject mixin methods into Mapping class
-        if let (Some(mixin), Some(mapping)) = (&mapping_mixin, module.get_attr("Mapping")) {
-            if let (PyObjectPayload::Class(mixin_cd), PyObjectPayload::Class(target_cd)) = (&mixin.payload, &mapping.payload) {
+        for (mixin, target_name) in mixins {
+            let Some(mixin) = mixin else {
+                continue;
+            };
+            let Some(target) = module.get_attr(target_name) else {
+                continue;
+            };
+            if let (PyObjectPayload::Class(mixin_cd), PyObjectPayload::Class(target_cd)) =
+                (&mixin.payload, &target.payload)
+            {
                 let mixin_ns = mixin_cd.namespace.read();
                 let mut target_ns = target_cd.namespace.write();
                 for (k, v) in mixin_ns.iter() {
-                    if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
+                    if !matches!(
+                        k.as_str(),
+                        "__module__" | "__dict__" | "__weakref__" | "__doc__"
+                    ) {
                         target_ns.insert(k.clone(), v.clone());
-                    }
-                }
-                target_cd.invalidate_cache();
-            }
-        }
-
-        // Inject mixin methods into MutableMapping class
-        // MutableMapping gets both Mapping mixin methods AND its own
-        if let Some(mm) = module.get_attr("MutableMapping") {
-            if let PyObjectPayload::Class(target_cd) = &mm.payload {
-                let mut target_ns = target_cd.namespace.write();
-                // First inject Mapping mixin methods
-                if let Some(ref mixin) = mapping_mixin {
-                    if let PyObjectPayload::Class(mixin_cd) = &mixin.payload {
-                        let mixin_ns = mixin_cd.namespace.read();
-                        for (k, v) in mixin_ns.iter() {
-                            if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
-                                target_ns.insert(k.clone(), v.clone());
-                            }
-                        }
-                    }
-                }
-                // Then inject MutableMapping-specific methods (overrides if any)
-                if let Some(ref mixin) = mutable_mapping_mixin {
-                    if let PyObjectPayload::Class(mixin_cd) = &mixin.payload {
-                        let mixin_ns = mixin_cd.namespace.read();
-                        for (k, v) in mixin_ns.iter() {
-                            if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
-                                target_ns.insert(k.clone(), v.clone());
-                            }
-                        }
                     }
                 }
                 target_cd.invalidate_cache();

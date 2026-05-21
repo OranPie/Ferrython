@@ -80,9 +80,7 @@ pub trait Visitor {
                 }
                 self.visit_expression(value);
             }
-            StatementKind::AugAssign {
-                target, value, ..
-            } => {
+            StatementKind::AugAssign { target, value, .. } => {
                 self.visit_expression(target);
                 self.visit_expression(value);
             }
@@ -114,11 +112,7 @@ pub trait Visitor {
                     self.visit_statement(s);
                 }
             }
-            StatementKind::While {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::While { test, body, orelse } => {
                 self.visit_expression(test);
                 for s in body {
                     self.visit_statement(s);
@@ -127,11 +121,7 @@ pub trait Visitor {
                     self.visit_statement(s);
                 }
             }
-            StatementKind::If {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::If { test, body, orelse } => {
                 self.visit_expression(test);
                 for s in body {
                     self.visit_statement(s);
@@ -238,11 +228,7 @@ pub trait Visitor {
                 self.visit_arguments(args);
                 self.visit_expression(body);
             }
-            ExpressionKind::IfExp {
-                test,
-                body,
-                orelse,
-            } => {
+            ExpressionKind::IfExp { test, body, orelse } => {
                 self.visit_expression(test);
                 self.visit_expression(body);
                 self.visit_expression(orelse);
@@ -329,11 +315,7 @@ pub trait Visitor {
             ExpressionKind::Attribute { value, .. } | ExpressionKind::Subscript { value, .. } => {
                 self.visit_expression(value);
             }
-            ExpressionKind::Slice {
-                lower,
-                upper,
-                step,
-            } => {
+            ExpressionKind::Slice { lower, upper, step } => {
                 if let Some(l) = lower {
                     self.visit_expression(l);
                 }

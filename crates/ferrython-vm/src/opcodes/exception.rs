@@ -10,15 +10,22 @@ use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
 impl VirtualMachine {
-    pub(crate) fn exec_exception_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_exception_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::SetupFinally => {
-                self.vm_frame().push_block(BlockKind::Finally, instr.arg as usize);
+                self.vm_frame()
+                    .push_block(BlockKind::Finally, instr.arg as usize);
             }
             Opcode::SetupExcept => {
-                self.vm_frame().push_block(BlockKind::Except, instr.arg as usize);
+                self.vm_frame()
+                    .push_block(BlockKind::Except, instr.arg as usize);
             }
-            Opcode::PopBlock => { self.vm_frame().pop_block(); }
+            Opcode::PopBlock => {
+                self.vm_frame().pop_block();
+            }
             Opcode::PopExcept => {
                 self.vm_frame().pop_block();
                 self.active_exception = None;
@@ -47,18 +54,20 @@ impl VirtualMachine {
                     // Push the generator itself — WithCleanupStart will resume/close it
                     self.vm_push(ctx_mgr.clone());
                 } else {
-                    let exit_raw = ctx_mgr.get_attr("__aexit__").ok_or_else(||
-                        PyException::attribute_error("__aexit__"))?;
-                    let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                        exit_raw
-                    } else {
-                        PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: ctx_mgr.clone(),
-                                method: exit_raw,
-                            }
-                        })
-                    };
+                    let exit_raw = ctx_mgr
+                        .get_attr("__aexit__")
+                        .ok_or_else(|| PyException::attribute_error("__aexit__"))?;
+                    let exit_method =
+                        if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                            exit_raw
+                        } else {
+                            PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: ctx_mgr.clone(),
+                                    method: exit_raw,
+                                },
+                            })
+                        };
                     self.vm_push(exit_method);
                 }
                 let frame = self.vm_frame();
@@ -74,10 +83,15 @@ impl VirtualMachine {
                     let stack = &self.vm_frame().stack;
                     if stack.len() >= 2 {
                         let exit_fn_ref = &stack[stack.len() - 2];
-                        if let PyObjectPayload::BoundMethod { receiver, .. } = &exit_fn_ref.payload {
+                        if let PyObjectPayload::BoundMethod { receiver, .. } = &exit_fn_ref.payload
+                        {
                             receiver.get_attr("__closing_thing__")
-                        } else { None }
-                    } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 };
                 if matches!(tos.payload, PyObjectPayload::None) {
                     // Normal exit (no exception)
@@ -101,17 +115,19 @@ impl VirtualMachine {
                     } else if let PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload {
                         match self.resume_generator(gen_arc, PyObject::none()) {
                             Ok(_) => {}
-                            Err(e) if e.kind == ExceptionKind::StopIteration
-                                   || e.kind == ExceptionKind::StopAsyncIteration => {}
+                            Err(e)
+                                if e.kind == ExceptionKind::StopIteration
+                                    || e.kind == ExceptionKind::StopAsyncIteration => {}
                             Err(e) => return Err(e),
                         }
                         let f = self.vm_frame();
                         f.push(PyObject::none());
                         f.push(PyObject::none());
                     } else {
-                        let result = self.call_object(exit_fn, vec![
-                            PyObject::none(), PyObject::none(), PyObject::none()
-                        ])?;
+                        let result = self.call_object(
+                            exit_fn,
+                            vec![PyObject::none(), PyObject::none(), PyObject::none()],
+                        )?;
                         // Call close() on closing thing if present
                         if let Some(thing) = &closing_thing {
                             self.call_close_on(thing)?;
@@ -123,11 +139,20 @@ impl VirtualMachine {
                         f.push(result);
                     }
                 } else if matches!(tos.payload, PyObjectPayload::ExceptionType(_))
-                       || matches!(tos.payload, PyObjectPayload::Class(_)) {
+                    || matches!(tos.payload, PyObjectPayload::Class(_))
+                {
                     // Exception exit: stack has [exit_fn, tb, value, type]
                     let exc_type = self.vm_pop();
-                    let exc_val = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
-                    let exc_tb = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
+                    let exc_val = if !self.vm_frame().stack.is_empty() {
+                        self.vm_pop()
+                    } else {
+                        PyObject::none()
+                    };
+                    let exc_tb = if !self.vm_frame().stack.is_empty() {
+                        self.vm_pop()
+                    } else {
+                        PyObject::none()
+                    };
                     let exit_fn = self.vm_pop();
 
                     // Restore redirected streams before calling __exit__
@@ -135,7 +160,9 @@ impl VirtualMachine {
                         self.restore_redirect(receiver);
                     }
 
-                    if let PyObjectPayload::Generator(gen_arc) | PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload {
+                    if let PyObjectPayload::Generator(gen_arc)
+                    | PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload
+                    {
                         // Throw exception into generator so its except clauses can catch it
                         let exc_kind = match &exc_type.payload {
                             PyObjectPayload::ExceptionType(k) => *k,
@@ -147,10 +174,18 @@ impl VirtualMachine {
                             _ => CompactString::from(exc_val.py_to_string()),
                         };
                         let gen_arc_clone = gen_arc.clone();
-                        let throw_result = self.gen_throw(&gen_arc_clone, exc_kind, exc_msg.clone());
+                        let throw_result =
+                            self.gen_throw(&gen_arc_clone, exc_kind, exc_msg.clone());
                         match throw_result {
-                            Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. })
-                                  | Err(PyException { kind: ExceptionKind::StopAsyncIteration, .. }) => {
+                            Ok(_)
+                            | Err(PyException {
+                                kind: ExceptionKind::StopIteration,
+                                ..
+                            })
+                            | Err(PyException {
+                                kind: ExceptionKind::StopAsyncIteration,
+                                ..
+                            }) => {
                                 // Generator handled exception (suppressed)
                                 let f = self.vm_frame();
                                 f.push(PyObject::none());
@@ -168,9 +203,10 @@ impl VirtualMachine {
                             }
                         }
                     } else {
-                        let result = self.call_object(exit_fn, vec![
-                            exc_type.clone(), exc_val.clone(), exc_tb.clone()
-                        ])?;
+                        let result = self.call_object(
+                            exit_fn,
+                            vec![exc_type.clone(), exc_val.clone(), exc_tb.clone()],
+                        )?;
                         // Call close() on closing thing if present
                         if let Some(thing) = &closing_thing {
                             let _ = self.call_close_on(thing);
@@ -197,9 +233,10 @@ impl VirtualMachine {
                         f.push(PyObject::none());
                         f.push(PyObject::none());
                     } else {
-                        let result = self.call_object(exit_fn, vec![
-                            PyObject::none(), PyObject::none(), PyObject::none()
-                        ])?;
+                        let result = self.call_object(
+                            exit_fn,
+                            vec![PyObject::none(), PyObject::none(), PyObject::none()],
+                        )?;
                         // Call close() on closing thing if present
                         if let Some(thing) = &closing_thing {
                             let _ = self.call_close_on(thing);
@@ -215,7 +252,8 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let exit_result = frame.pop();
                 let exc_or_none = frame.pop();
-                if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy() {
+                if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy()
+                {
                     // Exception was suppressed: clean up exception info (value, tb)
                     frame.pop(); // value
                     frame.pop(); // tb
@@ -260,16 +298,24 @@ impl VirtualMachine {
                     PyObjectPayload::ExceptionType(kind) => {
                         let kind = *kind;
                         frame.pop();
-                        let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
-                        if !frame.stack.is_empty() { frame.pop(); }
+                        let value = if !frame.stack.is_empty() {
+                            frame.pop()
+                        } else {
+                            PyObject::none()
+                        };
+                        if !frame.stack.is_empty() {
+                            frame.pop();
+                        }
                         let msg = match &value.payload {
                             PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
                             _ => CompactString::from(value.py_to_string()),
                         };
                         // Preserve original value for identity-based checks
                         // (e.g. contextlib's `exc is not value`)
-                        if matches!(value.payload, PyObjectPayload::ExceptionInstance(_)
-                            | PyObjectPayload::Instance(_)) {
+                        if matches!(
+                            value.payload,
+                            PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::Instance(_)
+                        ) {
                             return Err(PyException::with_original(kind, msg, value));
                         }
                         return Err(PyException::new(kind, msg));
@@ -278,8 +324,14 @@ impl VirtualMachine {
                         // User-defined exception class on stack — re-raise
                         let cls = frame.pop();
                         let kind = Self::find_exception_kind(&cls);
-                        let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
-                        if !frame.stack.is_empty() { frame.pop(); }
+                        let value = if !frame.stack.is_empty() {
+                            frame.pop()
+                        } else {
+                            PyObject::none()
+                        };
+                        if !frame.stack.is_empty() {
+                            frame.pop();
+                        }
                         let msg = match &value.payload {
                             PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
                             PyObjectPayload::Instance(_) => {
@@ -293,7 +345,9 @@ impl VirtualMachine {
                         };
                         return Err(PyException::with_original(kind, msg, value));
                     }
-                    PyObjectPayload::None => { frame.pop(); }
+                    PyObjectPayload::None => {
+                        frame.pop();
+                    }
                     _ => {}
                 }
             }
@@ -308,9 +362,7 @@ impl VirtualMachine {
                 PyObjectPayload::ExceptionInstance(ei) => {
                     PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
                 }
-                PyObjectPayload::ExceptionType(kind) => {
-                    PyException::new(*kind, "")
-                }
+                PyObjectPayload::ExceptionType(kind) => PyException::new(*kind, ""),
                 PyObjectPayload::Instance(inst) => {
                     let kind = Self::find_exception_kind(&inst.class);
                     // Derive message from args (CPython: str(exc) uses args)
@@ -344,13 +396,19 @@ impl VirtualMachine {
                 if let Some(exc) = self.active_exception.clone() {
                     return Err(exc);
                 }
-                return Err(PyException::runtime_error("No active exception to re-raise"));
+                return Err(PyException::runtime_error(
+                    "No active exception to re-raise",
+                ));
             }
             1 => {
                 let exc = frame.pop();
                 // If raising a user-defined exception class, auto-instantiate to preserve class identity
                 if let PyObjectPayload::Class(cd) = &exc.payload {
-                    let is_builtin_exc = cd.namespace.read().get("__builtin_exception_kind__").is_some();
+                    let is_builtin_exc = cd
+                        .namespace
+                        .read()
+                        .get("__builtin_exception_kind__")
+                        .is_some();
                     if !is_builtin_exc {
                         let inst = self.instantiate_class(&exc, vec![], vec![])?;
                         let kind = Self::find_exception_kind(&exc);
@@ -372,7 +430,10 @@ impl VirtualMachine {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             let mut w = ei.ensure_attrs().write();
                             w.insert(intern_or_new("__cause__"), PyObject::none());
-                            w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
+                            w.insert(
+                                intern_or_new("__suppress_context__"),
+                                PyObject::bool_val(true),
+                            );
                         }
                     }
                 } else {
@@ -382,7 +443,10 @@ impl VirtualMachine {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             let mut w = ei.ensure_attrs().write();
                             w.insert(intern_or_new("__cause__"), cause.clone());
-                            w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
+                            w.insert(
+                                intern_or_new("__suppress_context__"),
+                                PyObject::bool_val(true),
+                            );
                         }
                     }
                     py_exc.cause = Some(Box::new(cause_exc));
@@ -394,7 +458,9 @@ impl VirtualMachine {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             // Store __context__ as the active exception's original object
                             if let Some(ref ctx_orig) = active.original {
-                                ei.ensure_attrs().write().insert(intern_or_new("__context__"), ctx_orig.clone());
+                                ei.ensure_attrs()
+                                    .write()
+                                    .insert(intern_or_new("__context__"), ctx_orig.clone());
                             }
                         }
                     }
@@ -418,8 +484,9 @@ impl VirtualMachine {
             frame.push_block(BlockKind::With, arg as usize);
             frame.push(enter_result);
         } else {
-            let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
-                PyException::attribute_error("__exit__"))?;
+            let exit_raw = ctx_mgr
+                .get_attr("__exit__")
+                .ok_or_else(|| PyException::attribute_error("__exit__"))?;
             // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
             let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                 exit_raw
@@ -428,46 +495,60 @@ impl VirtualMachine {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: ctx_mgr.clone(),
                         method: exit_raw,
-                    }
+                    },
                 })
             };
             self.vm_push(exit_method);
-            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                PyException::attribute_error("__enter__"))?;
-            let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                (enter_raw, vec![])
-            } else {
-                let bound = PyObjectRef::new(PyObject {
-                    payload: PyObjectPayload::BoundMethod {
-                        receiver: ctx_mgr.clone(),
-                        method: enter_raw,
-                    }
-                });
-                (bound, vec![])
-            };
+            let enter_raw = ctx_mgr
+                .get_attr("__enter__")
+                .ok_or_else(|| PyException::attribute_error("__enter__"))?;
+            let (enter_method, enter_args) =
+                if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                    (enter_raw, vec![])
+                } else {
+                    let bound = PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: ctx_mgr.clone(),
+                            method: enter_raw,
+                        },
+                    });
+                    (bound, vec![])
+                };
             let enter_result = self.call_object(enter_method, enter_args)?;
 
             // Handle redirect_stdout/redirect_stderr: swap sys.stdout/stderr
             if let PyObjectPayload::Instance(ref inst) = ctx_mgr.payload {
                 let is_redirect_stdout = inst.attrs.read().contains_key("__redirect_stdout__");
                 let is_redirect_stderr = inst.attrs.read().contains_key("__redirect_stderr__");
-                let stream_name = if is_redirect_stdout { Some("stdout") }
-                    else if is_redirect_stderr { Some("stderr") }
-                    else { None };
+                let stream_name = if is_redirect_stdout {
+                    Some("stdout")
+                } else if is_redirect_stderr {
+                    Some("stderr")
+                } else {
+                    None
+                };
                 if let Some(sname) = stream_name {
                     // Save old stream
-                    let old_stream = self.modules.get("sys")
+                    let old_stream = self
+                        .modules
+                        .get("sys")
                         .and_then(|s| s.get_attr(sname))
                         .unwrap_or_else(PyObject::none);
-                    inst.attrs.write().insert(
-                        CompactString::from("_old_target"), old_stream);
+                    inst.attrs
+                        .write()
+                        .insert(CompactString::from("_old_target"), old_stream);
                     // Set new stream
-                    let new_target = inst.attrs.read().get("_new_target").cloned()
+                    let new_target = inst
+                        .attrs
+                        .read()
+                        .get("_new_target")
+                        .cloned()
                         .unwrap_or_else(PyObject::none);
                     if let Some(sys_mod) = self.modules.get("sys") {
                         if let PyObjectPayload::Module(md) = &sys_mod.payload {
-                            md.attrs.write().insert(
-                                CompactString::from(sname), new_target);
+                            md.attrs
+                                .write()
+                                .insert(CompactString::from(sname), new_target);
                         }
                     }
                 }
@@ -486,16 +567,21 @@ impl VirtualMachine {
             let attrs = inst.attrs.read();
             let is_stdout = attrs.contains_key("__redirect_stdout__");
             let is_stderr = attrs.contains_key("__redirect_stderr__");
-            let stream_name = if is_stdout { Some("stdout") }
-                else if is_stderr { Some("stderr") }
-                else { None };
+            let stream_name = if is_stdout {
+                Some("stdout")
+            } else if is_stderr {
+                Some("stderr")
+            } else {
+                None
+            };
             if let Some(sname) = stream_name {
                 if let Some(old_target) = attrs.get("_old_target").cloned() {
                     drop(attrs);
                     if let Some(sys_mod) = self.modules.get("sys") {
                         if let PyObjectPayload::Module(md) = &sys_mod.payload {
-                            md.attrs.write().insert(
-                                CompactString::from(sname), old_target);
+                            md.attrs
+                                .write()
+                                .insert(CompactString::from(sname), old_target);
                         }
                     }
                 }

@@ -1,87 +1,229 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
-    make_module, make_builtin, PyCell,
+    make_builtin, make_module, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+const MAX_EAGER_ITERTOOLS_RESULTS: usize = 1_000_000;
+
+/// When a `make_builtin` function is called with keyword arguments, the VM appends them
+/// as a trailing `dict`. This helper splits positional args from that optional kwargs dict.
+/// Returns `(positional_slice, kwarg_lookup_fn)`.
+/// The `kwarg_lookup_fn` returns the value for a given key name, or `None`.
+fn split_kwargs(args: &[PyObjectRef]) -> (&[PyObjectRef], Option<IndexMap<String, PyObjectRef>>) {
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(ref d) = last.payload {
+            let map = d.read();
+            // Only treat as kwargs if all keys are short strings (not arbitrary user data)
+            let all_str = map.keys().all(|k| matches!(k, HashableKey::Str(_)));
+            if all_str {
+                let kw: IndexMap<String, PyObjectRef> = map
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        if let HashableKey::Str(s) = k {
+                            Some((s.to_string(), v.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                return (&args[..args.len() - 1], Some(kw));
+            }
+        }
+    }
+    (args, None)
+}
+
 pub fn create_itertools_module() -> PyObjectRef {
     // chain is a callable object with a from_iterable class method attribute
-    let chain_class = PyObject::class(
-        CompactString::from("chain"),
-        vec![],
-        IndexMap::new(),
-    );
+    let chain_class = PyObject::class(CompactString::from("chain"), vec![], IndexMap::new());
     let chain_inst = PyObject::instance(chain_class);
     if let PyObjectPayload::Instance(ref d) = chain_inst.payload {
         let mut attrs = d.attrs.write();
-        attrs.insert(CompactString::from("__call__"), make_builtin(itertools_chain));
-        attrs.insert(CompactString::from("from_iterable"), make_builtin(itertools_chain_from_iterable));
-        attrs.insert(CompactString::from("__itertools_chain__"), PyObject::bool_val(true));
+        attrs.insert(
+            CompactString::from("__call__"),
+            make_builtin(itertools_chain),
+        );
+        attrs.insert(
+            CompactString::from("from_iterable"),
+            make_builtin(itertools_chain_from_iterable),
+        );
+        attrs.insert(
+            CompactString::from("__itertools_chain__"),
+            PyObject::bool_val(true),
+        );
     }
 
-    make_module("itertools", vec![
-        ("count", make_builtin(itertools_count)),
-        ("chain", chain_inst),
-        ("repeat", make_builtin(itertools_repeat)),
-        ("cycle", make_builtin(itertools_cycle)),
-        ("islice", PyObject::native_function("itertools.islice", itertools_islice)),
-        ("zip_longest", make_builtin(itertools_zip_longest)),
-        ("product", make_builtin(itertools_product)),
-        ("accumulate", PyObject::native_function("itertools.accumulate", itertools_accumulate)),
-        ("dropwhile", make_builtin(itertools_dropwhile)),
-        ("takewhile", make_builtin(itertools_takewhile)),
-        ("combinations", make_builtin(itertools_combinations)),
-        ("combinations_with_replacement", make_builtin(itertools_combinations_with_replacement)),
-        ("permutations", make_builtin(itertools_permutations)),
-        ("groupby", PyObject::native_function("itertools.groupby", itertools_groupby)),
-        ("filterfalse", PyObject::native_function("itertools.filterfalse", itertools_filterfalse)),
-        ("compress", make_builtin(itertools_compress)),
-        ("tee", make_builtin(itertools_tee)),
-        ("starmap", PyObject::native_function("itertools.starmap", itertools_starmap)),
-        ("pairwise", make_builtin(itertools_pairwise)),
-        ("batched", make_builtin(itertools_batched)),
-    ])
+    make_module(
+        "itertools",
+        vec![
+            ("count", make_builtin(itertools_count)),
+            ("chain", chain_inst),
+            ("repeat", make_builtin(itertools_repeat)),
+            ("cycle", make_builtin(itertools_cycle)),
+            (
+                "islice",
+                PyObject::native_function("itertools.islice", itertools_islice),
+            ),
+            ("zip_longest", make_builtin(itertools_zip_longest)),
+            ("product", make_builtin(itertools_product)),
+            (
+                "accumulate",
+                PyObject::native_function("itertools.accumulate", itertools_accumulate),
+            ),
+            ("dropwhile", make_builtin(itertools_dropwhile)),
+            ("takewhile", make_builtin(itertools_takewhile)),
+            ("combinations", make_builtin(itertools_combinations)),
+            (
+                "combinations_with_replacement",
+                make_builtin(itertools_combinations_with_replacement),
+            ),
+            ("permutations", make_builtin(itertools_permutations)),
+            (
+                "groupby",
+                PyObject::native_function("itertools.groupby", itertools_groupby),
+            ),
+            (
+                "filterfalse",
+                PyObject::native_function("itertools.filterfalse", itertools_filterfalse),
+            ),
+            ("compress", make_builtin(itertools_compress)),
+            ("tee", make_builtin(itertools_tee)),
+            (
+                "starmap",
+                PyObject::native_function("itertools.starmap", itertools_starmap),
+            ),
+            ("pairwise", make_builtin(itertools_pairwise)),
+            ("batched", make_builtin(itertools_batched)),
+        ],
+    )
+}
+
+fn checked_mul(a: usize, b: usize) -> PyResult<usize> {
+    a.checked_mul(b)
+        .ok_or_else(|| PyException::overflow_error("result too large"))
+}
+
+fn ensure_eager_result_size(size: usize) -> PyResult<()> {
+    if size > MAX_EAGER_ITERTOOLS_RESULTS {
+        Err(PyException::overflow_error("result too large"))
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_combinations_count(n: usize, r: usize) -> PyResult<usize> {
+    if r > n {
+        return Ok(0);
+    }
+    let r = r.min(n - r);
+    let mut result = 1usize;
+    for i in 1..=r {
+        result = checked_mul(result, n - r + i)? / i;
+        if result > MAX_EAGER_ITERTOOLS_RESULTS {
+            return Err(PyException::overflow_error("result too large"));
+        }
+    }
+    Ok(result)
 }
 
 fn itertools_count(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let start = if args.is_empty() { 0i64 } else { args[0].to_int()? };
-    let step = if args.len() >= 2 { args[1].to_int()? } else { 1 };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::Count { current: start, step }
-    )))))
+    let (pos, kw) = split_kwargs(args);
+    let start = if let Some(ref kw) = kw {
+        kw.get("start")
+            .map(|v| v.to_int())
+            .transpose()?
+            .or_else(|| pos.first().map(|v| v.to_int()).transpose().ok().flatten())
+            .unwrap_or(0i64)
+    } else if pos.is_empty() {
+        0i64
+    } else {
+        pos[0].to_int()?
+    };
+    let step = if let Some(ref kw) = kw {
+        kw.get("step")
+            .map(|v| v.to_int())
+            .transpose()?
+            .or_else(|| pos.get(1).map(|v| v.to_int()).transpose().ok().flatten())
+            .unwrap_or(1i64)
+    } else if pos.len() >= 2 {
+        pos[1].to_int()?
+    } else {
+        1
+    };
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Count {
+            current: start,
+            step,
+        }),
+    ))))
 }
 
 fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Convert each arg into an iterator
-    let sources: Vec<PyObjectRef> = args.iter().map(|a| {
-        if matches!(&a.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
-            a.clone()
-        } else {
-            // Materialize non-iterator iterables into list iterators
-            let items = a.to_list().unwrap_or_default();
-            PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List { items, index: 0 }
-            ))))
-        }
-    }).collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::Chain { sources, current: 0 }
-    )))))
+    let sources: Vec<PyObjectRef> = args
+        .iter()
+        .map(|a| {
+            if matches!(
+                &a.payload,
+                PyObjectPayload::Iterator(_)
+                    | PyObjectPayload::VecIter(_)
+                    | PyObjectPayload::RefIter { .. }
+            ) {
+                a.clone()
+            } else {
+                // Materialize non-iterator iterables into list iterators
+                let items = a.to_list().unwrap_or_default();
+                PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::List { items, index: 0 },
+                ))))
+            }
+        })
+        .collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Chain {
+            sources,
+            current: 0,
+        }),
+    ))))
 }
 
 fn itertools_repeat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() {
-        return Err(PyException::type_error("repeat() missing required argument"));
-    }
-    let item = args[0].clone();
-    let remaining = if args.len() >= 2 { Some(args[1].to_int()? as usize) } else { None };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::Repeat { item, remaining }
-    )))))
+    let (pos, kw) = split_kwargs(args);
+    let item = if let Some(ref kw) = kw {
+        kw.get("object")
+            .cloned()
+            .or_else(|| pos.first().cloned())
+            .ok_or_else(|| PyException::type_error("repeat() missing required argument 'object'"))?
+    } else {
+        pos.first()
+            .cloned()
+            .ok_or_else(|| PyException::type_error("repeat() missing required argument"))?
+    };
+    let remaining = if let Some(ref kw) = kw {
+        kw.get("times")
+            .map(|v| v.to_int().map(|n| if n < 0 { 0usize } else { n as usize }))
+            .transpose()?
+            .or_else(|| {
+                pos.get(1)
+                    .map(|v| v.to_int().map(|n| if n < 0 { 0usize } else { n as usize }))
+                    .transpose()
+                    .ok()
+                    .flatten()
+            })
+    } else if pos.len() >= 2 {
+        let n = pos[1].to_int()?;
+        Some(if n < 0 { 0 } else { n as usize })
+    } else {
+        None
+    };
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Repeat { item, remaining }),
+    ))))
 }
 
 fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -89,41 +231,71 @@ fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("cycle() missing required argument"));
     }
     let items = args[0].to_list()?;
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::Cycle { items, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Cycle { items, index: 0 }),
+    ))))
 }
 
 fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
-        return Err(PyException::type_error("islice() requires at least 2 arguments"));
+        return Err(PyException::type_error(
+            "islice() requires at least 2 arguments",
+        ));
     }
     let items = args[0].to_list()?;
     let total = items.len();
     let (start, stop, step) = if args.len() == 2 {
         // islice(iterable, stop) — stop=None means no limit
-        let stop = if matches!(&args[1].payload, PyObjectPayload::None) { total } else { args[1].to_int()? as usize };
+        let stop = if matches!(&args[1].payload, PyObjectPayload::None) {
+            total
+        } else {
+            args[1].to_int()? as usize
+        };
         (0usize, stop, 1usize)
     } else if args.len() == 3 {
         // islice(iterable, start, stop)
-        let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-        let stop = if matches!(&args[2].payload, PyObjectPayload::None) { total } else { args[2].to_int()? as usize };
+        let s = if matches!(&args[1].payload, PyObjectPayload::None) {
+            0
+        } else {
+            args[1].to_int()? as usize
+        };
+        let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
+            total
+        } else {
+            args[2].to_int()? as usize
+        };
         (s, stop, 1usize)
     } else {
         // islice(iterable, start, stop, step)
-        let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-        let stop = if matches!(&args[2].payload, PyObjectPayload::None) { total } else { args[2].to_int()? as usize };
-        let step = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
+        let s = if matches!(&args[1].payload, PyObjectPayload::None) {
+            0
+        } else {
+            args[1].to_int()? as usize
+        };
+        let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
+            total
+        } else {
+            args[2].to_int()? as usize
+        };
+        let step = if matches!(&args[3].payload, PyObjectPayload::None) {
+            1
+        } else {
+            args[3].to_int()? as usize
+        };
         (s, stop, step)
     };
-    let result: Vec<PyObjectRef> = items.into_iter()
+    let result: Vec<PyObjectRef> = items
+        .into_iter()
         .skip(start)
         .take(stop.saturating_sub(start))
         .step_by(step.max(1))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -142,33 +314,42 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args
     };
-    let lists: Vec<Vec<PyObjectRef>> = iter_args.iter()
+    let lists: Vec<Vec<PyObjectRef>> = iter_args
+        .iter()
         .map(|a| a.to_list())
         .collect::<Result<Vec<_>, _>>()?;
     let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
     let mut result = Vec::new();
     for i in 0..max_len {
-        let tuple: Vec<PyObjectRef> = lists.iter()
+        let tuple: Vec<PyObjectRef> = lists
+            .iter()
             .map(|l| l.get(i).cloned().unwrap_or_else(|| fillvalue.clone()))
             .collect();
         result.push(PyObject::tuple(tuple));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![PyObject::tuple(vec![])],
+                index: 0,
+            }),
+        ))));
     }
     // Check for trailing kwargs dict with repeat=
     let (pos_args, repeat) = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let map = map.read();
-            let r = map.get(&HashableKey::str_key(CompactString::from("repeat")))
+            let r = map
+                .get(&HashableKey::str_key(CompactString::from("repeat")))
                 .and_then(|v| v.as_int().map(|n| n as usize))
                 .unwrap_or(1);
             (&args[..args.len() - 1], r)
@@ -178,9 +359,28 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         (args, 1)
     };
-    let mut lists: Vec<Vec<PyObjectRef>> = pos_args.iter()
+    let mut lists: Vec<Vec<PyObjectRef>> = pos_args
+        .iter()
         .map(|a| a.to_list())
         .collect::<Result<Vec<_>, _>>()?;
+    if lists.iter().any(|lst| lst.is_empty()) {
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
+    }
+    if repeat > MAX_EAGER_ITERTOOLS_RESULTS {
+        return Err(PyException::overflow_error("result too large"));
+    }
+    let mut expected_len = 1usize;
+    for _ in 0..repeat {
+        for lst in &lists {
+            expected_len = checked_mul(expected_len, lst.len())?;
+            ensure_eager_result_size(expected_len)?;
+        }
+    }
     // Apply repeat: duplicate the iterables
     if repeat > 1 {
         let base = lists.clone();
@@ -200,16 +400,19 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         result = new_result;
     }
-    let items: Vec<PyObjectRef> = result.into_iter()
+    let items: Vec<PyObjectRef> = result
+        .into_iter()
         .map(|combo| PyObject::tuple(combo))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List { items, index: 0 }),
+    ))))
 }
 
 fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("accumulate requires an iterable")); }
+    if args.is_empty() {
+        return Err(PyException::type_error("accumulate requires an iterable"));
+    }
     let items = args[0].to_list()?;
     // Optional binary function as second arg
     let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -226,13 +429,19 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let has_initial = initial.is_some();
     if items.is_empty() {
         return if let Some(init) = initial {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List { items: vec![init], index: 0 }
-            )))))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
+                    items: vec![init],
+                    index: 0,
+                }),
+            ))))
         } else {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List { items: vec![], index: 0 }
-            )))))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List {
+                    items: vec![],
+                    index: 0,
+                }),
+            ))))
         };
     }
     let mut result = Vec::new();
@@ -272,42 +481,71 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         };
         result.push(acc.clone());
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("dropwhile requires predicate and iterable")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "dropwhile requires predicate and iterable",
+        ));
+    }
     let func = args[0].clone();
     let source = args[1].get_iter()?;
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::DropWhile { func, source, dropping: true }))
-    )))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::DropWhile {
+            func,
+            source,
+            dropping: true,
+        }),
+    ))))
 }
 
 fn itertools_takewhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("takewhile requires predicate and iterable")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "takewhile requires predicate and iterable",
+        ));
+    }
     let func = args[0].clone();
     let source = args[1].get_iter()?;
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::TakeWhile { func, source, done: false }))
-    )))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::TakeWhile {
+            func,
+            source,
+            done: false,
+        }),
+    ))))
 }
 
 fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("combinations requires iterable and r")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "combinations requires iterable and r",
+        ));
+    }
     let items = args[0].to_list()?;
     let r = args[1].as_int().unwrap_or(2) as usize;
     let n = items.len();
+    ensure_eager_result_size(checked_combinations_count(n, r)?)?;
     if r > n {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
     let mut result = Vec::new();
     let mut indices: Vec<usize> = (0..r).collect();
-    result.push(PyObject::tuple(indices.iter().map(|&i| items[i].clone()).collect()));
+    result.push(PyObject::tuple(
+        indices.iter().map(|&i| items[i].clone()).collect(),
+    ));
     loop {
         let mut i_opt = None;
         for i in (0..r).rev() {
@@ -316,36 +554,61 @@ fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 break;
             }
         }
-        let i = match i_opt { Some(i) => i, None => break };
+        let i = match i_opt {
+            Some(i) => i,
+            None => break,
+        };
         indices[i] += 1;
         for j in (i + 1)..r {
             indices[j] = indices[j - 1] + 1;
         }
-        result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
+        result.push(PyObject::tuple(
+            indices.iter().map(|&idx| items[idx].clone()).collect(),
+        ));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_combinations_with_replacement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("combinations_with_replacement requires iterable and r")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "combinations_with_replacement requires iterable and r",
+        ));
+    }
     let items = args[0].to_list()?;
     let r = args[1].as_int().unwrap_or(2) as usize;
     let n = items.len();
     if n == 0 && r > 0 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
+    let count_n = n
+        .checked_add(r)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or_else(|| PyException::overflow_error("result too large"))?;
+    ensure_eager_result_size(checked_combinations_count(count_n, r)?)?;
     if r == 0 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![PyObject::tuple(vec![])],
+                index: 0,
+            }),
+        ))));
     }
     let mut result = Vec::new();
     let mut indices: Vec<usize> = vec![0; r];
-    result.push(PyObject::tuple(indices.iter().map(|&i| items[i].clone()).collect()));
+    result.push(PyObject::tuple(
+        indices.iter().map(|&i| items[i].clone()).collect(),
+    ));
     loop {
         let mut i_opt = None;
         for i in (0..r).rev() {
@@ -354,62 +617,102 @@ fn itertools_combinations_with_replacement(args: &[PyObjectRef]) -> PyResult<PyO
                 break;
             }
         }
-        let i = match i_opt { Some(i) => i, None => break };
+        let i = match i_opt {
+            Some(i) => i,
+            None => break,
+        };
         let new_val = indices[i] + 1;
         for j in i..r {
             indices[j] = new_val;
         }
-        result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
+        result.push(PyObject::tuple(
+            indices.iter().map(|&idx| items[idx].clone()).collect(),
+        ));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_permutations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("permutations requires iterable")); }
+    if args.is_empty() {
+        return Err(PyException::type_error("permutations requires iterable"));
+    }
     let items = args[0].to_list()?;
-    let r = if args.len() > 1 { args[1].as_int().unwrap_or(items.len() as i64) as usize } else { items.len() };
+    let r = if args.len() > 1 {
+        args[1].as_int().unwrap_or(items.len() as i64) as usize
+    } else {
+        items.len()
+    };
     let n = items.len();
+    if r <= n {
+        let mut expected_len = 1usize;
+        for factor in (n - r + 1)..=n {
+            expected_len = checked_mul(expected_len, factor)?;
+            ensure_eager_result_size(expected_len)?;
+        }
+    }
     if r > n {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
     let mut result = Vec::new();
     let mut indices: Vec<usize> = (0..n).collect();
     let mut cycles: Vec<usize> = (0..r).map(|i| n - i).collect();
-    result.push(PyObject::tuple(indices[..r].iter().map(|&i| items[i].clone()).collect()));
+    result.push(PyObject::tuple(
+        indices[..r].iter().map(|&i| items[i].clone()).collect(),
+    ));
     'outer: loop {
         for i in (0..r).rev() {
             cycles[i] -= 1;
             if cycles[i] == 0 {
                 let tmp = indices[i];
-                for j in i..n-1 { indices[j] = indices[j+1]; }
-                indices[n-1] = tmp;
+                for j in i..n - 1 {
+                    indices[j] = indices[j + 1];
+                }
+                indices[n - 1] = tmp;
                 cycles[i] = n - i;
-                if i == 0 { break 'outer; }
+                if i == 0 {
+                    break 'outer;
+                }
             } else {
                 let j = n - cycles[i];
                 indices.swap(i, j);
-                result.push(PyObject::tuple(indices[..r].iter().map(|&idx| items[idx].clone()).collect()));
+                result.push(PyObject::tuple(
+                    indices[..r].iter().map(|&idx| items[idx].clone()).collect(),
+                ));
                 continue 'outer;
             }
         }
         break;
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("groupby requires iterable")); }
+    if args.is_empty() {
+        return Err(PyException::type_error("groupby requires iterable"));
+    }
     let items = args[0].to_list()?;
     if items.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
     // Optional key function (second arg)
     let key_fn = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -452,12 +755,12 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             current_group.push(item.clone());
         } else {
             let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List { items: current_group, index: 0 }
+                IteratorData::List {
+                    items: current_group,
+                    index: 0,
+                },
             ))));
-            result.push(PyObject::tuple(vec![
-                current_key_obj.clone(),
-                group_iter,
-            ]));
+            result.push(PyObject::tuple(vec![current_key_obj.clone(), group_iter]));
             current_key_str = k.clone();
             current_key_obj = if let Some(ref kf) = key_fn {
                 match &kf.payload {
@@ -472,32 +775,46 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: current_group, index: 0 }
+        IteratorData::List {
+            items: current_group,
+            index: 0,
+        },
     ))));
-    result.push(PyObject::tuple(vec![
-        current_key_obj,
-        group_iter,
-    ]));
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    result.push(PyObject::tuple(vec![current_key_obj, group_iter]));
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_chain_from_iterable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("chain.from_iterable requires iterable")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "chain.from_iterable requires iterable",
+        ));
+    }
     let outer = args[0].to_list()?;
     let mut result = Vec::new();
     for inner in &outer {
         let items = inner.to_list()?;
         result.extend(items);
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("compress requires data and selectors")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "compress requires data and selectors",
+        ));
+    }
     let data = args[0].to_list()?;
     let selectors = args[1].to_list()?;
     let mut result = Vec::new();
@@ -506,93 +823,133 @@ fn itertools_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             result.push(d.clone());
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: result,
+            index: 0,
+        }),
+    ))))
 }
 
 fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("tee requires iterable")); }
-    let items = args[0].to_list()?;
-    let n = if args.len() > 1 { args[1].as_int().unwrap_or(2) } else { 2 };
-    // Return independent list copies (CPython returns iterators, but our tests expect list equality)
-    let copies: Vec<PyObjectRef> = (0..n).map(|_| PyObject::list(items.clone())).collect();
-    Ok(PyObject::tuple(copies))
+    if args.is_empty() {
+        return Err(PyException::type_error("tee requires iterable"));
+    }
+    let n = if args.len() > 1 {
+        match args[1].as_int() {
+            Some(n) if n >= 0 => n as usize,
+            Some(_) => return Err(PyException::value_error("n must be >= 0")),
+            None => return Err(PyException::type_error("n must be an integer")),
+        }
+    } else {
+        2
+    };
+
+    // Obtain a proper iterator over the input
+    let source = args[0].get_iter()?;
+
+    // Shared source cell and shared buffer
+    let source_cell = Rc::new(PyCell::new(source));
+    let buffer_cell: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(Vec::new()));
+
+    let legs: Vec<PyObjectRef> = (0..n)
+        .map(|_| {
+            PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                IteratorData::Tee {
+                    source: Rc::clone(&source_cell),
+                    buffer: Rc::clone(&buffer_cell),
+                    index: 0,
+                },
+            ))))
+        })
+        .collect();
+    Ok(PyObject::tuple(legs))
 }
 
 fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("filterfalse requires predicate and iterable")); }
-    let items = args[1].to_list()?;
-    // If predicate is None, filter out truthy values
-    if matches!(args[0].payload, PyObjectPayload::None) {
-        let result: Vec<PyObjectRef> = items.into_iter().filter(|x| !x.is_truthy()).collect();
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: result, index: 0 }
-        )))));
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "filterfalse requires predicate and iterable",
+        ));
     }
-    // For native function/closure predicates, call directly
-    let pred = &args[0];
-    let mut result = Vec::new();
-    for item in &items {
-        let val = match &pred.payload {
-            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[item.clone()])?,
-            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[item.clone()])?,
-            _ => return Err(PyException::type_error("filterfalse with callable predicate requires VM dispatch")),
-        };
-        if !val.is_truthy() {
-            result.push(item.clone());
-        }
-    }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: result, index: 0 }
-    )))))
+    let func = args[0].clone();
+    let source = args[1].get_iter()?;
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::FilterFalse { func, source }),
+    ))))
 }
 
 fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("starmap requires function and iterable")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "starmap requires function and iterable",
+        ));
+    }
     let func = args[0].clone();
     let iterable = &args[1];
     // Convert iterable to an iterator for lazy consumption
-    let source = if matches!(&iterable.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
+    let source = if matches!(
+        &iterable.payload,
+        PyObjectPayload::Iterator(_)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::RefIter { .. }
+    ) {
         iterable.clone()
     } else {
         let items = iterable.to_list()?;
         PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items, index: 0 }
+            IteratorData::List { items, index: 0 },
         ))))
     };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::Starmap { func, source }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Starmap { func, source }),
+    ))))
 }
 
 /// pairwise(iterable) → iterator of consecutive overlapping pairs (Python 3.10+)
 fn itertools_pairwise(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("pairwise requires an iterable")); }
+    if args.is_empty() {
+        return Err(PyException::type_error("pairwise requires an iterable"));
+    }
     let items = args[0].to_list()?;
     if items.len() < 2 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
-    let pairs: Vec<PyObjectRef> = items.windows(2)
+    let pairs: Vec<PyObjectRef> = items
+        .windows(2)
         .map(|w| PyObject::tuple(vec![w[0].clone(), w[1].clone()]))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: pairs, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: pairs,
+            index: 0,
+        }),
+    ))))
 }
 
 /// batched(iterable, n) → iterator of tuples of size n (Python 3.12+)
 fn itertools_batched(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("batched requires iterable and n")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error("batched requires iterable and n"));
+    }
     let items = args[0].to_list()?;
     let n = args[1].to_int()? as usize;
-    if n == 0 { return Err(PyException::value_error("n must be at least one")); }
-    let batches: Vec<PyObjectRef> = items.chunks(n)
+    if n == 0 {
+        return Err(PyException::value_error("n must be at least one"));
+    }
+    let batches: Vec<PyObjectRef> = items
+        .chunks(n)
         .map(|chunk| PyObject::tuple(chunk.to_vec()))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-        IteratorData::List { items: batches, index: 0 }
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::List {
+            items: batches,
+            index: 0,
+        }),
+    ))))
 }

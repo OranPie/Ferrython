@@ -5,8 +5,8 @@
 
 mod compiler;
 pub mod error;
-pub mod symbol_table;
 mod peephole;
+pub mod symbol_table;
 
 pub use compiler::Compiler;
 pub use error::CompileError;

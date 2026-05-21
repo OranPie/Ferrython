@@ -1,6 +1,6 @@
 //! Code object statistics — complexity analysis and bytecode metrics.
 
-use ferrython_bytecode::code::{CodeObject, ConstantValue, CodeFlags};
+use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
 use std::collections::HashMap;
 
@@ -42,16 +42,21 @@ fn collect_stats(code: &CodeObject, out: &mut Vec<CodeStats>) {
 
         // Count branch instructions for cyclomatic complexity
         match instr.op {
-            Opcode::PopJumpIfTrue | Opcode::PopJumpIfFalse
-            | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
-            | Opcode::ForIter | Opcode::SetupExcept => {
+            Opcode::PopJumpIfTrue
+            | Opcode::PopJumpIfFalse
+            | Opcode::JumpIfTrueOrPop
+            | Opcode::JumpIfFalseOrPop
+            | Opcode::ForIter
+            | Opcode::SetupExcept => {
                 branches += 1;
             }
             _ => {}
         }
     }
 
-    let nested = code.constants.iter()
+    let nested = code
+        .constants
+        .iter()
         .filter(|c| matches!(c, ConstantValue::Code(_)))
         .count();
 
@@ -91,11 +96,30 @@ pub fn print_stats_report(stats: &[CodeStats]) {
     let generators = stats.iter().filter(|s| s.is_generator).count();
     let coroutines = stats.iter().filter(|s| s.is_coroutine).count();
 
-    println!("║ Code objects:      {:>6}                                ║", stats.len());
-    println!("║ Total instructions:{:>6}                                ║", total_instrs);
-    println!("║ Total constants:   {:>6}                                ║", total_consts);
-    if generators > 0 { println!("║ Generators:        {:>6}                                ║", generators); }
-    if coroutines > 0 { println!("║ Coroutines:        {:>6}                                ║", coroutines); }
+    println!(
+        "║ Code objects:      {:>6}                                ║",
+        stats.len()
+    );
+    println!(
+        "║ Total instructions:{:>6}                                ║",
+        total_instrs
+    );
+    println!(
+        "║ Total constants:   {:>6}                                ║",
+        total_consts
+    );
+    if generators > 0 {
+        println!(
+            "║ Generators:        {:>6}                                ║",
+            generators
+        );
+    }
+    if coroutines > 0 {
+        println!(
+            "║ Coroutines:        {:>6}                                ║",
+            coroutines
+        );
+    }
     println!("╠══════════════════════════════════════════════════════════╣");
 
     // Global opcode histogram
@@ -110,12 +134,17 @@ pub fn print_stats_report(stats: &[CodeStats]) {
 
     println!("║ Top opcodes:                                            ║");
     for (op, count) in sorted.iter().take(15) {
-        let pct = if total_instrs > 0 { *count as f64 / total_instrs as f64 * 100.0 } else { 0.0 };
+        let pct = if total_instrs > 0 {
+            *count as f64 / total_instrs as f64 * 100.0
+        } else {
+            0.0
+        };
         println!("║   {:28} {:>8} ({:>5.1}%)          ║", op, count, pct);
     }
 
     // Most complex functions
-    let mut by_complexity: Vec<_> = stats.iter()
+    let mut by_complexity: Vec<_> = stats
+        .iter()
         .filter(|s| s.cyclomatic_complexity > 1)
         .collect();
     by_complexity.sort_by(|a, b| b.cyclomatic_complexity.cmp(&a.cyclomatic_complexity));
@@ -124,8 +153,15 @@ pub fn print_stats_report(stats: &[CodeStats]) {
         println!("╠══════════════════════════════════════════════════════════╣");
         println!("║ Most complex functions:                                 ║");
         for s in by_complexity.iter().take(10) {
-            let display = if s.name.len() > 30 { &s.name[..30] } else { &s.name };
-            println!("║   {:35} complexity={:<3}       ║", display, s.cyclomatic_complexity);
+            let display = if s.name.len() > 30 {
+                &s.name[..30]
+            } else {
+                &s.name
+            };
+            println!(
+                "║   {:35} complexity={:<3}       ║",
+                display, s.cyclomatic_complexity
+            );
         }
     }
 

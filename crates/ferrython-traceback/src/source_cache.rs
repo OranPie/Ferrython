@@ -60,10 +60,7 @@ impl SourceCache {
     fn load_file(filename: &str) -> Option<Vec<String>> {
         let file = std::fs::File::open(filename).ok()?;
         let reader = std::io::BufReader::new(file);
-        let lines: Vec<String> = reader
-            .lines()
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+        let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>().ok()?;
         Some(lines)
     }
 }

@@ -4,10 +4,10 @@ use compact_str::CompactString;
 use ferrython_ast::*;
 use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Opcode};
 
+use super::expressions::body_contains_yield;
+use super::{CompileUnit, Compiler, LoopContext, Result};
 use crate::error::CompileError;
 use crate::symbol_table::Scope;
-use super::{Compiler, CompileUnit, LoopContext, Result};
-use super::expressions::body_contains_yield;
 
 impl Compiler {
     // ── statement compilation ───────────────────────────────────────
@@ -57,7 +57,12 @@ impl Compiler {
                 self.compile_aug_assign(target, *op, value)?;
             }
 
-            StatementKind::AnnAssign { target, annotation, value, .. } => {
+            StatementKind::AnnAssign {
+                target,
+                annotation,
+                value,
+                ..
+            } => {
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                     self.compile_store_target(target)?;
@@ -72,9 +77,10 @@ impl Compiler {
                     } else {
                         self.compile_expression(annotation)?;
                     }
-                    self.load_name("__annotations__");      // push __annotations__ dict
-                    let name_idx = self.add_const(ConstantValue::Str(CompactString::from(name.as_str())));
-                    self.emit_arg(Opcode::LoadConst, name_idx);  // push key
+                    self.load_name("__annotations__"); // push __annotations__ dict
+                    let name_idx =
+                        self.add_const(ConstantValue::Str(CompactString::from(name.as_str())));
+                    self.emit_arg(Opcode::LoadConst, name_idx); // push key
                     self.emit_op(Opcode::StoreSubscr);
                 }
             }
@@ -138,19 +144,11 @@ impl Compiler {
                 }
             }
 
-            StatementKind::If {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::If { test, body, orelse } => {
                 self.compile_if(test, body, orelse)?;
             }
 
-            StatementKind::While {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::While { test, body, orelse } => {
                 self.compile_while(test, body, orelse)?;
             }
 
@@ -257,7 +255,12 @@ impl Compiler {
                 self.compile_assert(test, msg.as_deref())?;
             }
 
-            StatementKind::With { items, body, is_async, .. } => {
+            StatementKind::With {
+                items,
+                body,
+                is_async,
+                ..
+            } => {
                 if *is_async {
                     self.compile_async_with(items, body)?;
                 } else {
@@ -435,8 +438,7 @@ impl Compiler {
         // Set up argument info on the code object
         {
             let unit = self.current_unit_mut();
-            unit.code.arg_count =
-                (args.posonlyargs.len() + args.args.len()) as u32;
+            unit.code.arg_count = (args.posonlyargs.len() + args.args.len()) as u32;
             unit.code.posonlyarg_count = args.posonlyargs.len() as u32;
             unit.code.kwonlyarg_count = args.kwonlyargs.len() as u32;
 
@@ -500,7 +502,10 @@ impl Compiler {
         // Extract docstring: if first statement is a string literal, store as first constant
         if let Some(first) = body.first() {
             if let StatementKind::Expr { value } = &first.node {
-                if let ExpressionKind::Constant { value: Constant::Str(doc) } = &value.node {
+                if let ExpressionKind::Constant {
+                    value: Constant::Str(doc),
+                } = &value.node
+                {
                     // Ensure docstring is the first constant in the code object
                     let unit = self.current_unit_mut();
                     let doc_const = ConstantValue::Str(doc.clone());
@@ -525,7 +530,9 @@ impl Compiler {
         let func_code = self.pop_function_unit();
 
         // Build annotations dict from arg annotations and return type
-        let all_args: Vec<&Arg> = args.posonlyargs.iter()
+        let all_args: Vec<&Arg> = args
+            .posonlyargs
+            .iter()
             .chain(args.args.iter())
             .chain(args.vararg.iter())
             .chain(args.kwonlyargs.iter())
@@ -676,7 +683,10 @@ impl Compiler {
         // Extract docstring from first statement if it's a string literal
         if let Some(first) = body.first() {
             if let StatementKind::Expr { value } = &first.node {
-                if let ExpressionKind::Constant { value: Constant::Str(doc) } = &value.node {
+                if let ExpressionKind::Constant {
+                    value: Constant::Str(doc),
+                } = &value.node
+                {
                     let doc_idx = self.add_const(ConstantValue::Str(doc.clone()));
                     self.emit_arg(Opcode::LoadConst, doc_idx);
                     self.store_name("__doc__");
@@ -704,9 +714,16 @@ impl Compiler {
             for freevar_name in &class_code.freevars.clone() {
                 // Find the cell index in the current (parent) scope
                 let unit = self.current_unit();
-                let cell_idx = unit.code.cellvars.iter().position(|v| v == freevar_name)
+                let cell_idx = unit
+                    .code
+                    .cellvars
+                    .iter()
+                    .position(|v| v == freevar_name)
                     .or_else(|| {
-                        unit.code.freevars.iter().position(|v| v == freevar_name)
+                        unit.code
+                            .freevars
+                            .iter()
+                            .position(|v| v == freevar_name)
                             .map(|i| i + unit.code.cellvars.len())
                     });
                 if let Some(idx) = cell_idx {
@@ -755,10 +772,7 @@ impl Compiler {
                 .collect();
             let kw_tuple_idx = self.add_const(ConstantValue::Tuple(kw_names));
             self.emit_arg(Opcode::LoadConst, kw_tuple_idx);
-            self.emit_arg(
-                Opcode::CallFunctionKw,
-                total_args + num_kw as u32,
-            );
+            self.emit_arg(Opcode::CallFunctionKw, total_args + num_kw as u32);
         } else {
             self.emit_arg(Opcode::CallFunction, total_args);
         }
@@ -838,9 +852,8 @@ impl Compiler {
 
         // Build fromlist tuple
         if names.len() == 1 && names[0].name.as_str() == "*" {
-            let star_idx = self.add_const(ConstantValue::Tuple(vec![ConstantValue::Str(
-                "*".into(),
-            )]));
+            let star_idx =
+                self.add_const(ConstantValue::Tuple(vec![ConstantValue::Str("*".into())]));
             self.emit_arg(Opcode::LoadConst, star_idx);
         } else {
             let from_names: Vec<ConstantValue> = names
@@ -1069,9 +1082,9 @@ impl Compiler {
         // Stack: [traceback, value, type] with type on top
         let remain_var = CompactString::from("$exc_remain$");
         let remain_idx = self.varname_index(&remain_var);
-        self.emit_op(Opcode::PopTop);           // pop type
+        self.emit_op(Opcode::PopTop); // pop type
         self.emit_arg(Opcode::StoreFast, remain_idx); // store value
-        self.emit_op(Opcode::PopTop);           // pop traceback
+        self.emit_op(Opcode::PopTop); // pop traceback
 
         // For each except* handler: try to split, run handler body if matched
         let mut handler_end_labels = Vec::new();
@@ -1095,7 +1108,8 @@ impl Compiler {
                 self.emit_arg(Opcode::CallFunction, 1);
                 // Stack: (match, rest) tuple — unpack
                 self.emit_arg(Opcode::UnpackSequence, 2);
-                let match_var = CompactString::from(format!("$exc_match_{}$", handler.location.line));
+                let match_var =
+                    CompactString::from(format!("$exc_match_{}$", handler.location.line));
                 let match_idx = self.varname_index(&match_var);
                 let rest_var = CompactString::from(format!("$exc_rest_{}$", handler.location.line));
                 let rest_idx = self.varname_index(&rest_var);
@@ -1184,11 +1198,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn compile_with(
-        &mut self,
-        items: &[WithItem],
-        body: &[Statement],
-    ) -> Result<()> {
+    pub(super) fn compile_with(&mut self, items: &[WithItem], body: &[Statement]) -> Result<()> {
         // Nested withs: `with a, b:` is equivalent to `with a: with b:`
         self.compile_with_item(items, 0, body)
     }
@@ -1366,7 +1376,9 @@ impl Compiler {
                 self.emit_inplace_op(op);
                 self.store_name(id);
             }
-            ExpressionKind::Attribute { value: obj, attr, .. } => {
+            ExpressionKind::Attribute {
+                value: obj, attr, ..
+            } => {
                 self.compile_expression(obj)?;
                 self.emit_op(Opcode::DupTop);
                 let mangled = self.mangle_name(attr);
@@ -1378,9 +1390,7 @@ impl Compiler {
                 self.emit_arg(Opcode::StoreAttr, attr_idx);
             }
             ExpressionKind::Subscript {
-                value: obj,
-                slice,
-                ..
+                value: obj, slice, ..
             } => {
                 self.compile_expression(obj)?;
                 self.compile_expression(slice)?;
@@ -1439,9 +1449,10 @@ impl Compiler {
             }
             ExpressionKind::Tuple { elts, .. } | ExpressionKind::List { elts, .. } => {
                 // Check for starred element
-                let star_count = elts.iter().filter(|e| {
-                    matches!(e.node, ExpressionKind::Starred { .. })
-                }).count();
+                let star_count = elts
+                    .iter()
+                    .filter(|e| matches!(e.node, ExpressionKind::Starred { .. }))
+                    .count();
 
                 if star_count > 1 {
                     return Err(CompileError::syntax(
@@ -1450,9 +1461,9 @@ impl Compiler {
                     ));
                 }
 
-                let star_idx = elts.iter().position(|e| {
-                    matches!(e.node, ExpressionKind::Starred { .. })
-                });
+                let star_idx = elts
+                    .iter()
+                    .position(|e| matches!(e.node, ExpressionKind::Starred { .. }));
 
                 if let Some(star) = star_idx {
                     let before = star as u32;
@@ -1587,11 +1598,7 @@ impl Compiler {
 
     /// Compile a pattern test — pushes True/False on stack.
     /// Returns true if the pattern always matches (wildcard/capture).
-    fn compile_pattern_test(
-        &mut self,
-        pattern: &Pattern,
-        subject_idx: u32,
-    ) -> Result<bool> {
+    fn compile_pattern_test(&mut self, pattern: &Pattern, subject_idx: u32) -> Result<bool> {
         match pattern {
             Pattern::MatchWildcard => {
                 // Always matches — push True
@@ -1618,7 +1625,12 @@ impl Compiler {
             Pattern::MatchMapping { keys, patterns, .. } => {
                 self.compile_mapping_pattern_test(keys, patterns, subject_idx)
             }
-            Pattern::MatchClass { cls, patterns, kwd_attrs, kwd_patterns } => {
+            Pattern::MatchClass {
+                cls,
+                patterns,
+                kwd_attrs,
+                kwd_patterns,
+            } => {
                 self.compile_class_pattern_test(cls, patterns, kwd_attrs, kwd_patterns, subject_idx)
             }
             Pattern::MatchOr { patterns } => {
@@ -1690,8 +1702,13 @@ impl Compiler {
         let fail_label = self.emit_jump(Opcode::PopJumpIfFalse);
 
         // Check len
-        let has_star = patterns.iter().any(|p| matches!(p, Pattern::MatchStar { .. }));
-        let fixed_count = patterns.iter().filter(|p| !matches!(p, Pattern::MatchStar { .. })).count();
+        let has_star = patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::MatchStar { .. }));
+        let fixed_count = patterns
+            .iter()
+            .filter(|p| !matches!(p, Pattern::MatchStar { .. }))
+            .count();
 
         self.load_name("len");
         self.emit_arg(Opcode::LoadFast, subject_idx);
@@ -1709,7 +1726,9 @@ impl Compiler {
 
         // Check each element pattern, using negative indices for elements after the star
         let mut elem_fails = Vec::new();
-        let star_pos = patterns.iter().position(|p| matches!(p, Pattern::MatchStar { .. }));
+        let star_pos = patterns
+            .iter()
+            .position(|p| matches!(p, Pattern::MatchStar { .. }));
         let post_star_count = star_pos.map_or(0, |sp| patterns.len() - sp - 1);
         let mut elem_idx = 0u32;
         let mut past_star = false;
@@ -1894,11 +1913,7 @@ impl Compiler {
     }
 
     /// Compile pattern bindings — store captured names after a successful match.
-    fn compile_pattern_bindings(
-        &mut self,
-        pattern: &Pattern,
-        subject_idx: u32,
-    ) -> Result<()> {
+    fn compile_pattern_bindings(&mut self, pattern: &Pattern, subject_idx: u32) -> Result<()> {
         match pattern {
             Pattern::MatchCapture { name } => {
                 self.emit_arg(Opcode::LoadFast, subject_idx);
@@ -1920,7 +1935,9 @@ impl Compiler {
                 }
             }
             Pattern::MatchSequence { patterns } => {
-                let star_pos = patterns.iter().position(|p| matches!(p, Pattern::MatchStar { .. }));
+                let star_pos = patterns
+                    .iter()
+                    .position(|p| matches!(p, Pattern::MatchStar { .. }));
                 let post_star_count = star_pos.map_or(0, |sp| patterns.len() - sp - 1);
                 let mut elem_idx = 0u32;
                 let mut past_star = false;
@@ -1960,7 +1977,11 @@ impl Compiler {
                     let _ = past_star;
                 }
             }
-            Pattern::MatchMapping { keys: _, patterns, rest } => {
+            Pattern::MatchMapping {
+                keys: _,
+                patterns,
+                rest,
+            } => {
                 for (i, pat) in patterns.iter().enumerate() {
                     let val_temp = CompactString::from(format!("$match_val_{}$", i));
                     let val_temp_idx = self.varname_index(&val_temp);
@@ -1972,7 +1993,12 @@ impl Compiler {
                     self.store_name(rest_name);
                 }
             }
-            Pattern::MatchClass { kwd_attrs, kwd_patterns, patterns, .. } => {
+            Pattern::MatchClass {
+                kwd_attrs,
+                kwd_patterns,
+                patterns,
+                ..
+            } => {
                 // Positional pattern bindings: bind subject to captured names
                 for (i, pat) in patterns.iter().enumerate() {
                     let pos_temp = CompactString::from(format!("$match_pos_{}$", i));
@@ -1986,8 +2012,10 @@ impl Compiler {
                     self.compile_pattern_bindings(pat, attr_temp_idx)?;
                 }
             }
-            Pattern::MatchWildcard | Pattern::MatchLiteral { .. }
-            | Pattern::MatchValue { .. } | Pattern::MatchStar { .. } => {}
+            Pattern::MatchWildcard
+            | Pattern::MatchLiteral { .. }
+            | Pattern::MatchValue { .. }
+            | Pattern::MatchStar { .. } => {}
         }
         Ok(())
     }
@@ -2001,7 +2029,11 @@ impl Compiler {
                 format!("{}.{}", Self::annotation_to_string(value), attr)
             }
             ExpressionKind::Subscript { value, slice, .. } => {
-                format!("{}[{}]", Self::annotation_to_string(value), Self::annotation_to_string(slice))
+                format!(
+                    "{}[{}]",
+                    Self::annotation_to_string(value),
+                    Self::annotation_to_string(slice)
+                )
             }
             ExpressionKind::Tuple { elts, .. } => {
                 let parts: Vec<String> = elts.iter().map(Self::annotation_to_string).collect();
@@ -2034,9 +2066,18 @@ impl Compiler {
                     Operator::Div => "/",
                     _ => "|",
                 };
-                format!("{} {} {}", Self::annotation_to_string(left), op_str, Self::annotation_to_string(right))
+                format!(
+                    "{} {} {}",
+                    Self::annotation_to_string(left),
+                    op_str,
+                    Self::annotation_to_string(right)
+                )
             }
-            ExpressionKind::Call { func, args, keywords } => {
+            ExpressionKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 let mut parts: Vec<String> = args.iter().map(Self::annotation_to_string).collect();
                 for kw in keywords {
                     if let Some(ref key) = kw.arg {
@@ -2065,16 +2106,17 @@ impl Compiler {
                 parts.join(op_str)
             }
             ExpressionKind::IfExp { test, body, orelse } => {
-                format!("{} if {} else {}",
+                format!(
+                    "{} if {} else {}",
                     Self::annotation_to_string(body),
                     Self::annotation_to_string(test),
-                    Self::annotation_to_string(orelse))
+                    Self::annotation_to_string(orelse)
+                )
             }
             ExpressionKind::Starred { value, .. } => {
                 format!("*{}", Self::annotation_to_string(value))
             }
-            _ => "...".to_string(),  // Fallback for unsupported expression types
+            _ => "...".to_string(), // Fallback for unsupported expression types
         }
     }
-
 }

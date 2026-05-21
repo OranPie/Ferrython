@@ -7,12 +7,12 @@
 //! synchronization primitives (Queue, Event, Lock, Semaphore, etc.)
 
 use compact_str::CompactString;
+use ferrython_bytecode::code::CodeFlags;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
-    make_module, make_builtin, check_args, check_args_min,
+    check_args, check_args_min, make_builtin, make_module, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
-use ferrython_bytecode::code::CodeFlags;
 use indexmap::IndexMap;
 use std::cell::RefCell;
 
@@ -49,163 +49,233 @@ pub fn get_wait_for_deadline() -> Option<std::time::Instant> {
 /// Create the complete `asyncio` module.
 pub fn create_asyncio_module() -> PyObjectRef {
     // Exception classes
-    let timeout_error = PyObject::class(
-        CompactString::from("TimeoutError"),
-        vec![], IndexMap::new(),
-    );
+    let timeout_error =
+        PyObject::class(CompactString::from("TimeoutError"), vec![], IndexMap::new());
     let cancelled_error = PyObject::class(
         CompactString::from("CancelledError"),
-        vec![], IndexMap::new(),
+        vec![],
+        IndexMap::new(),
     );
     let invalid_state_error = PyObject::class(
         CompactString::from("InvalidStateError"),
-        vec![], IndexMap::new(),
+        vec![],
+        IndexMap::new(),
     );
 
-    make_module("asyncio", vec![
-        // Core runners
-        ("run", make_builtin(asyncio_run)),
-        ("sleep", make_builtin(asyncio_sleep)),
-        ("gather", make_builtin(asyncio_gather)),
-        ("wait", make_builtin(asyncio_wait)),
-        ("wait_for", make_builtin(asyncio_wait_for)),
-        ("as_completed", make_builtin(asyncio_as_completed)),
-        ("shield", make_builtin(asyncio_shield)),
-
-        // Task management
-        ("create_task", make_builtin(asyncio_create_task)),
-        ("ensure_future", make_builtin(asyncio_ensure_future)),
-        ("current_task", make_builtin(asyncio_current_task)),
-        ("all_tasks", make_builtin(asyncio_all_tasks)),
-
-        // Event loop
-        ("get_event_loop", make_builtin(asyncio_get_event_loop)),
-        ("get_running_loop", make_builtin(asyncio_get_running_loop)),
-        ("new_event_loop", make_builtin(asyncio_new_event_loop)),
-        ("set_event_loop", make_builtin(asyncio_set_event_loop)),
-
-        // Introspection
-        ("iscoroutine", make_builtin(asyncio_iscoroutine)),
-        ("iscoroutinefunction", make_builtin(asyncio_iscoroutinefunction)),
-
-        // Synchronization primitives
-        ("Queue", primitives::make_queue_class()),
-        ("PriorityQueue", primitives::make_queue_class()),
-        ("LifoQueue", primitives::make_queue_class()),
-        ("Event", primitives::make_event_class()),
-        ("Lock", primitives::make_lock_class()),
-        ("Semaphore", primitives::make_semaphore_class()),
-        ("BoundedSemaphore", primitives::make_bounded_semaphore_class()),
-        ("Condition", primitives::make_condition_class()),
-
-        // Future/Task classes
-        ("Future", make_builtin(|_| Ok(task::create_future_object()))),
-        ("Task", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() {
-                return Err(PyException::type_error("Task() requires a coroutine"));
-            }
-            Ok(task::create_task_object(&args[0]))
-        })),
-
-        // Exception classes
-        ("TimeoutError", timeout_error),
-        ("CancelledError", cancelled_error),
-        ("InvalidStateError", invalid_state_error),
-
-        // Constants
-        ("FIRST_COMPLETED", PyObject::str_val(CompactString::from("FIRST_COMPLETED"))),
-        ("FIRST_EXCEPTION", PyObject::str_val(CompactString::from("FIRST_EXCEPTION"))),
-        ("ALL_COMPLETED", PyObject::str_val(CompactString::from("ALL_COMPLETED"))),
-
-        // ABC classes (used by aiohttp, anyio, etc.)
-        ("AbstractEventLoop", make_abstract_class("AbstractEventLoop")),
-        ("AbstractServer", make_abstract_class("AbstractServer")),
-        ("AbstractEventLoopPolicy", make_abstract_class("AbstractEventLoopPolicy")),
-        ("BaseProtocol", make_abstract_class("BaseProtocol")),
-        ("Protocol", make_abstract_class("Protocol")),
-        ("DatagramProtocol", make_abstract_class("DatagramProtocol")),
-        ("SubprocessProtocol", make_abstract_class("SubprocessProtocol")),
-        ("BufferedProtocol", make_abstract_class("BufferedProtocol")),
-        ("BaseTransport", make_abstract_class("BaseTransport")),
-        ("Transport", make_abstract_class("Transport")),
-        ("DatagramTransport", make_abstract_class("DatagramTransport")),
-        ("SubprocessTransport", make_abstract_class("SubprocessTransport")),
-        ("ReadTransport", make_abstract_class("ReadTransport")),
-        ("WriteTransport", make_abstract_class("WriteTransport")),
-        ("StreamReader", make_abstract_class("StreamReader")),
-        ("StreamWriter", make_abstract_class("StreamWriter")),
-        ("StreamReaderProtocol", make_abstract_class("StreamReaderProtocol")),
-        ("Server", make_abstract_class("Server")),
-
-        // Timeout context manager (Python 3.11+)
-        ("Timeout", {
-            let mut ns = IndexMap::new();
-            ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        let mut w = d.attrs.write();
-                        w.insert(CompactString::from("_deadline"), args[1].clone());
-                        w.insert(CompactString::from("_expired"), PyObject::bool_val(false));
+    make_module(
+        "asyncio",
+        vec![
+            // Core runners
+            ("run", make_builtin(asyncio_run)),
+            ("sleep", make_builtin(asyncio_sleep)),
+            ("gather", make_builtin(asyncio_gather)),
+            ("wait", make_builtin(asyncio_wait)),
+            ("wait_for", make_builtin(asyncio_wait_for)),
+            ("as_completed", make_builtin(asyncio_as_completed)),
+            ("shield", make_builtin(asyncio_shield)),
+            // Task management
+            ("create_task", make_builtin(asyncio_create_task)),
+            ("ensure_future", make_builtin(asyncio_ensure_future)),
+            ("current_task", make_builtin(asyncio_current_task)),
+            ("all_tasks", make_builtin(asyncio_all_tasks)),
+            // Event loop
+            ("get_event_loop", make_builtin(asyncio_get_event_loop)),
+            ("get_running_loop", make_builtin(asyncio_get_running_loop)),
+            ("new_event_loop", make_builtin(asyncio_new_event_loop)),
+            ("set_event_loop", make_builtin(asyncio_set_event_loop)),
+            // Introspection
+            ("iscoroutine", make_builtin(asyncio_iscoroutine)),
+            (
+                "iscoroutinefunction",
+                make_builtin(asyncio_iscoroutinefunction),
+            ),
+            // Synchronization primitives
+            ("Queue", primitives::make_queue_class()),
+            ("PriorityQueue", primitives::make_queue_class()),
+            ("LifoQueue", primitives::make_queue_class()),
+            ("Event", primitives::make_event_class()),
+            ("Lock", primitives::make_lock_class()),
+            ("Semaphore", primitives::make_semaphore_class()),
+            (
+                "BoundedSemaphore",
+                primitives::make_bounded_semaphore_class(),
+            ),
+            ("Condition", primitives::make_condition_class()),
+            // Future/Task classes
+            ("Future", make_builtin(|_| Ok(task::create_future_object()))),
+            (
+                "Task",
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("Task() requires a coroutine"));
                     }
-                }
-                Ok(PyObject::none())
-            }));
-            ns.insert(CompactString::from("__enter__"), make_builtin(|args: &[PyObjectRef]| {
-                Ok(if !args.is_empty() { args[0].clone() } else { PyObject::none() })
-            }));
-            ns.insert(CompactString::from("__exit__"), make_builtin(|_| {
-                Ok(PyObject::bool_val(false))
-            }));
-            ns.insert(CompactString::from("__aenter__"), make_builtin(|args: &[PyObjectRef]| {
-                Ok(if !args.is_empty() { args[0].clone() } else { PyObject::none() })
-            }));
-            ns.insert(CompactString::from("__aexit__"), make_builtin(|_| {
-                Ok(PyObject::bool_val(false))
-            }));
-            ns.insert(CompactString::from("expired"), make_builtin(|args: &[PyObjectRef]| {
-                if !args.is_empty() {
-                    if let Some(v) = args[0].get_attr("_expired") { return Ok(v); }
-                }
-                Ok(PyObject::bool_val(false))
-            }));
-            ns.insert(CompactString::from("when"), make_builtin(|args: &[PyObjectRef]| {
-                if !args.is_empty() {
-                    if let Some(v) = args[0].get_attr("_deadline") { return Ok(v); }
-                }
-                Ok(PyObject::none())
-            }));
-            ns.insert(CompactString::from("reschedule"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        d.attrs.write().insert(CompactString::from("_deadline"), args[1].clone());
-                    }
-                }
-                Ok(PyObject::none())
-            }));
-            PyObject::class(CompactString::from("Timeout"), vec![], ns)
-        }),
-
-        // Subprocess constants
-        ("PIPE", PyObject::int(-1)),
-        ("STDOUT", PyObject::int(-2)),
-        ("DEVNULL", PyObject::int(-3)),
-    ])
+                    Ok(task::create_task_object(&args[0]))
+                }),
+            ),
+            // Exception classes
+            ("TimeoutError", timeout_error),
+            ("CancelledError", cancelled_error),
+            ("InvalidStateError", invalid_state_error),
+            // Constants
+            (
+                "FIRST_COMPLETED",
+                PyObject::str_val(CompactString::from("FIRST_COMPLETED")),
+            ),
+            (
+                "FIRST_EXCEPTION",
+                PyObject::str_val(CompactString::from("FIRST_EXCEPTION")),
+            ),
+            (
+                "ALL_COMPLETED",
+                PyObject::str_val(CompactString::from("ALL_COMPLETED")),
+            ),
+            // ABC classes (used by aiohttp, anyio, etc.)
+            (
+                "AbstractEventLoop",
+                make_abstract_class("AbstractEventLoop"),
+            ),
+            ("AbstractServer", make_abstract_class("AbstractServer")),
+            (
+                "AbstractEventLoopPolicy",
+                make_abstract_class("AbstractEventLoopPolicy"),
+            ),
+            ("BaseProtocol", make_abstract_class("BaseProtocol")),
+            ("Protocol", make_abstract_class("Protocol")),
+            ("DatagramProtocol", make_abstract_class("DatagramProtocol")),
+            (
+                "SubprocessProtocol",
+                make_abstract_class("SubprocessProtocol"),
+            ),
+            ("BufferedProtocol", make_abstract_class("BufferedProtocol")),
+            ("BaseTransport", make_abstract_class("BaseTransport")),
+            ("Transport", make_abstract_class("Transport")),
+            (
+                "DatagramTransport",
+                make_abstract_class("DatagramTransport"),
+            ),
+            (
+                "SubprocessTransport",
+                make_abstract_class("SubprocessTransport"),
+            ),
+            ("ReadTransport", make_abstract_class("ReadTransport")),
+            ("WriteTransport", make_abstract_class("WriteTransport")),
+            ("StreamReader", make_abstract_class("StreamReader")),
+            ("StreamWriter", make_abstract_class("StreamWriter")),
+            (
+                "StreamReaderProtocol",
+                make_abstract_class("StreamReaderProtocol"),
+            ),
+            ("Server", make_abstract_class("Server")),
+            // Timeout context manager (Python 3.11+)
+            ("Timeout", {
+                let mut ns = IndexMap::new();
+                ns.insert(
+                    CompactString::from("__init__"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        if args.len() >= 2 {
+                            if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                                let mut w = d.attrs.write();
+                                w.insert(CompactString::from("_deadline"), args[1].clone());
+                                w.insert(
+                                    CompactString::from("_expired"),
+                                    PyObject::bool_val(false),
+                                );
+                            }
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+                ns.insert(
+                    CompactString::from("__enter__"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        Ok(if !args.is_empty() {
+                            args[0].clone()
+                        } else {
+                            PyObject::none()
+                        })
+                    }),
+                );
+                ns.insert(
+                    CompactString::from("__exit__"),
+                    make_builtin(|_| Ok(PyObject::bool_val(false))),
+                );
+                ns.insert(
+                    CompactString::from("__aenter__"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        Ok(if !args.is_empty() {
+                            args[0].clone()
+                        } else {
+                            PyObject::none()
+                        })
+                    }),
+                );
+                ns.insert(
+                    CompactString::from("__aexit__"),
+                    make_builtin(|_| Ok(PyObject::bool_val(false))),
+                );
+                ns.insert(
+                    CompactString::from("expired"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        if !args.is_empty() {
+                            if let Some(v) = args[0].get_attr("_expired") {
+                                return Ok(v);
+                            }
+                        }
+                        Ok(PyObject::bool_val(false))
+                    }),
+                );
+                ns.insert(
+                    CompactString::from("when"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        if !args.is_empty() {
+                            if let Some(v) = args[0].get_attr("_deadline") {
+                                return Ok(v);
+                            }
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+                ns.insert(
+                    CompactString::from("reschedule"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        if args.len() >= 2 {
+                            if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                                d.attrs
+                                    .write()
+                                    .insert(CompactString::from("_deadline"), args[1].clone());
+                            }
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+                PyObject::class(CompactString::from("Timeout"), vec![], ns)
+            }),
+            // Subprocess constants
+            ("PIPE", PyObject::int(-1)),
+            ("STDOUT", PyObject::int(-2)),
+            ("DEVNULL", PyObject::int(-3)),
+        ],
+    )
 }
 
 fn make_abstract_class(name: &str) -> PyObjectRef {
     let mut ns = IndexMap::new();
-    ns.insert(CompactString::from("register"), make_builtin(|args: &[PyObjectRef]| {
-        if args.len() >= 2 {
-            Ok(args[1].clone())
-        } else if args.len() == 1 {
-            Ok(args[0].clone())
-        } else {
-            Ok(PyObject::none())
-        }
-    }));
-    ns.insert(CompactString::from("__subclasshook__"), make_builtin(|_| {
-        Ok(PyObject::str_val(CompactString::from("NotImplemented")))
-    }));
+    ns.insert(
+        CompactString::from("register"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.len() >= 2 {
+                Ok(args[1].clone())
+            } else if args.len() == 1 {
+                Ok(args[0].clone())
+            } else {
+                Ok(PyObject::none())
+            }
+        }),
+    );
+    ns.insert(
+        CompactString::from("__subclasshook__"),
+        make_builtin(|_| Ok(PyObject::str_val(CompactString::from("NotImplemented")))),
+    );
     PyObject::class(CompactString::from(name), vec![], ns)
 }
 
@@ -221,7 +291,7 @@ fn asyncio_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(coro.clone())
         }
         _ => Err(PyException::type_error(
-            "asyncio.run() requires a coroutine object"
+            "asyncio.run() requires a coroutine object",
         )),
     }
 }
@@ -265,7 +335,9 @@ fn asyncio_wait(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Return (done, pending) as a tuple of sets
     let done = args[0].clone();
     let pending = PyObject::set(ferrython_core::object::new_fx_hashkey_map());
-    Ok(PyObject::builtin_awaitable(PyObject::tuple(vec![done, pending])))
+    Ok(PyObject::builtin_awaitable(PyObject::tuple(vec![
+        done, pending,
+    ])))
 }
 
 /// `asyncio.wait_for(fut, timeout)`
@@ -281,7 +353,9 @@ fn asyncio_wait_for(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // kwargs dict: extract "timeout" key
             PyObjectPayload::Dict(d) => {
                 let map = d.read();
-                if let Some(val) = map.get(&ferrython_core::types::HashableKey::str_key(CompactString::from("timeout"))) {
+                if let Some(val) = map.get(&ferrython_core::types::HashableKey::str_key(
+                    CompactString::from("timeout"),
+                )) {
                     match &val.payload {
                         PyObjectPayload::Int(n) => Some(n.to_f64()),
                         PyObjectPayload::Float(f) => Some(*f),
@@ -385,7 +459,10 @@ fn asyncio_set_event_loop(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// `asyncio.iscoroutine(obj)`
 fn asyncio_iscoroutine(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("asyncio.iscoroutine", args, 1)?;
-    Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Coroutine(_))))
+    Ok(PyObject::bool_val(matches!(
+        &args[0].payload,
+        PyObjectPayload::Coroutine(_)
+    )))
 }
 
 /// `asyncio.iscoroutinefunction(func)`

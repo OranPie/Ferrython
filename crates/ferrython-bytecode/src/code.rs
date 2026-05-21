@@ -13,7 +13,10 @@ pub enum ConstantValue {
     Integer(i64),
     BigInteger(Box<num_bigint::BigInt>),
     Float(f64),
-    Complex { real: f64, imag: f64 },
+    Complex {
+        real: f64,
+        imag: f64,
+    },
     Str(CompactString),
     Bytes(Vec<u8>),
     Ellipsis,

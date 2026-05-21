@@ -65,6 +65,13 @@ def deepcopy(x, memo=None):
     if isinstance(x, (int, float, str, bool, type(None), bytes, complex)):
         return x
 
+    if type(x).__name__ == "Counter":
+        copier = getattr(x, '__deepcopy__', None)
+        if copier is not None:
+            result = copier(memo)
+            memo[d] = result
+            return result
+
     # Check for __deepcopy__ method
     copier = getattr(cls, '__deepcopy__', None)
     if copier is not None:
@@ -94,6 +101,10 @@ def deepcopy(x, memo=None):
 
     # Dict
     if isinstance(x, dict):
+        if type(x).__name__ == "Counter":
+            result = x.copy()
+            memo[d] = result
+            return result
         result = {}
         memo[d] = result
         for key, value in x.items():

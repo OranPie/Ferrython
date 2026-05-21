@@ -61,7 +61,7 @@ pub fn parse_requirement(spec: &str) -> (String, Option<String>) {
     // Handle extras: package[extra]>=version
     let spec_no_extras = if let Some(bracket) = spec.find('[') {
         if let Some(end) = spec.find(']') {
-            format!("{}{}", &spec[..bracket], &spec[end+1..])
+            format!("{}{}", &spec[..bracket], &spec[end + 1..])
         } else {
             spec.to_string()
         }
@@ -113,7 +113,8 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
         return Err(format_http_error(name, resp.status().as_u16()));
     }
 
-    let data: PyPIResponse = resp.json()
+    let data: PyPIResponse = resp
+        .json()
         .map_err(|e| format!("JSON parse error: {}", e))?;
 
     // Find best wheel URL using PEP 425 tag matching; falls back to sdist
@@ -147,10 +148,15 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
 
     if !resp.status().is_success() {
         let status = resp.status();
-        return Err(format!("HTTP {} error fetching package '{}'", status.as_u16(), name));
+        return Err(format!(
+            "HTTP {} error fetching package '{}'",
+            status.as_u16(),
+            name
+        ));
     }
 
-    let data: PyPIResponse = resp.json()
+    let data: PyPIResponse = resp
+        .json()
         .map_err(|e| format!("JSON parse error for '{}': {}", name, e))?;
 
     // If latest version satisfies and is not yanked, use it directly (common fast path)
@@ -178,14 +184,17 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
         if let Some(releases_map) = releases.as_object() {
             // Filter out yanked versions: a release is yanked if all its files are yanked
             // or the release array is empty. We check for the "yanked" field on each file entry.
-            let versions: Vec<&str> = releases_map.iter()
+            let versions: Vec<&str> = releases_map
+                .iter()
                 .filter(|(_, files)| {
                     if let Some(files_arr) = files.as_array() {
-                        if files_arr.is_empty() { return false; }
+                        if files_arr.is_empty() {
+                            return false;
+                        }
                         // Keep if at least one file is not yanked
-                        files_arr.iter().any(|f| {
-                            !f.get("yanked").and_then(|y| y.as_bool()).unwrap_or(false)
-                        })
+                        files_arr
+                            .iter()
+                            .any(|f| !f.get("yanked").and_then(|y| y.as_bool()).unwrap_or(false))
                     } else {
                         true
                     }
@@ -270,7 +279,9 @@ fn suggest_pypi_alternatives(name: &str) -> Vec<String> {
             if resp.status().is_success() {
                 if let Ok(data) = resp.json::<PyPIResponse>() {
                     found.push(format!("{} ({})", data.info.name, data.info.version));
-                    if found.len() >= 3 { break; }
+                    if found.len() >= 3 {
+                        break;
+                    }
                 }
             }
         }
@@ -279,11 +290,16 @@ fn suggest_pypi_alternatives(name: &str) -> Vec<String> {
 }
 
 /// GET request with retry logic (exponential backoff, 3 attempts).
-fn get_with_retry(client: &reqwest::blocking::Client, url: &str) -> Result<reqwest::blocking::Response, String> {
+fn get_with_retry(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<reqwest::blocking::Response, String> {
     let mut last_err = String::new();
     for attempt in 0..3u32 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1)));
+            std::thread::sleep(std::time::Duration::from_millis(
+                500 * 2u64.pow(attempt - 1),
+            ));
         }
         match client.get(url).send() {
             Ok(resp) => return Ok(resp),
@@ -360,11 +376,16 @@ fn parse_wheel_tags(filename: &str) -> Option<WheelTags> {
 fn compatible_tags() -> (Vec<String>, Vec<String>, Vec<String>) {
     let python_tags = vec![
         "py3".to_string(),
-        "cp312".to_string(), "py312".to_string(),
-        "cp311".to_string(), "py311".to_string(),
-        "cp310".to_string(), "py310".to_string(),
-        "cp39".to_string(), "py39".to_string(),
-        "cp38".to_string(), "py38".to_string(),
+        "cp312".to_string(),
+        "py312".to_string(),
+        "cp311".to_string(),
+        "py311".to_string(),
+        "cp310".to_string(),
+        "py310".to_string(),
+        "cp39".to_string(),
+        "py39".to_string(),
+        "cp38".to_string(),
+        "py38".to_string(),
         "py2.py3".to_string(),
     ];
     let abi_tags = vec![
@@ -378,15 +399,19 @@ fn compatible_tags() -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut platform_tags = vec!["any".to_string()];
 
     let arch = std::env::consts::ARCH; // e.g. "x86_64", "aarch64"
-    let os = std::env::consts::OS;     // e.g. "linux", "macos", "windows"
+    let os = std::env::consts::OS; // e.g. "linux", "macos", "windows"
 
     match os {
         "linux" => {
             platform_tags.push(format!("linux_{}", arch));
             // Common manylinux generations
             for ml in &[
-                "manylinux_2_17", "manylinux_2_28", "manylinux_2_34",
-                "manylinux2014", "manylinux2010", "manylinux1",
+                "manylinux_2_17",
+                "manylinux_2_28",
+                "manylinux_2_34",
+                "manylinux2014",
+                "manylinux2010",
+                "manylinux1",
             ] {
                 platform_tags.push(format!("{}_{}", ml, arch));
             }
@@ -487,22 +512,20 @@ pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
         }
     }
 
-    let client = make_client()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = make_client().map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let resp = get_with_retry(&client, &release.url)
-        .map_err(|e| format!("Download error: {}", e))?;
+    let resp =
+        get_with_retry(&client, &release.url).map_err(|e| format!("Download error: {}", e))?;
 
     if !resp.status().is_success() {
         return Err(format!("Download failed (HTTP {})", resp.status()));
     }
 
-    let bytes = resp.bytes()
-        .map_err(|e| format!("Read error: {}", e))?;
+    let bytes = resp.bytes().map_err(|e| format!("Read error: {}", e))?;
 
     // Verify SHA256 if available
     if let Some(ref expected_hash) = release.sha256 {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let actual_hash = format!("{:x}", hasher.finalize());
@@ -515,8 +538,7 @@ pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
     }
 
     // Save to cache directory
-    std::fs::write(&cached, &bytes)
-        .map_err(|e| format!("Cache write error: {}", e))?;
+    std::fs::write(&cached, &bytes).map_err(|e| format!("Cache write error: {}", e))?;
 
     Ok(cached)
 }
@@ -532,7 +554,7 @@ fn wheel_cache_dir() -> PathBuf {
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> bool {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(_) => return false,
@@ -550,7 +572,8 @@ pub fn search(query: &str) -> Result<Vec<(String, String, String)>, String> {
 
     match client.get(&url).send() {
         Ok(resp) if resp.status().is_success() => {
-            let data: PyPIResponse = resp.json()
+            let data: PyPIResponse = resp
+                .json()
                 .map_err(|e| format!("JSON parse error: {}", e))?;
             Ok(vec![(
                 data.info.name,

@@ -190,15 +190,11 @@ impl PackageMetadata {
     }
 
     /// Merge a list of (name, email) pairs into single Author / Author-email strings.
-    fn merge_persons(persons: &[(Option<String>, Option<String>)]) -> (Option<String>, Option<String>) {
-        let names: Vec<&str> = persons
-            .iter()
-            .filter_map(|(n, _)| n.as_deref())
-            .collect();
-        let emails: Vec<&str> = persons
-            .iter()
-            .filter_map(|(_, e)| e.as_deref())
-            .collect();
+    fn merge_persons(
+        persons: &[(Option<String>, Option<String>)],
+    ) -> (Option<String>, Option<String>) {
+        let names: Vec<&str> = persons.iter().filter_map(|(n, _)| n.as_deref()).collect();
+        let emails: Vec<&str> = persons.iter().filter_map(|(_, e)| e.as_deref()).collect();
         let name = if names.is_empty() {
             None
         } else {

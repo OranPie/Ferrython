@@ -6,9 +6,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    NativeFunctionData, CompareOp, check_args_min, SharedFxAttrMap,
+use ferrython_core::object::{
+    check_args_min, new_fx_hashkey_map, CompareOp, FxHashKeyMap, InstanceData, NativeFunctionData,
+    PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -17,17 +17,39 @@ use std::rc::Rc;
 use super::core_fns::{builtin_dict_fromkeys, builtin_type};
 use super::dispatch;
 
-pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_namedtuple_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "_asdict" => {
             if let Some(fields) = inst.class.get_attr("_fields") {
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                     let mut map = IndexMap::new();
+                    if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                        if let PyObjectPayload::Tuple(items) = &tup.payload {
+                            for (field, val) in field_names.iter().zip(items.iter()) {
+                                let name = field.py_to_string();
+                                map.insert(
+                                    HashableKey::str_key(CompactString::from(name.as_str())),
+                                    val.clone(),
+                                );
+                            }
+                            return Ok(PyObject::dict(map));
+                        }
+                    }
                     let attrs = inst.attrs.read();
                     for field in field_names.iter() {
                         let name = field.py_to_string();
-                        let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
-                        map.insert(HashableKey::str_key(CompactString::from(name.as_str())), val);
+                        let val = attrs
+                            .get(name.as_str())
+                            .cloned()
+                            .unwrap_or_else(PyObject::none);
+                        map.insert(
+                            HashableKey::str_key(CompactString::from(name.as_str())),
+                            val,
+                        );
                     }
                     return Ok(PyObject::dict(map));
                 }
@@ -55,10 +77,16 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                         let hk = HashableKey::str_key(CompactString::from(name.as_str()));
                         let val = if let Some(ref kw) = kwargs_dict {
                             kw.get(&hk).cloned().unwrap_or_else(|| {
-                                attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none)
+                                attrs
+                                    .get(name.as_str())
+                                    .cloned()
+                                    .unwrap_or_else(PyObject::none)
                             })
                         } else {
-                            attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none)
+                            attrs
+                                .get(name.as_str())
+                                .cloned()
+                                .unwrap_or_else(PyObject::none)
                         };
                         new_values.push(val);
                     }
@@ -67,11 +95,8 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                     let new_inst = PyObject::instance(inst.class.clone());
                     if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
                         let mut new_attrs = new_data.attrs.write();
-                        for (field, val) in field_names.iter().zip(new_values.iter()) {
-                            let name = field.py_to_string();
-                            new_attrs.insert(CompactString::from(name.as_str()), val.clone());
-                        }
-                        new_attrs.insert(CompactString::from("_tuple"), PyObject::tuple(new_values));
+                        new_attrs
+                            .insert(CompactString::from("_tuple"), PyObject::tuple(new_values));
                     }
                     return Ok(new_inst);
                 }
@@ -81,7 +106,9 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
         "_make" => {
             // _make(iterable) — create instance from iterable
             if args.is_empty() {
-                return Err(PyException::type_error("_make() requires an iterable argument"));
+                return Err(PyException::type_error(
+                    "_make() requires an iterable argument",
+                ));
             }
             let items = args[0].to_list()?;
             if let Some(fields) = inst.class.get_attr("_fields") {
@@ -89,11 +116,6 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                     let new_inst = PyObject::instance(inst.class.clone());
                     if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
                         let mut new_attrs = new_data.attrs.write();
-                        for (i, field) in field_names.iter().enumerate() {
-                            let name = field.py_to_string();
-                            let val = items.get(i).cloned().unwrap_or_else(PyObject::none);
-                            new_attrs.insert(CompactString::from(name.as_str()), val);
-                        }
                         new_attrs.insert(CompactString::from("_tuple"), PyObject::tuple(items));
                     }
                     return Ok(new_inst);
@@ -112,18 +134,20 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
         "__iter__" => {
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
-                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                        Rc::new(PyCell::new(
-                            ferrython_core::object::IteratorData::Tuple { items: (**items).clone(), index: 0 }
-                        ))
-                    )));
+                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                        PyCell::new(ferrython_core::object::IteratorData::Tuple {
+                            items: (**items).clone(),
+                            index: 0,
+                        }),
+                    ))));
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(
-                    ferrython_core::object::IteratorData::Tuple { items: vec![], index: 0 }
-                ))
-            )))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(ferrython_core::object::IteratorData::Tuple {
+                    items: vec![],
+                    index: 0,
+                }),
+            ))))
         }
         "__repr__" | "__str__" => {
             let typename = if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -133,30 +157,67 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
             };
             if let Some(fields) = inst.class.get_attr("_fields") {
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                    if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                        if let PyObjectPayload::Tuple(items) = &tup.payload {
+                            let parts: Vec<String> = field_names
+                                .iter()
+                                .zip(items.iter())
+                                .map(|(f, val)| {
+                                    let name = f.py_to_string();
+                                    format!("{}={}", name, val.py_to_string())
+                                })
+                                .collect();
+                            return Ok(PyObject::str_val(CompactString::from(format!(
+                                "{}({})",
+                                typename,
+                                parts.join(", ")
+                            ))));
+                        }
+                    }
                     let attrs = inst.attrs.read();
-                    let parts: Vec<String> = field_names.iter()
+                    let parts: Vec<String> = field_names
+                        .iter()
                         .map(|f| {
                             let name = f.py_to_string();
-                            let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
+                            let val = attrs
+                                .get(name.as_str())
+                                .cloned()
+                                .unwrap_or_else(PyObject::none);
                             format!("{}={}", name, val.py_to_string())
                         })
                         .collect();
-                    return Ok(PyObject::str_val(CompactString::from(format!("{}({})", typename, parts.join(", ")))));
+                    return Ok(PyObject::str_val(CompactString::from(format!(
+                        "{}({})",
+                        typename,
+                        parts.join(", ")
+                    ))));
                 }
             }
-            Ok(PyObject::str_val(CompactString::from(format!("{}()", typename))))
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "{}()",
+                typename
+            ))))
         }
         "__eq__" => {
             // Compare namedtuple instances by their _tuple values
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            if args.is_empty() {
+                return Ok(PyObject::bool_val(false));
+            }
             let other = &args[0];
             let self_tuple = inst.attrs.read().get("_tuple").cloned();
             let other_tuple = other.get_attr("_tuple");
             if let (Some(st), Some(ot)) = (self_tuple, other_tuple) {
-                if let (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) = (&st.payload, &ot.payload) {
-                    if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
+                if let (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) =
+                    (&st.payload, &ot.payload)
+                {
+                    if a.len() != b.len() {
+                        return Ok(PyObject::bool_val(false));
+                    }
                     for (av, bv) in a.iter().zip(b.iter()) {
-                        if !av.compare(bv, ferrython_core::object::CompareOp::Eq)?.is_truthy() {
+                        if !av
+                            .compare(bv, ferrython_core::object::CompareOp::Eq)?
+                            .is_truthy()
+                        {
                             return Ok(PyObject::bool_val(false));
                         }
                     }
@@ -166,38 +227,126 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
             Ok(PyObject::bool_val(false))
         }
         "__hash__" => {
-            // Simple hash based on field count
+            // Hash the stored tuple payload.
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
-                    return Ok(PyObject::int(items.len() as i64 * 31));
+                    fn hash_key_like_python(key: &HashableKey) -> i64 {
+                        match key {
+                            HashableKey::Int(n) => n.to_i64().unwrap_or(0),
+                            HashableKey::Bool(b) => *b as i64,
+                            HashableKey::Float(f) => f.0.to_bits() as i64,
+                            HashableKey::Str(s) => {
+                                let mut h: u64 = 5381;
+                                for c in s.bytes() {
+                                    h = h.wrapping_mul(33).wrapping_add(c as u64);
+                                }
+                                h as i64
+                            }
+                            HashableKey::None => 0,
+                            HashableKey::Bytes(b) => {
+                                let mut h: u64 = 5381;
+                                for x in b.iter() {
+                                    h = h.wrapping_mul(33).wrapping_add(*x as u64);
+                                }
+                                h as i64
+                            }
+                            HashableKey::Tuple(items) => {
+                                let mut h: u64 = 0x345678;
+                                let mult: u64 = 1_000_003;
+                                for item in items.iter() {
+                                    h = h.wrapping_mul(mult)
+                                        ^ hash_key_like_python(
+                                            &item
+                                                .to_object()
+                                                .to_hashable_key()
+                                                .unwrap_or(HashableKey::None),
+                                        ) as u64;
+                                }
+                                h as i64
+                            }
+                            HashableKey::FrozenSet(items) => {
+                                let mut h: u64 = 1927868237u64.wrapping_mul(items.len() as u64 + 1);
+                                for item in items.iter() {
+                                    let ih = hash_key_like_python(
+                                        &item
+                                            .to_object()
+                                            .to_hashable_key()
+                                            .unwrap_or(HashableKey::None),
+                                    ) as u64;
+                                    h ^= (ih ^ (ih << 16) ^ 89869747).wrapping_mul(3644798167);
+                                }
+                                h = h.wrapping_mul(69069).wrapping_add(907133923);
+                                let result = h as i64;
+                                if result == -1 {
+                                    590923713
+                                } else {
+                                    result
+                                }
+                            }
+                            HashableKey::Identity(ptr, _) => *ptr as i64,
+                            HashableKey::Custom { hash_value, .. } => *hash_value,
+                        }
+                    }
+                    let mut h: u64 = 0x345678;
+                    let mult: u64 = 1_000_003;
+                    for item in items.iter() {
+                        h = h.wrapping_mul(mult)
+                            ^ hash_key_like_python(&item.to_hashable_key()?) as u64;
+                    }
+                    return Ok(PyObject::int(h as i64));
                 }
             }
             Ok(PyObject::int(0))
         }
         "__contains__" => {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            if args.is_empty() {
+                return Ok(PyObject::bool_val(false));
+            }
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
-                return Ok(PyObject::bool_val(tup.contains(&args[0])?));
+                if let PyObjectPayload::Tuple(items) = &tup.payload {
+                    return Ok(PyObject::bool_val(items.iter().any(|x| {
+                        x.compare(&args[0], CompareOp::Eq)
+                            .map(|o| o.is_truthy())
+                            .unwrap_or(false)
+                    })));
+                }
             }
             Ok(PyObject::bool_val(false))
         }
         "__getitem__" => {
-            if args.is_empty() { return Err(PyException::type_error("__getitem__ requires an argument")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("__getitem__ requires an argument"));
+            }
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 return tup.get_item(&args[0]);
             }
             Err(PyException::index_error("index out of range"))
         }
-        _ => Err(PyException::attribute_error(format!("namedtuple has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "namedtuple has no attribute '{}'",
+            method
+        ))),
     }
 }
 
-pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_deque_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let get_data = || -> PyObjectRef {
-        inst.attrs.read().get("_data").cloned().unwrap_or_else(|| PyObject::list(vec![]))
+        inst.attrs
+            .read()
+            .get("_data")
+            .cloned()
+            .unwrap_or_else(|| PyObject::list(vec![]))
     };
     let get_maxlen = || -> Option<usize> {
-        inst.attrs.read().get("__maxlen__").and_then(|v| v.as_int()).map(|n| n as usize)
+        inst.attrs
+            .read()
+            .get("__maxlen__")
+            .and_then(|v| v.as_int())
+            .map(|n| n as usize)
     };
     // Helper: enforce maxlen by trimming from the appropriate end
     let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
@@ -238,7 +387,10 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
                 if v.is_empty() {
-                    return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
+                    return Err(PyException::new(
+                        ExceptionKind::IndexError,
+                        "pop from an empty deque",
+                    ));
                 }
                 return Ok(v.pop().unwrap());
             }
@@ -249,7 +401,10 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
                 if v.is_empty() {
-                    return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
+                    return Err(PyException::new(
+                        ExceptionKind::IndexError,
+                        "pop from an empty deque",
+                    ));
                 }
                 return Ok(v.remove(0));
             }
@@ -280,7 +435,11 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             Ok(PyObject::none())
         }
         "rotate" => {
-            let n = if args.is_empty() { 1i64 } else { args[0].as_int().unwrap_or(1) };
+            let n = if args.is_empty() {
+                1i64
+            } else {
+                args[0].as_int().unwrap_or(1)
+            };
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
@@ -306,36 +465,60 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
         "copy" => {
             let data = get_data();
             let items = data.to_list()?;
-            let maxlen_obj = inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none);
+            let maxlen_obj = inst
+                .attrs
+                .read()
+                .get("__maxlen__")
+                .cloned()
+                .unwrap_or_else(PyObject::none);
             dispatch("deque", &[PyObject::list(items), maxlen_obj])
         }
         "count" => {
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let v = list.read();
-                let count = v.iter().filter(|x| x.py_to_string() == args[0].py_to_string()).count();
+                let count = v
+                    .iter()
+                    .filter(|x| x.py_to_string() == args[0].py_to_string())
+                    .count();
                 return Ok(PyObject::int(count as i64));
             }
             Ok(PyObject::int(0))
         }
         "index" => {
             if args.is_empty() {
-                return Err(PyException::type_error("index() requires at least 1 argument"));
+                return Err(PyException::type_error(
+                    "index() requires at least 1 argument",
+                ));
             }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let v = list.read();
                 let target = args[0].py_to_string();
-                let start = if args.len() > 1 { args[1].as_int().unwrap_or(0) as usize } else { 0 };
-                let stop = if args.len() > 2 { args[2].as_int().unwrap_or(v.len() as i64) as usize } else { v.len() };
+                let start = if args.len() > 1 {
+                    args[1].as_int().unwrap_or(0) as usize
+                } else {
+                    0
+                };
+                let stop = if args.len() > 2 {
+                    args[2].as_int().unwrap_or(v.len() as i64) as usize
+                } else {
+                    v.len()
+                };
                 for i in start..stop.min(v.len()) {
                     if v[i].py_to_string() == target {
                         return Ok(PyObject::int(i as i64));
                     }
                 }
-                return Err(PyException::new(ExceptionKind::ValueError, format!("{} is not in deque", args[0].py_to_string())));
+                return Err(PyException::new(
+                    ExceptionKind::ValueError,
+                    format!("{} is not in deque", args[0].py_to_string()),
+                ));
             }
-            Err(PyException::new(ExceptionKind::ValueError, "deque index error"))
+            Err(PyException::new(
+                ExceptionKind::ValueError,
+                "deque index error",
+            ))
         }
         "insert" => {
             if args.len() < 2 {
@@ -345,7 +528,10 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
                 let data = get_data();
                 if let PyObjectPayload::List(list) = &data.payload {
                     if list.read().len() >= ml {
-                        return Err(PyException::new(ExceptionKind::IndexError, "deque already at its maximum size"));
+                        return Err(PyException::new(
+                            ExceptionKind::IndexError,
+                            "deque already at its maximum size",
+                        ));
                     }
                 }
             }
@@ -370,7 +556,10 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
                     v.remove(pos);
                     return Ok(PyObject::none());
                 }
-                return Err(PyException::new(ExceptionKind::ValueError, "deque.remove(x): x not in deque"));
+                return Err(PyException::new(
+                    ExceptionKind::ValueError,
+                    "deque.remove(x): x not in deque",
+                ));
             }
             Ok(PyObject::none())
         }
@@ -383,7 +572,12 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
         }
         "maxlen" => {
             // Property-like access: return maxlen value
-            let ml = inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none);
+            let ml = inst
+                .attrs
+                .read()
+                .get("__maxlen__")
+                .cloned()
+                .unwrap_or_else(PyObject::none);
             Ok(ml)
         }
         "__len__" => {
@@ -394,12 +588,16 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             Ok(PyObject::int(0))
         }
         "__contains__" => {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            if args.is_empty() {
+                return Ok(PyObject::bool_val(false));
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let v = list.read();
                 let target = args[0].py_to_string();
-                return Ok(PyObject::bool_val(v.iter().any(|x| x.py_to_string() == target)));
+                return Ok(PyObject::bool_val(
+                    v.iter().any(|x| x.py_to_string() == target),
+                ));
             }
             Ok(PyObject::bool_val(false))
         }
@@ -414,16 +612,23 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
                 let len = v.len() as i64;
                 let actual_idx = if idx < 0 { len + idx } else { idx };
                 if actual_idx < 0 || actual_idx >= len {
-                    return Err(PyException::new(ExceptionKind::IndexError, "deque index out of range"));
+                    return Err(PyException::new(
+                        ExceptionKind::IndexError,
+                        "deque index out of range",
+                    ));
                 }
                 return Ok(v[actual_idx as usize].clone());
             }
-            Err(PyException::new(ExceptionKind::IndexError, "deque index out of range"))
+            Err(PyException::new(
+                ExceptionKind::IndexError,
+                "deque index out of range",
+            ))
         }
-        "__iter__" => {
-            Ok(get_data())
-        }
-        _ => Err(PyException::attribute_error(format!("deque has no attribute '{}'", method))),
+        "__iter__" => Ok(get_data()),
+        _ => Err(PyException::attribute_error(format!(
+            "deque has no attribute '{}'",
+            method
+        ))),
     }
 }
 
@@ -436,14 +641,21 @@ pub(super) fn call_instance_dict_method(
         "get" => {
             check_args_min("get", args, 1)?;
             let key_str = args[0].py_to_string();
-            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
-            Ok(attrs.read().get(key_str.as_str()).cloned().unwrap_or(default))
+            let default = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                PyObject::none()
+            };
+            Ok(attrs
+                .read()
+                .get(key_str.as_str())
+                .cloned()
+                .unwrap_or(default))
         }
         "keys" => {
             let guard = attrs.read();
-            let keys: Vec<PyObjectRef> = guard.keys()
-                .map(|k| PyObject::str_val(k.clone()))
-                .collect();
+            let keys: Vec<PyObjectRef> =
+                guard.keys().map(|k| PyObject::str_val(k.clone())).collect();
             Ok(PyObject::list(keys))
         }
         "values" => {
@@ -453,7 +665,8 @@ pub(super) fn call_instance_dict_method(
         }
         "items" => {
             let guard = attrs.read();
-            let items: Vec<PyObjectRef> = guard.iter()
+            let items: Vec<PyObjectRef> = guard
+                .iter()
                 .map(|(k, v)| PyObject::tuple(vec![PyObject::str_val(k.clone()), v.clone()]))
                 .collect();
             Ok(PyObject::list(items))
@@ -461,12 +674,18 @@ pub(super) fn call_instance_dict_method(
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
             let key_str = args[0].py_to_string();
-            Ok(PyObject::bool_val(attrs.read().contains_key(key_str.as_str())))
+            Ok(PyObject::bool_val(
+                attrs.read().contains_key(key_str.as_str()),
+            ))
         }
         "pop" => {
             check_args_min("pop", args, 1)?;
             let key_str = CompactString::from(args[0].py_to_string());
-            let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
+            let default = if args.len() >= 2 {
+                Some(args[1].clone())
+            } else {
+                None
+            };
             match attrs.write().swap_remove(&key_str) {
                 Some(v) => Ok(v),
                 None => match default {
@@ -484,7 +703,11 @@ pub(super) fn call_instance_dict_method(
                     w.insert(CompactString::from(k.to_object().py_to_string()), v);
                 }
             } else if let PyObjectPayload::InstanceDict(other) = &args[0].payload {
-                let other_items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let other_items: Vec<_> = other
+                    .read()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 let mut w = attrs.write();
                 for (k, v) in other_items {
                     w.insert(k, v);
@@ -494,7 +717,8 @@ pub(super) fn call_instance_dict_method(
         }
         "copy" => {
             let guard = attrs.read();
-            let copy: FxHashKeyMap = guard.iter()
+            let copy: FxHashKeyMap = guard
+                .iter()
                 .map(|(k, v)| (HashableKey::str_key(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict(copy))
@@ -506,7 +730,11 @@ pub(super) fn call_instance_dict_method(
         "setdefault" => {
             check_args_min("setdefault", args, 1)?;
             let key = CompactString::from(args[0].py_to_string());
-            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            let default = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                PyObject::none()
+            };
             let mut w = attrs.write();
             if let Some(v) = w.get(key.as_str()) {
                 Ok(v.clone())
@@ -515,28 +743,46 @@ pub(super) fn call_instance_dict_method(
                 Ok(default)
             }
         }
-        _ => Err(PyException::attribute_error(format!("'dict' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'dict' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
-pub(super) fn call_csv_writer_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_csv_writer_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
-    let fileobj = attrs.get("_fileobj").cloned().unwrap_or_else(PyObject::none);
-    let rows = attrs.get("_rows").cloned().unwrap_or_else(|| PyObject::list(vec![]));
+    let fileobj = attrs
+        .get("_fileobj")
+        .cloned()
+        .unwrap_or_else(PyObject::none);
+    let rows = attrs
+        .get("_rows")
+        .cloned()
+        .unwrap_or_else(|| PyObject::list(vec![]));
     drop(attrs);
 
     match method {
         "writerow" => {
-            if args.is_empty() { return Err(PyException::type_error("writerow() requires a sequence")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("writerow() requires a sequence"));
+            }
             let items = args[0].to_list()?;
-            let fields: Vec<String> = items.iter().map(|item| {
-                let s = item.py_to_string();
-                if s.contains(',') || s.contains('"') || s.contains('\n') {
-                    format!("\"{}\"", s.replace('"', "\"\""))
-                } else {
-                    s
-                }
-            }).collect();
+            let fields: Vec<String> = items
+                .iter()
+                .map(|item| {
+                    let s = item.py_to_string();
+                    if s.contains(',') || s.contains('"') || s.contains('\n') {
+                        format!("\"{}\"", s.replace('"', "\"\""))
+                    } else {
+                        s
+                    }
+                })
+                .collect();
             let line = format!("{}\r\n", fields.join(","));
             // Write to the file object's write method or accumulate in _rows
             if let PyObjectPayload::Instance(fobj_inst) = &fileobj.payload {
@@ -545,19 +791,25 @@ pub(super) fn call_csv_writer_method(inst: &ferrython_core::object::InstanceData
                     let mut fobj_attrs = fobj_inst.attrs.write();
                     if let Some(buf) = fobj_attrs.get("_buffer") {
                         let existing = buf.py_to_string();
-                        fobj_attrs.insert(CompactString::from("_buffer"),
-                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                        fobj_attrs.insert(
+                            CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))),
+                        );
                     }
                 }
             }
             // Also store in _rows
             if let PyObjectPayload::List(row_list) = &rows.payload {
-                row_list.write().push(PyObject::str_val(CompactString::from(&line)));
+                row_list
+                    .write()
+                    .push(PyObject::str_val(CompactString::from(&line)));
             }
             Ok(PyObject::none())
         }
         "writerows" => {
-            if args.is_empty() { return Err(PyException::type_error("writerows() requires an iterable")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("writerows() requires an iterable"));
+            }
             let rows_list = args[0].to_list()?;
             for row in rows_list {
                 // Recursively call writerow
@@ -565,14 +817,27 @@ pub(super) fn call_csv_writer_method(inst: &ferrython_core::object::InstanceData
             }
             Ok(PyObject::none())
         }
-        _ => Err(PyException::attribute_error(format!("'csv.writer' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'csv.writer' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
-pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_csv_dictwriter_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
-    let fileobj = attrs.get("_fileobj").cloned().unwrap_or_else(PyObject::none);
-    let fieldnames = attrs.get("_fieldnames").cloned().unwrap_or_else(|| PyObject::list(vec![]));
+    let fileobj = attrs
+        .get("_fileobj")
+        .cloned()
+        .unwrap_or_else(PyObject::none);
+    let fieldnames = attrs
+        .get("_fieldnames")
+        .cloned()
+        .unwrap_or_else(|| PyObject::list(vec![]));
     drop(attrs);
 
     let field_list = fieldnames.to_list()?;
@@ -586,22 +851,28 @@ pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::Instance
                     let mut fobj_attrs = fobj_inst.attrs.write();
                     if let Some(buf) = fobj_attrs.get("_buffer") {
                         let existing = buf.py_to_string();
-                        fobj_attrs.insert(CompactString::from("_buffer"),
-                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                        fobj_attrs.insert(
+                            CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))),
+                        );
                     }
                 }
             }
             Ok(PyObject::none())
         }
         "writerow" => {
-            if args.is_empty() { return Err(PyException::type_error("writerow() requires a dict")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("writerow() requires a dict"));
+            }
             let row_dict = &args[0];
             let mut fields = Vec::new();
             for name in &names {
                 // Dict key lookup first (avoids clashing with dict method names like "pop")
                 let val = if let PyObjectPayload::Dict(map) = &row_dict.payload {
-                    map.read().get(&HashableKey::str_key(CompactString::from(name.as_str())))
-                        .cloned().unwrap_or_else(PyObject::none)
+                    map.read()
+                        .get(&HashableKey::str_key(CompactString::from(name.as_str())))
+                        .cloned()
+                        .unwrap_or_else(PyObject::none)
                 } else if let Some(v) = row_dict.get_attr(name) {
                     v
                 } else {
@@ -620,22 +891,29 @@ pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::Instance
                     let mut fobj_attrs = fobj_inst.attrs.write();
                     if let Some(buf) = fobj_attrs.get("_buffer") {
                         let existing = buf.py_to_string();
-                        fobj_attrs.insert(CompactString::from("_buffer"),
-                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                        fobj_attrs.insert(
+                            CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))),
+                        );
                     }
                 }
             }
             Ok(PyObject::none())
         }
         "writerows" => {
-            if args.is_empty() { return Err(PyException::type_error("writerows() requires an iterable")); }
+            if args.is_empty() {
+                return Err(PyException::type_error("writerows() requires an iterable"));
+            }
             let rows = args[0].to_list()?;
             for row in rows.iter() {
                 call_csv_dictwriter_method(inst, "writerow", &[row.clone()])?;
             }
             Ok(PyObject::none())
         }
-        _ => Err(PyException::attribute_error(format!("'csv.DictWriter' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'csv.DictWriter' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
@@ -682,7 +960,11 @@ pub(super) fn compute_hash_digest(algo: &str, data: &[u8]) -> (String, Vec<u8>) 
     }
 }
 
-pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_hashlib_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "update" => {
             // Append data to _data buffer, recompute digest lazily
@@ -697,17 +979,34 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
             let mut w = inst.attrs.write();
             // Append to accumulated data
             let mut accumulated = if let Some(d) = w.get("_data") {
-                if let PyObjectPayload::Bytes(b) = &d.payload { (**b).clone() } else { vec![] }
+                if let PyObjectPayload::Bytes(b) = &d.payload {
+                    (**b).clone()
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
             };
             accumulated.extend_from_slice(&new_data);
-            w.insert(CompactString::from("_data"), PyObject::bytes(accumulated.clone()));
+            w.insert(
+                CompactString::from("_data"),
+                PyObject::bytes(accumulated.clone()),
+            );
             // Recompute digest
-            let algo = if let Some(n) = w.get("name") { n.py_to_string() } else { String::from("sha256") };
+            let algo = if let Some(n) = w.get("name") {
+                n.py_to_string()
+            } else {
+                String::from("sha256")
+            };
             let (hex, digest_bytes) = compute_hash_digest(&algo, &accumulated);
-            w.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&hex)));
-            w.insert(CompactString::from("_digest"), PyObject::bytes(digest_bytes));
+            w.insert(
+                CompactString::from("_hexdigest"),
+                PyObject::str_val(CompactString::from(&hex)),
+            );
+            w.insert(
+                CompactString::from("_digest"),
+                PyObject::bytes(digest_bytes),
+            );
             Ok(PyObject::none())
         }
         "hexdigest" => {
@@ -729,17 +1028,27 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
             let attrs = inst.attrs.read();
             let cls = inst.class.clone();
             let class_flags = InstanceData::compute_flags(&cls);
-            let new_inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
-                class: cls,
-                attrs: Rc::new(PyCell::new(attrs.clone())),
-                is_special: true, dict_storage: None,
-                class_flags,
-            }))));
+            let new_inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(
+                Box::new(InstanceData {
+                    class: cls,
+                    attrs: Rc::new(PyCell::new(attrs.clone())),
+                    is_special: true,
+                    dict_storage: None,
+                    class_flags,
+                }),
+            )));
             Ok(new_inst)
         }
         _ => {
-            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { "hash".to_string() };
-            Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", class_name, method)))
+            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.name.to_string()
+            } else {
+                "hash".to_string()
+            };
+            Err(PyException::attribute_error(format!(
+                "'{}' object has no attribute '{}'",
+                class_name, method
+            )))
         }
     }
 }
@@ -747,120 +1056,156 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
 /// Resolve class-level methods on builtin types (e.g., dict.fromkeys, int.from_bytes).
 pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<PyObjectRef> {
     match (type_name, method_name) {
-        ("dict", "fromkeys") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("dict.fromkeys"),
-            func: builtin_dict_fromkeys,
-        })))),
-        ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("int.from_bytes"),
-            func: builtin_int_from_bytes,
-        })))),
-        ("bool", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("bool.from_bytes"),
-            func: builtin_bool_from_bytes,
-        })))),
-        ("str", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("str.maketrans"),
-            func: builtin_str_maketrans,
-        })))),
-        ("bytes", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("bytes.fromhex"),
-            func: builtin_bytes_fromhex,
-        })))),
-        ("bytes", "maketrans") | ("bytearray", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("bytes.maketrans"),
-            func: builtin_bytes_maketrans,
-        })))),
-        ("object", "__getattribute__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("object.__getattribute__"),
-            func: builtin_object_getattribute,
-        })))),
-        ("object", "__setattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("object.__setattr__"),
-            func: builtin_object_setattr,
-        })))),
-        ("object", "__delattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("object.__delattr__"),
-            func: builtin_object_delattr,
-        })))),
-        ("type", "__new__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("type.__new__"),
-            func: builtin_type,
-        })))),
-        ("float", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("float.fromhex"),
-            func: builtin_float_fromhex,
-        })))),
+        ("dict", "fromkeys") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("dict.fromkeys"),
+                func: builtin_dict_fromkeys,
+            },
+        )))),
+        ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("int.from_bytes"),
+                func: builtin_int_from_bytes,
+            },
+        )))),
+        ("bool", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("bool.from_bytes"),
+                func: builtin_bool_from_bytes,
+            },
+        )))),
+        ("str", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("str.maketrans"),
+                func: builtin_str_maketrans,
+            },
+        )))),
+        ("bytes", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("bytes.fromhex"),
+                func: builtin_bytes_fromhex,
+            },
+        )))),
+        ("bytes", "maketrans") | ("bytearray", "maketrans") => Some(PyObject::wrap(
+            PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
+                name: CompactString::from("bytes.maketrans"),
+                func: builtin_bytes_maketrans,
+            })),
+        )),
+        ("object", "__getattribute__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(
+            Box::new(NativeFunctionData {
+                name: CompactString::from("object.__getattribute__"),
+                func: builtin_object_getattribute,
+            }),
+        ))),
+        ("object", "__setattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(
+            Box::new(NativeFunctionData {
+                name: CompactString::from("object.__setattr__"),
+                func: builtin_object_setattr,
+            }),
+        ))),
+        ("object", "__delattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(
+            Box::new(NativeFunctionData {
+                name: CompactString::from("object.__delattr__"),
+                func: builtin_object_delattr,
+            }),
+        ))),
+        ("type", "__new__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("type.__new__"),
+                func: builtin_type,
+            },
+        )))),
+        ("float", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("float.fromhex"),
+                func: builtin_float_fromhex,
+            },
+        )))),
         // property descriptor methods: property.__get__(self, obj, type)
-        ("property", "__get__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("property.__get__"),
-            func: |args: &[PyObjectRef]| {
-                // property.__get__(self, obj, objtype=None)
-                // self is the property object, obj is the instance
-                if args.is_empty() {
-                    return Err(PyException::type_error("descriptor '__get__' requires a property object"));
-                }
-                let prop = &args[0];
-                let obj = args.get(1);
-                // If obj is None or not provided, return the property itself
-                let obj = match obj {
-                    Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
-                    _ => return Ok(prop.clone()),
-                };
-                // Get the fget from the property
-                if let PyObjectPayload::Property(pd) = &prop.payload {
-                    if let Some(getter) = pd.fget.as_ref() {
-                        let getter = crate::builtins::core_fns::unwrap_abstract_fget(getter);
-                        return Ok(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: obj.clone(),
-                                method: getter,
-                            }
-                        }));
+        ("property", "__get__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("property.__get__"),
+                func: |args: &[PyObjectRef]| {
+                    // property.__get__(self, obj, objtype=None)
+                    // self is the property object, obj is the instance
+                    if args.is_empty() {
+                        return Err(PyException::type_error(
+                            "descriptor '__get__' requires a property object",
+                        ));
                     }
-                    return Err(PyException::attribute_error("unreadable attribute"));
-                }
-                // For InstanceProperty (subclass of property), look for fget in instance attrs
-                if let PyObjectPayload::Instance(inst) = &prop.payload {
-                    if let Some(fget) = inst.attrs.read().get("fget").cloned() {
-                        return Ok(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: obj.clone(),
-                                method: fget,
-                            }
-                        }));
+                    let prop = &args[0];
+                    let obj = args.get(1);
+                    // If obj is None or not provided, return the property itself
+                    let obj = match obj {
+                        Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
+                        _ => return Ok(prop.clone()),
+                    };
+                    // Get the fget from the property
+                    if let PyObjectPayload::Property(pd) = &prop.payload {
+                        if let Some(getter) = pd.fget.as_ref() {
+                            let getter = crate::builtins::core_fns::unwrap_abstract_fget(getter);
+                            return Ok(PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: getter,
+                                },
+                            }));
+                        }
+                        return Err(PyException::attribute_error("unreadable attribute"));
                     }
-                }
-                Ok(prop.clone())
+                    // For InstanceProperty (subclass of property), look for fget in instance attrs
+                    if let PyObjectPayload::Instance(inst) = &prop.payload {
+                        if let Some(fget) = inst.attrs.read().get("fget").cloned() {
+                            return Ok(PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: fget,
+                                },
+                            }));
+                        }
+                    }
+                    Ok(prop.clone())
+                },
             },
-        })))),
-        ("property", "__init__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData {
-            name: CompactString::from("property.__init__"),
-            func: |args: &[PyObjectRef]| {
-                // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
-                // Store fget/fset/fdel on the instance so subclasses work
-                if args.is_empty() {
-                    return Ok(PyObject::none());
-                }
-                let fget = args.get(1).cloned();
-                let fset = args.get(2).cloned();
-                let fdel = args.get(3).cloned();
-                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                    let mut w = inst.attrs.write();
-                    if let Some(f) = &fget { w.insert(CompactString::from("fget"), f.clone()); }
-                    if let Some(f) = &fset { w.insert(CompactString::from("fset"), f.clone()); }
-                    if let Some(f) = &fdel { w.insert(CompactString::from("fdel"), f.clone()); }
-                }
-                Ok(PyObject::none())
-            },
-        })))),
+        )))),
+        ("property", "__init__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(
+            Box::new(NativeFunctionData {
+                name: CompactString::from("property.__init__"),
+                func: |args: &[PyObjectRef]| {
+                    // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
+                    // Store fget/fset/fdel on the instance so subclasses work
+                    if args.is_empty() {
+                        return Ok(PyObject::none());
+                    }
+                    let fget = args.get(1).cloned();
+                    let fset = args.get(2).cloned();
+                    let fdel = args.get(3).cloned();
+                    if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        let mut w = inst.attrs.write();
+                        if let Some(f) = &fget {
+                            w.insert(CompactString::from("fget"), f.clone());
+                        }
+                        if let Some(f) = &fset {
+                            w.insert(CompactString::from("fset"), f.clone());
+                        }
+                        if let Some(f) = &fdel {
+                            w.insert(CompactString::from("fdel"), f.clone());
+                        }
+                    }
+                    Ok(PyObject::none())
+                },
+            }),
+        ))),
         _ => None,
     }
 }
 
 pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("int.from_bytes requires at least 1 argument"));
+        return Err(PyException::type_error(
+            "int.from_bytes requires at least 1 argument",
+        ));
     }
     let bytes = match &args[0].payload {
         PyObjectPayload::Bytes(b) => (**b).clone(),
@@ -874,7 +1219,8 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(map) = &last.payload {
                 let map_r = map.read();
-                if let Some(bo) = map_r.get(&HashableKey::str_key(CompactString::from("byteorder"))) {
+                if let Some(bo) = map_r.get(&HashableKey::str_key(CompactString::from("byteorder")))
+                {
                     byteorder = bo.py_to_string();
                 }
                 if let Some(s) = map_r.get(&HashableKey::str_key(CompactString::from("signed"))) {
@@ -901,7 +1247,11 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
                 result += (b as i64) << (8 * i);
             }
         }
-        _ => return Err(PyException::value_error("byteorder must be 'big' or 'little'")),
+        _ => {
+            return Err(PyException::value_error(
+                "byteorder must be 'big' or 'little'",
+            ))
+        }
     }
     if signed {
         let bits = bytes.len() * 8;
@@ -921,7 +1271,9 @@ pub(super) fn builtin_bool_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObject
 
 pub(super) fn builtin_str_maketrans(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("str.maketrans requires at least 1 argument"));
+        return Err(PyException::type_error(
+            "str.maketrans requires at least 1 argument",
+        ));
     }
     let mut map = IndexMap::new();
     if args.len() >= 2 {
@@ -955,13 +1307,19 @@ pub(super) fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
     let hex_str = args[0].py_to_string();
     let clean: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
     if clean.len() % 2 != 0 {
-        return Err(PyException::value_error("non-hexadecimal number found in fromhex() arg"));
+        return Err(PyException::value_error(
+            "non-hexadecimal number found in fromhex() arg",
+        ));
     }
     let mut bytes = Vec::new();
     for i in (0..clean.len()).step_by(2) {
-        match u8::from_str_radix(&clean[i..i+2], 16) {
+        match u8::from_str_radix(&clean[i..i + 2], 16) {
             Ok(b) => bytes.push(b),
-            Err(_) => return Err(PyException::value_error("non-hexadecimal number found in fromhex() arg")),
+            Err(_) => {
+                return Err(PyException::value_error(
+                    "non-hexadecimal number found in fromhex() arg",
+                ))
+            }
         }
     }
     Ok(PyObject::bytes(bytes))
@@ -980,7 +1338,9 @@ pub(super) fn builtin_bytes_maketrans(args: &[PyObjectRef]) -> PyResult<PyObject
         _ => return Err(PyException::type_error("a bytes-like object is required")),
     };
     if from_bytes.len() != to_bytes.len() {
-        return Err(PyException::value_error("maketrans arguments must have same length"));
+        return Err(PyException::value_error(
+            "maketrans arguments must have same length",
+        ));
     }
     let mut table: Vec<u8> = (0..=255u8).collect();
     for (f, t) in from_bytes.iter().zip(to_bytes.iter()) {
@@ -1012,8 +1372,9 @@ pub(super) fn builtin_float_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
     let rest = rest.strip_prefix("0x").unwrap_or(rest);
     if let Some(p_idx) = rest.find('p') {
         let mantissa_str = &rest[..p_idx];
-        let exp: i32 = rest[p_idx + 1..].parse().map_err(|_|
-            PyException::value_error("invalid hexadecimal floating-point string"))?;
+        let exp: i32 = rest[p_idx + 1..]
+            .parse()
+            .map_err(|_| PyException::value_error("invalid hexadecimal floating-point string"))?;
         let (int_part, frac_part) = if let Some(dot) = mantissa_str.find('.') {
             (&mantissa_str[..dot], &mantissa_str[dot + 1..])
         } else {
@@ -1029,19 +1390,25 @@ pub(super) fn builtin_float_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         let value = sign * (int_val as f64 + frac_val) * (2.0f64).powi(exp);
         Ok(PyObject::float(value))
     } else {
-        Err(PyException::value_error("invalid hexadecimal floating-point string"))
+        Err(PyException::value_error(
+            "invalid hexadecimal floating-point string",
+        ))
     }
 }
 pub(super) fn builtin_object_getattribute(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
-        return Err(PyException::type_error("object.__getattribute__ requires 2 arguments"));
+        return Err(PyException::type_error(
+            "object.__getattribute__ requires 2 arguments",
+        ));
     }
     let obj = &args[0];
     let name = args[1].py_to_string();
     match obj.get_attr(&name) {
         Some(v) => Ok(v),
         None => Err(PyException::attribute_error(format!(
-            "'{}' object has no attribute '{}'", obj.type_name(), name
+            "'{}' object has no attribute '{}'",
+            obj.type_name(),
+            name
         ))),
     }
 }
@@ -1049,7 +1416,9 @@ pub(super) fn builtin_object_getattribute(args: &[PyObjectRef]) -> PyResult<PyOb
 /// object.__setattr__(self, name, value)
 pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 3 {
-        return Err(PyException::type_error("object.__setattr__ requires 3 arguments"));
+        return Err(PyException::type_error(
+            "object.__setattr__ requires 3 arguments",
+        ));
     }
     let obj = &args[0];
     let name = args[1].py_to_string();
@@ -1058,17 +1427,25 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
         inst.attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
     } else if let PyObjectPayload::ExceptionInstance(ei) = &obj.payload {
-        ei.ensure_attrs().write().insert(CompactString::from(name), value);
+        ei.ensure_attrs()
+            .write()
+            .insert(CompactString::from(name), value);
         Ok(PyObject::none())
     } else if let PyObjectPayload::Function(f) = &obj.payload {
         f.attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
-    } else if matches!(&obj.payload, PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::BuiltinFunction(_)) {
+    } else if matches!(
+        &obj.payload,
+        PyObjectPayload::NativeFunction(_)
+            | PyObjectPayload::NativeClosure(_)
+            | PyObjectPayload::BuiltinFunction(_)
+    ) {
         // Silently accept for native functions
         Ok(PyObject::none())
     } else {
         Err(PyException::attribute_error(format!(
-            "'{}' object does not support attribute assignment", obj.type_name()
+            "'{}' object does not support attribute assignment",
+            obj.type_name()
         )))
     }
 }
@@ -1076,7 +1453,9 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
 /// object.__delattr__(self, name)
 pub(super) fn builtin_object_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
-        return Err(PyException::type_error("object.__delattr__ requires 2 arguments"));
+        return Err(PyException::type_error(
+            "object.__delattr__ requires 2 arguments",
+        ));
     }
     let obj = &args[0];
     let name = args[1].py_to_string();
@@ -1085,19 +1464,26 @@ pub(super) fn builtin_object_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
             Ok(PyObject::none())
         } else {
             Err(PyException::attribute_error(format!(
-                "'{}' object has no attribute '{}'", obj.type_name(), name
+                "'{}' object has no attribute '{}'",
+                obj.type_name(),
+                name
             )))
         }
     } else {
         Err(PyException::attribute_error(format!(
-            "'{}' object does not support attribute deletion", obj.type_name()
+            "'{}' object does not support attribute deletion",
+            obj.type_name()
         )))
     }
 }
 
 // ── StringIO methods ──
 
-pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_stringio_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "write" => {
             check_args_min("write", args, 1)?;
@@ -1105,7 +1491,10 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
             let len = text.len() as i64;
             let mut attrs = inst.attrs.write();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
-            let mut buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let mut buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             // Insert/overwrite at position
             if pos >= buf.len() {
                 buf.push_str(&text);
@@ -1117,30 +1506,45 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
                 }
             }
             let new_pos = pos + text.len();
-            attrs.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(&buf)));
+            attrs.insert(
+                CompactString::from("_buffer"),
+                PyObject::str_val(CompactString::from(&buf)),
+            );
             attrs.insert(CompactString::from("_pos"), PyObject::int(new_pos as i64));
             Ok(PyObject::int(len))
         }
         "read" => {
             let mut attrs = inst.attrs.write();
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             let n = if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
                 args[0].as_int().unwrap_or(-1)
-            } else { -1 };
+            } else {
+                -1
+            };
             let result = if n < 0 {
                 buf[pos..].to_string()
             } else {
                 let end = (pos + n as usize).min(buf.len());
                 buf[pos..end].to_string()
             };
-            let new_pos = if n < 0 { buf.len() } else { (pos + n as usize).min(buf.len()) };
+            let new_pos = if n < 0 {
+                buf.len()
+            } else {
+                (pos + n as usize).min(buf.len())
+            };
             attrs.insert(CompactString::from("_pos"), PyObject::int(new_pos as i64));
             Ok(PyObject::str_val(CompactString::from(&result)))
         }
         "readline" => {
             let mut attrs = inst.attrs.write();
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             let remaining = &buf[pos..];
             let line = if let Some(nl) = remaining.find('\n') {
@@ -1149,15 +1553,22 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
                 remaining
             };
             let result = line.to_string();
-            attrs.insert(CompactString::from("_pos"), PyObject::int((pos + result.len()) as i64));
+            attrs.insert(
+                CompactString::from("_pos"),
+                PyObject::int((pos + result.len()) as i64),
+            );
             Ok(PyObject::str_val(CompactString::from(&result)))
         }
         "readlines" => {
             let mut attrs = inst.attrs.write();
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             let remaining = &buf[pos..];
-            let lines: Vec<PyObjectRef> = remaining.split_inclusive('\n')
+            let lines: Vec<PyObjectRef> = remaining
+                .split_inclusive('\n')
                 .map(|l| PyObject::str_val(CompactString::from(l)))
                 .collect();
             attrs.insert(CompactString::from("_pos"), PyObject::int(buf.len() as i64));
@@ -1165,22 +1576,33 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
         }
         "getvalue" => {
             let attrs = inst.attrs.read();
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             Ok(PyObject::str_val(CompactString::from(&buf)))
         }
         "seek" => {
             check_args_min("seek", args, 1)?;
             let pos = args[0].as_int().unwrap_or(0);
-            let whence = if args.len() >= 2 { args[1].as_int().unwrap_or(0) } else { 0 };
+            let whence = if args.len() >= 2 {
+                args[1].as_int().unwrap_or(0)
+            } else {
+                0
+            };
             let mut attrs = inst.attrs.write();
-            let buf_len = attrs.get("_buffer").map(|b| b.py_to_string().len()).unwrap_or(0) as i64;
+            let buf_len = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string().len())
+                .unwrap_or(0) as i64;
             let new_pos = match whence {
-                0 => pos,                      // SEEK_SET
-                1 => {                         // SEEK_CUR
+                0 => pos, // SEEK_SET
+                1 => {
+                    // SEEK_CUR
                     let cur = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0);
                     cur + pos
                 }
-                2 => buf_len + pos,            // SEEK_END
+                2 => buf_len + pos, // SEEK_END
                 _ => pos,
             };
             let new_pos = new_pos.max(0);
@@ -1195,19 +1617,34 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
         "truncate" => {
             let mut attrs = inst.attrs.write();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
-            let size = if !args.is_empty() { args[0].as_int().unwrap_or(pos as i64) as usize } else { pos };
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let size = if !args.is_empty() {
+                args[0].as_int().unwrap_or(pos as i64) as usize
+            } else {
+                pos
+            };
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             let truncated: String = buf.chars().take(size).collect();
-            attrs.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(&truncated)));
+            attrs.insert(
+                CompactString::from("_buffer"),
+                PyObject::str_val(CompactString::from(&truncated)),
+            );
             Ok(PyObject::int(size as i64))
         }
         "close" => {
-            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            inst.attrs
+                .write()
+                .insert(CompactString::from("_closed"), PyObject::bool_val(true));
             Ok(PyObject::none())
         }
-        "closed" => {
-            Ok(inst.attrs.read().get("_closed").cloned().unwrap_or_else(|| PyObject::bool_val(false)))
-        }
+        "closed" => Ok(inst
+            .attrs
+            .read()
+            .get("_closed")
+            .cloned()
+            .unwrap_or_else(|| PyObject::bool_val(false))),
         "__enter__" => {
             // Return self — reconstruct from instance data
             let cls = inst.class.clone();
@@ -1218,7 +1655,9 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
             Ok(inst_obj)
         }
         "__exit__" => {
-            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            inst.attrs
+                .write()
+                .insert(CompactString::from("_closed"), PyObject::bool_val(true));
             Ok(PyObject::none())
         }
         "__iter__" => {
@@ -1233,7 +1672,10 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
         "__next__" => {
             // Read next line, raise StopIteration when exhausted
             let mut attrs = inst.attrs.write();
-            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let buf = attrs
+                .get("_buffer")
+                .map(|b| b.py_to_string())
+                .unwrap_or_default();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             if pos >= buf.len() {
                 return Err(PyException::stop_iteration());
@@ -1245,16 +1687,26 @@ pub(super) fn call_stringio_method(inst: &ferrython_core::object::InstanceData, 
                 remaining
             };
             let result = line.to_string();
-            attrs.insert(CompactString::from("_pos"), PyObject::int((pos + result.len()) as i64));
+            attrs.insert(
+                CompactString::from("_pos"),
+                PyObject::int((pos + result.len()) as i64),
+            );
             Ok(PyObject::str_val(CompactString::from(&result)))
         }
-        _ => Err(PyException::attribute_error(format!("'StringIO' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'StringIO' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
 // ── BytesIO methods ──
 
-pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_bytesio_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     match method {
         "write" => {
             check_args_min("write", args, 1)?;
@@ -1289,14 +1741,20 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             let n = if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
                 args[0].as_int().unwrap_or(-1)
-            } else { -1 };
+            } else {
+                -1
+            };
             let result = if n < 0 {
                 buf[pos..].to_vec()
             } else {
                 let end = (pos + n as usize).min(buf.len());
                 buf[pos..end].to_vec()
             };
-            let new_pos = if n < 0 { buf.len() } else { (pos + n as usize).min(buf.len()) };
+            let new_pos = if n < 0 {
+                buf.len()
+            } else {
+                (pos + n as usize).min(buf.len())
+            };
             attrs.insert(CompactString::from("_pos"), PyObject::int(new_pos as i64));
             Ok(PyObject::bytes(result))
         }
@@ -1310,7 +1768,11 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
         "seek" => {
             check_args_min("seek", args, 1)?;
             let pos = args[0].as_int().unwrap_or(0);
-            let whence = if args.len() >= 2 { args[1].as_int().unwrap_or(0) } else { 0 };
+            let whence = if args.len() >= 2 {
+                args[1].as_int().unwrap_or(0)
+            } else {
+                0
+            };
             let mut attrs = inst.attrs.write();
             let buf_len = match attrs.get("_buffer").map(|b| &b.payload) {
                 Some(PyObjectPayload::Bytes(b)) => b.len() as i64,
@@ -1326,13 +1788,21 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
             attrs.insert(CompactString::from("_pos"), PyObject::int(new_pos));
             Ok(PyObject::int(new_pos))
         }
-        "tell" => {
-            Ok(PyObject::int(inst.attrs.read().get("_pos").and_then(|p| p.as_int()).unwrap_or(0)))
-        }
+        "tell" => Ok(PyObject::int(
+            inst.attrs
+                .read()
+                .get("_pos")
+                .and_then(|p| p.as_int())
+                .unwrap_or(0),
+        )),
         "truncate" => {
             let mut attrs = inst.attrs.write();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
-            let size = if !args.is_empty() { args[0].as_int().unwrap_or(pos as i64) as usize } else { pos };
+            let size = if !args.is_empty() {
+                args[0].as_int().unwrap_or(pos as i64) as usize
+            } else {
+                pos
+            };
             let buf = match attrs.get("_buffer").map(|b| &b.payload) {
                 Some(PyObjectPayload::Bytes(b)) => b[..size.min(b.len())].to_vec(),
                 _ => vec![],
@@ -1341,7 +1811,9 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
             Ok(PyObject::int(size as i64))
         }
         "close" => {
-            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            inst.attrs
+                .write()
+                .insert(CompactString::from("_closed"), PyObject::bool_val(true));
             Ok(PyObject::none())
         }
         "__enter__" => {
@@ -1353,39 +1825,72 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
             Ok(inst_obj)
         }
         "__exit__" => {
-            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            inst.attrs
+                .write()
+                .insert(CompactString::from("_closed"), PyObject::bool_val(true));
             Ok(PyObject::none())
         }
-        _ => Err(PyException::attribute_error(format!("'BytesIO' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'BytesIO' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
 // ── pathlib.Path methods ──
 
 pub(super) fn simple_glob_match(pattern: &str, text: &str) -> bool {
-    if pattern == "*" { return true; }
-    if !pattern.contains('*') && !pattern.contains('?') { return pattern == text; }
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == text;
+    }
     let parts: Vec<&str> = pattern.split('*').collect();
     let mut pos = 0;
     for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some(idx) = text[pos..].find(part) {
-            if i == 0 && idx != 0 { return false; }
+            if i == 0 && idx != 0 {
+                return false;
+            }
             pos += idx + part.len();
-        } else { return false; }
+        } else {
+            return false;
+        }
     }
-    parts.last().map_or(true, |p| p.is_empty() || pos == text.len())
+    parts
+        .last()
+        .map_or(true, |p| p.is_empty() || pos == text.len())
 }
 
-pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_pathlib_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let get_path = || -> String {
-        inst.attrs.read().get("_path").map(|p| p.py_to_string()).unwrap_or_else(|| ".".to_string())
+        inst.attrs
+            .read()
+            .get("_path")
+            .map(|p| p.py_to_string())
+            .unwrap_or_else(|| ".".to_string())
     };
     match method {
-        "exists" => Ok(PyObject::bool_val(std::path::Path::new(&get_path()).exists())),
-        "is_file" => Ok(PyObject::bool_val(std::path::Path::new(&get_path()).is_file())),
-        "is_dir" => Ok(PyObject::bool_val(std::path::Path::new(&get_path()).is_dir())),
-        "is_absolute" => Ok(PyObject::bool_val(std::path::Path::new(&get_path()).is_absolute())),
+        "exists" => Ok(PyObject::bool_val(
+            std::path::Path::new(&get_path()).exists(),
+        )),
+        "is_file" => Ok(PyObject::bool_val(
+            std::path::Path::new(&get_path()).is_file(),
+        )),
+        "is_dir" => Ok(PyObject::bool_val(
+            std::path::Path::new(&get_path()).is_dir(),
+        )),
+        "is_absolute" => Ok(PyObject::bool_val(
+            std::path::Path::new(&get_path()).is_absolute(),
+        )),
         "read_text" => {
             let path = get_path();
             let content = std::fs::read_to_string(&path)
@@ -1424,15 +1929,23 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             // Check for parents=True, exist_ok=True kwargs
             let parents = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::str_key(CompactString::from("parents")))
-                        .map(|v| v.is_truthy()).unwrap_or(false)
-                } else { false }
+                    m.read()
+                        .get(&HashableKey::str_key(CompactString::from("parents")))
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
             });
             let exist_ok = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
-                        .map(|v| v.is_truthy()).unwrap_or(false)
-                } else { false }
+                    m.read()
+                        .get(&HashableKey::str_key(CompactString::from("exist_ok")))
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
             });
             let result = if parents {
                 std::fs::create_dir_all(&path)
@@ -1441,7 +1954,9 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             };
             match result {
                 Ok(()) => Ok(PyObject::none()),
-                Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
+                Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Ok(PyObject::none())
+                }
                 Err(e) => Err(PyException::os_error(format!("{}: '{}'", e, path))),
             }
         }
@@ -1488,26 +2003,38 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "name" => {
             let path = get_path();
             let p = std::path::Path::new(&path);
-            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             Ok(PyObject::str_val(CompactString::from(name)))
         }
         "stem" => {
             let path = get_path();
             let p = std::path::Path::new(&path);
-            let stem = p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let stem = p
+                .file_stem()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             Ok(PyObject::str_val(CompactString::from(stem)))
         }
         "suffix" => {
             let path = get_path();
             let p = std::path::Path::new(&path);
-            let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            let ext = p
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
             Ok(PyObject::str_val(CompactString::from(ext)))
         }
         "suffixes" => {
             let path = get_path();
-            let name = std::path::Path::new(&path).file_name()
-                .map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let parts: Vec<PyObjectRef> = name.match_indices('.')
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let parts: Vec<PyObjectRef> = name
+                .match_indices('.')
                 .map(|(i, _)| PyObject::str_val(CompactString::from(&name[i..])))
                 .collect();
             // Actually need individual suffixes: ".tar.gz" → [".tar", ".gz"]
@@ -1525,7 +2052,10 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "parent" => {
             let path = get_path();
             let p = std::path::Path::new(&path);
-            let parent = p.parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_else(|| ".".to_string());
+            let parent = p
+                .parent()
+                .map(|pp| pp.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string());
             Ok(PyObject::str_val(CompactString::from(parent)))
         }
         "parents" => {
@@ -1534,33 +2064,47 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let mut parents = Vec::new();
             let mut cur = p.parent();
             while let Some(pp) = cur {
-                parents.push(PyObject::str_val(CompactString::from(pp.to_string_lossy().to_string())));
+                parents.push(PyObject::str_val(CompactString::from(
+                    pp.to_string_lossy().to_string(),
+                )));
                 cur = pp.parent();
-                if pp.as_os_str().is_empty() { break; }
+                if pp.as_os_str().is_empty() {
+                    break;
+                }
             }
             Ok(PyObject::list(parents))
         }
         "parts" => {
             let path = get_path();
             let p = std::path::Path::new(&path);
-            let parts: Vec<PyObjectRef> = p.components()
-                .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
+            let parts: Vec<PyObjectRef> = p
+                .components()
+                .map(|c| {
+                    PyObject::str_val(CompactString::from(
+                        c.as_os_str().to_string_lossy().to_string(),
+                    ))
+                })
                 .collect();
             Ok(PyObject::tuple(parts))
         }
         "as_posix" => {
             let path = get_path();
-            Ok(PyObject::str_val(CompactString::from(path.replace('\\', "/"))))
+            Ok(PyObject::str_val(CompactString::from(
+                path.replace('\\', "/"),
+            )))
         }
         "relative_to" => {
             check_args_min("relative_to", args, 1)?;
             let path = get_path();
             let base = args[0].py_to_string();
             if let Ok(rel) = std::path::Path::new(&path).strip_prefix(&base) {
-                Ok(PyObject::str_val(CompactString::from(rel.to_string_lossy().to_string())))
+                Ok(PyObject::str_val(CompactString::from(
+                    rel.to_string_lossy().to_string(),
+                )))
             } else {
                 Err(PyException::value_error(format!(
-                    "'{}' is not relative to '{}'", path, base
+                    "'{}' is not relative to '{}'",
+                    path, base
                 )))
             }
         }
@@ -1575,14 +2119,18 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
                 Ok(PyObject::str_val(CompactString::from(path)))
             } else {
                 let abs = std::env::current_dir().unwrap_or_default().join(p);
-                Ok(PyObject::str_val(CompactString::from(abs.to_string_lossy().to_string())))
+                Ok(PyObject::str_val(CompactString::from(
+                    abs.to_string_lossy().to_string(),
+                )))
             }
         }
         "resolve" => {
             let path = get_path();
-            let resolved = std::fs::canonicalize(&path)
-                .unwrap_or_else(|_| std::path::PathBuf::from(&path));
-            Ok(PyObject::str_val(CompactString::from(resolved.to_string_lossy().to_string())))
+            let resolved =
+                std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
+            Ok(PyObject::str_val(CompactString::from(
+                resolved.to_string_lossy().to_string(),
+            )))
         }
         "with_suffix" => {
             check_args_min("with_suffix", args, 1)?;
@@ -1590,7 +2138,9 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let new_suffix = args[0].py_to_string();
             let p = std::path::Path::new(&path);
             let new_path = p.with_extension(new_suffix.trim_start_matches('.'));
-            Ok(PyObject::str_val(CompactString::from(new_path.to_string_lossy().to_string())))
+            Ok(PyObject::str_val(CompactString::from(
+                new_path.to_string_lossy().to_string(),
+            )))
         }
         "with_name" => {
             check_args_min("with_name", args, 1)?;
@@ -1598,7 +2148,9 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let new_name = args[0].py_to_string();
             let p = std::path::Path::new(&path);
             let new_path = p.with_file_name(&new_name);
-            Ok(PyObject::str_val(CompactString::from(new_path.to_string_lossy().to_string())))
+            Ok(PyObject::str_val(CompactString::from(
+                new_path.to_string_lossy().to_string(),
+            )))
         }
         "joinpath" | "__truediv__" => {
             check_args_min("joinpath", args, 1)?;
@@ -1607,20 +2159,27 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             for arg in args {
                 joined = joined.join(arg.py_to_string().as_str());
             }
-            Ok(PyObject::str_val(CompactString::from(joined.to_string_lossy().to_string())))
+            Ok(PyObject::str_val(CompactString::from(
+                joined.to_string_lossy().to_string(),
+            )))
         }
         "stat" => {
             let path = get_path();
             let meta = std::fs::metadata(&path)
                 .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             let mut ns = IndexMap::new();
-            ns.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
+            ns.insert(
+                CompactString::from("st_size"),
+                PyObject::int(meta.len() as i64),
+            );
             ns.insert(CompactString::from("st_mode"), PyObject::int(0));
             let cls = PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new());
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(inst_data) = &inst_obj.payload {
                 let mut attrs = inst_data.attrs.write();
-                for (k, v) in ns { attrs.insert(k, v); }
+                for (k, v) in ns {
+                    attrs.insert(k, v);
+                }
             }
             Ok(inst_obj)
         }
@@ -1632,17 +2191,26 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             // touch(mode=0o666, exist_ok=True) — create file if doesn't exist
             let exist_ok = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
-                        .map(|v| v.is_truthy()).unwrap_or(true)
-                } else { true }
+                    m.read()
+                        .get(&HashableKey::str_key(CompactString::from("exist_ok")))
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(true)
+                } else {
+                    true
+                }
             });
             let p = std::path::Path::new(&path);
             if p.exists() {
                 if !exist_ok {
-                    return Err(PyException::os_error(format!("FileExistsError: '{}'", path)));
+                    return Err(PyException::os_error(format!(
+                        "FileExistsError: '{}'",
+                        path
+                    )));
                 }
                 // Update modification time by opening and closing
-                std::fs::OpenOptions::new().write(true).open(&path)
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
                     .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             } else {
                 std::fs::File::create(&path)
@@ -1656,13 +2224,19 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let pattern = args[0].py_to_string();
             let dir = std::path::Path::new(&base);
             let mut results = Vec::new();
-            fn walk_dir_rglob(dir: &std::path::Path, pattern: &str, results: &mut Vec<PyObjectRef>) {
+            fn walk_dir_rglob(
+                dir: &std::path::Path,
+                pattern: &str,
+                results: &mut Vec<PyObjectRef>,
+            ) {
                 if let Ok(entries) = std::fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         let name = entry.file_name().to_string_lossy().to_string();
                         if super::instance_methods::simple_glob_match(pattern, &name) {
-                            results.push(PyObject::str_val(CompactString::from(path.to_string_lossy().to_string())));
+                            results.push(PyObject::str_val(CompactString::from(
+                                path.to_string_lossy().to_string(),
+                            )));
                         }
                         if path.is_dir() {
                             walk_dir_rglob(&path, pattern, results);
@@ -1696,7 +2270,10 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let pattern = args[0].py_to_string();
             // Match against the full path or just the filename
             let p = std::path::Path::new(&path);
-            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             let matched = simple_glob_match(&pattern, &name) || simple_glob_match(&pattern, &path);
             Ok(PyObject::bool_val(matched))
         }
@@ -1730,7 +2307,11 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "open" => {
             // Simple open: return the text content for read mode
             let path = get_path();
-            let mode = if !args.is_empty() { args[0].py_to_string() } else { "r".to_string() };
+            let mode = if !args.is_empty() {
+                args[0].py_to_string()
+            } else {
+                "r".to_string()
+            };
             if mode.contains('r') {
                 let content = std::fs::read_to_string(&path)
                     .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
@@ -1742,7 +2323,10 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
                 Ok(PyObject::none())
             }
         }
-        _ => Err(PyException::attribute_error(format!("'Path' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'Path' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
@@ -1754,7 +2338,8 @@ fn append_tz_offset(base: &str, tzinfo: &Option<PyObjectRef>) -> String {
         if !matches!(&tz.payload, PyObjectPayload::None) {
             if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
                 let tz_attrs = tz_inst.attrs.read();
-                let offset_secs = tz_attrs.get("_offset_seconds")
+                let offset_secs = tz_attrs
+                    .get("_offset_seconds")
                     .and_then(|v| match &v.payload {
                         PyObjectPayload::Float(f) => Some(*f as i64),
                         PyObjectPayload::Int(i) => i.to_i64(),
@@ -1772,7 +2357,11 @@ fn append_tz_offset(base: &str, tzinfo: &Option<PyObjectRef>) -> String {
     base.to_string()
 }
 
-pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_datetime_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
     let year = attrs.get("year").and_then(|v| v.as_int()).unwrap_or(1970);
     let month = attrs.get("month").and_then(|v| v.as_int()).unwrap_or(1);
@@ -1780,7 +2369,10 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
     let hour = attrs.get("hour").and_then(|v| v.as_int()).unwrap_or(0);
     let minute = attrs.get("minute").and_then(|v| v.as_int()).unwrap_or(0);
     let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
-    let microsecond = attrs.get("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+    let microsecond = attrs
+        .get("microsecond")
+        .and_then(|v| v.as_int())
+        .unwrap_or(0);
     let date_only = attrs.contains_key("__date_only__");
     let time_only = attrs.contains_key("__time_only__");
     let tzinfo = attrs.get("tzinfo").cloned();
@@ -1789,7 +2381,8 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
         "strftime" => {
             check_args_min("strftime", args, 1)?;
             let fmt = args[0].py_to_string();
-            let result = datetime_strftime(&fmt, year, month, day, hour, minute, second, microsecond);
+            let result =
+                datetime_strftime(&fmt, year, month, day, hour, minute, second, microsecond);
             Ok(PyObject::str_val(CompactString::from(&result)))
         }
         "isoformat" => {
@@ -1804,11 +2397,21 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 let s = format!("{:04}-{:02}-{:02}", year, month, day);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             } else {
-                let sep = if !args.is_empty() { args[0].py_to_string() } else { "T".to_string() };
-                let base = if microsecond != 0 {
-                    format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}", year, month, day, sep, hour, minute, second, microsecond)
+                let sep = if !args.is_empty() {
+                    args[0].py_to_string()
                 } else {
-                    format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}", year, month, day, sep, hour, minute, second)
+                    "T".to_string()
+                };
+                let base = if microsecond != 0 {
+                    format!(
+                        "{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}",
+                        year, month, day, sep, hour, minute, second, microsecond
+                    )
+                } else {
+                    format!(
+                        "{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}",
+                        year, month, day, sep, hour, minute, second
+                    )
                 };
                 let s = append_tz_offset(&base, &tzinfo);
                 Ok(PyObject::str_val(CompactString::from(&s)))
@@ -1837,24 +2440,48 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 w.insert(CompactString::from("hour"), PyObject::int(hour));
                 w.insert(CompactString::from("minute"), PyObject::int(minute));
                 w.insert(CompactString::from("second"), PyObject::int(second));
-                w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+                w.insert(
+                    CompactString::from("microsecond"),
+                    PyObject::int(microsecond),
+                );
             }
             Ok(inst_obj)
         }
         "replace" => {
             // replace(year=None, month=None, ...) via kwargs dict
-            let mut ny = year; let mut nm = month; let mut nd = day;
-            let mut nh = hour; let mut nmi = minute; let mut ns = second; let mut nus = microsecond;
+            let mut ny = year;
+            let mut nm = month;
+            let mut nd = day;
+            let mut nh = hour;
+            let mut nmi = minute;
+            let mut ns = second;
+            let mut nus = microsecond;
             if let Some(kw) = args.last() {
                 if let PyObjectPayload::Dict(map) = &kw.payload {
                     let r = map.read();
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("month"))) { nm = v.as_int().unwrap_or(nm); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("day"))) { nd = v.as_int().unwrap_or(nd); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
-                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("year"))) {
+                        ny = v.as_int().unwrap_or(ny);
+                    }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("month"))) {
+                        nm = v.as_int().unwrap_or(nm);
+                    }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("day"))) {
+                        nd = v.as_int().unwrap_or(nd);
+                    }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hour"))) {
+                        nh = v.as_int().unwrap_or(nh);
+                    }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minute"))) {
+                        nmi = v.as_int().unwrap_or(nmi);
+                    }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("second"))) {
+                        ns = v.as_int().unwrap_or(ns);
+                    }
+                    if let Some(v) =
+                        r.get(&HashableKey::str_key(CompactString::from("microsecond")))
+                    {
+                        nus = v.as_int().unwrap_or(nus);
+                    }
                 }
             }
             let cls = PyObject::class(CompactString::from("datetime"), vec![], IndexMap::new());
@@ -1875,7 +2502,11 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
         "timestamp" => {
             // Rough UNIX timestamp (ignoring timezone)
             let days = ymd_to_days(year, month, day) - 719468;
-            let total = days as f64 * 86400.0 + hour as f64 * 3600.0 + minute as f64 * 60.0 + second as f64 + microsecond as f64 / 1_000_000.0;
+            let total = days as f64 * 86400.0
+                + hour as f64 * 3600.0
+                + minute as f64 * 60.0
+                + second as f64
+                + microsecond as f64 / 1_000_000.0;
             Ok(PyObject::float(total))
         }
         "weekday" => {
@@ -1897,32 +2528,62 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
         }
         "ctime" => {
             let weekday_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-            let month_short = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            let month_short = [
+                "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                "Dec",
+            ];
             let days = ymd_to_days(year, month, day);
             let wday = ((days + 2) % 7) as usize;
-            let s = format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
+            let s = format!(
+                "{} {} {:2} {:02}:{:02}:{:02} {:04}",
                 weekday_short.get(wday).unwrap_or(&""),
                 month_short.get(month as usize).unwrap_or(&""),
-                day, hour, minute, second, year);
+                day,
+                hour,
+                minute,
+                second,
+                year
+            );
             Ok(PyObject::str_val(CompactString::from(&s)))
         }
         "timetuple" => {
             let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-            let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-            let yday: i64 = month_days[..(month - 1) as usize].iter().map(|&d| d as i64).sum::<i64>() + day;
+            let month_days = [
+                31,
+                if leap { 29 } else { 28 },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
+            let yday: i64 = month_days[..(month - 1) as usize]
+                .iter()
+                .map(|&d| d as i64)
+                .sum::<i64>()
+                + day;
             Ok(PyObject::tuple(vec![
-                PyObject::int(year), PyObject::int(month), PyObject::int(day),
-                PyObject::int(hour), PyObject::int(minute), PyObject::int(second),
+                PyObject::int(year),
+                PyObject::int(month),
+                PyObject::int(day),
+                PyObject::int(hour),
+                PyObject::int(minute),
+                PyObject::int(second),
                 PyObject::int((ymd_to_days(year, month, day) + 2) % 7),
-                PyObject::int(yday), PyObject::int(-1),
+                PyObject::int(yday),
+                PyObject::int(-1),
             ]))
         }
         "isocalendar" => {
             // ISO calendar: (year, week, weekday) where Monday=1, Sunday=7
             let days = ymd_to_days(year, month, day);
             let dow = ((days + 2) % 7 + 7) % 7; // 0=Monday
-            // Find Thursday of the same ISO week
+                                                // Find Thursday of the same ISO week
             let thu = days + 3 - dow;
             // ISO year is the year containing that Thursday
             let (iso_year, _, _) = days_to_ymd_civil(thu);
@@ -1949,7 +2610,10 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 let s = format!("{:04}-{:02}-{:02}", year, month, day);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             } else {
-                let base = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                let base = format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year, month, day, hour, minute, second
+                );
                 let s = append_tz_offset(&base, &tzinfo);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             }
@@ -1967,7 +2631,10 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 w.insert(CompactString::from("hour"), PyObject::int(hour));
                 w.insert(CompactString::from("minute"), PyObject::int(minute));
                 w.insert(CompactString::from("second"), PyObject::int(second));
-                w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+                w.insert(
+                    CompactString::from("microsecond"),
+                    PyObject::int(microsecond),
+                );
             }
             Ok(inst_obj)
         }
@@ -1976,14 +2643,19 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 if !matches!(&tz.payload, PyObjectPayload::None) {
                     if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
                         let tz_attrs = tz_inst.attrs.read();
-                        let offset_secs = tz_attrs.get("_offset_seconds")
+                        let offset_secs = tz_attrs
+                            .get("_offset_seconds")
                             .and_then(|v| match &v.payload {
                                 PyObjectPayload::Float(f) => Some(*f as i64),
                                 PyObjectPayload::Int(i) => i.to_i64(),
                                 _ => None,
                             })
                             .unwrap_or(0);
-                        let td_cls = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
+                        let td_cls = PyObject::class(
+                            CompactString::from("timedelta"),
+                            vec![],
+                            IndexMap::new(),
+                        );
                         let td = PyObject::instance(td_cls);
                         if let PyObjectPayload::Instance(ref d) = td.payload {
                             let mut w = d.attrs.write();
@@ -1991,7 +2663,10 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                             w.insert(CompactString::from("days"), PyObject::int(0));
                             w.insert(CompactString::from("seconds"), PyObject::int(offset_secs));
                             w.insert(CompactString::from("microseconds"), PyObject::int(0));
-                            w.insert(CompactString::from("_total_seconds"), PyObject::float(offset_secs as f64));
+                            w.insert(
+                                CompactString::from("_total_seconds"),
+                                PyObject::float(offset_secs as f64),
+                            );
                         }
                         return Ok(td);
                     }
@@ -2012,16 +2687,24 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             }
             Ok(PyObject::none())
         }
-        _ => Err(PyException::attribute_error(format!("'datetime' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'datetime' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
-pub(super) fn call_timedelta_method(inst: &ferrython_core::object::InstanceData, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_timedelta_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    _args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
     match method {
-        "total_seconds" => {
-            Ok(attrs.get("_total_seconds").cloned().unwrap_or_else(|| PyObject::float(0.0)))
-        }
+        "total_seconds" => Ok(attrs
+            .get("_total_seconds")
+            .cloned()
+            .unwrap_or_else(|| PyObject::float(0.0))),
         "__str__" | "__repr__" => {
             let days = attrs.get("days").and_then(|v| v.as_int()).unwrap_or(0);
             let secs = attrs.get("seconds").and_then(|v| v.as_int()).unwrap_or(0);
@@ -2029,7 +2712,14 @@ pub(super) fn call_timedelta_method(inst: &ferrython_core::object::InstanceData,
             let m = (secs % 3600) / 60;
             let s = secs % 60;
             let result = if days != 0 {
-                format!("{} day{}, {}:{:02}:{:02}", days, if days.abs() != 1 { "s" } else { "" }, h, m, s)
+                format!(
+                    "{} day{}, {}:{:02}:{:02}",
+                    days,
+                    if days.abs() != 1 { "s" } else { "" },
+                    h,
+                    m,
+                    s
+                )
             } else {
                 format!("{}:{:02}:{:02}", h, m, s)
             };
@@ -2051,28 +2741,82 @@ pub(super) fn call_timedelta_method(inst: &ferrython_core::object::InstanceData,
                 w.insert(intern_or_new("__timedelta__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("days"), PyObject::int(days));
                 w.insert(CompactString::from("seconds"), PyObject::int(seconds));
-                w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
+                w.insert(
+                    CompactString::from("microseconds"),
+                    PyObject::int(microseconds),
+                );
                 w.insert(CompactString::from("total_seconds"), PyObject::float(total));
                 w.insert(CompactString::from("_total_us"), PyObject::int(neg));
             }
             Ok(inst_obj)
         }
-        _ => Err(PyException::attribute_error(format!("'timedelta' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'timedelta' object has no attribute '{}'",
+            method
+        ))),
     }
 }
 
-pub(super) fn datetime_strftime(fmt: &str, year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, _microsecond: i64) -> String {
-    let weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+pub(super) fn datetime_strftime(
+    fmt: &str,
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    _microsecond: i64,
+) -> String {
+    let weekday_names = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
     let weekday_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let month_names = ["", "January", "February", "March", "April", "May", "June",
-                       "July", "August", "September", "October", "November", "December"];
-    let month_short = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month_names = [
+        "",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let month_short = [
+        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let days_civil = ymd_to_days(year, month, day);
     let wday = ((days_civil + 2) % 7) as usize; // Monday=0
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let month_lengths = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let yday: i64 = month_lengths[..(month - 1) as usize].iter().map(|&d| d as i64).sum::<i64>() + day;
+    let month_lengths = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let yday: i64 = month_lengths[..(month - 1) as usize]
+        .iter()
+        .map(|&d| d as i64)
+        .sum::<i64>()
+        + day;
 
     let mut result = String::new();
     let mut chars = fmt.chars().peekable();
@@ -2084,7 +2828,10 @@ pub(super) fn datetime_strftime(fmt: &str, year: i64, month: i64, day: i64, hour
                 Some('m') => result.push_str(&format!("{:02}", month)),
                 Some('d') => result.push_str(&format!("{:02}", day)),
                 Some('H') => result.push_str(&format!("{:02}", hour)),
-                Some('I') => result.push_str(&format!("{:02}", if hour % 12 == 0 { 12 } else { hour % 12 })),
+                Some('I') => result.push_str(&format!(
+                    "{:02}",
+                    if hour % 12 == 0 { 12 } else { hour % 12 }
+                )),
                 Some('M') => result.push_str(&format!("{:02}", minute)),
                 Some('S') => result.push_str(&format!("{:02}", second)),
                 Some('f') => result.push_str(&format!("{:06}", _microsecond)),
@@ -2092,18 +2839,30 @@ pub(super) fn datetime_strftime(fmt: &str, year: i64, month: i64, day: i64, hour
                 Some('A') => result.push_str(weekday_names.get(wday).unwrap_or(&"")),
                 Some('a') => result.push_str(weekday_short.get(wday).unwrap_or(&"")),
                 Some('B') => result.push_str(month_names.get(month as usize).unwrap_or(&"")),
-                Some('b') | Some('h') => result.push_str(month_short.get(month as usize).unwrap_or(&"")),
+                Some('b') | Some('h') => {
+                    result.push_str(month_short.get(month as usize).unwrap_or(&""))
+                }
                 Some('w') => result.push_str(&format!("{}", (wday + 1) % 7)), // Sunday=0
                 Some('j') => result.push_str(&format!("{:03}", yday)),
-                Some('c') => result.push_str(&format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
-                    weekday_short.get(wday).unwrap_or(&""), month_short.get(month as usize).unwrap_or(&""),
-                    day, hour, minute, second, year)),
+                Some('c') => result.push_str(&format!(
+                    "{} {} {:2} {:02}:{:02}:{:02} {:04}",
+                    weekday_short.get(wday).unwrap_or(&""),
+                    month_short.get(month as usize).unwrap_or(&""),
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    year
+                )),
                 Some('x') => result.push_str(&format!("{:02}/{:02}/{:02}", month, day, year % 100)),
                 Some('X') => result.push_str(&format!("{:02}:{:02}:{:02}", hour, minute, second)),
                 Some('%') => result.push('%'),
                 Some('n') => result.push('\n'),
                 Some('t') => result.push('\t'),
-                Some(c) => { result.push('%'); result.push(c); }
+                Some(c) => {
+                    result.push('%');
+                    result.push(c);
+                }
                 None => result.push('%'),
             }
         } else {
@@ -2127,11 +2886,11 @@ pub(super) fn ymd_to_days(year: i64, month: i64, day: i64) -> i64 {
 fn days_to_ymd_civil(z: i64) -> (i64, i64, i64) {
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
-    let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let y = yoe + era * 400;
-    let doy = doe - (365*yoe + yoe/4 - yoe/100);
-    let mp = (5*doy + 2) / 153;
-    let d = doy - (153*mp + 2)/5 + 1;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
@@ -2139,9 +2898,16 @@ fn days_to_ymd_civil(z: i64) -> (i64, i64, i64) {
 
 // ── queue.Queue / LifoQueue / PriorityQueue methods ──
 
-pub(super) fn call_queue_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_queue_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
-    let kind = attrs.get("__queue__").map(|v| v.py_to_string()).unwrap_or_default();
+    let kind = attrs
+        .get("__queue__")
+        .map(|v| v.py_to_string())
+        .unwrap_or_default();
     let items_ref = attrs.get("_items").cloned();
     let maxsize = attrs.get("maxsize").and_then(|v| v.as_int()).unwrap_or(0);
     drop(attrs);
@@ -2160,11 +2926,22 @@ pub(super) fn call_queue_method(inst: &ferrython_core::object::InstanceData, met
                 // PriorityQueue: keep sorted (min-heap via sort)
                 if kind == "PriorityQueue" {
                     items.sort_by(|a, b| {
-                        let lt = a.compare(b, CompareOp::Lt).map(|v| v.is_truthy()).unwrap_or(false);
-                        if lt { std::cmp::Ordering::Less }
-                        else {
-                            let gt = a.compare(b, CompareOp::Gt).map(|v| v.is_truthy()).unwrap_or(false);
-                            if gt { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal }
+                        let lt = a
+                            .compare(b, CompareOp::Lt)
+                            .map(|v| v.is_truthy())
+                            .unwrap_or(false);
+                        if lt {
+                            std::cmp::Ordering::Less
+                        } else {
+                            let gt = a
+                                .compare(b, CompareOp::Gt)
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                            if gt {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                std::cmp::Ordering::Equal
+                            }
                         }
                     });
                 }
@@ -2210,6 +2987,9 @@ pub(super) fn call_queue_method(inst: &ferrython_core::object::InstanceData, met
             }
         }
         "task_done" | "join" => Ok(PyObject::none()),
-        _ => Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", kind, method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'",
+            kind, method
+        ))),
     }
 }

@@ -79,10 +79,17 @@ impl Parser {
                     break;
                 }
                 // If we're now at a compound statement keyword, we've crossed a line
-                if matches!(self.peek().kind,
-                    TokenKind::Def | TokenKind::Class | TokenKind::If | TokenKind::While |
-                    TokenKind::For | TokenKind::Try | TokenKind::With | TokenKind::Async |
-                    TokenKind::At
+                if matches!(
+                    self.peek().kind,
+                    TokenKind::Def
+                        | TokenKind::Class
+                        | TokenKind::If
+                        | TokenKind::While
+                        | TokenKind::For
+                        | TokenKind::Try
+                        | TokenKind::With
+                        | TokenKind::Async
+                        | TokenKind::At
                 ) {
                     break;
                 }
@@ -101,8 +108,7 @@ impl Parser {
         self.expect_newline()?;
         if !self.check(TokenKind::Indent) {
             return Err(ParseError::new(
-                crate::error::ParseErrorKind::IndentationError(
-                    "expected an indented block".into()),
+                crate::error::ParseErrorKind::IndentationError("expected an indented block".into()),
                 self.peek().span,
             ));
         }
@@ -144,7 +150,10 @@ impl Parser {
     }
 
     fn check_newline_or_eof(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof)
+        matches!(
+            self.peek().kind,
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof
+        )
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<&Token, ParseError> {
@@ -184,7 +193,9 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while self.pos < self.tokens.len() && matches!(self.peek().kind, TokenKind::Newline | TokenKind::Semicolon) {
+        while self.pos < self.tokens.len()
+            && matches!(self.peek().kind, TokenKind::Newline | TokenKind::Semicolon)
+        {
             self.advance();
         }
     }
@@ -203,7 +214,10 @@ impl Parser {
 fn parse_expression_text(text: &str, loc: SourceLocation) -> Result<Expression, ParseError> {
     let text = text.trim();
     if text.is_empty() {
-        return Ok(Expression::constant(Constant::Str(CompactString::from("")), loc));
+        return Ok(Expression::constant(
+            Constant::Str(CompactString::from("")),
+            loc,
+        ));
     }
     // Wrap in parens so newlines inside the expression are allowed (matches CPython).
     let wrapped = format!("({})", text);

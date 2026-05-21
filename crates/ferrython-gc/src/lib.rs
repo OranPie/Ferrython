@@ -60,7 +60,9 @@ pub fn register_cycle_collector<F: Fn() -> usize + Send + 'static>(f: F) {
 pub fn notify_alloc() -> bool {
     unsafe {
         let gc = &mut *GC.0.get();
-        if !gc.enabled { return false; }
+        if !gc.enabled {
+            return false;
+        }
         gc.allocation_count += 1;
         gc.allocation_count >= gc.threshold_gen0
     }
@@ -97,12 +99,16 @@ pub fn collect() -> usize {
 
 /// Enable garbage collection.
 pub fn enable() {
-    unsafe { (*GC.0.get()).enabled = true; }
+    unsafe {
+        (*GC.0.get()).enabled = true;
+    }
 }
 
 /// Disable garbage collection.
 pub fn disable() {
-    unsafe { (*GC.0.get()).enabled = false; }
+    unsafe {
+        (*GC.0.get()).enabled = false;
+    }
 }
 
 /// Return whether GC is currently enabled.
