@@ -351,7 +351,7 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
                 let release = pypi::fetch_package_info(name, Some(exact)).map_err(|e| {
                     format!(
                         "Could not find {}=={}:\n  {}\n  \
-                         Hint: Check available versions with: ferryip search {}",
+                         Hint: Check available versions with: ferrypip search {}",
                         name, exact, e, name
                     )
                 })?;
@@ -373,7 +373,7 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
                 pypi::fetch_best_version(name, trimmed).map_err(|e| {
                     format!(
                         "Could not find a version of '{}' satisfying '{}':\n  {}\n  \
-                         Hint: Try relaxing the version constraint or check: ferryip search {}",
+                         Hint: Try relaxing the version constraint or check: ferrypip search {}",
                         name, trimmed, e, name
                     )
                 })
@@ -384,7 +384,7 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
             let release = pypi::fetch_package_info(name, None).map_err(|e| {
                 format!(
                     "Package '{}' not found:\n  {}\n  \
-                     Hint: Check the package name or search: ferryip search {}",
+                     Hint: Check the package name or search: ferrypip search {}",
                     name, e, name
                 )
             })?;

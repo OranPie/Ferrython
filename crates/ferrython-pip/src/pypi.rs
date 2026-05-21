@@ -216,7 +216,7 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
 
 fn make_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .user_agent(format!("ferryip/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("ferrypip/{}", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))
@@ -550,7 +550,7 @@ fn wheel_cache_dir() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".cache")
         });
-    base.join("ferryip").join("wheels")
+    base.join("ferrypip").join("wheels")
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> bool {

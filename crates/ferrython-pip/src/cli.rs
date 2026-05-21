@@ -2,7 +2,11 @@ use crate::{metadata::PackageMetadata, pypi, registry, resolver};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ferryip", version = env!("CARGO_PKG_VERSION"), about = "Ferrython package manager (pip-compatible)")]
+#[command(
+    name = "ferrypip",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Ferrython package manager (pip-compatible)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -197,7 +201,7 @@ enum Commands {
         wheel_dir: String,
     },
 
-    /// Show information about the ferryip configuration
+    /// Show information about the ferrypip configuration
     Config {
         /// Show all configuration values
         #[arg(short, long)]
@@ -234,6 +238,18 @@ enum CacheAction {
     Purge,
     /// Remove a specific package from cache
     Remove { pattern: String },
+}
+
+fn status(label: &str, message: impl std::fmt::Display, quiet: bool) {
+    if !quiet {
+        println!("{:<10} {}", label, message);
+    }
+}
+
+fn detail(message: impl std::fmt::Display, quiet: bool) {
+    if !quiet {
+        println!("  {}", message);
+    }
 }
 
 pub fn run() {
@@ -295,7 +311,7 @@ pub fn run() {
             } else if packages.is_empty() {
                 eprintln!(
                     "Error: You must give at least one requirement to install \
-                           (see 'ferryip install --help')"
+                           (see 'ferrypip install --help')"
                 );
                 std::process::exit(1);
             } else {
@@ -414,11 +430,11 @@ fn user_site_packages() -> String {
 
 fn show_debug(site_packages: &str) -> Result<(), String> {
     let exe = std::env::current_exe().unwrap_or_default();
-    println!("ferryip {}", env!("CARGO_PKG_VERSION"));
+    println!("ferrypip {}", env!("CARGO_PKG_VERSION"));
     println!();
-    println!("  executable: {}", exe.display());
-    println!("  site-packages: {}", site_packages);
-    println!("  user-site-packages: {}", user_site_packages());
+    println!("{:<20} {}", "executable", exe.display());
+    println!("{:<20} {}", "site-packages", site_packages);
+    println!("{:<20} {}", "user-site-packages", user_site_packages());
     println!();
     println!("Environment:");
     for var in &["FERRYTHON_COMPAT", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE"] {
@@ -628,20 +644,17 @@ fn install_packages(
 
         // Handle editable entries from requirements files (editable:<path>)
         if let Some(edit_path) = trimmed.strip_prefix("editable:") {
-            if !quiet {
-                println!(
-                    "[{}/{}] Installing {} (editable)",
-                    idx + 1,
-                    total,
-                    edit_path
-                );
-            }
+            status(
+                "Installing",
+                format!("[{}/{}] {} (editable)", idx + 1, total, edit_path),
+                quiet,
+            );
             install_editable(edit_path, site_packages, quiet)?;
             installed_count += 1;
             continue;
         }
 
-        // Handle `ferryip install .` or `ferryip install .[dev]` or `ferryip install ./path`
+        // Handle `ferrypip install .` or `ferrypip install .[dev]` or `ferrypip install ./path`
         if trimmed == "."
             || trimmed.starts_with(".[")
             || trimmed.starts_with("./")
@@ -691,7 +704,11 @@ fn install_packages(
             parse_version_specifier_with_extras(&trimmed.to_string());
         if !quiet && total > 1 {
             let ver_display = version_spec.as_deref().unwrap_or("");
-            println!("[{}/{}] Processing {}{}", idx + 1, total, name, ver_display);
+            status(
+                "Processing",
+                format!("[{}/{}] {}{}", idx + 1, total, name, ver_display),
+                quiet,
+            );
         }
         if verbose {
             let extras_display = if extras.is_empty() {
@@ -699,14 +716,17 @@ fn install_packages(
             } else {
                 format!("[{}]", extras.join(","))
             };
-            println!(
-                "  Resolving {}{}{}",
-                name,
-                extras_display,
-                version_spec
-                    .as_deref()
-                    .map(|v| format!(" ({})", v))
-                    .unwrap_or_default()
+            detail(
+                format!(
+                    "Resolving {}{}{}",
+                    name,
+                    extras_display,
+                    version_spec
+                        .as_deref()
+                        .map(|v| format!(" ({})", v))
+                        .unwrap_or_default()
+                ),
+                quiet,
             );
         }
         resolver::install_with_deps(
@@ -728,10 +748,15 @@ fn install_packages(
 
     if !quiet && installed_count > 1 {
         let elapsed = start_time.elapsed();
-        println!(
-            "\nSuccessfully processed {} package(s) in {:.1}s.",
-            installed_count,
-            elapsed.as_secs_f64()
+        println!();
+        status(
+            "Complete",
+            format!(
+                "processed {} package(s) in {:.1}s",
+                installed_count,
+                elapsed.as_secs_f64()
+            ),
+            quiet,
         );
     }
     Ok(())
@@ -837,9 +862,11 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
         }
     };
 
-    if !quiet {
-        println!("Installing {} ({}) from local file", name, version);
-    }
+    status(
+        "Installing",
+        format!("{} ({}) from local file", name, version),
+        quiet,
+    );
 
     crate::installer::install_wheel(file_path, site_packages, &name, &version)?;
 
@@ -858,9 +885,7 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
         }
     }
 
-    if !quiet {
-        println!("  Successfully installed {}-{}", name, version);
-    }
+    status("Installed", format!("{}-{}", name, version), quiet);
     Ok(())
 }
 
@@ -967,7 +992,8 @@ fn dry_run_install(
         return Ok(());
     }
 
-    println!("Would install:");
+    println!("Dry run");
+    println!("-------");
     for spec in &specs {
         let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
         match resolver::resolve_package_info(&name, version_spec.as_deref(), "") {
@@ -979,8 +1005,8 @@ fn dry_run_install(
                 };
                 let ver_str = version_spec.as_deref().unwrap_or("");
                 println!(
-                    "  {}{} {} (latest: {})",
-                    name, extras_str, ver_str, info.version
+                    "{:<10} {}{} {} (latest: {})",
+                    "Would add", name, extras_str, ver_str, info.version
                 );
 
                 // Show transitive dependencies
@@ -990,12 +1016,12 @@ fn dry_run_install(
                         match pypi::fetch_package_info(&dep_name, None) {
                             Ok(dep_info) => {
                                 println!(
-                                    "    └─ {} {} (latest: {})",
-                                    dep_name, dep_ver_str, dep_info.version
+                                    "  {:<8} {} {} (latest: {})",
+                                    "requires", dep_name, dep_ver_str, dep_info.version
                                 );
                             }
                             Err(_) => {
-                                println!("    └─ {} {}", dep_name, dep_ver_str);
+                                println!("  {:<8} {} {}", "requires", dep_name, dep_ver_str);
                             }
                         }
                     }
@@ -1003,7 +1029,7 @@ fn dry_run_install(
             }
             Err(e) => {
                 if !quiet {
-                    println!("  {} — could not resolve: {}", name, e);
+                    println!("{:<10} {} - could not resolve: {}", "Skipped", name, e);
                 }
             }
         }
@@ -1066,10 +1092,10 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         } else {
             proj_dir.clone()
         };
-        println!(
-            "Successfully installed {} (editable, {})",
-            name,
-            source_root.display()
+        status(
+            "Installed",
+            format!("{} (editable, {})", name, source_root.display()),
+            quiet,
         );
     }
 
@@ -1079,7 +1105,15 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let deps = pyproj.dependencies();
         if !deps.is_empty() {
             if !quiet {
-                println!("Installing {} project dependencies...", deps.len());
+                status(
+                    "Resolving",
+                    format!(
+                        "{} project dependenc{}",
+                        deps.len(),
+                        if deps.len() == 1 { "y" } else { "ies" }
+                    ),
+                    quiet,
+                );
             }
             install_packages(&deps, site_packages, false, false, false, quiet, false)?;
         }
@@ -1088,7 +1122,15 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let build_reqs = pyproj.build_requires();
         if !build_reqs.is_empty() {
             if !quiet {
-                println!("Installing {} build dependencies...", build_reqs.len());
+                status(
+                    "Resolving",
+                    format!(
+                        "{} build dependenc{}",
+                        build_reqs.len(),
+                        if build_reqs.len() == 1 { "y" } else { "ies" }
+                    ),
+                    quiet,
+                );
             }
             install_packages(
                 &build_reqs,
@@ -1104,9 +1146,18 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let cfg = crate::setup_cfg::parse_setup_cfg(&setup_cfg_path)?;
         if !cfg.install_requires.is_empty() {
             if !quiet {
-                println!(
-                    "Installing {} project dependencies...",
-                    cfg.install_requires.len()
+                status(
+                    "Resolving",
+                    format!(
+                        "{} project dependenc{}",
+                        cfg.install_requires.len(),
+                        if cfg.install_requires.len() == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        }
+                    ),
+                    quiet,
                 );
             }
             install_packages(
@@ -1132,7 +1183,7 @@ fn uninstall_packages(
 ) -> Result<(), String> {
     if names.is_empty() {
         return Err(
-            "You must give at least one package to uninstall (see 'ferryip uninstall --help')"
+            "You must give at least one package to uninstall (see 'ferrypip uninstall --help')"
                 .to_string(),
         );
     }
@@ -1151,18 +1202,23 @@ fn uninstall_packages(
                 String::new()
             };
             if !quiet {
-                println!("WARNING: Skipping {} as it is not installed.{}", name, hint);
+                status(
+                    "Skipped",
+                    format!("{} is not installed.{}", name, hint),
+                    quiet,
+                );
             }
             continue;
         }
         let info = installed.unwrap();
         if !yes {
-            println!(
-                "Found existing installation: {}-{}",
-                info.name, info.version
+            status(
+                "Found",
+                format!("existing installation: {}-{}", info.name, info.version),
+                quiet,
             );
             let file_count = info.files.len();
-            println!("  Would remove {} file(s):", file_count);
+            detail(format!("Would remove {} file(s):", file_count), quiet);
             // Show up to 10 files, then summarize
             for (i, f) in info.files.iter().enumerate() {
                 if i >= 10 {
@@ -1177,13 +1233,13 @@ fn uninstall_packages(
             let mut input = String::new();
             if std::io::stdin().read_line(&mut input).is_ok() && input.trim().to_lowercase() == "n"
             {
-                println!("Skipping {}.", name);
+                status("Skipped", name, quiet);
                 continue;
             }
         }
         registry::uninstall(name, site_packages).map_err(|e| format!("Uninstall failed: {}", e))?;
         if !quiet {
-            println!("Successfully uninstalled {}-{}", info.name, info.version);
+            status("Removed", format!("{}-{}", info.name, info.version), quiet);
         }
     }
     Ok(())
@@ -1392,7 +1448,7 @@ fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(),
             println!("Required-by: {}", required_by.join(", "));
         }
 
-        println!("Installer: ferryip");
+        println!("Installer: ferrypip");
 
         if show_files {
             println!("Files:");
@@ -1421,7 +1477,7 @@ fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(),
             if !info.requires_dist.is_empty() {
                 println!("Requires: {}", info.requires_dist.join(", "));
             }
-            println!("\nTo install: ferryip install {}", name);
+            println!("\nTo install: ferrypip install {}", name);
             Ok(())
         }
         Err(_e) => {
@@ -1433,7 +1489,7 @@ fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(),
             };
             Err(format!(
                 "Package '{}' is not installed and was not found on PyPI.\n\
-                 {}Hint: Check the package name spelling or search with: ferryip search {}",
+                 {}Hint: Check the package name spelling or search with: ferrypip search {}",
                 name, hint, name
             ))
         }
@@ -2017,7 +2073,7 @@ fn cache_dir() -> std::path::PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             std::path::PathBuf::from(home).join(".cache")
         });
-    base.join("ferryip").join("wheels")
+    base.join("ferrypip").join("wheels")
 }
 
 fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
@@ -2235,7 +2291,7 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
 
     // WHEEL
     let wheel_metadata = format!(
-        "Wheel-Version: 1.0\nGenerator: ferryip\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        "Wheel-Version: 1.0\nGenerator: ferrypip\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
     );
     zip.start_file(format!("{}/WHEEL", dist_info_prefix), options)
         .map_err(|e| format!("Zip error: {}", e))?;
@@ -2321,7 +2377,7 @@ fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
     let exe = std::env::current_exe().unwrap_or_default();
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
-    println!("ferryip version: {}", env!("CARGO_PKG_VERSION"));
+    println!("ferrypip version: {}", env!("CARGO_PKG_VERSION"));
     println!("Ferrython compatible: 3.8+");
     println!("Location: {}", exe.display());
     println!("Site-packages: {}", site_packages);
@@ -2374,7 +2430,7 @@ fn inspect_packages(site_packages: &str) -> Result<(), String> {
     println!("{{");
     println!("  \"version\": \"1\",");
     println!(
-        "  \"pip_version\": \"ferryip-{}\",",
+        "  \"pip_version\": \"ferrypip-{}\",",
         env!("CARGO_PKG_VERSION")
     );
     println!("  \"installed\": [");
@@ -2398,7 +2454,7 @@ fn inspect_packages(site_packages: &str) -> Result<(), String> {
             println!("        \"requires_dist\": [{}],", req_json.join(", "));
         }
         // Remove trailing comma from last field by always ending with a known field
-        println!("        \"installer\": \"ferryip\"");
+        println!("        \"installer\": \"ferrypip\"");
         println!("      }}");
         println!("    }}{}", comma);
     }
@@ -2477,7 +2533,7 @@ fn generate_lock_file(
     let mut file = std::fs::File::create(output_file)
         .map_err(|e| format!("Cannot create {}: {}", output_file, e))?;
 
-    writeln!(file, "# This file is @generated by ferryip lock.").map_err(|e| e.to_string())?;
+    writeln!(file, "# This file is @generated by ferrypip lock.").map_err(|e| e.to_string())?;
     writeln!(file, "# Do not edit manually.").map_err(|e| e.to_string())?;
     writeln!(file, "#").map_err(|e| e.to_string())?;
 

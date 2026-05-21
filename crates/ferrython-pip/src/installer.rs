@@ -284,7 +284,7 @@ pub fn install_editable_with_metadata(
     fs::write(&pth_file, format!("{}\n", source_root.display()))
         .map_err(|e| format!("Write .pth file: {}", e))?;
 
-    // Write dist-info for pip/ferryip compatibility
+    // Write dist-info for pip/ferrypip compatibility
     let dist_info_name = format!("{}-{}.dist-info", package_name, version);
     let dist_info_path = site.join(&dist_info_name);
     fs::create_dir_all(&dist_info_path).map_err(|e| format!("mkdir dist-info: {}", e))?;
@@ -294,7 +294,7 @@ pub fn install_editable_with_metadata(
         meta.render()
     } else {
         format!(
-            "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+            "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferrypip\n",
             name, version
         )
     };
@@ -302,7 +302,7 @@ pub fn install_editable_with_metadata(
         .map_err(|e| format!("Write METADATA: {}", e))?;
 
     // INSTALLER
-    fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
+    fs::write(dist_info_path.join("INSTALLER"), "ferrypip\n")
         .map_err(|e| format!("Write INSTALLER: {}", e))?;
 
     // PEP 610 direct_url.json
@@ -707,7 +707,7 @@ fn write_record(
             meta.render()
         } else {
             format!(
-                "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+                "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferrypip\n",
                 name, version
             )
         };
@@ -717,12 +717,12 @@ fn write_record(
     // Only write WHEEL if it doesn't already exist
     let wheel_path = dist_info_path.join("WHEEL");
     if !wheel_path.exists() {
-        let wheel_meta = "Wheel-Version: 1.0\nGenerator: ferryip 0.1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+        let wheel_meta = "Wheel-Version: 1.0\nGenerator: ferrypip 0.1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
         fs::write(&wheel_path, wheel_meta).map_err(|e| format!("Write WHEEL: {}", e))?;
     }
 
     // INSTALLER (always overwrite — we installed it)
-    fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
+    fs::write(dist_info_path.join("INSTALLER"), "ferrypip\n")
         .map_err(|e| format!("Write INSTALLER: {}", e))?;
 
     // top_level.txt — infer top-level package names if not already present

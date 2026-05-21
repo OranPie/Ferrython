@@ -57,7 +57,7 @@ pub fn uninstall(name: &str, site_packages: &str) -> Result<(), String> {
     let pkg = get_installed(name, site_packages).ok_or_else(|| {
         format!(
             "Package '{}' is not installed.\n\
-             Hint: Use 'ferryip list' to see installed packages.",
+             Hint: Use 'ferrypip list' to see installed packages.",
             name
         )
     })?;

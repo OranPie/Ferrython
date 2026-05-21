@@ -175,7 +175,7 @@ impl PackageMetadata {
         }
 
         // Installer tag
-        out.push_str("Installer: ferryip\n");
+        out.push_str("Installer: ferrypip\n");
 
         // Long description separated by blank line
         if let Some(ref desc) = self.description {

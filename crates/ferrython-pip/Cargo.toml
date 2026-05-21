@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Ferryip — A pip-compatible package manager for Ferrython"
+description = "Ferrypip — A pip-compatible package manager for Ferrython"
+
+[[bin]]
+name = "ferrypip"
+path = "src/main.rs"
 
 [[bin]]
 name = "ferryip"
-path = "src/main.rs"
+path = "src/bin/ferryip.rs"
 
 [dependencies]
 ferrython-toolchain = { workspace = true }

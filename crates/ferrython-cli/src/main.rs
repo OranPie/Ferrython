@@ -163,7 +163,8 @@ fn main_inner() {
     // These may appear before the script/command, e.g. `ferrython -u -W ignore script.py`.
     let mut inspect_after = env::var("PYTHONINSPECT").is_ok();
     let mut skip_first_line = false;
-    let mut warnings: Vec<String> = Vec::new();
+    let mut _warnings: Vec<String> = Vec::new();
+    let mut _x_options: Vec<String> = Vec::new();
 
     // Rebuild args: strip --compat and consume single-letter flags, stop at first
     // non-flag token (script path, -c, -m, special keyword, or --).
@@ -172,7 +173,13 @@ fn main_inner() {
     let mut iter = raw_args[1..].iter().peekable();
     while let Some(a) = iter.peek() {
         // Stop consuming flags once we hit -c, -m, --, or a non-flag token.
-        if *a == "--" || *a == "-c" || *a == "-m" || !a.starts_with('-') || a.len() < 2 {
+        if *a == "--"
+            || *a == "-?"
+            || *a == "-c"
+            || *a == "-m"
+            || !a.starts_with('-')
+            || a.len() < 2
+        {
             break;
         }
         let flag = iter.next().unwrap();
@@ -181,6 +188,17 @@ fn main_inner() {
         }
         // Multi-char flags: handle as-is; they'll be dispatched below
         if flag.starts_with("--") {
+            if flag == "--check-hash-based-pycs" {
+                if let Some(next) = iter.peek() {
+                    if !next.starts_with('-') {
+                        iter.next();
+                    }
+                }
+                continue;
+            }
+            if flag.starts_with("--check-hash-based-pycs=") {
+                continue;
+            }
             args.push(flag.clone());
             continue;
         }
@@ -191,18 +209,31 @@ fn main_inner() {
             match chars[i] {
                 'i' => inspect_after = true,
                 'x' => skip_first_line = true,
-                'u' | 'B' | 'O' | 's' | 'S' | 'd' | 'q' => {} // accepted, no-op
+                'u' | 'B' | 'O' | 's' | 'S' | 'd' | 'q' | 'E' | 'I' | 'P' | 'R' | 'b' | 'v' => {} // accepted, no-op
                 'W' => {
                     // -W FILTER or -WFILTER
                     if i + 1 < chars.len() {
                         // Rest of this flag token is the filter
                         let filter: String = chars[i + 1..].iter().collect();
-                        warnings.push(filter);
+                        _warnings.push(filter);
                         i = chars.len();
                         continue;
                     } else if let Some(next) = iter.peek() {
                         if !next.starts_with('-') {
-                            warnings.push(iter.next().unwrap().clone());
+                            _warnings.push(iter.next().unwrap().clone());
+                        }
+                    }
+                }
+                'X' => {
+                    // -X OPT or -XOPT
+                    if i + 1 < chars.len() {
+                        let opt: String = chars[i + 1..].iter().collect();
+                        _x_options.push(opt);
+                        i = chars.len();
+                        continue;
+                    } else if let Some(next) = iter.peek() {
+                        if !next.starts_with('-') {
+                            _x_options.push(iter.next().unwrap().clone());
                         }
                     }
                 }
@@ -348,7 +379,7 @@ fn main_inner() {
         return;
     }
 
-    if args[1] == "--help" || args[1] == "-h" {
+    if args[1] == "--help" || args[1] == "-h" || args[1] == "-?" {
         let version = env!("CARGO_PKG_VERSION");
         println!("Ferrython {} — Python 3.8 interpreter", version);
         println!();
@@ -361,10 +392,21 @@ fn main_inner() {
         println!("  -i              Inspect interactively after running script");
         println!("  -u              Unbuffered binary stdout/stderr (accepted, no-op)");
         println!("  -O              Optimize (accepted, no-op)");
+        println!("  -OO             Remove docstrings in addition to -O (accepted, no-op)");
         println!("  -B              Don't write .pyc bytecode files (accepted, no-op)");
+        println!("  -E              Ignore PYTHON* environment variables (accepted after startup)");
+        println!("  -I              Isolated mode (accepted after startup)");
+        println!("  -P              Don't prepend an unsafe path to sys.path (accepted, no-op)");
+        println!("  -s              Don't add user site directory to sys.path (accepted, no-op)");
+        println!("  -S              Don't imply 'import site' on initialization (accepted, no-op)");
+        println!("  -b, -bb         Bytes/str warning control (accepted, no-op)");
+        println!("  -d, -q, -v      Debug, quiet, verbose import modes (accepted, no-op)");
+        println!("  -R              Hash randomization control (accepted, no-op)");
         println!("  -W FILTER       Warning control (accepted, no-op)");
+        println!("  -X OPT          Implementation-specific option (accepted, no-op)");
         println!("  -x              Skip first line of script");
         println!("  -V, --version   Print version and exit");
+        println!("  --check-hash-based-pycs MODE  Hash pyc policy (accepted, no-op)");
         println!("  --compat        CPython-compatible mode (disable superinstructions)");
         println!("  --dis FILE      Disassemble bytecode to stderr, then execute");
         println!("  --profile FILE  Run with execution profiling");
