@@ -2,10 +2,10 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
-    check_args, check_args_min,
-    IteratorData, PropertyData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    FxAttrMap, SyncUsize,
+use ferrython_core::object::{
+    check_args, check_args_min, guard_eager_allocation, guarded_push, new_fx_hashkey_map,
+    FxAttrMap, FxHashKeyMap, IteratorData, PropertyData, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef, SyncUsize,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -55,7 +55,9 @@ pub(super) fn builtin_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             _ => {}
         }
     }
-    Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        args[0].py_to_string(),
+    )))
 }
 
 pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -64,20 +66,25 @@ pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     if args.len() >= 2 {
         // int(string, base)
-        let s = args[0].as_str().ok_or_else(||
-            PyException::type_error("int() can't convert non-string with explicit base"))?;
+        let s = args[0].as_str().ok_or_else(|| {
+            PyException::type_error("int() can't convert non-string with explicit base")
+        })?;
         let mut base = args[1].to_int()? as u32;
         let s = s.trim();
         // Handle base 0: auto-detect from prefix
         let s = if base == 0 {
             if s.starts_with("0x") || s.starts_with("0X") {
-                base = 16; &s[2..]
+                base = 16;
+                &s[2..]
             } else if s.starts_with("0o") || s.starts_with("0O") {
-                base = 8; &s[2..]
+                base = 8;
+                &s[2..]
             } else if s.starts_with("0b") || s.starts_with("0B") {
-                base = 2; &s[2..]
+                base = 2;
+                &s[2..]
             } else {
-                base = 10; s
+                base = 10;
+                s
             }
         } else if base == 16 && (s.starts_with("0x") || s.starts_with("0X")) {
             &s[2..]
@@ -88,8 +95,13 @@ pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         } else {
             s
         };
-        let val = i64::from_str_radix(s, base).map_err(|_|
-            PyException::value_error(format!("invalid literal for int() with base {}: '{}'", base, args[0].as_str().unwrap())))?;
+        let val = i64::from_str_radix(s, base).map_err(|_| {
+            PyException::value_error(format!(
+                "invalid literal for int() with base {}: '{}'",
+                base,
+                args[0].as_str().unwrap()
+            ))
+        })?;
         return Ok(PyObject::int(val));
     }
     Ok(PyObject::int(args[0].to_int()?))
@@ -108,9 +120,10 @@ pub(super) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // extra trailing dict (they aren't here — if caller used x=10, it goes through
     // a different path). We must also reject >1 positional args.
     if args.len() > 1 {
-        return Err(PyException::type_error(
-            CompactString::from(format!("bool() takes at most 1 argument ({} given)", args.len())),
-        ));
+        return Err(PyException::type_error(CompactString::from(format!(
+            "bool() takes at most 1 argument ({} given)",
+            args.len()
+        ))));
     }
     if args.is_empty() {
         return Ok(PyObject::bool_val(false));
@@ -127,35 +140,38 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // Inject metaclass reference if mcs is a user-defined metaclass (not plain 'type')
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.metaclass.is_none() {
-                let is_plain_type = matches!(&mcs.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "type");
+                let is_plain_type =
+                    matches!(&mcs.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "type");
                 if !is_plain_type {
                     // Re-create with metaclass set
-                    return Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(ferrython_core::object::ClassData {
-                        name: cd.name.clone(),
-                        bases: cd.bases.clone(),
-                        namespace: cd.namespace.clone(),
-                        mro: cd.mro.clone(),
-                        metaclass: Some(mcs.clone()),
-                        method_cache: Rc::new(PyCell::new(FxHashMap::default())),
-                        subclasses: Rc::new(PyCell::new(Vec::new())),
-                        slots: cd.slots.clone(),
-                        has_getattribute: cd.has_getattribute,
-                        has_getattr: cd.has_getattr,
-                        has_setattr: cd.has_setattr,
-                        has_descriptors: cd.has_descriptors,
-                        method_vtable: cd.method_vtable.clone(),
-                        attr_shape: cd.attr_shape.clone(),
-                        class_version: cd.class_version,
-                        is_dict_subclass: cd.is_dict_subclass,
-                        expected_attrs: cd.expected_attrs,
-                        is_simple_class: Cell::new(false), // has metaclass
-                        is_exception_subclass: cd.is_exception_subclass,
-                        instance_flags: cd.instance_flags,
-                        cached_init: PyCell::new(None),
-                        cached_init_inline: PyCell::new(None),
-                        has_custom_new: Cell::new(cd.has_custom_new.get()),
-                        builtin_base_name: cd.builtin_base_name.clone(),
-                    }))));
+                    return Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(
+                        ferrython_core::object::ClassData {
+                            name: cd.name.clone(),
+                            bases: cd.bases.clone(),
+                            namespace: cd.namespace.clone(),
+                            mro: cd.mro.clone(),
+                            metaclass: Some(mcs.clone()),
+                            method_cache: Rc::new(PyCell::new(FxHashMap::default())),
+                            subclasses: Rc::new(PyCell::new(Vec::new())),
+                            slots: cd.slots.clone(),
+                            has_getattribute: cd.has_getattribute,
+                            has_getattr: cd.has_getattr,
+                            has_setattr: cd.has_setattr,
+                            has_descriptors: cd.has_descriptors,
+                            method_vtable: cd.method_vtable.clone(),
+                            attr_shape: cd.attr_shape.clone(),
+                            class_version: cd.class_version,
+                            is_dict_subclass: cd.is_dict_subclass,
+                            expected_attrs: cd.expected_attrs,
+                            is_simple_class: Cell::new(false), // has metaclass
+                            is_exception_subclass: cd.is_exception_subclass,
+                            instance_flags: cd.instance_flags,
+                            cached_init: PyCell::new(None),
+                            cached_init_inline: PyCell::new(None),
+                            has_custom_new: Cell::new(cd.has_custom_new.get()),
+                            builtin_base_name: cd.builtin_base_name.clone(),
+                        },
+                    ))));
                 }
             }
         }
@@ -168,12 +184,8 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("type", args, 1)?;
     let name = args[0].type_name();
     match &args[0].payload {
-        PyObjectPayload::Instance(inst) => {
-            Ok(inst.class.clone())
-        }
-        PyObjectPayload::ExceptionInstance(ei) => {
-            Ok(PyObject::exception_type(ei.kind))
-        }
+        PyObjectPayload::Instance(inst) => Ok(inst.class.clone()),
+        PyObjectPayload::ExceptionInstance(ei) => Ok(PyObject::exception_type(ei.kind)),
         // For classes with a custom metaclass, return the metaclass
         PyObjectPayload::Class(cd) => {
             if let Some(ref mcs) = cd.metaclass {
@@ -182,21 +194,26 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Ok(PyObject::builtin_type(CompactString::from("type")))
             }
         }
-        _ => Ok(PyObject::builtin_type(CompactString::from(name)))
+        _ => Ok(PyObject::builtin_type(CompactString::from(name))),
     }
 }
 
-fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj: &PyObjectRef) -> PyResult<PyObjectRef> {
-    let name = name_obj.as_str().ok_or_else(||
-        PyException::type_error("type() argument 1 must be str"))?;
+fn builtin_type_create(
+    name_obj: &PyObjectRef,
+    bases_obj: &PyObjectRef,
+    dict_obj: &PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    let name = name_obj
+        .as_str()
+        .ok_or_else(|| PyException::type_error("type() argument 1 must be str"))?;
     let bases = bases_obj.to_list()?;
     // Check for attempts to subclass final builtin types (bool)
     for base in &bases {
         if let PyObjectPayload::BuiltinType(n) = &base.payload {
             if n.as_str() == "bool" {
-                return Err(PyException::type_error(
-                    CompactString::from("type 'bool' is not an acceptable base type"),
-                ));
+                return Err(PyException::type_error(CompactString::from(
+                    "type 'bool' is not an acceptable base type",
+                )));
             }
         }
     }
@@ -226,13 +243,15 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
             }
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(ferrython_core::object::ClassData::new(
-        CompactString::from(name),
-        bases,
-        namespace,
-        mro,
-        None,
-    )))))
+    Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(
+        ferrython_core::object::ClassData::new(
+            CompactString::from(name),
+            bases,
+            namespace,
+            mro,
+            None,
+        ),
+    ))))
 }
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -248,24 +267,34 @@ pub(crate) fn builtin_abs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_min(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("min expected at least 1 argument, got 0"));
+        return Err(PyException::type_error(
+            "min expected at least 1 argument, got 0",
+        ));
     }
     min_max_impl(args, std::cmp::Ordering::Less, "min")
 }
 
 pub(super) fn builtin_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("max expected at least 1 argument, got 0"));
+        return Err(PyException::type_error(
+            "max expected at least 1 argument, got 0",
+        ));
     }
     min_max_impl(args, std::cmp::Ordering::Greater, "max")
 }
 
-fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str) -> PyResult<PyObjectRef> {
+fn min_max_impl(
+    args: &[PyObjectRef],
+    target_ord: std::cmp::Ordering,
+    name: &str,
+) -> PyResult<PyObjectRef> {
     // Multi-arg: min(a, b, c, ...) — track best by index, clone once at end
     if args.len() > 1 {
         let mut best_idx = 0usize;
         for (i, item) in args[1..].iter().enumerate() {
-            if ferrython_core::object::helpers::partial_cmp_objects(item, &args[best_idx]) == Some(target_ord) {
+            if ferrython_core::object::helpers::partial_cmp_objects(item, &args[best_idx])
+                == Some(target_ord)
+            {
                 best_idx = i + 1;
             }
         }
@@ -278,13 +307,19 @@ fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str
         _ => {
             let materialized = args[0].to_list()?;
             if materialized.is_empty() {
-                return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
+                return Err(PyException::value_error(&format!(
+                    "{}() arg is an empty sequence",
+                    name
+                )));
             }
             return min_max_slice(&materialized, target_ord);
         }
     };
     if items.is_empty() {
-        return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
+        return Err(PyException::value_error(&format!(
+            "{}() arg is an empty sequence",
+            name
+        )));
     }
     min_max_slice(items, target_ord)
 }
@@ -294,12 +329,15 @@ fn min_max_slice(items: &[PyObjectRef], target_ord: std::cmp::Ordering) -> PyRes
     // Single-pass: try small-int scan, fall back to generic on first non-int
     if items.len() >= 2 {
         let is_min = target_ord == std::cmp::Ordering::Less;
-        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(first_val)) = &items[0].payload {
+        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(first_val)) =
+            &items[0].payload
+        {
             let mut best_idx = 0usize;
             let mut best_val = *first_val;
             let mut all_small = true;
             for (i, item) in items[1..].iter().enumerate() {
-                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &item.payload {
+                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &item.payload
+                {
                     if (is_min && *v < best_val) || (!is_min && *v > best_val) {
                         best_val = *v;
                         best_idx = i + 1;
@@ -317,7 +355,9 @@ fn min_max_slice(items: &[PyObjectRef], target_ord: std::cmp::Ordering) -> PyRes
     // Generic path: track best by index, clone only once at the end
     let mut best_idx = 0usize;
     for (i, item) in items[1..].iter().enumerate() {
-        if ferrython_core::object::helpers::partial_cmp_objects(item, &items[best_idx]) == Some(target_ord) {
+        if ferrython_core::object::helpers::partial_cmp_objects(item, &items[best_idx])
+            == Some(target_ord)
+        {
             best_idx = i + 1;
         }
     }
@@ -326,9 +366,15 @@ fn min_max_slice(items: &[PyObjectRef], target_ord: std::cmp::Ordering) -> PyRes
 
 pub(super) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("sum expected at least 1 argument, got 0"));
+        return Err(PyException::type_error(
+            "sum expected at least 1 argument, got 0",
+        ));
     }
-    let start_val = if args.len() > 1 { &args[1] } else { &PyObject::int(0) };
+    let start_val = if args.len() > 1 {
+        &args[1]
+    } else {
+        &PyObject::int(0)
+    };
 
     // Direct accumulation over list/tuple without cloning the entire container
     let items_ref: &[PyObjectRef] = match &args[0].payload {
@@ -340,9 +386,17 @@ pub(super) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::value_error("range() arg 3 must not be zero"));
             }
             let n = if rd.step > 0 {
-                if rd.start >= rd.stop { 0i64 } else { (rd.stop - rd.start + rd.step - 1) / rd.step }
+                if rd.start >= rd.stop {
+                    0i64
+                } else {
+                    (rd.stop - rd.start + rd.step - 1) / rd.step
+                }
             } else {
-                if rd.start <= rd.stop { 0i64 } else { (rd.start - rd.stop - rd.step - 1) / (-rd.step) }
+                if rd.start <= rd.stop {
+                    0i64
+                } else {
+                    (rd.start - rd.stop - rd.step - 1) / (-rd.step)
+                }
             };
             if n == 0 {
                 return Ok(start_val.clone());
@@ -428,7 +482,10 @@ fn sum_items(items: &[PyObjectRef], start: &PyObjectRef) -> PyResult<PyObjectRef
             match &item.payload {
                 PyObjectPayload::Float(f) => total += f,
                 PyObjectPayload::Int(PyInt::Small(n)) => total += *n as f64,
-                _ => { all_numeric = false; break; }
+                _ => {
+                    all_numeric = false;
+                    break;
+                }
             }
         }
         if all_numeric {
@@ -446,7 +503,11 @@ fn sum_items(items: &[PyObjectRef], start: &PyObjectRef) -> PyResult<PyObjectRef
 
 pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("round", args, 1)?;
-    let ndigits = if args.len() >= 2 { Some(args[1].to_int()?) } else { None };
+    let ndigits = if args.len() >= 2 {
+        Some(args[1].to_int()?)
+    } else {
+        None
+    };
     match &args[0].payload {
         PyObjectPayload::Int(i) => {
             if let Some(n) = ndigits {
@@ -485,19 +546,24 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 match &round_method.payload {
                     PyObjectPayload::NativeFunction(nf) => {
                         let mut call_args = vec![args[0].clone()];
-                        if args.len() >= 2 { call_args.push(args[1].clone()); }
+                        if args.len() >= 2 {
+                            call_args.push(args[1].clone());
+                        }
                         return (nf.func)(&call_args);
                     }
                     PyObjectPayload::NativeClosure(nc) => {
                         let mut call_args = vec![args[0].clone()];
-                        if args.len() >= 2 { call_args.push(args[1].clone()); }
+                        if args.len() >= 2 {
+                            call_args.push(args[1].clone());
+                        }
                         return (nc.func)(&call_args);
                     }
                     _ => {}
                 }
             }
             Err(PyException::type_error(format!(
-                "type '{}' doesn't define __round__ method", args[0].type_name()
+                "type '{}' doesn't define __round__ method",
+                args[0].type_name()
             )))
         }
     }
@@ -512,7 +578,11 @@ fn round_half_to_even(x: f64) -> f64 {
     if (frac - 0.5).abs() < f64::EPSILON * x.abs().max(1.0) {
         // Exactly halfway — round to even
         if rounded as i64 % 2 != 0 {
-            if x > 0.0 { rounded - 1.0 } else { rounded + 1.0 }
+            if x > 0.0 {
+                rounded - 1.0
+            } else {
+                rounded + 1.0
+            }
         } else {
             rounded
         }
@@ -538,10 +608,16 @@ pub(super) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         let base_i = args[0].as_int().ok_or_else(||
             PyException::type_error("pow() 1st argument not allowed for 3-argument pow() unless all arguments are integers"))?;
-        let exp_i = args[1].as_int().ok_or_else(||
-            PyException::type_error("pow() 2nd argument cannot be negative when 3rd argument specified"))?;
-        let mod_i = modulus.as_int().ok_or_else(||
-            PyException::type_error("pow() 3rd argument not allowed unless all arguments are integers"))?;
+        let exp_i = args[1].as_int().ok_or_else(|| {
+            PyException::type_error(
+                "pow() 2nd argument cannot be negative when 3rd argument specified",
+            )
+        })?;
+        let mod_i = modulus.as_int().ok_or_else(|| {
+            PyException::type_error(
+                "pow() 3rd argument not allowed unless all arguments are integers",
+            )
+        })?;
         if mod_i == 0 {
             return Err(PyException::value_error("pow() 3rd argument cannot be 0"));
         }
@@ -584,7 +660,11 @@ fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
         exp >>= 1;
     }
     let r = result as i64;
-    if modulus < 0 && r > 0 { r + modulus } else { r }
+    if modulus < 0 && r > 0 {
+        r + modulus
+    } else {
+        r
+    }
 }
 
 /// Extended Euclidean algorithm: returns (gcd, x, y) such that a*x + b*y = gcd
@@ -611,7 +691,9 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         HashableKey::Bool(b) => b as i64,
         HashableKey::Str(ref s) => {
             let mut h: u64 = 5381;
-            for c in s.bytes() { h = h.wrapping_mul(33).wrapping_add(c as u64); }
+            for c in s.bytes() {
+                h = h.wrapping_mul(33).wrapping_add(c as u64);
+            }
             h as i64
         }
         HashableKey::Float(f) => {
@@ -649,9 +731,19 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             h = h.wrapping_mul(69069).wrapping_add(907133923) & mask;
             let result = h as i64;
-            if result == -1 { 590923713 } else { result }
+            if result == -1 {
+                590923713
+            } else {
+                result
+            }
         }
-        HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b.iter() { h = h.wrapping_mul(33).wrapping_add(*x as u64); } h as i64 }
+        HashableKey::Bytes(b) => {
+            let mut h: u64 = 5381;
+            for x in b.iter() {
+                h = h.wrapping_mul(33).wrapping_add(*x as u64);
+            }
+            h as i64
+        }
         HashableKey::Identity(ptr, _) => ptr as i64,
         HashableKey::Custom { hash_value, .. } => hash_value,
     };
@@ -712,7 +804,9 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                         let ns = cd.namespace.read();
                         if ns.contains_key("__int_enum__") || ns.contains_key("_value_") {
                             for base in &cd.bases {
-                                if class_is_subclass_of(base, "IntEnum") || class_is_subclass_of(base, "int") {
+                                if class_is_subclass_of(base, "IntEnum")
+                                    || class_is_subclass_of(base, "int")
+                                {
                                     return true;
                                 }
                             }
@@ -752,7 +846,9 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                 classes_to_check.extend(target_cd.bases.iter().cloned());
                 for check_cls in &classes_to_check {
                     if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
-                        if let Some(registry) = check_cd.namespace.read().get("_abc_registry").cloned() {
+                        if let Some(registry) =
+                            check_cd.namespace.read().get("_abc_registry").cloned()
+                        {
                             if let PyObjectPayload::Dict(map) = &registry.payload {
                                 let obj_class = match &obj.payload {
                                     PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
@@ -770,7 +866,9 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                                                 return true;
                                             }
                                             if let Some(ref ocn) = obj_class_name {
-                                                if let PyObjectPayload::Class(rc) = &registered.payload {
+                                                if let PyObjectPayload::Class(rc) =
+                                                    &registered.payload
+                                                {
                                                     if rc.name == *ocn {
                                                         return true;
                                                     }
@@ -905,8 +1003,20 @@ fn exception_is_subclass_of(kind: ExceptionKind, target_name: &str) -> bool {
 fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
     match abc_name {
         "Iterable" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range" | "iterator" | "generator")
-                || obj.get_attr("__iter__").is_some()
+            matches!(
+                obj.type_name(),
+                "list"
+                    | "tuple"
+                    | "str"
+                    | "dict"
+                    | "set"
+                    | "frozenset"
+                    | "bytes"
+                    | "bytearray"
+                    | "range"
+                    | "iterator"
+                    | "generator"
+            ) || obj.get_attr("__iter__").is_some()
         }
         "Iterator" => {
             matches!(obj.type_name(), "iterator" | "generator")
@@ -917,32 +1027,66 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
                 || (obj.get_attr("__getitem__").is_some() && obj.get_attr("keys").is_some())
         }
         "Sequence" | "MutableSequence" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "bytes" | "bytearray" | "range")
+            matches!(
+                obj.type_name(),
+                "list" | "tuple" | "str" | "bytes" | "bytearray" | "range"
+            )
         }
         "Set" | "MutableSet" => {
             matches!(obj.type_name(), "set" | "frozenset")
         }
-        "Callable" => {
-            obj.is_callable()
-        }
-        "Hashable" => {
-            !matches!(obj.type_name(), "list" | "dict" | "set" | "bytearray")
-        }
+        "Callable" => obj.is_callable(),
+        "Hashable" => !matches!(obj.type_name(), "list" | "dict" | "set" | "bytearray"),
         "Sized" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
-                || obj.get_attr("__len__").is_some()
+            matches!(
+                obj.type_name(),
+                "list"
+                    | "tuple"
+                    | "str"
+                    | "dict"
+                    | "set"
+                    | "frozenset"
+                    | "bytes"
+                    | "bytearray"
+                    | "range"
+            ) || obj.get_attr("__len__").is_some()
         }
         "Collection" => {
-            check_abc_structural(obj, "Sized") && check_abc_structural(obj, "Iterable")
+            check_abc_structural(obj, "Sized")
+                && check_abc_structural(obj, "Iterable")
                 && obj.get_attr("__contains__").is_some()
-                || matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+                || matches!(
+                    obj.type_name(),
+                    "list"
+                        | "tuple"
+                        | "str"
+                        | "dict"
+                        | "set"
+                        | "frozenset"
+                        | "bytes"
+                        | "bytearray"
+                        | "range"
+                )
         }
         "Reversible" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "bytes" | "bytearray" | "range")
+            matches!(
+                obj.type_name(),
+                "list" | "tuple" | "str" | "dict" | "bytes" | "bytearray" | "range"
+            )
         }
         "Container" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
-                || obj.get_attr("__contains__").is_some()
+            matches!(
+                obj.type_name(),
+                "list"
+                    | "tuple"
+                    | "str"
+                    | "dict"
+                    | "set"
+                    | "frozenset"
+                    | "bytes"
+                    | "bytearray"
+                    | "range"
+            ) || obj.get_attr("__contains__").is_some()
         }
         "Number" | "Complex" => {
             matches!(obj.type_name(), "int" | "float" | "complex" | "bool")
@@ -969,11 +1113,15 @@ pub(super) fn builtin_input(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         std::io::stdout().flush().ok();
     }
     let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf).map_err(|e|
-        PyException::runtime_error(format!("input error: {}", e))
-    )?;
-    if buf.ends_with('\n') { buf.pop(); }
-    if buf.ends_with('\r') { buf.pop(); }
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(|e| PyException::runtime_error(format!("input error: {}", e)))?;
+    if buf.ends_with('\n') {
+        buf.pop();
+    }
+    if buf.ends_with('\r') {
+        buf.pop();
+    }
     Ok(PyObject::str_val(CompactString::from(buf)))
 }
 
@@ -984,7 +1132,8 @@ pub(super) fn builtin_ord(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
             if b.len() != 1 {
                 return Err(PyException::type_error(format!(
-                    "ord() expected a character, but bytes of length {} found", b.len()
+                    "ord() expected a character, but bytes of length {} found",
+                    b.len()
                 )));
             }
             return Ok(PyObject::int(b[0] as i64));
@@ -996,23 +1145,31 @@ pub(super) fn builtin_ord(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         _ => {}
     }
-    let s = args[0].as_str().ok_or_else(|| PyException::type_error(
-        "ord() expected string of length 1, but found non-string"
-    ))?;
+    let s = args[0].as_str().ok_or_else(|| {
+        PyException::type_error("ord() expected string of length 1, but found non-string")
+    })?;
     let mut chars = s.chars();
-    let c = chars.next().ok_or_else(|| PyException::type_error("ord() expected a character"))?;
+    let c = chars
+        .next()
+        .ok_or_else(|| PyException::type_error("ord() expected a character"))?;
     if chars.next().is_some() {
-        return Err(PyException::type_error("ord() expected a character, but string of length > 1 found"));
+        return Err(PyException::type_error(
+            "ord() expected a character, but string of length > 1 found",
+        ));
     }
     Ok(PyObject::int(c as i64))
 }
 
 pub(super) fn builtin_chr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("chr", args, 1)?;
-    let n = args[0].as_int().ok_or_else(|| PyException::type_error("chr() expects int"))?;
+    let n = args[0]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("chr() expects int"))?;
     if n < 0 || n > 0x10FFFF {
-        return Err(PyException::value_error(
-            format!("chr() arg not in range(0x110000): {}", n)));
+        return Err(PyException::value_error(format!(
+            "chr() arg not in range(0x110000): {}",
+            n
+        )));
     }
     // Rust char doesn't allow surrogates (0xD800-0xDFFF), but CPython does
     let s = if let Some(c) = char::from_u32(n as u32) {
@@ -1035,12 +1192,16 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
         let index_fn = {
             let attrs = inst.attrs.read();
             attrs.get("__index__").cloned()
-        }.or_else(|| obj.get_attr("__index__"));
+        }
+        .or_else(|| obj.get_attr("__index__"));
         if let Some(func) = index_fn {
             let result = match &func.payload {
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                 PyObjectPayload::NativeFunction(nf) => (nf.func)(&[])?,
-                PyObjectPayload::BoundMethod { receiver: _, method } => {
+                PyObjectPayload::BoundMethod {
+                    receiver: _,
+                    method,
+                } => {
                     // Call the bound method — for simple __index__ methods that
                     // just return an int, we can try NativeFunction/NativeClosure
                     match &method.payload {
@@ -1048,8 +1209,13 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
                         PyObjectPayload::NativeFunction(nf) => (nf.func)(&[obj.clone()])?,
                         // Python-defined __index__ needs VM; we can't call it here.
                         // Fall through to error.
-                        _ => return Err(PyException::type_error(format!(
-                            "'{}'() integer argument expected, got '{}'", func_name, obj.type_name()))),
+                        _ => {
+                            return Err(PyException::type_error(format!(
+                                "'{}'() integer argument expected, got '{}'",
+                                func_name,
+                                obj.type_name()
+                            )))
+                        }
                     }
                 }
                 PyObjectPayload::Function(_) => {
@@ -1057,10 +1223,18 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
                     // But for the common case of __index__ defined in the class,
                     // it'll be accessed as BoundMethod via get_attr, handled above.
                     return Err(PyException::type_error(format!(
-                        "'{}'() integer argument expected, got '{}'", func_name, obj.type_name())));
+                        "'{}'() integer argument expected, got '{}'",
+                        func_name,
+                        obj.type_name()
+                    )));
                 }
-                _ => return Err(PyException::type_error(format!(
-                    "'{}'() integer argument expected, got '{}'", func_name, obj.type_name()))),
+                _ => {
+                    return Err(PyException::type_error(format!(
+                        "'{}'() integer argument expected, got '{}'",
+                        func_name,
+                        obj.type_name()
+                    )))
+                }
             };
             if let Some(n) = result.as_int() {
                 return Ok(n);
@@ -1068,27 +1242,42 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
         }
     }
     Err(PyException::type_error(format!(
-        "'{}'() integer argument expected, got '{}'", func_name, obj.type_name())))
+        "'{}'() integer argument expected, got '{}'",
+        func_name,
+        obj.type_name()
+    )))
 }
 
 pub(super) fn builtin_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hex", args, 1)?;
     let n = resolve_index(&args[0], "hex")?;
-    let s = if n < 0 { format!("-0x{:x}", -n) } else { format!("0x{:x}", n) };
+    let s = if n < 0 {
+        format!("-0x{:x}", -n)
+    } else {
+        format!("0x{:x}", n)
+    };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_oct(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("oct", args, 1)?;
     let n = resolve_index(&args[0], "oct")?;
-    let s = if n < 0 { format!("-0o{:o}", -n) } else { format!("0o{:o}", n) };
+    let s = if n < 0 {
+        format!("-0o{:o}", -n)
+    } else {
+        format!("0o{:o}", n)
+    };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_bin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("bin", args, 1)?;
     let n = resolve_index(&args[0], "bin")?;
-    let s = if n < 0 { format!("-0b{:b}", -n) } else { format!("0b{:b}", n) };
+    let s = if n < 0 {
+        format!("-0b{:b}", -n)
+    } else {
+        format!("0b{:b}", n)
+    };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
@@ -1106,11 +1295,26 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     // Homogeneous small-int sort: extract i64 values, sort natively, avoid repeated
     // enum matching in the comparator. Detection is O(n) matches vs O(n log n) match-pairs.
-    let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+    let all_small_int = items.iter().all(|x| {
+        matches!(
+            &x.payload,
+            PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))
+        )
+    });
     if all_small_int {
         items.sort_unstable_by(|a, b| {
-            let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
-            let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
+            let av =
+                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload {
+                    *v
+                } else {
+                    0
+                };
+            let bv =
+                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload {
+                    *v
+                } else {
+                    0
+                };
             av.cmp(&bv)
         });
     } else if items.len() > 1 {
@@ -1126,28 +1330,37 @@ pub(super) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("reversed", args, 1)?;
     let mut items = args[0].to_list()?;
     items.reverse();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(ferrython_core::object::IteratorData::List { items, index: 0 }))
-    )))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(ferrython_core::object::IteratorData::List { items, index: 0 }),
+    ))))
 }
 
 pub(super) fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("enumerate", args, 1)?;
     let start = if args.len() > 1 {
         args[1].as_int().unwrap_or(0)
-    } else { 0 };
+    } else {
+        0
+    };
     // Get an iterator from the source
     let source = get_iter_from_obj(&args[0])?;
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::Enumerate { source, index: start, cached_tuple: None }))
-    )))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Enumerate {
+            source,
+            index: start,
+            cached_tuple: None,
+        }),
+    ))))
 }
 
 pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Rc::new(PyCell::new(IteratorData::List { items: vec![], index: 0 }))
-        )));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::List {
+                items: vec![],
+                index: 0,
+            }),
+        ))));
     }
     // Check for trailing kwargs dict with strict=True
     let mut strict = false;
@@ -1166,44 +1379,59 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args
     };
-    let sources: Vec<PyObjectRef> = iter_args.iter()
+    let sources: Vec<PyObjectRef> = iter_args
+        .iter()
         .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
     let n = sources.len();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::Zip { sources, strict, cached_tuple: None, items_buf: Vec::with_capacity(n) }))
-    )))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+        PyCell::new(IteratorData::Zip {
+            sources,
+            strict,
+            cached_tuple: None,
+            items_buf: Vec::with_capacity(n),
+        }),
+    ))))
 }
 
 /// Get an iterator from any iterable object.
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
-        PyObjectPayload::Range(rd) => {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::Range { current: rd.start, stop: rd.stop, step: rd.step }))
-            )))
-        }
+        PyObjectPayload::Iterator(_)
+        | PyObjectPayload::RangeIter(..)
+        | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::Generator(_)
+        | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
+        PyObjectPayload::Range(rd) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::Range {
+                current: rd.start,
+                stop: rd.stop,
+                step: rd.step,
+            }),
+        )))),
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
             Ok(PyObject::wrap(PyObjectPayload::RefIter {
-                source: obj.clone(), index: SyncUsize::new(0)
+                source: obj.clone(),
+                index: SyncUsize::new(0),
             }))
         }
         PyObjectPayload::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::Str { chars, index: 0 }))
-            )))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::Str { chars, index: 0 }),
+            ))))
         }
         PyObjectPayload::Set(m) => {
             let items: Vec<PyObjectRef> = m.read().values().cloned().collect();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List { items, index: 0 }))
-            )))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List { items, index: 0 }),
+            ))))
         }
         PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
             Ok(PyObject::wrap(PyObjectPayload::RefIter {
-                source: obj.clone(), index: SyncUsize::new(0)
+                source: obj.clone(),
+                index: SyncUsize::new(0),
             }))
         }
         PyObjectPayload::Instance(_) => {
@@ -1215,7 +1443,10 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     Err(_) => Ok(obj.clone()),
                 }
             } else {
-                Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+                Err(PyException::type_error(format!(
+                    "'{}' object is not iterable",
+                    obj.type_name()
+                )))
             }
         }
         // Module with __iter__ (file objects, module_with_attrs with _bind_methods)
@@ -1224,24 +1455,24 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             if let Some(iter_attr) = obj.get_attr("__iter__") {
                 let result = match &iter_attr.payload {
                     // __iter__ returned a list/iterator directly (stored as attr)
-                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) => {
-                        Some(iter_attr.clone())
-                    }
+                    PyObjectPayload::List(_)
+                    | PyObjectPayload::Tuple(_)
+                    | PyObjectPayload::Iterator(_)
+                    | PyObjectPayload::RangeIter(..)
+                    | PyObjectPayload::VecIter(_) => Some(iter_attr.clone()),
                     // __iter__ is a bound method — call it
                     PyObjectPayload::BoundMethod { receiver, method } => {
                         if let PyObjectPayload::NativeClosure(nc) = &method.payload {
                             Some((nc.func)(&[receiver.clone()])?)
                         } else if let PyObjectPayload::NativeFunction(nf) = &method.payload {
                             Some((nf.func)(&[receiver.clone()])?)
-                        } else { None }
+                        } else {
+                            None
+                        }
                     }
                     // __iter__ is a native closure/function to call with self
-                    PyObjectPayload::NativeClosure(nc) => {
-                        Some((nc.func)(&[obj.clone()])?)
-                    }
-                    PyObjectPayload::NativeFunction(nf) => {
-                        Some((nf.func)(&[obj.clone()])?)
-                    }
+                    PyObjectPayload::NativeClosure(nc) => Some((nc.func)(&[obj.clone()])?),
+                    PyObjectPayload::NativeFunction(nf) => Some((nf.func)(&[obj.clone()])?),
                     _ => None,
                 };
                 if let Some(result) = result {
@@ -1251,7 +1482,10 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                         if obj.get_attr("__next__").is_some() {
                             return Ok(obj.clone());
                         }
-                        return Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())));
+                        return Err(PyException::type_error(format!(
+                            "'{}' object is not iterable",
+                            obj.type_name()
+                        )));
                     }
                     return get_iter_from_obj(&result);
                 }
@@ -1260,7 +1494,10 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             if obj.get_attr("__next__").is_some() {
                 return Ok(obj.clone());
             }
-            Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+            Err(PyException::type_error(format!(
+                "'{}' object is not iterable",
+                obj.type_name()
+            )))
         }
         // Delegate all other payload types to the core get_iter (handles DictKeys, DictValues,
         // DictItems, Bytes, ByteArray, FrozenSet, MappingProxy, etc.)
@@ -1275,24 +1512,30 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (start, stop, step) = match args.len() {
         1 => {
-            let stop = args[0].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
+            let stop = args[0]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
             (0i64, stop, 1i64)
         }
         2 => {
-            let start = args[0].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
-            let stop = args[1].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
+            let start = args[0]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
+            let stop = args[1]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
             (start, stop, 1)
         }
         3 => {
-            let start = args[0].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
-            let stop = args[1].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
-            let step = args[2].as_int().ok_or_else(||
-                PyException::type_error("range() integer expected"))?;
+            let start = args[0]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
+            let stop = args[1]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
+            let step = args[2]
+                .as_int()
+                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
             if step == 0 {
                 return Err(PyException::value_error("range() arg 3 must not be zero"));
             }
@@ -1313,7 +1556,7 @@ pub(super) fn builtin_list(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut items = Vec::new();
         loop {
             match iter_advance(&iter)? {
-                Some((_new_iter, value)) => items.push(value),
+                Some((_new_iter, value)) => guarded_push(&mut items, value, "list()")?,
                 None => break,
             }
         }
@@ -1332,7 +1575,7 @@ pub(super) fn builtin_tuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut items = Vec::new();
         loop {
             match iter_advance(&iter)? {
-                Some((_new_iter, value)) => items.push(value),
+                Some((_new_iter, value)) => guarded_push(&mut items, value, "tuple()")?,
                 None => break,
             }
         }
@@ -1349,13 +1592,13 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &args[0].payload {
         PyObjectPayload::Dict(m) => {
             let mut new_map = m.read().clone();
-            new_map.shift_remove(&HashableKey::str_key(CompactString::from("__defaultdict_factory__")));
+            new_map.shift_remove(&HashableKey::str_key(CompactString::from(
+                "__defaultdict_factory__",
+            )));
             new_map.shift_remove(&HashableKey::str_key(CompactString::from("__counter__")));
             Ok(PyObject::dict(new_map))
-        },
-        PyObjectPayload::MappingProxy(m) => {
-            Ok(PyObject::dict(m.read().clone()))
-        },
+        }
+        PyObjectPayload::MappingProxy(m) => Ok(PyObject::dict(m.read().clone())),
         PyObjectPayload::InstanceDict(m) => {
             let read = m.read();
             let mut map = IndexMap::new();
@@ -1365,16 +1608,23 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
             }
             Ok(PyObject::dict(map))
-        },
+        }
         // dict from iterable of (key, value) pairs
-        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::Set(_) => {
+        PyObjectPayload::List(_)
+        | PyObjectPayload::Tuple(_)
+        | PyObjectPayload::Iterator(_)
+        | PyObjectPayload::RangeIter(..)
+        | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
             let mut map = IndexMap::new();
             for pair in &pairs {
                 let kv = pair.to_list()?;
                 if kv.len() != 2 {
-                    return Err(PyException::value_error(
-                        format!("dictionary update sequence element has length {}; 2 is required", kv.len())));
+                    return Err(PyException::value_error(format!(
+                        "dictionary update sequence element has length {}; 2 is required",
+                        kv.len()
+                    )));
                 }
                 let key = kv[0].to_hashable_key()?;
                 map.insert(key, kv[1].clone());
@@ -1395,8 +1645,10 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             for pair in &pairs {
                 let kv = pair.to_list()?;
                 if kv.len() != 2 {
-                    return Err(PyException::value_error(
-                        format!("dictionary update sequence element has length {}; 2 is required", kv.len())));
+                    return Err(PyException::value_error(format!(
+                        "dictionary update sequence element has length {}; 2 is required",
+                        kv.len()
+                    )));
                 }
                 let key = kv[0].to_hashable_key()?;
                 map.insert(key, kv[1].clone());
@@ -1438,7 +1690,9 @@ pub(super) fn builtin_all(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("all", args, 1)?;
     let items = args[0].to_list()?;
     for item in items {
-        if !item.is_truthy() { return Ok(PyObject::bool_val(false)); }
+        if !item.is_truthy() {
+            return Ok(PyObject::bool_val(false));
+        }
     }
     Ok(PyObject::bool_val(true))
 }
@@ -1447,7 +1701,9 @@ pub(super) fn builtin_any(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("any", args, 1)?;
     let items = args[0].to_list()?;
     for item in items {
-        if item.is_truthy() { return Ok(PyObject::bool_val(true)); }
+        if item.is_truthy() {
+            return Ok(PyObject::bool_val(true));
+        }
     }
     Ok(PyObject::bool_val(false))
 }
@@ -1455,12 +1711,12 @@ pub(super) fn builtin_any(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() == 2 {
         // iter(callable, sentinel) — creates a lazy sentinel iterator
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Rc::new(PyCell::new(IteratorData::Sentinel {
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::Sentinel {
                 callable: args[0].clone(),
                 sentinel: args[1].clone(),
-            }))
-        )));
+            }),
+        ))));
     }
     check_args("iter", args, 1)?;
     get_iter_from_obj(&args[0])
@@ -1482,15 +1738,19 @@ pub(super) fn builtin_next(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hasattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hasattr", args, 2)?;
-    let name = args[1].as_str().ok_or_else(||
-        PyException::type_error("hasattr(): attribute name must be string"))?;
-    Ok(PyObject::bool_val(ferrython_core::object::py_has_attr(&args[0], name)))
+    let name = args[1]
+        .as_str()
+        .ok_or_else(|| PyException::type_error("hasattr(): attribute name must be string"))?;
+    Ok(PyObject::bool_val(ferrython_core::object::py_has_attr(
+        &args[0], name,
+    )))
 }
 
 pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("getattr", args, 2)?;
-    let name = args[1].as_str().ok_or_else(||
-        PyException::type_error("getattr(): attribute name must be string"))?;
+    let name = args[1]
+        .as_str()
+        .ok_or_else(|| PyException::type_error("getattr(): attribute name must be string"))?;
     match args[0].get_attr(name) {
         Some(v) => Ok(v),
         None => {
@@ -1498,7 +1758,9 @@ pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Ok(args[2].clone())
             } else {
                 Err(PyException::attribute_error(format!(
-                    "'{}' object has no attribute '{}'", args[0].type_name(), name
+                    "'{}' object has no attribute '{}'",
+                    args[0].type_name(),
+                    name
                 )))
             }
         }
@@ -1519,22 +1781,34 @@ pub(super) fn builtin_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() >= 2 {
         let spec = args[1].py_to_string();
         if !spec.is_empty() {
-            return args[0].format_value(&spec).map(|s| PyObject::str_val(CompactString::from(s)));
+            return args[0]
+                .format_value(&spec)
+                .map(|s| PyObject::str_val(CompactString::from(s)));
         }
     }
-    Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        args[0].py_to_string(),
+    )))
 }
 
 pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("ascii", args, 1)?;
     let repr = args[0].repr();
     // ascii() takes repr() and escapes non-ASCII characters
-    let escaped: String = repr.chars().map(|c| {
-        if c.is_ascii() { c.to_string() }
-        else if (c as u32) <= 0xff { format!("\\x{:02x}", c as u32) }
-        else if (c as u32) <= 0xffff { format!("\\u{:04x}", c as u32) }
-        else { format!("\\U{:08x}", c as u32) }
-    }).collect();
+    let escaped: String = repr
+        .chars()
+        .map(|c| {
+            if c.is_ascii() {
+                c.to_string()
+            } else if (c as u32) <= 0xff {
+                format!("\\x{:02x}", c as u32)
+            } else if (c as u32) <= 0xffff {
+                format!("\\u{:04x}", c as u32)
+            } else {
+                format!("\\U{:08x}", c as u32)
+            }
+        })
+        .collect();
     Ok(PyObject::str_val(CompactString::from(escaped)))
 }
 
@@ -1546,7 +1820,11 @@ pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // is_abstract_marker() detects Property.fget abstract markers.
     // unwrap_abstract_fget() unwraps the marker when actually calling the getter.
     Ok(PyObjectRef::new(PyObject {
-        payload: PyObjectPayload::Property(Box::new(PropertyData { fget: fget_raw, fset, fdel })),
+        payload: PyObjectPayload::Property(Box::new(PropertyData {
+            fget: fget_raw,
+            fset,
+            fdel,
+        })),
     }))
 }
 
@@ -1577,33 +1855,49 @@ pub(super) fn builtin_classmethod(args: &[PyObjectRef]) -> PyResult<PyObjectRef>
 
 pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() != 3 {
-        return Err(PyException::type_error("setattr() takes exactly 3 arguments"));
+        return Err(PyException::type_error(
+            "setattr() takes exactly 3 arguments",
+        ));
     }
     let name = args[1].py_to_string();
     match &args[0].payload {
         PyObjectPayload::Instance(inst) => {
-            inst.attrs.write().insert(CompactString::from(name), args[2].clone());
+            inst.attrs
+                .write()
+                .insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::Class(cd) => {
-            cd.namespace.write().insert(CompactString::from(name), args[2].clone());
+            cd.namespace
+                .write()
+                .insert(CompactString::from(name), args[2].clone());
             cd.invalidate_cache();
         }
         PyObjectPayload::Module(m) => {
-            m.attrs.write().insert(CompactString::from(name), args[2].clone());
+            m.attrs
+                .write()
+                .insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::ExceptionInstance(ei) => {
-            ei.ensure_attrs().write().insert(CompactString::from(name), args[2].clone());
+            ei.ensure_attrs()
+                .write()
+                .insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::Function(f) => {
-            f.attrs.write().insert(CompactString::from(name), args[2].clone());
+            f.attrs
+                .write()
+                .insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) |
-        PyObjectPayload::BuiltinFunction(_) => {
+        PyObjectPayload::NativeFunction(_)
+        | PyObjectPayload::NativeClosure(_)
+        | PyObjectPayload::BuiltinFunction(_) => {
             // Silently accept — native functions don't have persistent attrs
         }
-        _ => return Err(PyException::attribute_error(format!(
-            "'{}' object does not support attribute assignment", args[0].type_name()
-        ))),
+        _ => {
+            return Err(PyException::attribute_error(format!(
+                "'{}' object does not support attribute assignment",
+                args[0].type_name()
+            )))
+        }
     }
     Ok(PyObject::none())
 }
@@ -1618,9 +1912,12 @@ pub(super) fn builtin_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Module(md) => {
             md.attrs.write().shift_remove(name.as_str());
         }
-        _ => return Err(PyException::attribute_error(format!(
-            "'{}' object does not support attribute deletion", args[0].type_name()
-        ))),
+        _ => {
+            return Err(PyException::attribute_error(format!(
+                "'{}' object does not support attribute deletion",
+                args[0].type_name()
+            )))
+        }
     }
     Ok(PyObject::none())
 }
@@ -1632,25 +1929,32 @@ pub(super) fn builtin_vars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &args[0].payload {
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = attrs.iter()
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = attrs
+                .iter()
                 .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict_from_pairs(pairs))
         }
         PyObjectPayload::Class(cd) => {
             let ns = cd.namespace.read();
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = ns.iter()
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = ns
+                .iter()
                 .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict_from_pairs(pairs))
         }
         PyObjectPayload::Module(md) => {
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md.attrs.read().iter()
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md
+                .attrs
+                .read()
+                .iter()
                 .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict_from_pairs(pairs))
         }
-        _ => Err(PyException::type_error("vars() argument must have __dict__ attribute")),
+        _ => Err(PyException::type_error(
+            "vars() argument must have __dict__ attribute",
+        )),
     }
 }
 
@@ -1664,13 +1968,23 @@ pub(super) fn builtin_locals(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_slice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let to_opt = |a: &PyObjectRef| -> Option<PyObjectRef> {
-        if matches!(a.payload, PyObjectPayload::None) { None } else { Some(a.clone()) }
+        if matches!(a.payload, PyObjectPayload::None) {
+            None
+        } else {
+            Some(a.clone())
+        }
     };
     match args.len() {
-        0 => Err(PyException::type_error("slice expected at least 1 argument, got 0")),
+        0 => Err(PyException::type_error(
+            "slice expected at least 1 argument, got 0",
+        )),
         1 => Ok(PyObject::slice(None, to_opt(&args[0]), None)),
         2 => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), None)),
-        _ => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), to_opt(&args[2]))),
+        _ => Ok(PyObject::slice(
+            to_opt(&args[0]),
+            to_opt(&args[1]),
+            to_opt(&args[2]),
+        )),
     }
 }
 
@@ -1686,18 +2000,27 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if args.len() >= 2 {
                 Ok(PyObject::bytes(s.as_bytes().to_vec()))
             } else {
-                Err(PyException::type_error("string argument without an encoding"))
+                Err(PyException::type_error(
+                    "string argument without an encoding",
+                ))
             }
         }
         PyObjectPayload::Int(n) => {
-            let size = n.to_i64().unwrap_or(0) as usize;
+            let size = n.to_i64().unwrap_or(0);
+            if size < 0 {
+                return Err(PyException::value_error("negative count"));
+            }
+            let size = size as usize;
+            guard_eager_allocation(size, "bytes()")?;
             Ok(PyObject::bytes(vec![0u8; size]))
         }
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
             let items = args[0].to_list()?;
             let mut result = Vec::with_capacity(items.len());
             for item in items {
-                let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                let v = item
+                    .to_int()
+                    .map_err(|_| PyException::type_error("an integer is required"))?;
                 if v < 0 || v > 255 {
                     return Err(PyException::value_error("bytes must be in range(0, 256)"));
                 }
@@ -1718,7 +2041,9 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Ok(items) = args[0].to_list() {
                 let mut result = Vec::with_capacity(items.len());
                 for item in items {
-                    let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                    let v = item
+                        .to_int()
+                        .map_err(|_| PyException::type_error("an integer is required"))?;
                     if v < 0 || v > 255 {
                         return Err(PyException::value_error("bytes must be in range(0, 256)"));
                     }
@@ -1742,18 +2067,27 @@ pub(super) fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if args.len() >= 2 {
                 Ok(PyObject::bytearray(s.as_bytes().to_vec()))
             } else {
-                Err(PyException::type_error("string argument without an encoding"))
+                Err(PyException::type_error(
+                    "string argument without an encoding",
+                ))
             }
         }
         PyObjectPayload::Int(n) => {
-            let size = n.to_i64().unwrap_or(0) as usize;
+            let size = n.to_i64().unwrap_or(0);
+            if size < 0 {
+                return Err(PyException::value_error("negative count"));
+            }
+            let size = size as usize;
+            guard_eager_allocation(size, "bytearray()")?;
             Ok(PyObject::bytearray(vec![0u8; size]))
         }
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
             let items = args[0].to_list()?;
             let mut result = Vec::with_capacity(items.len());
             for item in items {
-                let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                let v = item
+                    .to_int()
+                    .map_err(|_| PyException::type_error("an integer is required"))?;
                 if v < 0 || v > 255 {
                     return Err(PyException::value_error("bytes must be in range(0, 256)"));
                 }
@@ -1795,41 +2129,66 @@ pub(crate) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 };
             }
         }
-        if matches!(&arg.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_)) {
+        if matches!(
+            &arg.payload,
+            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_)
+        ) {
             // OK, fall through to numeric conversion
         } else {
-            return Err(PyException::type_error(format!("complex() first argument must be a string or a number, not '{}'", arg.type_name())));
+            return Err(PyException::type_error(format!(
+                "complex() first argument must be a string or a number, not '{}'",
+                arg.type_name()
+            )));
         }
     }
     // With two args: complex(a, b) = a + b*1j
     // If b is complex, real/imag extraction: result = (a.real - b.imag) + (a.imag + b.real)j
     if let (Some(a), Some(b)) = (&a0, &a1) {
         if matches!(&a.payload, PyObjectPayload::Str(_)) {
-            return Err(PyException::type_error("complex() can't take second arg if first is a string"));
+            return Err(PyException::type_error(
+                "complex() can't take second arg if first is a string",
+            ));
         }
         if matches!(&b.payload, PyObjectPayload::Str(_)) {
-            return Err(PyException::type_error("complex() second arg can't be a string"));
+            return Err(PyException::type_error(
+                "complex() second arg can't be a string",
+            ));
         }
         // Reject dicts/lists/etc for either arg with helpful messages
-        let is_num = |o: &PyObjectRef| matches!(&o.payload,
-            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_) | PyObjectPayload::Complex{..});
+        let is_num = |o: &PyObjectRef| {
+            matches!(
+                &o.payload,
+                PyObjectPayload::Int(_)
+                    | PyObjectPayload::Float(_)
+                    | PyObjectPayload::Bool(_)
+                    | PyObjectPayload::Complex { .. }
+            )
+        };
         if !is_num(a) {
-            return Err(PyException::type_error(
-                format!("complex() first argument must be a string or a number, not '{}'", a.type_name())));
+            return Err(PyException::type_error(format!(
+                "complex() first argument must be a string or a number, not '{}'",
+                a.type_name()
+            )));
         }
         if !is_num(b) {
-            return Err(PyException::type_error(
-                format!("complex() second argument must be a number, not '{}'", b.type_name())));
+            return Err(PyException::type_error(format!(
+                "complex() second argument must be a number, not '{}'",
+                b.type_name()
+            )));
         }
-        let a_is_complex = matches!(&a.payload, PyObjectPayload::Complex{..});
-        let b_is_complex = matches!(&b.payload, PyObjectPayload::Complex{..});
+        let a_is_complex = matches!(&a.payload, PyObjectPayload::Complex { .. });
+        let b_is_complex = matches!(&b.payload, PyObjectPayload::Complex { .. });
         let af = a.to_float().unwrap_or(0.0);
         let bf = b.to_float().unwrap_or(0.0);
         if !a_is_complex && matches!(&a.payload, PyObjectPayload::Int(_)) && af.is_infinite() {
-            return Err(PyException::overflow_error("int too large to convert to float"));
+            return Err(PyException::overflow_error(
+                "int too large to convert to float",
+            ));
         }
         if !b_is_complex && matches!(&b.payload, PyObjectPayload::Int(_)) && bf.is_infinite() {
-            return Err(PyException::overflow_error("int too large to convert to float"));
+            return Err(PyException::overflow_error(
+                "int too large to convert to float",
+            ));
         }
         let (ar, ai) = match &a.payload {
             PyObjectPayload::Complex { real, imag } => (*real, *imag),
@@ -1843,8 +2202,14 @@ pub(crate) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let imag = if a_is_complex { ai + br } else { br };
         return Ok(PyObject::complex(real, imag));
     }
-    let real = a0.as_ref().map(|v| v.to_float().unwrap_or(0.0)).unwrap_or(0.0);
-    let imag = a1.as_ref().map(|v| v.to_float().unwrap_or(0.0)).unwrap_or(0.0);
+    let real = a0
+        .as_ref()
+        .map(|v| v.to_float().unwrap_or(0.0))
+        .unwrap_or(0.0);
+    let imag = a1
+        .as_ref()
+        .map(|v| v.to_float().unwrap_or(0.0))
+        .unwrap_or(0.0);
     Ok(PyObject::complex(real, imag))
 }
 
@@ -1852,24 +2217,32 @@ fn parse_complex_string(raw: &str) -> PyResult<PyObjectRef> {
     let trimmed = raw.trim();
     // Strip matching surrounding parens
     let trimmed = if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        trimmed[1..trimmed.len()-1].trim()
+        trimmed[1..trimmed.len() - 1].trim()
     } else {
         trimmed
     };
     if trimmed.is_empty() {
-        return Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", raw)));
+        return Err(PyException::value_error(format!(
+            "complex() arg is a malformed string: '{}'",
+            raw
+        )));
     }
     // Remove all underscores (validated later that no double-underscore creeps in via strtod)
     let no_ws: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
 
     // Handle pure imaginary: "2j", "-3j", or "j" / "+j" / "-j"
     if no_ws.ends_with('j') || no_ws.ends_with('J') {
-        let body = &no_ws[..no_ws.len()-1];
+        let body = &no_ws[..no_ws.len() - 1];
         // Handle "j", "+j", "-j"
-        let imag_body = if body.is_empty() { "1" }
-            else if body == "+" { "1" }
-            else if body == "-" { "-1" }
-            else { body };
+        let imag_body = if body.is_empty() {
+            "1"
+        } else if body == "+" {
+            "1"
+        } else if body == "-" {
+            "-1"
+        } else {
+            body
+        };
         // Pure imaginary: full body parses as float
         if let Some(f) = parse_py_float(imag_body) {
             return Ok(PyObject::complex(0.0, f));
@@ -1879,19 +2252,26 @@ fn parse_complex_string(raw: &str) -> PyResult<PyObjectRef> {
         if let Some(split_pos) = find_complex_split(body) {
             let real_s = &body[..split_pos];
             let imag_s_raw = &body[split_pos..];
-            let imag_s = if imag_s_raw == "+" { "1".to_string() }
-                else if imag_s_raw == "-" { "-1".to_string() }
-                else if imag_s_raw == "++" || imag_s_raw == "+" { "1".to_string() }
-                else if imag_s_raw.starts_with('+') {
-                    let rest = &imag_s_raw[1..];
-                    if rest.is_empty() { "1".to_string() } else { rest.to_string() }
-                } else if imag_s_raw == "-" {
-                    "-1".to_string()
-                } else if imag_s_raw.starts_with('-') && imag_s_raw.len() == 1 {
-                    "-1".to_string()
+            let imag_s = if imag_s_raw == "+" {
+                "1".to_string()
+            } else if imag_s_raw == "-" {
+                "-1".to_string()
+            } else if imag_s_raw == "++" || imag_s_raw == "+" {
+                "1".to_string()
+            } else if imag_s_raw.starts_with('+') {
+                let rest = &imag_s_raw[1..];
+                if rest.is_empty() {
+                    "1".to_string()
                 } else {
-                    imag_s_raw.to_string()
-                };
+                    rest.to_string()
+                }
+            } else if imag_s_raw == "-" {
+                "-1".to_string()
+            } else if imag_s_raw.starts_with('-') && imag_s_raw.len() == 1 {
+                "-1".to_string()
+            } else {
+                imag_s_raw.to_string()
+            };
             if let (Some(r), Some(i)) = (parse_py_float(real_s), parse_py_float(&imag_s)) {
                 return Ok(PyObject::complex(r, i));
             }
@@ -1901,21 +2281,32 @@ fn parse_complex_string(raw: &str) -> PyResult<PyObjectRef> {
     if let Some(r) = parse_py_float(&no_ws) {
         return Ok(PyObject::complex(r, 0.0));
     }
-    Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", raw)))
+    Err(PyException::value_error(format!(
+        "complex() arg is a malformed string: '{}'",
+        raw
+    )))
 }
 
 /// Parse a Python-style float string (supports `_` separators, `inf`, `nan`).
 fn parse_py_float(s: &str) -> Option<f64> {
-    if s.is_empty() { return None; }
-    if s.starts_with('_') || s.ends_with('_') || s.contains("__") { return None; }
+    if s.is_empty() {
+        return None;
+    }
+    if s.starts_with('_') || s.ends_with('_') || s.contains("__") {
+        return None;
+    }
     // Each underscore must be surrounded by digits on both sides.
     let bytes = s.as_bytes();
     for (i, &c) in bytes.iter().enumerate() {
         if c == b'_' {
-            if i == 0 || i + 1 >= bytes.len() { return None; }
-            let prev = bytes[i-1];
-            let next = bytes[i+1];
-            if !prev.is_ascii_digit() || !next.is_ascii_digit() { return None; }
+            if i == 0 || i + 1 >= bytes.len() {
+                return None;
+            }
+            let prev = bytes[i - 1];
+            let next = bytes[i + 1];
+            if !prev.is_ascii_digit() || !next.is_ascii_digit() {
+                return None;
+            }
         }
     }
     let cleaned: String = s.chars().filter(|&c| c != '_').collect();
@@ -1937,11 +2328,15 @@ fn find_complex_split(body: &str) -> Option<usize> {
         i -= 1;
         let c = bytes[i];
         if (c == b'+' || c == b'-') && i > 0 {
-            let prev = bytes[i-1];
-            if prev == b'e' || prev == b'E' { continue; }
+            let prev = bytes[i - 1];
+            if prev == b'e' || prev == b'E' {
+                continue;
+            }
             // If previous char is also a sign (like `+-0j`), this sign is part of the imag
             // number, keep scanning to find the earlier one.
-            if prev == b'+' || prev == b'-' { continue; }
+            if prev == b'+' || prev == b'-' {
+                continue;
+            }
             return Some(i);
         }
     }
@@ -1967,17 +2362,23 @@ pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
 pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
     match (&sub.payload, &sup.payload) {
         (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(sup_cd)) => {
-            if sub_cd.name == sup_cd.name { return true; }
+            if sub_cd.name == sup_cd.name {
+                return true;
+            }
             // Walk full MRO
             for base in &sub_cd.mro {
                 if let PyObjectPayload::Class(bc) = &base.payload {
-                    if bc.name == sup_cd.name { return true; }
+                    if bc.name == sup_cd.name {
+                        return true;
+                    }
                 }
             }
             // Also check direct bases
             for base in &sub_cd.bases {
                 if let PyObjectPayload::Class(bc) = &base.payload {
-                    if bc.name == sup_cd.name { return true; }
+                    if bc.name == sup_cd.name {
+                        return true;
+                    }
                 }
             }
             // Check _abc_registry for virtual subclass registration
@@ -1986,7 +2387,9 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
                 classes_to_check.extend(sup_cd.bases.iter().cloned());
                 for check_cls in &classes_to_check {
                     if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
-                        if let Some(registry) = check_cd.namespace.read().get("_abc_registry").cloned() {
+                        if let Some(registry) =
+                            check_cd.namespace.read().get("_abc_registry").cloned()
+                        {
                             if let PyObjectPayload::Dict(map) = &registry.payload {
                                 for (k, _) in map.read().iter() {
                                     if let HashableKey::Identity(_, registered) = k {
@@ -2013,12 +2416,18 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
             // Check bases: is any base an ExceptionType matching target?
             for base in &sub_cd.bases {
                 if let PyObjectPayload::ExceptionType(bk) = &base.payload {
-                    if bk == target_kind { return true; }
+                    if bk == target_kind {
+                        return true;
+                    }
                     // Check exception hierarchy
-                    if is_exception_subclass(bk, target_kind) { return true; }
+                    if is_exception_subclass(bk, target_kind) {
+                        return true;
+                    }
                 }
                 // Recursively check class bases
-                if check_subclass(base, sup) { return true; }
+                if check_subclass(base, sup) {
+                    return true;
+                }
             }
             false
         }
@@ -2027,9 +2436,8 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // BuiltinType subclass (bool is subclass of int)
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
-            a == b
-            || (a.as_str() == "bool" && b.as_str() == "int")
-            || b.as_str() == "object"  // everything is a subclass of object
+            a == b || (a.as_str() == "bool" && b.as_str() == "int") || b.as_str() == "object"
+            // everything is a subclass of object
         }
         // Any type is subclass of object
         (_, PyObjectPayload::BuiltinType(b)) if b.as_str() == "object" => true,
@@ -2037,12 +2445,16 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         (PyObjectPayload::Class(sub_cd), PyObjectPayload::BuiltinType(target)) => {
             for base in &sub_cd.mro {
                 if let PyObjectPayload::BuiltinType(bt) = &base.payload {
-                    if bt == target { return true; }
+                    if bt == target {
+                        return true;
+                    }
                 }
             }
             for base in &sub_cd.bases {
                 if let PyObjectPayload::BuiltinType(bt) = &base.payload {
-                    if bt == target { return true; }
+                    if bt == target {
+                        return true;
+                    }
                 }
             }
             false
@@ -2067,7 +2479,9 @@ pub(crate) fn is_exception_subclass(child: &ExceptionKind, parent: &ExceptionKin
 }
 
 pub(super) fn builtin_object(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    Ok(PyObject::instance(PyObject::builtin_type(CompactString::from("object"))))
+    Ok(PyObject::instance(PyObject::builtin_type(
+        CompactString::from("object"),
+    )))
 }
 
 pub(super) fn builtin_super(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -2079,7 +2493,11 @@ pub(super) fn builtin_super(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("dict.fromkeys", args, 1)?;
     let iterable = &args[0];
-    let value = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+    let value = if args.len() >= 2 {
+        args[1].clone()
+    } else {
+        PyObject::none()
+    };
     let mut map = IndexMap::new();
     match &iterable.payload {
         PyObjectPayload::List(items) => {
@@ -2112,7 +2530,8 @@ pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         }
         _ => {
             return Err(PyException::type_error(format!(
-                "'{}' object is not iterable", iterable.type_name()
+                "'{}' object is not iterable",
+                iterable.type_name()
             )));
         }
     }
@@ -2144,12 +2563,14 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let type_name = obj.type_name();
 
     // Get the object's name
-    let _name = obj.get_attr("__name__")
+    let _name = obj
+        .get_attr("__name__")
         .map(|n| n.py_to_string())
         .unwrap_or_else(|| type_name.to_string());
 
     // Get docstring
-    let doc = obj.get_attr("__doc__")
+    let doc = obj
+        .get_attr("__doc__")
         .map(|d| d.py_to_string())
         .unwrap_or_default();
 
@@ -2158,10 +2579,15 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Class(cd) => {
             println!("Help on class {}:", cd.name);
             println!();
-            println!("class {}({})", cd.name,
-                cd.bases.iter()
+            println!(
+                "class {}({})",
+                cd.name,
+                cd.bases
+                    .iter()
                     .filter_map(|b| b.get_attr("__name__").map(|n| n.py_to_string()))
-                    .collect::<Vec<_>>().join(", "));
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         PyObjectPayload::Module(md) => {
             println!("Help on module {}:", md.name);
@@ -2195,7 +2621,8 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     continue; // Skip dunder methods in default view
                 }
                 let val = &ns[name];
-                let method_doc = val.get_attr("__doc__")
+                let method_doc = val
+                    .get_attr("__doc__")
                     .map(|d| d.py_to_string())
                     .unwrap_or_default();
                 println!(" |  {}(self, ...)", name);
@@ -2211,7 +2638,9 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let mut names: Vec<_> = attrs.keys().collect();
             names.sort();
             for name in names {
-                if name.starts_with("_") { continue; }
+                if name.starts_with("_") {
+                    continue;
+                }
                 let val = &attrs[name];
                 let desc = match &val.payload {
                     PyObjectPayload::Function(_) => "function",
@@ -2231,7 +2660,9 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 #[allow(non_snake_case)]
 pub(super) fn builtin___import__(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("__import__() requires at least 1 argument"));
+        return Err(PyException::type_error(
+            "__import__() requires at least 1 argument",
+        ));
     }
     let name = args[0].py_to_string();
     // Store the import request for the VM to process
