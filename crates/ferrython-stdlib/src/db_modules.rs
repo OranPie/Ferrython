@@ -3,12 +3,11 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Global registry: canonical DB path → shared Database.
 /// Multiple sqlite3.connect() calls to the same path reuse the same in-memory DB.
@@ -124,7 +123,9 @@ fn split_respecting_parens(s: &str, delim: char) -> Vec<String> {
     for c in s.chars() {
         if in_string {
             current.push(c);
-            if c == string_char { in_string = false; }
+            if c == string_char {
+                in_string = false;
+            }
         } else if c == '\'' || c == '"' {
             in_string = true;
             string_char = c;
@@ -152,7 +153,7 @@ fn split_respecting_parens(s: &str, delim: char) -> Vec<String> {
 fn strip_quotes(s: &str) -> String {
     let s = s.trim();
     if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
-        s[1..s.len()-1].to_string()
+        s[1..s.len() - 1].to_string()
     } else {
         s.to_string()
     }
@@ -164,7 +165,7 @@ fn parse_value(s: &str) -> DbValue {
         return DbValue::Null;
     }
     if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
-        return DbValue::Text(s[1..s.len()-1].to_string());
+        return DbValue::Text(s[1..s.len() - 1].to_string());
     }
     if let Ok(i) = s.parse::<i64>() {
         return DbValue::Int(i);
@@ -185,14 +186,14 @@ fn eval_where_condition(row: &IndexMap<String, DbValue>, condition: &str) -> boo
     let lower = condition.to_lowercase();
     if let Some(idx) = find_keyword_pos(&lower, " and ") {
         let left = &condition[..idx];
-        let right = &condition[idx+5..];
+        let right = &condition[idx + 5..];
         return eval_where_condition(row, left) && eval_where_condition(row, right);
     }
 
     // Handle OR
     if let Some(idx) = find_keyword_pos(&lower, " or ") {
         let left = &condition[..idx];
-        let right = &condition[idx+4..];
+        let right = &condition[idx + 4..];
         return eval_where_condition(row, left) || eval_where_condition(row, right);
     }
 
@@ -217,7 +218,7 @@ fn eval_where_condition(row: &IndexMap<String, DbValue>, condition: &str) -> boo
     // Handle LIKE
     if let Some(idx) = find_keyword_pos(&lower, " like ") {
         let col = condition[..idx].trim();
-        let pattern = strip_quotes(condition[idx+6..].trim());
+        let pattern = strip_quotes(condition[idx + 6..].trim());
         let col_val = match row.get(col) {
             Some(DbValue::Text(s)) => s.clone(),
             Some(DbValue::Int(i)) => i.to_string(),
@@ -230,7 +231,7 @@ fn eval_where_condition(row: &IndexMap<String, DbValue>, condition: &str) -> boo
     for op in &["!=", ">=", "<=", ">", "<", "="] {
         if let Some(idx) = condition.find(op) {
             let col = condition[..idx].trim();
-            let val_str = condition[idx+op.len()..].trim();
+            let val_str = condition[idx + op.len()..].trim();
             let val = if val_str == "?" {
                 DbValue::Text("?".to_string())
             } else {
@@ -249,11 +250,15 @@ fn find_keyword_pos(lower: &str, keyword: &str) -> Option<usize> {
     let mut string_char = ' ';
     let bytes = lower.as_bytes();
     let kw_bytes = keyword.as_bytes();
-    if bytes.len() < kw_bytes.len() { return None; }
+    if bytes.len() < kw_bytes.len() {
+        return None;
+    }
     for i in 0..=bytes.len() - kw_bytes.len() {
         let c = bytes[i] as char;
         if in_string {
-            if c == string_char { in_string = false; }
+            if c == string_char {
+                in_string = false;
+            }
             continue;
         }
         if c == '\'' || c == '"' {
@@ -261,7 +266,7 @@ fn find_keyword_pos(lower: &str, keyword: &str) -> Option<usize> {
             string_char = c;
             continue;
         }
-        if &bytes[i..i+kw_bytes.len()] == kw_bytes {
+        if &bytes[i..i + kw_bytes.len()] == kw_bytes {
             return Some(i);
         }
     }
@@ -277,9 +282,13 @@ fn match_like(value: &str, pattern: &str) -> bool {
     }
     let mut pos = 0usize;
     for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some(found) = value_lower[pos..].find(part) {
-            if i == 0 && found != 0 { return false; }
+            if i == 0 && found != 0 {
+                return false;
+            }
             pos += found + part.len();
         } else {
             return false;
@@ -301,36 +310,79 @@ fn compare_values(row_val: Option<&DbValue>, cmp_val: &DbValue, op: &str) -> boo
         (DbValue::Null, DbValue::Null) => op == "=",
         (DbValue::Null, _) | (_, DbValue::Null) => op == "!=",
         (DbValue::Int(a), DbValue::Int(b)) => match op {
-            "=" => a == b, "!=" => a != b, ">" => a > b, "<" => a < b, ">=" => a >= b, "<=" => a <= b,
+            "=" => a == b,
+            "!=" => a != b,
+            ">" => a > b,
+            "<" => a < b,
+            ">=" => a >= b,
+            "<=" => a <= b,
             _ => false,
         },
         (DbValue::Float(a), DbValue::Float(b)) => match op {
-            "=" => a == b, "!=" => a != b, ">" => a > b, "<" => a < b, ">=" => a >= b, "<=" => a <= b,
+            "=" => a == b,
+            "!=" => a != b,
+            ">" => a > b,
+            "<" => a < b,
+            ">=" => a >= b,
+            "<=" => a <= b,
             _ => false,
         },
-        (DbValue::Int(a), DbValue::Float(b)) => { let a = *a as f64; match op {
-            "=" => a == *b, "!=" => a != *b, ">" => a > *b, "<" => a < *b, ">=" => a >= *b, "<=" => a <= *b,
-            _ => false,
-        }},
-        (DbValue::Float(a), DbValue::Int(b)) => { let b = *b as f64; match op {
-            "=" => *a == b, "!=" => *a != b, ">" => *a > b, "<" => *a < b, ">=" => *a >= b, "<=" => *a <= b,
-            _ => false,
-        }},
+        (DbValue::Int(a), DbValue::Float(b)) => {
+            let a = *a as f64;
+            match op {
+                "=" => a == *b,
+                "!=" => a != *b,
+                ">" => a > *b,
+                "<" => a < *b,
+                ">=" => a >= *b,
+                "<=" => a <= *b,
+                _ => false,
+            }
+        }
+        (DbValue::Float(a), DbValue::Int(b)) => {
+            let b = *b as f64;
+            match op {
+                "=" => *a == b,
+                "!=" => *a != b,
+                ">" => *a > b,
+                "<" => *a < b,
+                ">=" => *a >= b,
+                "<=" => *a <= b,
+                _ => false,
+            }
+        }
         (DbValue::Text(a), DbValue::Text(b)) => match op {
-            "=" => a == b, "!=" => a != b, ">" => a > b, "<" => a < b, ">=" => a >= b, "<=" => a <= b,
+            "=" => a == b,
+            "!=" => a != b,
+            ">" => a > b,
+            "<" => a < b,
+            ">=" => a >= b,
+            "<=" => a <= b,
             _ => false,
         },
         (DbValue::Int(a), DbValue::Text(b)) => {
             let a_s = a.to_string();
-            match op { "=" => a_s == *b, "!=" => a_s != *b, _ => false }
-        },
+            match op {
+                "=" => a_s == *b,
+                "!=" => a_s != *b,
+                _ => false,
+            }
+        }
         (DbValue::Text(a), DbValue::Int(b)) => {
             if let Ok(a_i) = a.parse::<i64>() {
-                match op { "=" => a_i == *b, "!=" => a_i != *b, ">" => a_i > *b, "<" => a_i < *b, ">=" => a_i >= *b, "<=" => a_i <= *b, _ => false }
+                match op {
+                    "=" => a_i == *b,
+                    "!=" => a_i != *b,
+                    ">" => a_i > *b,
+                    "<" => a_i < *b,
+                    ">=" => a_i >= *b,
+                    "<=" => a_i <= *b,
+                    _ => false,
+                }
             } else {
                 op == "!="
             }
-        },
+        }
         _ => false,
     }
 }
@@ -364,11 +416,29 @@ fn execute_sql(db: &mut Database, sql: &str, params: &[PyObjectRef]) -> PyResult
         execute_drop_table(db, &sql)
     } else if upper.starts_with("CREATE INDEX") || upper.starts_with("CREATE UNIQUE INDEX") {
         // Indexes are not needed for our in-memory engine; accept and no-op.
-        Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
-    } else if upper.starts_with("BEGIN") || upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
-        Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
+        Ok(QueryResult {
+            rows: vec![],
+            columns: vec![],
+            rowcount: 0,
+            lastrowid: 0,
+        })
+    } else if upper.starts_with("BEGIN")
+        || upper.starts_with("COMMIT")
+        || upper.starts_with("ROLLBACK")
+    {
+        Ok(QueryResult {
+            rows: vec![],
+            columns: vec![],
+            rowcount: 0,
+            lastrowid: 0,
+        })
     } else if upper.starts_with("PRAGMA") {
-        Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
+        Ok(QueryResult {
+            rows: vec![],
+            columns: vec![],
+            rowcount: 0,
+            lastrowid: 0,
+        })
     } else {
         Err(PyException::new(
             ferrython_core::error::ExceptionKind::RuntimeError,
@@ -378,7 +448,9 @@ fn execute_sql(db: &mut Database, sql: &str, params: &[PyObjectRef]) -> PyResult
 }
 
 fn substitute_params(sql: &str, params: &[PyObjectRef]) -> String {
-    if params.is_empty() { return sql.to_string(); }
+    if params.is_empty() {
+        return sql.to_string();
+    }
     let mut result = String::new();
     let mut param_idx = 0;
     let mut in_string = false;
@@ -386,7 +458,9 @@ fn substitute_params(sql: &str, params: &[PyObjectRef]) -> String {
     for c in sql.chars() {
         if in_string {
             result.push(c);
-            if c == string_char { in_string = false; }
+            if c == string_char {
+                in_string = false;
+            }
         } else if c == '\'' || c == '"' {
             in_string = true;
             string_char = c;
@@ -416,10 +490,18 @@ fn execute_create_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     let if_not_exists = upper.contains("IF NOT EXISTS");
 
     // Extract table name and columns
-    let paren_start = sql.find('(').ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed CREATE TABLE"))?;
-    let paren_end = sql.rfind(')').ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed CREATE TABLE"))?;
+    let paren_start = sql.find('(').ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed CREATE TABLE",
+        )
+    })?;
+    let paren_end = sql.rfind(')').ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed CREATE TABLE",
+        )
+    })?;
 
     let before_paren = &sql[..paren_start].trim();
     let words: Vec<&str> = before_paren.split_whitespace().collect();
@@ -431,7 +513,12 @@ fn execute_create_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     };
 
     if if_not_exists && db.tables.contains_key(&table_name) {
-        return Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 });
+        return Ok(QueryResult {
+            rows: vec![],
+            columns: vec![],
+            rowcount: 0,
+            lastrowid: 0,
+        });
     }
 
     if db.tables.contains_key(&table_name) {
@@ -441,61 +528,101 @@ fn execute_create_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
         ));
     }
 
-    let cols_str = &sql[paren_start+1..paren_end];
+    let cols_str = &sql[paren_start + 1..paren_end];
     let col_defs = split_respecting_parens(cols_str, ',');
     let mut columns = Vec::new();
     for def in &col_defs {
         let def = def.trim();
         let def_upper = def.to_uppercase();
         // Skip constraints like PRIMARY KEY(...), UNIQUE(...), FOREIGN KEY(...)
-        if def_upper.starts_with("PRIMARY KEY") || def_upper.starts_with("UNIQUE")
-            || def_upper.starts_with("FOREIGN KEY") || def_upper.starts_with("CHECK")
-            || def_upper.starts_with("CONSTRAINT") {
+        if def_upper.starts_with("PRIMARY KEY")
+            || def_upper.starts_with("UNIQUE")
+            || def_upper.starts_with("FOREIGN KEY")
+            || def_upper.starts_with("CHECK")
+            || def_upper.starts_with("CONSTRAINT")
+        {
             continue;
         }
         let parts: Vec<&str> = def.split_whitespace().collect();
-        if parts.is_empty() { continue; }
+        if parts.is_empty() {
+            continue;
+        }
         let name = parts[0].to_string();
-        let col_type = if parts.len() > 1 { parts[1].to_uppercase() } else { "TEXT".to_string() };
+        let col_type = if parts.len() > 1 {
+            parts[1].to_uppercase()
+        } else {
+            "TEXT".to_string()
+        };
         let is_pk = def_upper.contains("PRIMARY KEY");
-        columns.push(Column { name, col_type, primary_key: is_pk });
+        columns.push(Column {
+            name,
+            col_type,
+            primary_key: is_pk,
+        });
     }
 
-    db.tables.insert(table_name.clone(), Table {
-        name: table_name,
-        columns,
-        rows: Vec::new(),
-        auto_increment: 1,
-    });
+    db.tables.insert(
+        table_name.clone(),
+        Table {
+            name: table_name,
+            columns,
+            rows: Vec::new(),
+            auto_increment: 1,
+        },
+    );
 
-    Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
+    Ok(QueryResult {
+        rows: vec![],
+        columns: vec![],
+        rowcount: 0,
+        lastrowid: 0,
+    })
 }
 
 fn execute_insert(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     let upper = sql.to_uppercase();
 
     // Find table name - after INTO
-    let into_pos = upper.find("INTO").ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed INSERT"))?;
-    let after_into = sql[into_pos+4..].trim();
+    let into_pos = upper.find("INTO").ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed INSERT",
+        )
+    })?;
+    let after_into = sql[into_pos + 4..].trim();
 
     // Table name is first word
-    let table_end = after_into.find(|c: char| c == '(' || c.is_whitespace()).unwrap_or(after_into.len());
+    let table_end = after_into
+        .find(|c: char| c == '(' || c.is_whitespace())
+        .unwrap_or(after_into.len());
     let table_name = after_into[..table_end].trim().to_string();
 
-    let table = db.tables.get(&table_name).ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError,
-        format!("no such table: {}", table_name),
-    ))?.clone();
+    let table = db
+        .tables
+        .get(&table_name)
+        .ok_or_else(|| {
+            PyException::new(
+                ferrython_core::error::ExceptionKind::RuntimeError,
+                format!("no such table: {}", table_name),
+            )
+        })?
+        .clone();
 
     let rest = after_into[table_end..].trim();
 
     // Extract column names if provided
     let (col_names, values_str) = if rest.starts_with('(') {
-        let close = rest.find(')').ok_or_else(|| PyException::new(
-            ferrython_core::error::ExceptionKind::RuntimeError, "malformed INSERT: missing )"))?;
-        let cols: Vec<String> = rest[1..close].split(',').map(|s| s.trim().to_string()).collect();
-        let after = rest[close+1..].trim();
+        let close = rest.find(')').ok_or_else(|| {
+            PyException::new(
+                ferrython_core::error::ExceptionKind::RuntimeError,
+                "malformed INSERT: missing )",
+            )
+        })?;
+        let cols: Vec<String> = rest[1..close]
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        let after = rest[close + 1..].trim();
         (cols, after.to_string())
     } else {
         let cols: Vec<String> = table.columns.iter().map(|c| c.name.clone()).collect();
@@ -504,9 +631,13 @@ fn execute_insert(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
 
     // Find VALUES(...)
     let values_upper = values_str.to_uppercase();
-    let vals_pos = values_upper.find("VALUES").ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed INSERT: missing VALUES"))?;
-    let after_values = values_str[vals_pos+6..].trim();
+    let vals_pos = values_upper.find("VALUES").ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed INSERT: missing VALUES",
+        )
+    })?;
+    let after_values = values_str[vals_pos + 6..].trim();
 
     // Could be multiple value tuples
     let mut row_strings = Vec::new();
@@ -516,12 +647,16 @@ fn execute_insert(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     let mut string_char = ' ';
     for (i, c) in after_values.chars().enumerate() {
         if in_string {
-            if c == string_char { in_string = false; }
+            if c == string_char {
+                in_string = false;
+            }
         } else if c == '\'' || c == '"' {
             in_string = true;
             string_char = c;
         } else if c == '(' {
-            if depth == 0 { start = i + 1; }
+            if depth == 0 {
+                start = i + 1;
+            }
             depth += 1;
         } else if c == ')' {
             depth -= 1;
@@ -563,7 +698,13 @@ fn execute_insert(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
                     if *id >= table.auto_increment {
                         table.auto_increment = *id + 1;
                     }
-                    lastrowid = row.get(&col.name).map(|v| match v { DbValue::Int(i) => *i, _ => 0 }).unwrap_or(0);
+                    lastrowid = row
+                        .get(&col.name)
+                        .map(|v| match v {
+                            DbValue::Int(i) => *i,
+                            _ => 0,
+                        })
+                        .unwrap_or(0);
                 } else {
                     row.insert(col.name.clone(), DbValue::Int(table.auto_increment));
                     lastrowid = table.auto_increment;
@@ -580,33 +721,46 @@ fn execute_insert(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
         lastrowid = table.rows.len() as i64;
     }
 
-    Ok(QueryResult { rows: vec![], columns: vec![], rowcount, lastrowid })
+    Ok(QueryResult {
+        rows: vec![],
+        columns: vec![],
+        rowcount,
+        lastrowid,
+    })
 }
 
 fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
     let upper = sql.to_uppercase();
 
     // Extract FROM table
-    let from_pos = upper.find(" FROM ").ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed SELECT: missing FROM"))?;
+    let from_pos = upper.find(" FROM ").ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed SELECT: missing FROM",
+        )
+    })?;
 
     let select_cols_str = sql[6..from_pos].trim(); // after SELECT
-    let after_from = sql[from_pos+6..].trim();
+    let after_from = sql[from_pos + 6..].trim();
 
     // Table name
-    let table_end = after_from.find(|c: char| c.is_whitespace()).unwrap_or(after_from.len());
+    let table_end = after_from
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(after_from.len());
     let table_name = after_from[..table_end].trim().to_string();
     let rest = after_from[table_end..].trim();
 
-    let table = db.tables.get(&table_name).ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError,
-        format!("no such table: {}", table_name),
-    ))?;
+    let table = db.tables.get(&table_name).ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            format!("no such table: {}", table_name),
+        )
+    })?;
 
     // WHERE clause
     let rest_upper = rest.to_uppercase();
     let (where_clause, rest_after_where) = if let Some(w_pos) = rest_upper.find("WHERE ") {
-        let after_where = &rest[w_pos+6..];
+        let after_where = &rest[w_pos + 6..];
         // Find end (ORDER BY, LIMIT, GROUP BY, or end)
         let end_pos = find_clause_end(&after_where.to_uppercase());
         let wc = after_where[..end_pos].trim().to_string();
@@ -615,11 +769,12 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
     } else {
         (String::new(), rest.to_string());
         let rau = rest.to_uppercase();
-        let end_pos = if rau.starts_with("ORDER") || rau.starts_with("LIMIT") || rau.starts_with("GROUP") {
-            0
-        } else {
-            rest.len()
-        };
+        let end_pos =
+            if rau.starts_with("ORDER") || rau.starts_with("LIMIT") || rau.starts_with("GROUP") {
+                0
+            } else {
+                rest.len()
+            };
         (String::new(), rest[end_pos.min(rest.len())..].to_string())
     };
 
@@ -627,42 +782,59 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
     let select_cols: Vec<String> = if select_cols_str.trim() == "*" {
         table.columns.iter().map(|c| c.name.clone()).collect()
     } else {
-        select_cols_str.split(',').map(|s| {
-            let s = s.trim();
-            // Handle COUNT(*), etc.
-            s.to_string()
-        }).collect()
+        select_cols_str
+            .split(',')
+            .map(|s| {
+                let s = s.trim();
+                // Handle COUNT(*), etc.
+                s.to_string()
+            })
+            .collect()
     };
 
     // Filter rows
-    let mut result_rows: Vec<&IndexMap<String, DbValue>> = table.rows.iter()
+    let mut result_rows: Vec<&IndexMap<String, DbValue>> = table
+        .rows
+        .iter()
         .filter(|row| eval_where_condition(row, &where_clause))
         .collect();
 
     // ORDER BY
     let rest_after_where_upper = rest_after_where.to_uppercase();
     if let Some(order_pos) = rest_after_where_upper.find("ORDER BY") {
-        let order_str = &rest_after_where[order_pos+8..];
-        let end = order_str.to_uppercase().find("LIMIT").unwrap_or(order_str.len());
+        let order_str = &rest_after_where[order_pos + 8..];
+        let end = order_str
+            .to_uppercase()
+            .find("LIMIT")
+            .unwrap_or(order_str.len());
         let order_clause = order_str[..end].trim();
         let parts: Vec<&str> = order_clause.split(',').collect();
         if let Some(first) = parts.first() {
             let tokens: Vec<&str> = first.trim().split_whitespace().collect();
             let col = tokens[0].to_string();
-            let desc = tokens.get(1).map(|t| t.to_uppercase() == "DESC").unwrap_or(false);
+            let desc = tokens
+                .get(1)
+                .map(|t| t.to_uppercase() == "DESC")
+                .unwrap_or(false);
             result_rows.sort_by(|a, b| {
                 let va = a.get(&col);
                 let vb = b.get(&col);
                 let cmp = compare_db_values(va, vb);
-                if desc { cmp.reverse() } else { cmp }
+                if desc {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
             });
         }
     }
 
     // LIMIT
     if let Some(limit_pos) = rest_after_where_upper.find("LIMIT") {
-        let limit_str = rest_after_where[limit_pos+5..].trim();
-        let limit_end = limit_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(limit_str.len());
+        let limit_str = rest_after_where[limit_pos + 5..].trim();
+        let limit_end = limit_str
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(limit_str.len());
         if let Ok(limit) = limit_str[..limit_end].parse::<usize>() {
             result_rows.truncate(limit);
         }
@@ -674,8 +846,10 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
     // Check if any columns are aggregates
     let has_aggregate = select_cols.iter().any(|col| {
         let upper = col.trim().to_uppercase();
-        upper.starts_with("COUNT(") || upper.starts_with("SUM(")
-            || upper.starts_with("AVG(") || upper.starts_with("MIN(")
+        upper.starts_with("COUNT(")
+            || upper.starts_with("SUM(")
+            || upper.starts_with("AVG(")
+            || upper.starts_with("MIN(")
             || upper.starts_with("MAX(")
     });
 
@@ -694,9 +868,12 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
                 } else {
                     col_trimmed
                 };
-                vals.push(result_rows.first()
-                    .and_then(|r| r.get(actual_col).cloned())
-                    .unwrap_or(DbValue::Null));
+                vals.push(
+                    result_rows
+                        .first()
+                        .and_then(|r| r.get(actual_col).cloned())
+                        .unwrap_or(DbValue::Null),
+                );
             }
         }
         rows.push(vals);
@@ -718,17 +895,25 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
         }
     }
 
-    let columns: Vec<String> = select_cols.iter().map(|c| {
-        let c = c.trim();
-        let upper = c.to_uppercase();
-        if let Some(as_pos) = upper.find(" AS ") {
-            c[as_pos+4..].trim().to_string()
-        } else {
-            c.to_string()
-        }
-    }).collect();
+    let columns: Vec<String> = select_cols
+        .iter()
+        .map(|c| {
+            let c = c.trim();
+            let upper = c.to_uppercase();
+            if let Some(as_pos) = upper.find(" AS ") {
+                c[as_pos + 4..].trim().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
 
-    Ok(QueryResult { rows, columns, rowcount: -1, lastrowid: 0 })
+    Ok(QueryResult {
+        rows,
+        columns,
+        rowcount: -1,
+        lastrowid: 0,
+    })
 }
 
 fn find_clause_end(upper: &str) -> usize {
@@ -757,9 +942,12 @@ fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Opt
                 Some(DbValue::Int(rows.len() as i64))
             } else {
                 let col = inner;
-                let count = rows.iter().filter(|r| {
-                    matches!(r.get(&col as &str), Some(v) if !matches!(v, DbValue::Null))
-                }).count();
+                let count = rows
+                    .iter()
+                    .filter(
+                        |r| matches!(r.get(&col as &str), Some(v) if !matches!(v, DbValue::Null)),
+                    )
+                    .count();
                 Some(DbValue::Int(count as i64))
             }
         }
@@ -770,13 +958,26 @@ fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Opt
             let mut count = 0i64;
             for row in rows {
                 match row.get(&col as &str) {
-                    Some(DbValue::Int(n)) => { sum_f += *n as f64; count += 1; }
-                    Some(DbValue::Float(f)) => { sum_f += f; has_float = true; count += 1; }
+                    Some(DbValue::Int(n)) => {
+                        sum_f += *n as f64;
+                        count += 1;
+                    }
+                    Some(DbValue::Float(f)) => {
+                        sum_f += f;
+                        has_float = true;
+                        count += 1;
+                    }
                     _ => {}
                 }
             }
-            if count == 0 { return Some(DbValue::Null); }
-            if has_float { Some(DbValue::Float(sum_f)) } else { Some(DbValue::Int(sum_f as i64)) }
+            if count == 0 {
+                return Some(DbValue::Null);
+            }
+            if has_float {
+                Some(DbValue::Float(sum_f))
+            } else {
+                Some(DbValue::Int(sum_f as i64))
+            }
         }
         "AVG" => {
             let col = inner;
@@ -784,12 +985,22 @@ fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Opt
             let mut count = 0i64;
             for row in rows {
                 match row.get(&col as &str) {
-                    Some(DbValue::Int(n)) => { sum += *n as f64; count += 1; }
-                    Some(DbValue::Float(f)) => { sum += f; count += 1; }
+                    Some(DbValue::Int(n)) => {
+                        sum += *n as f64;
+                        count += 1;
+                    }
+                    Some(DbValue::Float(f)) => {
+                        sum += f;
+                        count += 1;
+                    }
                     _ => {}
                 }
             }
-            if count == 0 { Some(DbValue::Null) } else { Some(DbValue::Float(sum / count as f64)) }
+            if count == 0 {
+                Some(DbValue::Null)
+            } else {
+                Some(DbValue::Float(sum / count as f64))
+            }
         }
         "MIN" => {
             let col = inner;
@@ -801,7 +1012,8 @@ fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Opt
                         min_val = Some(match min_val {
                             None => v.clone(),
                             Some(ref cur) => {
-                                if compare_db_values(Some(v), Some(cur)) == std::cmp::Ordering::Less {
+                                if compare_db_values(Some(v), Some(cur)) == std::cmp::Ordering::Less
+                                {
                                     v.clone()
                                 } else {
                                     cur.clone()
@@ -823,7 +1035,9 @@ fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Opt
                         max_val = Some(match max_val {
                             None => v.clone(),
                             Some(ref cur) => {
-                                if compare_db_values(Some(v), Some(cur)) == std::cmp::Ordering::Greater {
+                                if compare_db_values(Some(v), Some(cur))
+                                    == std::cmp::Ordering::Greater
+                                {
                                     v.clone()
                                 } else {
                                     cur.clone()
@@ -845,7 +1059,9 @@ fn compare_db_values(a: Option<&DbValue>, b: Option<&DbValue>) -> std::cmp::Orde
         (None, _) | (Some(DbValue::Null), _) => std::cmp::Ordering::Less,
         (_, None) | (_, Some(DbValue::Null)) => std::cmp::Ordering::Greater,
         (Some(DbValue::Int(a)), Some(DbValue::Int(b))) => a.cmp(b),
-        (Some(DbValue::Float(a)), Some(DbValue::Float(b))) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(DbValue::Float(a)), Some(DbValue::Float(b))) => {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }
         (Some(DbValue::Text(a)), Some(DbValue::Text(b))) => a.cmp(b),
         _ => std::cmp::Ordering::Equal,
     }
@@ -855,15 +1071,22 @@ fn execute_update(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     let upper = sql.to_uppercase();
 
     // UPDATE table SET col=val,... WHERE ...
-    let set_pos = upper.find(" SET ").ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed UPDATE: missing SET"))?;
+    let set_pos = upper.find(" SET ").ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed UPDATE: missing SET",
+        )
+    })?;
 
     let table_name = sql[6..set_pos].trim().to_string(); // after "UPDATE"
 
-    let after_set = sql[set_pos+5..].trim();
+    let after_set = sql[set_pos + 5..].trim();
     let where_pos = after_set.to_uppercase().find(" WHERE ");
     let (set_clause, where_clause) = if let Some(wp) = where_pos {
-        (after_set[..wp].trim(), after_set[wp+7..].trim().to_string())
+        (
+            after_set[..wp].trim(),
+            after_set[wp + 7..].trim().to_string(),
+        )
     } else {
         (after_set, String::new())
     };
@@ -872,14 +1095,16 @@ fn execute_update(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
         .iter()
         .filter_map(|s| {
             let eq = s.find('=')?;
-            Some((s[..eq].trim().to_string(), s[eq+1..].trim().to_string()))
+            Some((s[..eq].trim().to_string(), s[eq + 1..].trim().to_string()))
         })
         .collect();
 
-    let table = db.tables.get_mut(&table_name).ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError,
-        format!("no such table: {}", table_name),
-    ))?;
+    let table = db.tables.get_mut(&table_name).ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            format!("no such table: {}", table_name),
+        )
+    })?;
 
     let mut rowcount = 0i64;
     for row in &mut table.rows {
@@ -891,17 +1116,28 @@ fn execute_update(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
         }
     }
 
-    Ok(QueryResult { rows: vec![], columns: vec![], rowcount, lastrowid: 0 })
+    Ok(QueryResult {
+        rows: vec![],
+        columns: vec![],
+        rowcount,
+        lastrowid: 0,
+    })
 }
 
 fn execute_delete(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     let upper = sql.to_uppercase();
 
-    let from_pos = upper.find("FROM ").ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError, "malformed DELETE: missing FROM"))?;
+    let from_pos = upper.find("FROM ").ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            "malformed DELETE: missing FROM",
+        )
+    })?;
 
-    let after_from = sql[from_pos+5..].trim();
-    let table_end = after_from.find(|c: char| c.is_whitespace()).unwrap_or(after_from.len());
+    let after_from = sql[from_pos + 5..].trim();
+    let table_end = after_from
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(after_from.len());
     let table_name = after_from[..table_end].trim().to_string();
     let rest = after_from[table_end..].trim();
 
@@ -911,16 +1147,25 @@ fn execute_delete(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
         String::new()
     };
 
-    let table = db.tables.get_mut(&table_name).ok_or_else(|| PyException::new(
-        ferrython_core::error::ExceptionKind::RuntimeError,
-        format!("no such table: {}", table_name),
-    ))?;
+    let table = db.tables.get_mut(&table_name).ok_or_else(|| {
+        PyException::new(
+            ferrython_core::error::ExceptionKind::RuntimeError,
+            format!("no such table: {}", table_name),
+        )
+    })?;
 
     let before = table.rows.len();
-    table.rows.retain(|row| !eval_where_condition(row, &where_clause));
+    table
+        .rows
+        .retain(|row| !eval_where_condition(row, &where_clause));
     let rowcount = (before - table.rows.len()) as i64;
 
-    Ok(QueryResult { rows: vec![], columns: vec![], rowcount, lastrowid: 0 })
+    Ok(QueryResult {
+        rows: vec![],
+        columns: vec![],
+        rowcount,
+        lastrowid: 0,
+    })
 }
 
 fn execute_drop_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
@@ -932,7 +1177,12 @@ fn execute_drop_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
 
     if !db.tables.contains_key(&table_name) {
         if if_exists {
-            return Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 });
+            return Ok(QueryResult {
+                rows: vec![],
+                columns: vec![],
+                rowcount: 0,
+                lastrowid: 0,
+            });
         }
         return Err(PyException::new(
             ferrython_core::error::ExceptionKind::RuntimeError,
@@ -941,7 +1191,12 @@ fn execute_drop_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     }
 
     db.tables.shift_remove(&table_name);
-    Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
+    Ok(QueryResult {
+        rows: vec![],
+        columns: vec![],
+        rowcount: 0,
+        lastrowid: 0,
+    })
 }
 
 // ── sqlite3.Row implementation ─────────────────────────────────────────
@@ -952,7 +1207,8 @@ fn build_sqlite_row(columns: &[String], values: &[PyObjectRef]) -> PyObjectRef {
     let mut attrs = IndexMap::new();
 
     // Store column-value pairs for string key access
-    let col_map: IndexMap<CompactString, PyObjectRef> = col_names.iter()
+    let col_map: IndexMap<CompactString, PyObjectRef> = col_names
+        .iter()
         .zip(val_list.iter())
         .map(|(k, v)| (CompactString::from(k.as_str()), v.clone()))
         .collect();
@@ -961,63 +1217,84 @@ fn build_sqlite_row(columns: &[String], values: &[PyObjectRef]) -> PyObjectRef {
     // __getitem__ — access by string key or integer index
     let cm2 = cm.clone();
     let vl = val_list.clone();
-    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
-        "Row.__getitem__", move |args| {
+    attrs.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_closure("Row.__getitem__", move |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("__getitem__ requires a key"));
             }
             match &args[0].payload {
-                PyObjectPayload::Str(key) => {
-                    cm2.get(key.as_str())
-                        .cloned()
-                        .ok_or_else(|| PyException::key_error(format!("'{}'", key)))
-                }
+                PyObjectPayload::Str(key) => cm2
+                    .get(key.as_str())
+                    .cloned()
+                    .ok_or_else(|| PyException::key_error(format!("'{}'", key))),
                 PyObjectPayload::Int(idx) => {
                     let i = idx.to_i64().unwrap_or(0);
-                    let idx = if i < 0 { (vl.len() as i64 + i) as usize } else { i as usize };
+                    let idx = if i < 0 {
+                        (vl.len() as i64 + i) as usize
+                    } else {
+                        i as usize
+                    };
                     vl.get(idx)
                         .cloned()
                         .ok_or_else(|| PyException::index_error("index out of range"))
                 }
-                _ => Err(PyException::type_error("Row indices must be integers or strings")),
+                _ => Err(PyException::type_error(
+                    "Row indices must be integers or strings",
+                )),
             }
-        }));
+        }),
+    );
 
     // keys()
     let cn = col_names.clone();
-    attrs.insert(CompactString::from("keys"), PyObject::native_closure(
-        "Row.keys", move |_| {
-            Ok(PyObject::list(cn.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()))
-        }));
+    attrs.insert(
+        CompactString::from("keys"),
+        PyObject::native_closure("Row.keys", move |_| {
+            Ok(PyObject::list(
+                cn.iter()
+                    .map(|s| PyObject::str_val(CompactString::from(s.as_str())))
+                    .collect(),
+            ))
+        }),
+    );
 
     // values() (the row data as a tuple)
     let vl = val_list.clone();
-    attrs.insert(CompactString::from("values"), PyObject::native_closure(
-        "Row.values", move |_| {
-            Ok(PyObject::list(vl.clone()))
-        }));
+    attrs.insert(
+        CompactString::from("values"),
+        PyObject::native_closure("Row.values", move |_| Ok(PyObject::list(vl.clone()))),
+    );
 
     // __len__
     let n = val_list.len();
-    attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
-        "Row.__len__", move |_| Ok(PyObject::int(n as i64))));
+    attrs.insert(
+        CompactString::from("__len__"),
+        PyObject::native_closure("Row.__len__", move |_| Ok(PyObject::int(n as i64))),
+    );
 
     // __repr__
     let cm3 = cm.clone();
-    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-        "Row.__repr__", move |_| {
-            let pairs: Vec<String> = cm3.iter()
+    attrs.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("Row.__repr__", move |_| {
+            let pairs: Vec<String> = cm3
+                .iter()
                 .map(|(k, v)| format!("{}={}", k, v.py_to_string()))
                 .collect();
-            Ok(PyObject::str_val(CompactString::from(format!("Row({})", pairs.join(", ")))))
-        }));
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "Row({})",
+                pairs.join(", ")
+            ))))
+        }),
+    );
 
     // __iter__ — iterate over values
     let vl = val_list.clone();
-    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
-        "Row.__iter__", move |_| {
-            Ok(PyObject::list(vl.clone()))
-        }));
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("Row.__iter__", move |_| Ok(PyObject::list(vl.clone()))),
+    );
 
     // Make it tuple-like: store values as a tuple
     let cls = PyObject::class(CompactString::from("Row"), vec![], IndexMap::new());
@@ -1031,7 +1308,10 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     build_cursor_object_with_conn(db, None)
 }
 
-fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObjectRef>) -> PyObjectRef {
+fn build_cursor_object_with_conn(
+    db: Arc<Mutex<Database>>,
+    conn: Option<PyObjectRef>,
+) -> PyObjectRef {
     let result_rows: Arc<Mutex<Vec<Vec<DbValue>>>> = Arc::new(Mutex::new(Vec::new()));
     let result_cols: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fetch_pos: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -1040,7 +1320,10 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
     let self_ref: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
 
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("__sqlite_cursor__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__sqlite_cursor__"),
+        PyObject::bool_val(true),
+    );
     attrs.insert(CompactString::from("arraysize"), PyObject::int(1));
 
     // execute(sql, params=())
@@ -1051,231 +1334,300 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
     let rc_ref = rowcount.clone();
     let lid_ref = lastrowid.clone();
     let sr = self_ref.clone();
-    attrs.insert(CompactString::from("execute"), PyObject::native_closure("execute", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("execute() requires at least 1 argument"));
-        }
-        let sql = args[0].py_to_string();
-        let params: Vec<PyObjectRef> = if args.len() > 1 {
-            match &args[1].payload {
-                PyObjectPayload::Tuple(items) => (**items).clone(),
-                PyObjectPayload::List(items) => items.read().clone(),
-                _ => vec![args[1].clone()],
+    attrs.insert(
+        CompactString::from("execute"),
+        PyObject::native_closure("execute", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "execute() requires at least 1 argument",
+                ));
             }
-        } else {
-            vec![]
-        };
+            let sql = args[0].py_to_string();
+            let params: Vec<PyObjectRef> = if args.len() > 1 {
+                match &args[1].payload {
+                    PyObjectPayload::Tuple(items) => (**items).clone(),
+                    PyObjectPayload::List(items) => items.read().clone(),
+                    _ => vec![args[1].clone()],
+                }
+            } else {
+                vec![]
+            };
 
-        let mut db_guard = db_ref.lock().unwrap();
-        if db_guard.closed {
-            return Err(PyException::new(
-                ferrython_core::error::ExceptionKind::RuntimeError,
-                "Cannot operate on a closed database.",
-            ));
-        }
-        let result = execute_sql(&mut db_guard, &sql, &params)?;
-        *rows_ref.lock().unwrap() = result.rows;
-        *cols_ref.lock().unwrap() = result.columns;
-        *pos_ref.lock().unwrap() = 0;
-        *rc_ref.lock().unwrap() = result.rowcount;
-        *lid_ref.lock().unwrap() = result.lastrowid;
-        // Update attrs on cursor self-reference for property access
-        let cursor = sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none());
-        if let PyObjectPayload::Instance(inst) = &cursor.payload {
-            let mut a = inst.attrs.write();
-            a.insert(CompactString::from("rowcount"), PyObject::int(result.rowcount));
-            a.insert(CompactString::from("lastrowid"), PyObject::int(result.lastrowid));
-        }
-        Ok(cursor)
-    }));
+            let mut db_guard = db_ref.lock().unwrap();
+            if db_guard.closed {
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::RuntimeError,
+                    "Cannot operate on a closed database.",
+                ));
+            }
+            let result = execute_sql(&mut db_guard, &sql, &params)?;
+            *rows_ref.lock().unwrap() = result.rows;
+            *cols_ref.lock().unwrap() = result.columns;
+            *pos_ref.lock().unwrap() = 0;
+            *rc_ref.lock().unwrap() = result.rowcount;
+            *lid_ref.lock().unwrap() = result.lastrowid;
+            // Update attrs on cursor self-reference for property access
+            let cursor = sr
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| PyObject::none());
+            if let PyObjectPayload::Instance(inst) = &cursor.payload {
+                let mut a = inst.attrs.write();
+                a.insert(
+                    CompactString::from("rowcount"),
+                    PyObject::int(result.rowcount),
+                );
+                a.insert(
+                    CompactString::from("lastrowid"),
+                    PyObject::int(result.lastrowid),
+                );
+            }
+            Ok(cursor)
+        }),
+    );
 
     // executemany(sql, seq_of_params)
     let db_ref = db.clone();
     let rc_ref = rowcount.clone();
     let lid_ref = lastrowid.clone();
     let sr = self_ref.clone();
-    attrs.insert(CompactString::from("executemany"), PyObject::native_closure("executemany", move |args| {
-        if args.len() < 2 {
-            return Err(PyException::type_error("executemany() requires 2 arguments"));
-        }
-        let sql = args[0].py_to_string();
-        let seq = match &args[1].payload {
-            PyObjectPayload::List(items) => items.read().clone(),
-            PyObjectPayload::Tuple(items) => (**items).clone(),
-            _ => return Err(PyException::type_error("executemany() second arg must be iterable")),
-        };
-
-        let mut db_guard = db_ref.lock().unwrap();
-        if db_guard.closed {
-            return Err(PyException::new(
-                ferrython_core::error::ExceptionKind::RuntimeError,
-                "Cannot operate on a closed database.",
-            ));
-        }
-        let mut total_rowcount = 0i64;
-        let mut last_id = 0i64;
-        for param_set in &seq {
-            let params: Vec<PyObjectRef> = match &param_set.payload {
-                PyObjectPayload::Tuple(items) => (**items).clone(),
+    attrs.insert(
+        CompactString::from("executemany"),
+        PyObject::native_closure("executemany", move |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "executemany() requires 2 arguments",
+                ));
+            }
+            let sql = args[0].py_to_string();
+            let seq = match &args[1].payload {
                 PyObjectPayload::List(items) => items.read().clone(),
-                _ => vec![param_set.clone()],
+                PyObjectPayload::Tuple(items) => (**items).clone(),
+                _ => {
+                    return Err(PyException::type_error(
+                        "executemany() second arg must be iterable",
+                    ))
+                }
             };
-            let result = execute_sql(&mut db_guard, &sql, &params)?;
-            total_rowcount += result.rowcount;
-            last_id = result.lastrowid;
-        }
-        *rc_ref.lock().unwrap() = total_rowcount;
-        *lid_ref.lock().unwrap() = last_id;
-        let cursor = sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none());
-        if let PyObjectPayload::Instance(inst) = &cursor.payload {
-            let mut a = inst.attrs.write();
-            a.insert(CompactString::from("rowcount"), PyObject::int(total_rowcount));
-            a.insert(CompactString::from("lastrowid"), PyObject::int(last_id));
-        }
-        Ok(cursor)
-    }));
+
+            let mut db_guard = db_ref.lock().unwrap();
+            if db_guard.closed {
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::RuntimeError,
+                    "Cannot operate on a closed database.",
+                ));
+            }
+            let mut total_rowcount = 0i64;
+            let mut last_id = 0i64;
+            for param_set in &seq {
+                let params: Vec<PyObjectRef> = match &param_set.payload {
+                    PyObjectPayload::Tuple(items) => (**items).clone(),
+                    PyObjectPayload::List(items) => items.read().clone(),
+                    _ => vec![param_set.clone()],
+                };
+                let result = execute_sql(&mut db_guard, &sql, &params)?;
+                total_rowcount += result.rowcount;
+                last_id = result.lastrowid;
+            }
+            *rc_ref.lock().unwrap() = total_rowcount;
+            *lid_ref.lock().unwrap() = last_id;
+            let cursor = sr
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| PyObject::none());
+            if let PyObjectPayload::Instance(inst) = &cursor.payload {
+                let mut a = inst.attrs.write();
+                a.insert(
+                    CompactString::from("rowcount"),
+                    PyObject::int(total_rowcount),
+                );
+                a.insert(CompactString::from("lastrowid"), PyObject::int(last_id));
+            }
+            Ok(cursor)
+        }),
+    );
 
     // executescript(sql_script) — execute multiple SQL statements separated by semicolons
     let db_ref = db.clone();
     let sr = self_ref.clone();
-    attrs.insert(CompactString::from("executescript"), PyObject::native_closure("executescript", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("executescript() requires 1 argument"));
-        }
-        let script = args[0].py_to_string();
-        let mut db_guard = db_ref.lock().unwrap();
-        if db_guard.closed {
-            return Err(PyException::new(
-                ferrython_core::error::ExceptionKind::RuntimeError,
-                "Cannot operate on a closed database.",
-            ));
-        }
-        for stmt in script.split(';') {
-            let trimmed = stmt.trim();
-            if trimmed.is_empty() {
-                continue;
+    attrs.insert(
+        CompactString::from("executescript"),
+        PyObject::native_closure("executescript", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "executescript() requires 1 argument",
+                ));
             }
-            execute_sql(&mut db_guard, trimmed, &[])?;
-        }
-        Ok(sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none()))
-    }));
+            let script = args[0].py_to_string();
+            let mut db_guard = db_ref.lock().unwrap();
+            if db_guard.closed {
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::RuntimeError,
+                    "Cannot operate on a closed database.",
+                ));
+            }
+            for stmt in script.split(';') {
+                let trimmed = stmt.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                execute_sql(&mut db_guard, trimmed, &[])?;
+            }
+            Ok(sr
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| PyObject::none()))
+        }),
+    );
 
     // fetchone()
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
     let cols_for_fetch = result_cols.clone();
     let conn_one = conn.clone();
-    attrs.insert(CompactString::from("fetchone"), PyObject::native_closure("fetchone", move |_args| {
-        let rows = rows_ref.lock().unwrap();
-        let mut pos = pos_ref.lock().unwrap();
-        if *pos >= rows.len() {
-            return Ok(PyObject::none());
-        }
-        let row = &rows[*pos];
-        *pos += 1;
-        let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-        let use_row = conn_one.as_ref()
-            .and_then(|c| c.get_attr("row_factory"))
-            .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
-            .unwrap_or(false);
-        if use_row {
-            let cols = cols_for_fetch.lock().unwrap();
-            Ok(build_sqlite_row(&cols, &items))
-        } else {
-            Ok(PyObject::tuple(items))
-        }
-    }));
+    attrs.insert(
+        CompactString::from("fetchone"),
+        PyObject::native_closure("fetchone", move |_args| {
+            let rows = rows_ref.lock().unwrap();
+            let mut pos = pos_ref.lock().unwrap();
+            if *pos >= rows.len() {
+                return Ok(PyObject::none());
+            }
+            let row = &rows[*pos];
+            *pos += 1;
+            let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
+            let use_row = conn_one
+                .as_ref()
+                .and_then(|c| c.get_attr("row_factory"))
+                .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
+                .unwrap_or(false);
+            if use_row {
+                let cols = cols_for_fetch.lock().unwrap();
+                Ok(build_sqlite_row(&cols, &items))
+            } else {
+                Ok(PyObject::tuple(items))
+            }
+        }),
+    );
 
     // fetchall()
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
     let cols_for_fetch = result_cols.clone();
     let conn_all = conn.clone();
-    attrs.insert(CompactString::from("fetchall"), PyObject::native_closure("fetchall", move |_args| {
-        let rows = rows_ref.lock().unwrap();
-        let mut pos = pos_ref.lock().unwrap();
-        let use_row = conn_all.as_ref()
-            .and_then(|c| c.get_attr("row_factory"))
-            .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
-            .unwrap_or(false);
-        let cols = if use_row { cols_for_fetch.lock().unwrap().clone() } else { vec![] };
-        let mut result = Vec::new();
-        while *pos < rows.len() {
-            let row = &rows[*pos];
-            let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-            if use_row {
-                result.push(build_sqlite_row(&cols, &items));
+    attrs.insert(
+        CompactString::from("fetchall"),
+        PyObject::native_closure("fetchall", move |_args| {
+            let rows = rows_ref.lock().unwrap();
+            let mut pos = pos_ref.lock().unwrap();
+            let use_row = conn_all
+                .as_ref()
+                .and_then(|c| c.get_attr("row_factory"))
+                .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
+                .unwrap_or(false);
+            let cols = if use_row {
+                cols_for_fetch.lock().unwrap().clone()
             } else {
-                result.push(PyObject::tuple(items));
+                vec![]
+            };
+            let mut result = Vec::new();
+            while *pos < rows.len() {
+                let row = &rows[*pos];
+                let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
+                if use_row {
+                    result.push(build_sqlite_row(&cols, &items));
+                } else {
+                    result.push(PyObject::tuple(items));
+                }
+                *pos += 1;
             }
-            *pos += 1;
-        }
-        Ok(PyObject::list(result))
-    }));
+            Ok(PyObject::list(result))
+        }),
+    );
 
     // fetchmany(size=arraysize)
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
-    attrs.insert(CompactString::from("fetchmany"), PyObject::native_closure("fetchmany", move |args| {
-        let size = if !args.is_empty() {
-            args[0].to_int().unwrap_or(1) as usize
-        } else {
-            1
-        };
-        let rows = rows_ref.lock().unwrap();
-        let mut pos = pos_ref.lock().unwrap();
-        let mut result = Vec::new();
-        let mut count = 0;
-        while *pos < rows.len() && count < size {
-            let row = &rows[*pos];
-            let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-            result.push(PyObject::tuple(items));
-            *pos += 1;
-            count += 1;
-        }
-        Ok(PyObject::list(result))
-    }));
+    attrs.insert(
+        CompactString::from("fetchmany"),
+        PyObject::native_closure("fetchmany", move |args| {
+            let size = if !args.is_empty() {
+                args[0].to_int().unwrap_or(1) as usize
+            } else {
+                1
+            };
+            let rows = rows_ref.lock().unwrap();
+            let mut pos = pos_ref.lock().unwrap();
+            let mut result = Vec::new();
+            let mut count = 0;
+            while *pos < rows.len() && count < size {
+                let row = &rows[*pos];
+                let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
+                result.push(PyObject::tuple(items));
+                *pos += 1;
+                count += 1;
+            }
+            Ok(PyObject::list(result))
+        }),
+    );
 
     // description
     let cols_ref = result_cols.clone();
-    attrs.insert(CompactString::from("description"), PyObject::native_closure("description", move |_args| {
-        let cols = cols_ref.lock().unwrap();
-        if cols.is_empty() {
-            return Ok(PyObject::none());
-        }
-        let items: Vec<PyObjectRef> = cols.iter().map(|name| {
-            PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(name.as_str())),
-                PyObject::none(), PyObject::none(), PyObject::none(),
-                PyObject::none(), PyObject::none(), PyObject::none(),
-            ])
-        }).collect();
-        Ok(PyObject::list(items))
-    }));
+    attrs.insert(
+        CompactString::from("description"),
+        PyObject::native_closure("description", move |_args| {
+            let cols = cols_ref.lock().unwrap();
+            if cols.is_empty() {
+                return Ok(PyObject::none());
+            }
+            let items: Vec<PyObjectRef> = cols
+                .iter()
+                .map(|name| {
+                    PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from(name.as_str())),
+                        PyObject::none(),
+                        PyObject::none(),
+                        PyObject::none(),
+                        PyObject::none(),
+                        PyObject::none(),
+                        PyObject::none(),
+                    ])
+                })
+                .collect();
+            Ok(PyObject::list(items))
+        }),
+    );
 
     // rowcount and lastrowid — direct values, updated by execute/executemany
     attrs.insert(CompactString::from("rowcount"), PyObject::int(-1));
     attrs.insert(CompactString::from("lastrowid"), PyObject::none());
 
     // close()
-    attrs.insert(CompactString::from("close"), PyObject::native_function("close", |_args| {
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("close"),
+        PyObject::native_function("close", |_args| Ok(PyObject::none())),
+    );
 
     // __iter__ / __next__ for iteration
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
-    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_args| {
-        let rows = rows_ref.lock().unwrap();
-        let pos = pos_ref.lock().unwrap();
-        let mut result = Vec::new();
-        for i in *pos..rows.len() {
-            let row = &rows[i];
-            let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-            result.push(PyObject::tuple(items));
-        }
-        Ok(PyObject::list(result))
-    }));
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("__iter__", move |_args| {
+            let rows = rows_ref.lock().unwrap();
+            let pos = pos_ref.lock().unwrap();
+            let mut result = Vec::new();
+            for i in *pos..rows.len() {
+                let row = &rows[i];
+                let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
+                result.push(PyObject::tuple(items));
+            }
+            Ok(PyObject::list(result))
+        }),
+    );
 
     let cls = PyObject::class(CompactString::from("Cursor"), vec![], IndexMap::new());
     let cursor = PyObject::instance_with_attrs(cls, attrs);
@@ -1288,7 +1640,10 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
 
 fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("__sqlite_conn__"), PyObject::bool_val(true));
+    attrs.insert(
+        CompactString::from("__sqlite_conn__"),
+        PyObject::bool_val(true),
+    );
 
     // Self-reference so cursor() can pass the connection for row_factory access
     let conn_ref: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
@@ -1296,112 +1651,152 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     // cursor()
     let db_ref = db.clone();
     let cr = conn_ref.clone();
-    attrs.insert(CompactString::from("cursor"), PyObject::native_closure("cursor", move |_args| {
-        let conn = cr.lock().unwrap().clone();
-        Ok(build_cursor_object_with_conn(db_ref.clone(), conn))
-    }));
+    attrs.insert(
+        CompactString::from("cursor"),
+        PyObject::native_closure("cursor", move |_args| {
+            let conn = cr.lock().unwrap().clone();
+            Ok(build_cursor_object_with_conn(db_ref.clone(), conn))
+        }),
+    );
 
     // execute(sql, params=()) — convenience: creates cursor, executes, returns cursor
     let db_ref = db.clone();
     let cr = conn_ref.clone();
-    attrs.insert(CompactString::from("execute"), PyObject::native_closure("execute", move |args| {
-        let conn = cr.lock().unwrap().clone();
-        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
-        if let PyObjectPayload::Instance(ref d) = cursor.payload {
-            let exec_fn = d.attrs.read().get(&CompactString::from("execute")).cloned();
-            if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
-                    (nc.func)(args)?;
+    attrs.insert(
+        CompactString::from("execute"),
+        PyObject::native_closure("execute", move |args| {
+            let conn = cr.lock().unwrap().clone();
+            let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
+            if let PyObjectPayload::Instance(ref d) = cursor.payload {
+                let exec_fn = d.attrs.read().get(&CompactString::from("execute")).cloned();
+                if let Some(f) = exec_fn {
+                    if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                        (nc.func)(args)?;
+                    }
                 }
             }
-        }
-        Ok(cursor)
-    }));
+            Ok(cursor)
+        }),
+    );
 
     // executemany(sql, seq_of_params)
     let db_ref = db.clone();
     let cr = conn_ref.clone();
-    attrs.insert(CompactString::from("executemany"), PyObject::native_closure("executemany", move |args| {
-        let conn = cr.lock().unwrap().clone();
-        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
-        if let PyObjectPayload::Instance(ref d) = cursor.payload {
-            let exec_fn = d.attrs.read().get(&CompactString::from("executemany")).cloned();
-            if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
-                    (nc.func)(args)?;
+    attrs.insert(
+        CompactString::from("executemany"),
+        PyObject::native_closure("executemany", move |args| {
+            let conn = cr.lock().unwrap().clone();
+            let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
+            if let PyObjectPayload::Instance(ref d) = cursor.payload {
+                let exec_fn = d
+                    .attrs
+                    .read()
+                    .get(&CompactString::from("executemany"))
+                    .cloned();
+                if let Some(f) = exec_fn {
+                    if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                        (nc.func)(args)?;
+                    }
                 }
             }
-        }
-        Ok(cursor)
-    }));
+            Ok(cursor)
+        }),
+    );
 
     // executescript(sql_script) — convenience on connection
     let db_ref = db.clone();
     let cr = conn_ref.clone();
-    attrs.insert(CompactString::from("executescript"), PyObject::native_closure("executescript", move |args| {
-        let conn = cr.lock().unwrap().clone();
-        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
-        if let PyObjectPayload::Instance(ref d) = cursor.payload {
-            let exec_fn = d.attrs.read().get(&CompactString::from("executescript")).cloned();
-            if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
-                    (nc.func)(args)?;
+    attrs.insert(
+        CompactString::from("executescript"),
+        PyObject::native_closure("executescript", move |args| {
+            let conn = cr.lock().unwrap().clone();
+            let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
+            if let PyObjectPayload::Instance(ref d) = cursor.payload {
+                let exec_fn = d
+                    .attrs
+                    .read()
+                    .get(&CompactString::from("executescript"))
+                    .cloned();
+                if let Some(f) = exec_fn {
+                    if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                        (nc.func)(args)?;
+                    }
                 }
             }
-        }
-        Ok(cursor)
-    }));
+            Ok(cursor)
+        }),
+    );
 
     // commit()
-    attrs.insert(CompactString::from("commit"), PyObject::native_function("commit", |_args| {
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("commit"),
+        PyObject::native_function("commit", |_args| Ok(PyObject::none())),
+    );
 
     // rollback()
-    attrs.insert(CompactString::from("rollback"), PyObject::native_function("rollback", |_args| {
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("rollback"),
+        PyObject::native_function("rollback", |_args| Ok(PyObject::none())),
+    );
 
     // close()
     let db_ref = db.clone();
-    attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_args| {
-        let mut guard = db_ref.lock().unwrap();
-        guard.closed = true;
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("close"),
+        PyObject::native_closure("close", move |_args| {
+            let mut guard = db_ref.lock().unwrap();
+            guard.closed = true;
+            Ok(PyObject::none())
+        }),
+    );
 
     // create_function(name, num_params, func)
-    attrs.insert(CompactString::from("create_function"), PyObject::native_function("create_function", |_args| {
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("create_function"),
+        PyObject::native_function("create_function", |_args| Ok(PyObject::none())),
+    );
 
     // total_changes
     let db_ref = db.clone();
-    attrs.insert(CompactString::from("total_changes"), PyObject::native_closure("total_changes", move |_args| {
-        let guard = db_ref.lock().unwrap();
-        let total: usize = guard.tables.values().map(|t| t.rows.len()).sum();
-        Ok(PyObject::int(total as i64))
-    }));
+    attrs.insert(
+        CompactString::from("total_changes"),
+        PyObject::native_closure("total_changes", move |_args| {
+            let guard = db_ref.lock().unwrap();
+            let total: usize = guard.tables.values().map(|t| t.rows.len()).sum();
+            Ok(PyObject::int(total as i64))
+        }),
+    );
 
     // isolation_level
-    attrs.insert(CompactString::from("isolation_level"), PyObject::str_val(CompactString::from("")));
+    attrs.insert(
+        CompactString::from("isolation_level"),
+        PyObject::str_val(CompactString::from("")),
+    );
 
     // row_factory — set via conn.row_factory = sqlite3.Row
     // Cursors read it dynamically via get_attr on the connection
     attrs.insert(CompactString::from("row_factory"), PyObject::none());
 
     // __enter__ / __exit__ for context manager
-    attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", |args| {
-        if args.is_empty() { return Ok(PyObject::none()); }
-        Ok(args[0].clone())
-    }));
+    attrs.insert(
+        CompactString::from("__enter__"),
+        PyObject::native_function("__enter__", |args| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            Ok(args[0].clone())
+        }),
+    );
 
     let db_ref = db.clone();
-    attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_args| {
-        let guard = db_ref.lock().unwrap();
-        drop(guard);
-        Ok(PyObject::bool_val(false))
-    }));
+    attrs.insert(
+        CompactString::from("__exit__"),
+        PyObject::native_closure("__exit__", move |_args| {
+            let guard = db_ref.lock().unwrap();
+            drop(guard);
+            Ok(PyObject::bool_val(false))
+        }),
+    );
 
     let cls = PyObject::class(CompactString::from("Connection"), vec![], IndexMap::new());
     let connection = PyObject::instance_with_attrs(cls, attrs);
@@ -1414,14 +1809,17 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
 
 fn sqlite3_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("connect() requires 1 argument: database"));
+        return Err(PyException::type_error(
+            "connect() requires 1 argument: database",
+        ));
     }
     let path = args[0].py_to_string();
     let db = if path == ":memory:" {
         Arc::new(Mutex::new(Database::new(&path)))
     } else {
         let mut registry = DB_REGISTRY.lock().unwrap();
-        registry.entry(path.clone())
+        registry
+            .entry(path.clone())
             .or_insert_with(|| Arc::new(Mutex::new(Database::new(&path))))
             .clone()
     };
@@ -1429,21 +1827,51 @@ fn sqlite3_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub fn create_sqlite3_module() -> PyObjectRef {
-    make_module("sqlite3", vec![
-        ("connect", make_builtin(sqlite3_connect)),
-        ("version", PyObject::str_val(CompactString::from("2.6.0"))),
-        ("sqlite_version", PyObject::str_val(CompactString::from("3.39.0"))),
-        ("PARSE_DECLTYPES", PyObject::int(1)),
-        ("PARSE_COLNAMES", PyObject::int(2)),
-        ("apilevel", PyObject::str_val(CompactString::from("2.0"))),
-        ("paramstyle", PyObject::str_val(CompactString::from("qmark"))),
-        ("threadsafety", PyObject::int(1)),
-        ("Error", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("DatabaseError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("OperationalError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("IntegrityError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("ProgrammingError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("InterfaceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("Row", PyObject::class(CompactString::from("Row"), vec![], IndexMap::new())),
-    ])
+    make_module(
+        "sqlite3",
+        vec![
+            ("connect", make_builtin(sqlite3_connect)),
+            ("version", PyObject::str_val(CompactString::from("2.6.0"))),
+            (
+                "sqlite_version",
+                PyObject::str_val(CompactString::from("3.39.0")),
+            ),
+            ("PARSE_DECLTYPES", PyObject::int(1)),
+            ("PARSE_COLNAMES", PyObject::int(2)),
+            ("apilevel", PyObject::str_val(CompactString::from("2.0"))),
+            (
+                "paramstyle",
+                PyObject::str_val(CompactString::from("qmark")),
+            ),
+            ("threadsafety", PyObject::int(1)),
+            (
+                "Error",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "DatabaseError",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "OperationalError",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "IntegrityError",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "ProgrammingError",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "InterfaceError",
+                PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError),
+            ),
+            (
+                "Row",
+                PyObject::class(CompactString::from("Row"), vec![], IndexMap::new()),
+            ),
+        ],
+    )
 }

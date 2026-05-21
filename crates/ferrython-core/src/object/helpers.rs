@@ -1,6 +1,7 @@
 //! Formatting helpers, slice resolution, coercion, and module-building utilities.
 
-use crate::error::{ExceptionKind, PyException, PyResult};
+use crate::error::ExceptionKind;
+use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
@@ -139,6 +140,7 @@ pub fn is_hidden_dict_key(k: &HashableKey) -> bool {
         || s.as_str() == "__counter__"
         || s.as_str() == "__ordered_dict__"
         || s.as_str() == "__move_to_end_fn__"
+        || s.as_str() == "_tuple"
     )
 }
 
@@ -322,6 +324,62 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeFunction(a), PyObjectPayload::NativeFunction(b)) => {
+            if a.name == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeClosure(a), PyObjectPayload::NativeClosure(b)) => {
+            if a.name == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::NativeFunction(b)) => {
+            if a.as_ref() == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
+            if a.name == b.as_ref() {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::NativeClosure(b)) => {
+            if a.as_ref() == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeClosure(a), PyObjectPayload::BuiltinFunction(b)) => {
+            if a.name == b.as_ref() {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeFunction(a), PyObjectPayload::NativeClosure(b)) => {
+            if a.name == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::NativeClosure(a), PyObjectPayload::NativeFunction(b)) => {
+            if a.name == b.name {
                 Some(std::cmp::Ordering::Equal)
             } else {
                 None
@@ -715,12 +773,14 @@ pub(super) fn float_to_str(f: f64) -> String {
     if f == f64::INFINITY {
         return "inf".into();
     }
+
     if f == f64::NEG_INFINITY {
         return "-inf".into();
     }
     if f.is_nan() {
         return "nan".into();
     }
+
     if f == 0.0 {
         return if f.is_sign_negative() {
             "-0.0".into()

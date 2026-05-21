@@ -1,8 +1,8 @@
 //! String literal parsing — handles escape sequences, raw strings, byte strings.
 
-use compact_str::CompactString;
 use crate::error::{ParseError, ParseErrorKind};
 use crate::token::Span;
+use compact_str::CompactString;
 
 /// Parse a regular string literal (process escape sequences).
 pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseError> {
@@ -35,10 +35,7 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                             }
                         }
                         Err(_) => {
-                            return Err(ParseError::new(
-                                ParseErrorKind::InvalidEscape('x'),
-                                span,
-                            ));
+                            return Err(ParseError::new(ParseErrorKind::InvalidEscape('x'), span));
                         }
                     }
                 }
@@ -60,10 +57,7 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                             }
                         }
                         Err(_) => {
-                            return Err(ParseError::new(
-                                ParseErrorKind::InvalidEscape('u'),
-                                span,
-                            ));
+                            return Err(ParseError::new(ParseErrorKind::InvalidEscape('u'), span));
                         }
                     }
                 }
@@ -83,10 +77,7 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                             }
                         }
                         Err(_) => {
-                            return Err(ParseError::new(
-                                ParseErrorKind::InvalidEscape('U'),
-                                span,
-                            ));
+                            return Err(ParseError::new(ParseErrorKind::InvalidEscape('U'), span));
                         }
                     }
                 }
@@ -105,9 +96,10 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                             Some(c) => result.push(c),
                             None => {
                                 return Err(ParseError::new(
-                                    ParseErrorKind::InvalidSyntax(
-                                        format!("unknown Unicode character name: {}", name),
-                                    ),
+                                    ParseErrorKind::InvalidSyntax(format!(
+                                        "unknown Unicode character name: {}",
+                                        name
+                                    )),
                                     span,
                                 ));
                             }
@@ -181,10 +173,7 @@ pub fn parse_bytes_literal(s: &str, span: Span) -> Result<Vec<u8>, ParseError> {
                     match u8::from_str_radix(&hex, 16) {
                         Ok(n) => result.push(n),
                         Err(_) => {
-                            return Err(ParseError::new(
-                                ParseErrorKind::InvalidEscape('x'),
-                                span,
-                            ));
+                            return Err(ParseError::new(ParseErrorKind::InvalidEscape('x'), span));
                         }
                     }
                 }

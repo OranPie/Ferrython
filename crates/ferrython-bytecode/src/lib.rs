@@ -1,7 +1,7 @@
 //! Ferrython bytecode — Python 3.8 opcode definitions and code objects.
 
-pub mod opcode;
 pub mod code;
+pub mod opcode;
 
-pub use opcode::{Opcode, Instruction};
-pub use code::{CodeObject, CodeFlags, ConstantValue};
+pub use code::{CodeFlags, CodeObject, ConstantValue};
+pub use opcode::{Instruction, Opcode};

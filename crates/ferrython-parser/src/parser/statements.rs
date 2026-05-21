@@ -16,8 +16,7 @@ impl Parser {
         // Detect unexpected indent at the start of a statement.
         if matches!(self.peek().kind, TokenKind::Indent) {
             return Err(ParseError::new(
-                crate::error::ParseErrorKind::IndentationError(
-                    "unexpected indent".into()),
+                crate::error::ParseErrorKind::IndentationError("unexpected indent".into()),
                 self.peek().span,
             ));
         }
@@ -30,9 +29,21 @@ impl Parser {
             TokenKind::Async => self.parse_async_stmt(),
             TokenKind::Class => self.parse_class_def(),
             TokenKind::Return => self.parse_return_stmt(),
-            TokenKind::Pass => { self.advance(); self.expect_newline()?; Ok(Statement::new(StatementKind::Pass, loc)) }
-            TokenKind::Break => { self.advance(); self.expect_newline()?; Ok(Statement::new(StatementKind::Break, loc)) }
-            TokenKind::Continue => { self.advance(); self.expect_newline()?; Ok(Statement::new(StatementKind::Continue, loc)) }
+            TokenKind::Pass => {
+                self.advance();
+                self.expect_newline()?;
+                Ok(Statement::new(StatementKind::Pass, loc))
+            }
+            TokenKind::Break => {
+                self.advance();
+                self.expect_newline()?;
+                Ok(Statement::new(StatementKind::Break, loc))
+            }
+            TokenKind::Continue => {
+                self.advance();
+                self.expect_newline()?;
+                Ok(Statement::new(StatementKind::Continue, loc))
+            }
             TokenKind::Import => self.parse_import_stmt(),
             TokenKind::From => self.parse_from_import_stmt(),
             TokenKind::Raise => self.parse_raise_stmt(),
@@ -558,7 +569,9 @@ impl Parser {
             TokenKind::For => self.parse_for_stmt(true),
             TokenKind::With => self.parse_with_stmt(true),
             _ => Err(ParseError::new(
-                ParseErrorKind::InvalidSyntax("expected 'def', 'for', or 'with' after 'async'".into()),
+                ParseErrorKind::InvalidSyntax(
+                    "expected 'def', 'for', or 'with' after 'async'".into(),
+                ),
                 self.peek().span,
             )),
         }
@@ -590,12 +603,8 @@ impl Parser {
         };
         // Attach decorators
         match &mut stmt.node {
-            StatementKind::FunctionDef {
-                decorator_list, ..
-            }
-            | StatementKind::ClassDef {
-                decorator_list, ..
-            } => {
+            StatementKind::FunctionDef { decorator_list, .. }
+            | StatementKind::ClassDef { decorator_list, .. } => {
                 *decorator_list = decorators;
             }
             _ => unreachable!(),
@@ -821,17 +830,15 @@ impl Parser {
                 self.advance();
                 let lit_pat = self.parse_literal_pattern()?;
                 match lit_pat {
-                    Pattern::MatchLiteral { value } => {
-                        Ok(Pattern::MatchLiteral {
-                            value: Expression::new(
-                                ExpressionKind::UnaryOp {
-                                    op: UnaryOperator::USub,
-                                    operand: Box::new(value),
-                                },
-                                loc,
-                            ),
-                        })
-                    }
+                    Pattern::MatchLiteral { value } => Ok(Pattern::MatchLiteral {
+                        value: Expression::new(
+                            ExpressionKind::UnaryOp {
+                                op: UnaryOperator::USub,
+                                operand: Box::new(value),
+                            },
+                            loc,
+                        ),
+                    }),
                     _ => Err(self.unexpected_token("numeric literal")),
                 }
             }
@@ -875,9 +882,7 @@ impl Parser {
                 }
             }
             // Mapping pattern `{key: pat, ...}`
-            TokenKind::LeftBrace => {
-                self.parse_mapping_pattern()
-            }
+            TokenKind::LeftBrace => self.parse_mapping_pattern(),
             // Star pattern `*name` or `*_`
             TokenKind::Star => {
                 self.advance();
@@ -890,9 +895,7 @@ impl Parser {
                 }
             }
             // Name: could be capture, value (dotted), or class pattern
-            TokenKind::Name(_) => {
-                self.parse_name_or_class_pattern()
-            }
+            TokenKind::Name(_) => self.parse_name_or_class_pattern(),
             _ => Err(self.unexpected_token("pattern")),
         }
     }
@@ -957,10 +960,7 @@ impl Parser {
         Ok(Pattern::MatchCapture { name })
     }
 
-    fn parse_class_pattern_args(
-        &mut self,
-        cls: Expression,
-    ) -> Result<Pattern, ParseError> {
+    fn parse_class_pattern_args(&mut self, cls: Expression) -> Result<Pattern, ParseError> {
         self.expect(TokenKind::LeftParen)?;
         let mut patterns = Vec::new();
         let mut kwd_attrs = Vec::new();

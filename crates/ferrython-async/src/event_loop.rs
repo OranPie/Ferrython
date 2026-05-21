@@ -150,7 +150,9 @@ impl EventLoop {
     /// Start the event loop.
     pub fn start(&mut self) -> PyResult<()> {
         if self.state == EventLoopState::Closed {
-            return Err(PyException::runtime_error("cannot reuse a closed event loop"));
+            return Err(PyException::runtime_error(
+                "cannot reuse a closed event loop",
+            ));
         }
         self.state = EventLoopState::Running;
         Ok(())
@@ -184,11 +186,7 @@ impl Default for EventLoop {
 
 /// Create a Python-level EventLoop object that wraps the Rust EventLoop.
 pub fn create_event_loop_object() -> PyObjectRef {
-    let loop_cls = PyObject::class(
-        CompactString::from("EventLoop"),
-        vec![],
-        IndexMap::new(),
-    );
+    let loop_cls = PyObject::class(CompactString::from("EventLoop"), vec![], IndexMap::new());
 
     // Shared state via Arc<Mutex<EventLoop>>
     let loop_state = Arc::new(Mutex::new(EventLoop::new()));
@@ -197,83 +195,104 @@ pub fn create_event_loop_object() -> PyObjectRef {
 
     // run_until_complete(coro)
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("run_until_complete"), PyObject::native_closure(
-        "EventLoop.run_until_complete",
-        move |args: &[PyObjectRef]| {
-            if args.is_empty() {
-                return Err(PyException::type_error("run_until_complete() requires a coroutine"));
-            }
-            let mut loop_ = ls.lock();
-            loop_.start()?;
-            // Store coroutine in thread-local for VM to drive
-            crate::module::store_asyncio_run_coro(args[0].clone());
-            Ok(args[0].clone())
-        },
-    ));
+    attrs.insert(
+        CompactString::from("run_until_complete"),
+        PyObject::native_closure(
+            "EventLoop.run_until_complete",
+            move |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error(
+                        "run_until_complete() requires a coroutine",
+                    ));
+                }
+                let mut loop_ = ls.lock();
+                loop_.start()?;
+                // Store coroutine in thread-local for VM to drive
+                crate::module::store_asyncio_run_coro(args[0].clone());
+                Ok(args[0].clone())
+            },
+        ),
+    );
 
     // close()
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("close"), PyObject::native_closure(
-        "EventLoop.close",
-        move |_| { ls.lock().close(); Ok(PyObject::none()) },
-    ));
+    attrs.insert(
+        CompactString::from("close"),
+        PyObject::native_closure("EventLoop.close", move |_| {
+            ls.lock().close();
+            Ok(PyObject::none())
+        }),
+    );
 
     // is_running()
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("is_running"), PyObject::native_closure(
-        "EventLoop.is_running",
-        move |_| Ok(PyObject::bool_val(ls.lock().is_running())),
-    ));
+    attrs.insert(
+        CompactString::from("is_running"),
+        PyObject::native_closure("EventLoop.is_running", move |_| {
+            Ok(PyObject::bool_val(ls.lock().is_running()))
+        }),
+    );
 
     // is_closed()
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("is_closed"), PyObject::native_closure(
-        "EventLoop.is_closed",
-        move |_| Ok(PyObject::bool_val(ls.lock().is_closed())),
-    ));
+    attrs.insert(
+        CompactString::from("is_closed"),
+        PyObject::native_closure("EventLoop.is_closed", move |_| {
+            Ok(PyObject::bool_val(ls.lock().is_closed()))
+        }),
+    );
 
     // time()
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("time"), PyObject::native_closure(
-        "EventLoop.time",
-        move |_| Ok(PyObject::float(ls.lock().time())),
-    ));
+    attrs.insert(
+        CompactString::from("time"),
+        PyObject::native_closure("EventLoop.time", move |_| {
+            Ok(PyObject::float(ls.lock().time()))
+        }),
+    );
 
     // stop()
     let ls = loop_state.clone();
-    attrs.insert(CompactString::from("stop"), PyObject::native_closure(
-        "EventLoop.stop",
-        move |_| { ls.lock().stop(); Ok(PyObject::none()) },
-    ));
+    attrs.insert(
+        CompactString::from("stop"),
+        PyObject::native_closure("EventLoop.stop", move |_| {
+            ls.lock().stop();
+            Ok(PyObject::none())
+        }),
+    );
 
     // call_soon(callback, *args) — schedule callback for next iteration
-    attrs.insert(CompactString::from("call_soon"), PyObject::native_closure(
-        "EventLoop.call_soon",
-        |_args| Ok(PyObject::none()),
-    ));
+    attrs.insert(
+        CompactString::from("call_soon"),
+        PyObject::native_closure("EventLoop.call_soon", |_args| Ok(PyObject::none())),
+    );
 
     // call_later(delay, callback, *args)
-    attrs.insert(CompactString::from("call_later"), PyObject::native_closure(
-        "EventLoop.call_later",
-        |_args| Ok(PyObject::none()),
-    ));
+    attrs.insert(
+        CompactString::from("call_later"),
+        PyObject::native_closure("EventLoop.call_later", |_args| Ok(PyObject::none())),
+    );
 
     // create_future()
-    attrs.insert(CompactString::from("create_future"), PyObject::native_closure(
-        "EventLoop.create_future",
-        |_| Ok(crate::task::create_future_object()),
-    ));
+    attrs.insert(
+        CompactString::from("create_future"),
+        PyObject::native_closure("EventLoop.create_future", |_| {
+            Ok(crate::task::create_future_object())
+        }),
+    );
 
     // create_task(coro)
-    attrs.insert(CompactString::from("create_task"), PyObject::native_closure(
-        "EventLoop.create_task",
-        |args| {
+    attrs.insert(
+        CompactString::from("create_task"),
+        PyObject::native_closure("EventLoop.create_task", |args| {
             if args.is_empty() {
-                return Err(PyException::type_error("create_task() requires a coroutine"));
+                return Err(PyException::type_error(
+                    "create_task() requires a coroutine",
+                ));
             }
             Ok(crate::task::create_task_object(&args[0]))
-        },
-    ));
+        }),
+    );
 
     PyObject::instance_with_attrs(loop_cls, attrs)
 }

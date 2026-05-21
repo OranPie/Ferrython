@@ -3,9 +3,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args, check_args_min, guard_eager_allocation, guarded_push, new_fx_hashkey_map,
-    FxAttrMap, FxHashKeyMap, IteratorData, PropertyData, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, SyncUsize,
+    check_args, check_args_min, guard_eager_allocation, guarded_push, lookup_in_class_mro,
+    new_fx_hashkey_map, FxAttrMap, FxHashKeyMap, IteratorData, PropertyData, PyCell, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -1000,93 +1000,240 @@ fn exception_is_subclass_of(kind: ExceptionKind, target_name: &str) -> bool {
 }
 
 /// Structural (duck-type) check for collections.abc ABCs.
-fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
+fn abc_required_methods(abc_name: &str) -> &'static [&'static str] {
     match abc_name {
-        "Iterable" => {
-            matches!(
-                obj.type_name(),
-                "list"
-                    | "tuple"
-                    | "str"
-                    | "dict"
-                    | "set"
-                    | "frozenset"
-                    | "bytes"
-                    | "bytearray"
-                    | "range"
-                    | "iterator"
-                    | "generator"
-            ) || obj.get_attr("__iter__").is_some()
+        "Hashable" => &["__hash__"],
+        "Iterable" => &["__iter__"],
+        "Iterator" => &["__iter__", "__next__"],
+        "Reversible" => &["__iter__", "__reversed__"],
+        "Generator" => &["__iter__", "__next__", "send", "throw", "close"],
+        "Sized" => &["__len__"],
+        "Container" => &["__contains__"],
+        "Callable" => &["__call__"],
+        "Collection" => &["__len__", "__iter__", "__contains__"],
+        "Sequence" => &["__getitem__", "__len__"],
+        "MutableSequence" => &[
+            "__getitem__",
+            "__len__",
+            "__setitem__",
+            "__delitem__",
+            "insert",
+        ],
+        "Set" => &["__contains__", "__iter__", "__len__"],
+        "MutableSet" => &["__contains__", "__iter__", "__len__", "add", "discard"],
+        "Mapping" => &["__getitem__", "__iter__", "__len__"],
+        "MutableMapping" => &[
+            "__getitem__",
+            "__iter__",
+            "__len__",
+            "__setitem__",
+            "__delitem__",
+        ],
+        "Awaitable" => &["__await__"],
+        "Coroutine" => &["send", "throw", "close", "__await__"],
+        "AsyncIterable" => &["__aiter__"],
+        "AsyncIterator" => &["__aiter__", "__anext__"],
+        "AsyncGenerator" => &["__aiter__", "__anext__", "asend", "athrow"],
+        _ => &[],
+    }
+}
+
+fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
+    match abc_name {
+        "Hashable" => &[
+            "int",
+            "float",
+            "complex",
+            "str",
+            "bool",
+            "bytes",
+            "tuple",
+            "frozenset",
+            "NoneType",
+            "type",
+        ],
+        "Iterable" => &[
+            "list",
+            "tuple",
+            "dict",
+            "set",
+            "frozenset",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+            "dict_keys",
+            "dict_items",
+            "dict_values",
+            "iterator",
+            "generator",
+            "list_iterator",
+            "tuple_iterator",
+            "dict_keyiterator",
+            "dict_valueiterator",
+            "dict_itemiterator",
+        ],
+        "Iterator" => &[
+            "iterator",
+            "generator",
+            "list_iterator",
+            "tuple_iterator",
+            "dict_keyiterator",
+            "dict_valueiterator",
+            "dict_itemiterator",
+        ],
+        "Reversible" => &[
+            "list",
+            "tuple",
+            "str",
+            "dict",
+            "bytes",
+            "bytearray",
+            "range",
+            "dict_keys",
+            "dict_items",
+            "dict_values",
+            "OrderedDict",
+            "Counter",
+        ],
+        "Sized" => &[
+            "list",
+            "tuple",
+            "dict",
+            "set",
+            "frozenset",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+            "dict_keys",
+            "dict_items",
+            "dict_values",
+        ],
+        "Container" => &[
+            "list",
+            "tuple",
+            "dict",
+            "set",
+            "frozenset",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+            "dict_keys",
+            "dict_items",
+        ],
+        "Collection" => &[
+            "list",
+            "tuple",
+            "dict",
+            "set",
+            "frozenset",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+            "dict_keys",
+            "dict_items",
+            "dict_values",
+        ],
+        "Sequence" => &[
+            "list",
+            "tuple",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+            "memoryview",
+        ],
+        "MutableSequence" => &["list", "bytearray", "deque"],
+        "ByteString" => &["bytes", "bytearray"],
+        "Set" => &["set", "frozenset", "dict_keys", "dict_items"],
+        "MutableSet" => &["set"],
+        "Mapping" => &["dict", "Counter", "UserDict"],
+        "MutableMapping" => &["dict", "Counter", "UserDict"],
+        "Callable" => &["function", "builtin_function_or_method", "method", "type"],
+        "Awaitable" => &["coroutine"],
+        "Coroutine" => &["coroutine"],
+        "AsyncIterable" => &["async_generator"],
+        "AsyncIterator" => &["async_generator"],
+        "AsyncGenerator" => &["async_generator"],
+        _ => &[],
+    }
+}
+
+fn object_has_abc_method(obj: &PyObjectRef, name: &str) -> bool {
+    obj.get_attr(name)
+        .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
+        .unwrap_or(false)
+}
+
+fn class_has_abc_method(cls: &PyObjectRef, name: &str) -> bool {
+    lookup_in_class_mro(cls, name)
+        .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
+        .unwrap_or(false)
+}
+
+fn abc_hashable_blocked_type(name: &str) -> bool {
+    matches!(name, "bytearray" | "dict" | "list" | "set")
+}
+
+fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        if abc_builtin_type_names(abc_name)
+            .iter()
+            .any(|builtin| *builtin == cd.name.as_str())
+        {
+            return true;
         }
-        "Iterator" => {
-            matches!(obj.type_name(), "iterator" | "generator")
-                || obj.get_attr("__next__").is_some()
+        if let Some(base_name) = &cd.builtin_base_name {
+            if abc_builtin_type_names(abc_name)
+                .iter()
+                .any(|builtin| *builtin == base_name.as_str())
+            {
+                return true;
+            }
         }
-        "Mapping" | "MutableMapping" => {
-            matches!(obj.type_name(), "dict")
-                || (obj.get_attr("__getitem__").is_some() && obj.get_attr("keys").is_some())
+        let blocked_hashable = abc_hashable_blocked_type(cd.name.as_str())
+            || cd
+                .builtin_base_name
+                .as_ref()
+                .map(|name| abc_hashable_blocked_type(name.as_str()))
+                .unwrap_or(false);
+        match abc_name {
+            "Hashable" => {
+                if blocked_hashable {
+                    false
+                } else {
+                    class_has_abc_method(cls, "__hash__")
+                }
+            }
+            "Callable" => true,
+            _ => abc_required_methods(abc_name)
+                .iter()
+                .all(|name| class_has_abc_method(cls, name)),
         }
-        "Sequence" | "MutableSequence" => {
-            matches!(
-                obj.type_name(),
-                "list" | "tuple" | "str" | "bytes" | "bytearray" | "range"
-            )
-        }
-        "Set" | "MutableSet" => {
-            matches!(obj.type_name(), "set" | "frozenset")
-        }
+    } else {
+        false
+    }
+}
+
+fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
+    if abc_builtin_type_names(abc_name)
+        .iter()
+        .any(|builtin| *builtin == obj.type_name())
+    {
+        return true;
+    }
+    match abc_name {
+        "ByteString" => matches!(obj.type_name(), "bytes" | "bytearray"),
         "Callable" => obj.is_callable(),
-        "Hashable" => !matches!(obj.type_name(), "list" | "dict" | "set" | "bytearray"),
-        "Sized" => {
-            matches!(
-                obj.type_name(),
-                "list"
-                    | "tuple"
-                    | "str"
-                    | "dict"
-                    | "set"
-                    | "frozenset"
-                    | "bytes"
-                    | "bytearray"
-                    | "range"
-            ) || obj.get_attr("__len__").is_some()
-        }
-        "Collection" => {
-            check_abc_structural(obj, "Sized")
-                && check_abc_structural(obj, "Iterable")
-                && obj.get_attr("__contains__").is_some()
-                || matches!(
-                    obj.type_name(),
-                    "list"
-                        | "tuple"
-                        | "str"
-                        | "dict"
-                        | "set"
-                        | "frozenset"
-                        | "bytes"
-                        | "bytearray"
-                        | "range"
-                )
-        }
-        "Reversible" => {
-            matches!(
-                obj.type_name(),
-                "list" | "tuple" | "str" | "dict" | "bytes" | "bytearray" | "range"
-            )
-        }
-        "Container" => {
-            matches!(
-                obj.type_name(),
-                "list"
-                    | "tuple"
-                    | "str"
-                    | "dict"
-                    | "set"
-                    | "frozenset"
-                    | "bytes"
-                    | "bytearray"
-                    | "range"
-            ) || obj.get_attr("__contains__").is_some()
+        "Hashable" => {
+            if abc_hashable_blocked_type(obj.type_name()) {
+                false
+            } else {
+                object_has_abc_method(obj, "__hash__")
+            }
         }
         "Number" | "Complex" => {
             matches!(obj.type_name(), "int" | "float" | "complex" | "bool")
@@ -1097,7 +1244,9 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
         "Rational" | "Integral" => {
             matches!(obj.type_name(), "int" | "bool")
         }
-        _ => false,
+        _ => abc_required_methods(abc_name)
+            .iter()
+            .all(|name| object_has_abc_method(obj, name)),
     }
 }
 
@@ -1328,7 +1477,35 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("reversed", args, 1)?;
-    let mut items = args[0].to_list()?;
+    let obj = &args[0];
+    if let Some(reversed_attr) = obj.get_attr("__reversed__") {
+        if !matches!(&reversed_attr.payload, PyObjectPayload::None) {
+            return ferrython_core::object::helpers::call_callable(&reversed_attr, &[]);
+        }
+    }
+    let builtin_reversible = matches!(
+        obj.type_name(),
+        "list"
+            | "tuple"
+            | "str"
+            | "bytes"
+            | "bytearray"
+            | "range"
+            | "dict"
+            | "Counter"
+            | "OrderedDict"
+            | "dict_keys"
+            | "dict_items"
+            | "dict_values"
+            | "memoryview"
+    );
+    if !builtin_reversible {
+        return Err(PyException::type_error(format!(
+            "'{}' object is not reversible",
+            obj.type_name()
+        )));
+    }
+    let mut items = obj.to_list()?;
     items.reverse();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
         PyCell::new(ferrython_core::object::IteratorData::List { items, index: 0 }),
@@ -2381,6 +2558,21 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
                     }
                 }
             }
+            if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
+                if let PyObjectPayload::Set(set) = &registry.payload {
+                    let sub_name = HashableKey::str_key(CompactString::from(sub_cd.name.as_str()));
+                    if set.read().contains_key(&sub_name) {
+                        return true;
+                    }
+                    if let Some(base_name) = &sub_cd.builtin_base_name {
+                        let base_key =
+                            HashableKey::str_key(CompactString::from(base_name.as_str()));
+                        if set.read().contains_key(&base_key) {
+                            return true;
+                        }
+                    }
+                }
+            }
             // Check _abc_registry for virtual subclass registration
             {
                 let mut classes_to_check: Vec<PyObjectRef> = vec![sup.clone()];
@@ -2407,6 +2599,9 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
                         }
                     }
                 }
+            }
+            if check_abc_structural_class(sub, sup_cd.name.as_str()) {
+                return true;
             }
             false
         }
@@ -2701,18 +2896,38 @@ pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     check_args("memoryview", args, 1)?;
     match &args[0].payload {
         PyObjectPayload::Bytes(_) => {
-            // Read-only memoryview — wrap as bytes (immutable)
-            Ok(PyObject::bytes(match &args[0].payload {
-                PyObjectPayload::Bytes(b) => (**b).clone(),
-                _ => unreachable!(),
-            }))
+            let cls = PyObject::builtin_type(CompactString::from("memoryview"));
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(
+                    CompactString::from("__memoryview__"),
+                    PyObject::bool_val(true),
+                );
+                attrs.insert(
+                    CompactString::from("__readonly__"),
+                    PyObject::bool_val(true),
+                );
+                attrs.insert(CompactString::from("obj"), args[0].clone());
+            }
+            Ok(inst)
         }
         PyObjectPayload::ByteArray(_) => {
-            // Mutable memoryview — keep as bytearray so __setitem__ works
-            Ok(PyObject::bytearray(match &args[0].payload {
-                PyObjectPayload::ByteArray(b) => (**b).clone(),
-                _ => unreachable!(),
-            }))
+            let cls = PyObject::builtin_type(CompactString::from("memoryview"));
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(
+                    CompactString::from("__memoryview__"),
+                    PyObject::bool_val(true),
+                );
+                attrs.insert(
+                    CompactString::from("__readonly__"),
+                    PyObject::bool_val(false),
+                );
+                attrs.insert(CompactString::from("obj"), args[0].clone());
+            }
+            Ok(inst)
         }
         _ => Err(PyException::type_error(format!(
             "memoryview: a bytes-like object is required, not '{}'",

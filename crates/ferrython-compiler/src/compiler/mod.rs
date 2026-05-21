@@ -1,7 +1,7 @@
 //! Main compiler: walks the AST and emits bytecode into `CodeObject`s.
 
-mod statements;
 mod expressions;
+mod statements;
 
 use compact_str::CompactString;
 use ferrython_ast::*;
@@ -12,7 +12,6 @@ use crate::error::CompileError;
 use crate::symbol_table::{self, Scope, ScopeType, SymbolScope};
 
 pub(super) type Result<T> = std::result::Result<T, CompileError>;
-
 
 /// Label index used for forward-jump patching.
 #[derive(Debug, Clone, Copy)]
@@ -46,7 +45,6 @@ pub(super) struct CompileUnit {
 }
 
 impl CompileUnit {
-
     pub(super) fn new(
         name: &str,
         filename: &str,
@@ -62,8 +60,16 @@ impl CompileUnit {
             code.flags = CodeFlags::OPTIMIZED | CodeFlags::NEWLOCALS;
         }
         // Populate cellvars and freevars from scope analysis
-        code.cellvars = scope.cell_names().iter().map(|s| CompactString::from(*s)).collect();
-        code.freevars = scope.free_names().iter().map(|s| CompactString::from(*s)).collect();
+        code.cellvars = scope
+            .cell_names()
+            .iter()
+            .map(|s| CompactString::from(*s))
+            .collect();
+        code.freevars = scope
+            .free_names()
+            .iter()
+            .map(|s| CompactString::from(*s))
+            .collect();
         if !code.freevars.is_empty() {
             code.flags |= CodeFlags::NESTED;
         }
@@ -98,7 +104,6 @@ pub struct Compiler {
     pub(super) future_annotations: bool,
 }
 
-
 impl Compiler {
     pub fn new(filename: impl Into<String>) -> Self {
         Self {
@@ -122,7 +127,9 @@ impl Compiler {
     }
 
     pub(super) fn current_unit_mut(&mut self) -> &mut CompileUnit {
-        self.unit_stack.last_mut().expect("no compile unit on stack")
+        self.unit_stack
+            .last_mut()
+            .expect("no compile unit on stack")
     }
 
     /// Python name mangling: __name → _ClassName__name inside class bodies.
@@ -214,7 +221,11 @@ impl Compiler {
 
     /// Check if a name is already registered in varnames (e.g. __annotations__ added by SetupAnnotations)
     pub(super) fn is_in_varnames(&self, name: &str) -> bool {
-        self.current_unit().code.varnames.iter().any(|v| v.as_str() == name)
+        self.current_unit()
+            .code
+            .varnames
+            .iter()
+            .any(|v| v.as_str() == name)
     }
 
     pub(super) fn is_cell(&self, name: &str) -> bool {
@@ -250,10 +261,7 @@ impl Compiler {
             }
         }
         let idx = varnames.len() as u32;
-        self.current_unit_mut()
-            .code
-            .varnames
-            .push(name.into());
+        self.current_unit_mut().code.varnames.push(name.into());
         idx
     }
 
@@ -382,8 +390,7 @@ impl Compiler {
                             value: Constant::Str(doc),
                         } = &value.node
                         {
-                            let doc_idx =
-                                self.add_const(ConstantValue::Str(doc.clone()));
+                            let doc_idx = self.add_const(ConstantValue::Str(doc.clone()));
                             self.emit_arg(Opcode::LoadConst, doc_idx);
                             self.store_name("__doc__");
                         }
@@ -416,9 +423,11 @@ impl Compiler {
     fn has_future_annotations(body: &[Statement]) -> bool {
         for s in body {
             match &s.node {
-                StatementKind::ImportFrom { module: Some(mod_name), names, .. }
-                    if mod_name == "__future__" =>
-                {
+                StatementKind::ImportFrom {
+                    module: Some(mod_name),
+                    names,
+                    ..
+                } if mod_name == "__future__" => {
                     for alias in names {
                         if alias.name == "annotations" {
                             return true;
@@ -426,7 +435,13 @@ impl Compiler {
                     }
                 }
                 // Skip docstrings (string expression statements)
-                StatementKind::Expr { value } if matches!(&value.node, ExpressionKind::Constant { value: Constant::Str(_) }) => {}
+                StatementKind::Expr { value }
+                    if matches!(
+                        &value.node,
+                        ExpressionKind::Constant {
+                            value: Constant::Str(_)
+                        }
+                    ) => {}
                 // Any other statement ends the __future__ import region
                 _ => break,
             }
@@ -439,26 +454,58 @@ impl Compiler {
         for s in body {
             match &s.node {
                 StatementKind::AnnAssign { .. } => return true,
-                StatementKind::If { body: if_body, orelse, .. } => {
-                    if Self::has_annotations(if_body) || Self::has_annotations(orelse) { return true; }
-                }
-                StatementKind::For { body: for_body, orelse, .. } |
-                StatementKind::While { body: for_body, orelse, .. } => {
-                    if Self::has_annotations(for_body) || Self::has_annotations(orelse) { return true; }
-                }
-                StatementKind::Try { body: try_body, handlers, orelse, finalbody, .. } => {
-                    if Self::has_annotations(try_body) || Self::has_annotations(orelse) || Self::has_annotations(finalbody) { return true; }
-                    for h in handlers {
-                        if Self::has_annotations(&h.body) { return true; }
+                StatementKind::If {
+                    body: if_body,
+                    orelse,
+                    ..
+                } => {
+                    if Self::has_annotations(if_body) || Self::has_annotations(orelse) {
+                        return true;
                     }
                 }
-                StatementKind::With { body: with_body, .. } => {
-                    if Self::has_annotations(with_body) { return true; }
+                StatementKind::For {
+                    body: for_body,
+                    orelse,
+                    ..
+                }
+                | StatementKind::While {
+                    body: for_body,
+                    orelse,
+                    ..
+                } => {
+                    if Self::has_annotations(for_body) || Self::has_annotations(orelse) {
+                        return true;
+                    }
+                }
+                StatementKind::Try {
+                    body: try_body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                    ..
+                } => {
+                    if Self::has_annotations(try_body)
+                        || Self::has_annotations(orelse)
+                        || Self::has_annotations(finalbody)
+                    {
+                        return true;
+                    }
+                    for h in handlers {
+                        if Self::has_annotations(&h.body) {
+                            return true;
+                        }
+                    }
+                }
+                StatementKind::With {
+                    body: with_body, ..
+                } => {
+                    if Self::has_annotations(with_body) {
+                        return true;
+                    }
                 }
                 _ => {}
             }
         }
         false
     }
-
 }

@@ -1,22 +1,22 @@
 //! The Python object model — `PyObject`, `PyObjectRef`, `PyObjectPayload`.
 
-mod payload;
 mod constructors;
+pub mod helpers;
 mod methods;
-mod methods_type;
 mod methods_arith;
-mod methods_compare;
 mod methods_attr;
+mod methods_compare;
 mod methods_container;
 pub mod methods_format;
-pub mod helpers;
+mod methods_type;
+mod payload;
 
 // Re-export all public types and functions
-pub use payload::*;
-pub use methods::*;
-pub use methods_attr::{lookup_in_class_mro, is_data_descriptor, has_descriptor_get, py_has_attr};
-pub use helpers::*;
-pub use constructors::init_gc;
+pub use constructors::alloc_list_box_empty;
 pub use constructors::alloc_map_inner;
 pub use constructors::alloc_tuple_box_empty;
-pub use constructors::alloc_list_box_empty;
+pub use constructors::init_gc;
+pub use helpers::*;
+pub use methods::*;
+pub use methods_attr::{has_descriptor_get, is_data_descriptor, lookup_in_class_mro, py_has_attr};
+pub use payload::*;

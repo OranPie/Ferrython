@@ -435,12 +435,14 @@ def run_unittest(*classes):
     """Run unittest test-case classes and raise TestFailed on any failure."""
     suite = unittest.TestSuite()
     for cls in classes:
-        if isinstance(cls, str):
+        if type(cls) is str:
             suite.addTest(unittest.TestLoader().loadTestsFromName(cls))
-        elif isinstance(cls, unittest.TestSuite):
+        elif hasattr(cls, "_tests") and hasattr(cls, "run"):
             suite.addTest(cls)
-        else:
+        elif type(cls) is type and issubclass(cls, unittest.TestCase):
             suite.addTests(unittest.TestLoader().loadTestsFromTestCase(cls))
+        else:
+            suite.addTests(cls)
     verbosity = 2 if verbose else 1
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
     if not result.wasSuccessful():

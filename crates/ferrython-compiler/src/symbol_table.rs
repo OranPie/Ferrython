@@ -3,10 +3,10 @@
 //! Walks the AST before compilation to determine which names are local,
 //! global, nonlocal, free, or cell variables in each scope.
 
+use crate::error::CompileError;
 use ferrython_ast::*;
 use indexmap::IndexMap;
 use rustc_hash::FxHashSet;
-use crate::error::CompileError;
 
 /// The kind of scope a symbol table entry represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,11 +192,11 @@ fn resolve_free_vars(scope: &mut Scope) {
     // Pass 1 (top-down): Propagate available closure names downward and mark
     //   implicit globals as Free when an enclosing function scope has them.
     // Pass 2 (bottom-up): Mark parent variables as Cell when children capture them.
-    
+
     // Collect names available from enclosing function scopes
     let available: FxHashSet<String> = FxHashSet::default();
     resolve_top_down(scope, &available);
-    
+
     // Now bottom-up: mark Cell vars and propagate Nonlocal → Free
     resolve_bottom_up(scope);
 }
@@ -206,8 +206,10 @@ fn resolve_free_vars(scope: &mut Scope) {
 fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
     // For each implicit-Global symbol in this scope, check if it's available
     // from an enclosing function scope
-    if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension
-       || scope.scope_type == ScopeType::Class {
+    if scope.scope_type == ScopeType::Function
+        || scope.scope_type == ScopeType::Comprehension
+        || scope.scope_type == ScopeType::Class
+    {
         for (_name, sym) in &mut scope.symbols {
             if sym.scope == SymbolScope::Global && !sym.is_explicit_global_or_nonlocal {
                 if available.contains(&sym.name) {
@@ -216,7 +218,7 @@ fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
             }
         }
     }
-    
+
     // Build the set of names available to our children
     let mut child_available = available.clone();
     if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension {
@@ -233,7 +235,7 @@ fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
             }
         }
     }
-    
+
     // Recurse into children
     for child in &mut scope.children {
         resolve_top_down(child, &child_available);
@@ -246,7 +248,7 @@ fn resolve_bottom_up(scope: &mut Scope) {
     for child in &mut scope.children {
         resolve_bottom_up(child);
     }
-    
+
     // Collect names that children need as Free or Nonlocal
     let mut names_needed: FxHashSet<String> = FxHashSet::default();
     for child in &scope.children {
@@ -256,26 +258,31 @@ fn resolve_bottom_up(scope: &mut Scope) {
             }
         }
     }
-    
+
     for name in &names_needed {
         if let Some(sym) = scope.symbols.get_mut(name.as_str()) {
             if sym.scope == SymbolScope::Local {
                 sym.scope = SymbolScope::Cell;
             }
-        } else if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension
-                  || scope.scope_type == ScopeType::Class {
+        } else if scope.scope_type == ScopeType::Function
+            || scope.scope_type == ScopeType::Comprehension
+            || scope.scope_type == ScopeType::Class
+        {
             // Not in our scope — add as Free so our parent provides it
-            scope.symbols.insert(name.clone(), Symbol {
-                name: name.clone(),
-                scope: SymbolScope::Free,
-                is_assigned: false,
-                is_referenced: true,
-                is_parameter: false,
-                is_explicit_global_or_nonlocal: false,
-            });
+            scope.symbols.insert(
+                name.clone(),
+                Symbol {
+                    name: name.clone(),
+                    scope: SymbolScope::Free,
+                    is_assigned: false,
+                    is_referenced: true,
+                    is_parameter: false,
+                    is_explicit_global_or_nonlocal: false,
+                },
+            );
         }
     }
-    
+
     // Nonlocal → Free for runtime access
     for child in &mut scope.children {
         for (_name, sym) in &mut child.symbols {
@@ -306,9 +313,13 @@ impl Analyzer {
     /// True if the current scope is a function directly inside a class scope.
     fn is_inside_class_method(&self) -> bool {
         let len = self.scope_stack.len();
-        if len < 2 { return false; }
+        if len < 2 {
+            return false;
+        }
         let current = &self.scope_stack[len - 1];
-        if current.scope_type != ScopeType::Function { return false; }
+        if current.scope_type != ScopeType::Function {
+            return false;
+        }
         // Walk up: skip comprehension scopes, look for class
         for i in (0..len - 1).rev() {
             match self.scope_stack[i].scope_type {
@@ -375,7 +386,9 @@ impl Analyzer {
                 }
                 // Analyze parameter annotations in the enclosing scope
                 // (annotations are evaluated where the def statement appears)
-                for arg in args.posonlyargs.iter()
+                for arg in args
+                    .posonlyargs
+                    .iter()
                     .chain(args.args.iter())
                     .chain(args.vararg.iter())
                     .chain(args.kwonlyargs.iter())
@@ -481,11 +494,7 @@ impl Analyzer {
                 }
             }
 
-            StatementKind::While {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::While { test, body, orelse } => {
                 self.analyze_expression(test);
                 for s in body {
                     self.analyze_statement(s);
@@ -495,11 +504,7 @@ impl Analyzer {
                 }
             }
 
-            StatementKind::If {
-                test,
-                body,
-                orelse,
-            } => {
+            StatementKind::If { test, body, orelse } => {
                 self.analyze_expression(test);
                 for s in body {
                     self.analyze_statement(s);
@@ -569,13 +574,10 @@ impl Analyzer {
 
             StatementKind::Import { names } => {
                 for alias in names {
-                    let store_name = alias
-                        .asname
-                        .as_deref()
-                        .unwrap_or_else(|| {
-                            // For `import a.b.c`, we store `a`
-                            alias.name.split('.').next().unwrap_or(&alias.name)
-                        });
+                    let store_name = alias.asname.as_deref().unwrap_or_else(|| {
+                        // For `import a.b.c`, we store `a`
+                        alias.name.split('.').next().unwrap_or(&alias.name)
+                    });
                     self.current_scope().mark_assigned(store_name);
                 }
             }
@@ -608,8 +610,7 @@ impl Analyzer {
                             }
                         }
                     }
-                    self.current_scope()
-                        .add_symbol(name, SymbolScope::Global);
+                    self.current_scope().add_symbol(name, SymbolScope::Global);
                 }
             }
 
@@ -624,14 +625,16 @@ impl Analyzer {
                                 ));
                             } else if sym.is_assigned || sym.is_referenced {
                                 self.errors.push(CompileError::syntax(
-                                    format!("name '{}' is used prior to nonlocal declaration", name),
+                                    format!(
+                                        "name '{}' is used prior to nonlocal declaration",
+                                        name
+                                    ),
                                     stmt.location,
                                 ));
                             }
                         }
                     }
-                    self.current_scope()
-                        .add_symbol(name, SymbolScope::Nonlocal);
+                    self.current_scope().add_symbol(name, SymbolScope::Nonlocal);
                 }
             }
 
@@ -754,11 +757,7 @@ impl Analyzer {
                 self.current_scope().children.push(child);
             }
 
-            ExpressionKind::IfExp {
-                test,
-                body,
-                orelse,
-            } => {
+            ExpressionKind::IfExp { test, body, orelse } => {
                 self.analyze_expression(test);
                 self.analyze_expression(body);
                 self.analyze_expression(orelse);
@@ -914,11 +913,7 @@ impl Analyzer {
                 self.analyze_expression(value);
             }
 
-            ExpressionKind::Slice {
-                lower,
-                upper,
-                step,
-            } => {
+            ExpressionKind::Slice { lower, upper, step } => {
                 if let Some(l) = lower {
                     self.analyze_expression(l);
                 }
@@ -992,7 +987,11 @@ impl Analyzer {
                     self.analyze_pattern(p);
                 }
             }
-            Pattern::MatchMapping { keys, patterns, rest } => {
+            Pattern::MatchMapping {
+                keys,
+                patterns,
+                rest,
+            } => {
                 for k in keys {
                     self.analyze_expression(k);
                 }
@@ -1003,7 +1002,12 @@ impl Analyzer {
                     self.current_scope().mark_assigned(rest_name);
                 }
             }
-            Pattern::MatchClass { cls, patterns, kwd_patterns, .. } => {
+            Pattern::MatchClass {
+                cls,
+                patterns,
+                kwd_patterns,
+                ..
+            } => {
                 self.analyze_expression(cls);
                 for p in patterns {
                     self.analyze_pattern(p);

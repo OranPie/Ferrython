@@ -8,12 +8,17 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 use ferrython_core::types::PyInt;
 
 // ── Misc ops ─────────────────────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_misc_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_misc_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::PrintExpr => {
                 let frame = self.vm_frame();
@@ -23,14 +28,18 @@ impl VirtualMachine {
                 }
             }
             Opcode::LoadBuildClass => {
-                self.vm_frame().push(PyObject::builtin_function(
-                    intern_or_new("__build_class__")));
+                self.vm_frame()
+                    .push(PyObject::builtin_function(intern_or_new("__build_class__")));
             }
             Opcode::SetupAnnotations => {
                 let frame = self.vm_frame();
                 // In function scope, __annotations__ may be a fast local (varname).
                 // Check if it's registered as a varname and use fast locals.
-                let varname_idx = frame.code.varnames.iter().position(|v| v == "__annotations__");
+                let varname_idx = frame
+                    .code
+                    .varnames
+                    .iter()
+                    .position(|v| v == "__annotations__");
                 if let Some(idx) = varname_idx {
                     if idx < frame.locals.len() && frame.locals[idx].is_none() {
                         frame.locals[idx] = Some(PyObject::dict(new_fx_hashkey_map()));
@@ -59,7 +68,9 @@ impl VirtualMachine {
                             let mut buf = ryu::Buffer::new();
                             Some(CompactString::from(buf.format(*f)))
                         }
-                        PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
+                        PyObjectPayload::Bool(b) => {
+                            Some(CompactString::from(if *b { "True" } else { "False" }))
+                        }
                         PyObjectPayload::None => Some(CompactString::from("None")),
                         _ => None,
                     };
@@ -96,7 +107,9 @@ impl VirtualMachine {
                                 if let Some(format_method) = value.get_attr("__format__") {
                                     let spec = PyObject::str_val(CompactString::from(&fmt_spec));
                                     let r = self.call_object(format_method, vec![spec])?;
-                                    self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                    self.vm_push(PyObject::str_val(CompactString::from(
+                                        r.py_to_string(),
+                                    )));
                                     return Ok(None);
                                 }
                             }
@@ -109,7 +122,9 @@ impl VirtualMachine {
                                 if let Some(format_method) = value.get_attr("__format__") {
                                     let spec = PyObject::str_val(CompactString::from(""));
                                     let r = self.call_object(format_method, vec![spec])?;
-                                    self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                    self.vm_push(PyObject::str_val(CompactString::from(
+                                        r.py_to_string(),
+                                    )));
                                     return Ok(None);
                                 }
                                 if let Some(str_method) = value.get_attr("__str__") {
@@ -169,7 +184,8 @@ impl VirtualMachine {
                         }
                         Err(e) => return Err(e),
                     }
-                } else if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &sub_iter.payload {
+                } else if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &sub_iter.payload
+                {
                     // Drive the async generator awaitable — this is what happens when
                     // `await ag.__anext__()` is compiled as GetAwaitable + YieldFrom.
                     match self.drive_async_gen_awaitable(gen, action, send_val) {
@@ -196,7 +212,7 @@ impl VirtualMachine {
                         let items = items.read().clone();
                         let has_awaitable = items.iter().any(|item| {
                             matches!(&item.payload, PyObjectPayload::Coroutine(_))
-                            || item.get_attr("_coro").is_some()  // Task objects
+                                || item.get_attr("_coro").is_some() // Task objects
                         });
                         if has_awaitable {
                             // asyncio.gather pattern: drive each coroutine/task
@@ -286,7 +302,6 @@ impl VirtualMachine {
                 }
             }
             // ── Async opcodes ──
-
             Opcode::GetAwaitable => {
                 // TOS is a coroutine or object with __await__. Push the awaitable iterator.
                 let obj = self.vm_pop();
@@ -362,29 +377,35 @@ impl VirtualMachine {
                 if let PyObjectPayload::AsyncGenerator(gen_arc) = &ctx_mgr.payload {
                     let enter_result = match self.resume_generator(gen_arc, PyObject::none()) {
                         Ok(val) => val,
-                        Err(e) if e.kind == ExceptionKind::StopAsyncIteration
-                              || e.kind == ExceptionKind::StopIteration => PyObject::none(),
+                        Err(e)
+                            if e.kind == ExceptionKind::StopAsyncIteration
+                                || e.kind == ExceptionKind::StopIteration =>
+                        {
+                            PyObject::none()
+                        }
                         Err(e) => return Err(e),
                     };
                     // Wrap in BuiltinAwaitable so GET_AWAITABLE + YIELD_FROM resolve it
                     self.vm_push(PyObject::builtin_awaitable(enter_result));
                 } else {
-                    let aenter_raw = ctx_mgr.get_attr("__aenter__").ok_or_else(||
+                    let aenter_raw = ctx_mgr.get_attr("__aenter__").ok_or_else(|| {
                         PyException::type_error(format!(
                             "'{}' object does not support the async context manager protocol",
                             ctx_mgr.type_name()
-                        )))?;
-                    let (aenter_method, aenter_args) = if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                        (aenter_raw, vec![])
-                    } else {
-                        let bound = PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: ctx_mgr.clone(),
-                                method: aenter_raw,
-                            }
-                        });
-                        (bound, vec![])
-                    };
+                        ))
+                    })?;
+                    let (aenter_method, aenter_args) =
+                        if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                            (aenter_raw, vec![])
+                        } else {
+                            let bound = PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: ctx_mgr.clone(),
+                                    method: aenter_raw,
+                                },
+                            });
+                            (bound, vec![])
+                        };
                     let result = self.call_object(aenter_method, aenter_args)?;
                     self.vm_push(result);
                 }
@@ -394,17 +415,23 @@ impl VirtualMachine {
                 // End of async for — check if exception is StopAsyncIteration.
                 // VM pushes (traceback, value, type) at except handler.
                 // Stack: [... aiter, traceback, value, type] → [...]
-                let exc_type = self.vm_pop();   // type (TOS)
-                let exc_value = self.vm_pop();  // value
+                let exc_type = self.vm_pop(); // type (TOS)
+                let exc_value = self.vm_pop(); // value
                 let _traceback = self.vm_pop(); // traceback
-                let _aiter = self.vm_pop();     // async iterator
-                // Check type first, then value for StopAsyncIteration
+                let _aiter = self.vm_pop(); // async iterator
+                                            // Check type first, then value for StopAsyncIteration
                 let is_stop_async = match &exc_type.payload {
                     PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
-                    PyObjectPayload::ExceptionInstance(ei) => ei.kind == ExceptionKind::StopAsyncIteration,
+                    PyObjectPayload::ExceptionInstance(ei) => {
+                        ei.kind == ExceptionKind::StopAsyncIteration
+                    }
                     _ => match &exc_value.payload {
-                        PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
-                        PyObjectPayload::ExceptionInstance(ei) => ei.kind == ExceptionKind::StopAsyncIteration,
+                        PyObjectPayload::ExceptionType(k) => {
+                            *k == ExceptionKind::StopAsyncIteration
+                        }
+                        PyObjectPayload::ExceptionInstance(ei) => {
+                            ei.kind == ExceptionKind::StopAsyncIteration
+                        }
                         _ => false,
                     },
                 };

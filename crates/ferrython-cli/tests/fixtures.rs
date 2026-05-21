@@ -19,12 +19,11 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn run_fixture(path: &std::path::Path) -> Result<(), String> {
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("read error: {e}"))?;
+    let source = fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
     let filename = path.file_name().unwrap().to_str().unwrap();
 
-    let module = ferrython_parser::parse(&source, filename)
-        .map_err(|e| format!("parse error: {e}"))?;
+    let module =
+        ferrython_parser::parse(&source, filename).map_err(|e| format!("parse error: {e}"))?;
     let code = ferrython_compiler::compile(&module, filename)
         .map_err(|e| format!("compile error: {e}"))?;
 
@@ -63,14 +62,14 @@ fixture_test!(test_basics, "test_basics.py");
 fixture_test!(test_advanced, "test_advanced.py");
 
 // Phase tests
-fixture_test!(test_phase2,  "test_phase2.py");
-fixture_test!(test_phase3,  "test_phase3.py");
-fixture_test!(test_phase4,  "test_phase4.py");
-fixture_test!(test_phase5,  "test_phase5.py");
-fixture_test!(test_phase6,  "test_phase6.py");
-fixture_test!(test_phase7,  "test_phase7.py");
-fixture_test!(test_phase8,  "test_phase8.py");
-fixture_test!(test_phase9,  "test_phase9.py");
+fixture_test!(test_phase2, "test_phase2.py");
+fixture_test!(test_phase3, "test_phase3.py");
+fixture_test!(test_phase4, "test_phase4.py");
+fixture_test!(test_phase5, "test_phase5.py");
+fixture_test!(test_phase6, "test_phase6.py");
+fixture_test!(test_phase7, "test_phase7.py");
+fixture_test!(test_phase8, "test_phase8.py");
+fixture_test!(test_phase9, "test_phase9.py");
 fixture_test!(test_phase10, "test_phase10.py");
 fixture_test!(test_phase11, "test_phase11.py");
 fixture_test!(test_phase12, "test_phase12.py");

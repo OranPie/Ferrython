@@ -1,17 +1,16 @@
 //! System, OS, and platform stdlib modules
 
 use compact_str::CompactString;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::Arc;
-use std::rc::Rc;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    PyCell,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args, check_args_min,
+    check_args, check_args_min, make_builtin, make_module, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use indexmap::IndexMap;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
 
@@ -577,7 +576,9 @@ fn sys_getrecursionlimit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("sys.setrecursionlimit", args, 1)?;
-    let limit = args[0].as_int().ok_or_else(|| PyException::type_error("an integer is required"))?;
+    let limit = args[0]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("an integer is required"))?;
     if limit <= 0 {
         return Err(PyException::value_error("recursion limit must be positive"));
     }
@@ -647,28 +648,79 @@ fn sys_excepthook_default(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn make_stdio_object(name: &str, mode: &str, fileno: i64) -> PyObjectRef {
     use indexmap::IndexMap;
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
-    attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode)));
-    attrs.insert(CompactString::from("encoding"), PyObject::str_val(CompactString::from("utf-8")));
-    attrs.insert(CompactString::from("errors"), PyObject::str_val(CompactString::from("strict")));
+    attrs.insert(
+        CompactString::from("name"),
+        PyObject::str_val(CompactString::from(name)),
+    );
+    attrs.insert(
+        CompactString::from("mode"),
+        PyObject::str_val(CompactString::from(mode)),
+    );
+    attrs.insert(
+        CompactString::from("encoding"),
+        PyObject::str_val(CompactString::from("utf-8")),
+    );
+    attrs.insert(
+        CompactString::from("errors"),
+        PyObject::str_val(CompactString::from("strict")),
+    );
     attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-    attrs.insert(CompactString::from("line_buffering"), PyObject::bool_val(fileno != 0));
+    attrs.insert(
+        CompactString::from("line_buffering"),
+        PyObject::bool_val(fileno != 0),
+    );
     attrs.insert(CompactString::from("_fileno"), PyObject::int(fileno));
     attrs.insert(CompactString::from("newlines"), PyObject::none());
     attrs.insert(CompactString::from("buffer"), PyObject::none());
-    attrs.insert(CompactString::from("write"), PyObject::native_function("write", stdio_write));
-    attrs.insert(CompactString::from("writelines"), PyObject::native_function("writelines", stdio_writelines));
-    attrs.insert(CompactString::from("read"), PyObject::native_function("read", stdio_read));
-    attrs.insert(CompactString::from("readline"), PyObject::native_function("readline", stdio_readline));
-    attrs.insert(CompactString::from("readlines"), PyObject::native_function("readlines", stdio_readlines));
-    attrs.insert(CompactString::from("flush"), PyObject::native_function("flush", stdio_flush));
-    attrs.insert(CompactString::from("fileno"), PyObject::native_function("fileno", stdio_fileno));
-    attrs.insert(CompactString::from("isatty"), PyObject::native_function("isatty", stdio_isatty));
-    attrs.insert(CompactString::from("readable"), PyObject::native_function("readable", stdio_readable));
-    attrs.insert(CompactString::from("writable"), PyObject::native_function("writable", stdio_writable));
-    attrs.insert(CompactString::from("seekable"), PyObject::native_function("seekable", stdio_seekable));
-    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
-    
+    attrs.insert(
+        CompactString::from("write"),
+        PyObject::native_function("write", stdio_write),
+    );
+    attrs.insert(
+        CompactString::from("writelines"),
+        PyObject::native_function("writelines", stdio_writelines),
+    );
+    attrs.insert(
+        CompactString::from("read"),
+        PyObject::native_function("read", stdio_read),
+    );
+    attrs.insert(
+        CompactString::from("readline"),
+        PyObject::native_function("readline", stdio_readline),
+    );
+    attrs.insert(
+        CompactString::from("readlines"),
+        PyObject::native_function("readlines", stdio_readlines),
+    );
+    attrs.insert(
+        CompactString::from("flush"),
+        PyObject::native_function("flush", stdio_flush),
+    );
+    attrs.insert(
+        CompactString::from("fileno"),
+        PyObject::native_function("fileno", stdio_fileno),
+    );
+    attrs.insert(
+        CompactString::from("isatty"),
+        PyObject::native_function("isatty", stdio_isatty),
+    );
+    attrs.insert(
+        CompactString::from("readable"),
+        PyObject::native_function("readable", stdio_readable),
+    );
+    attrs.insert(
+        CompactString::from("writable"),
+        PyObject::native_function("writable", stdio_writable),
+    );
+    attrs.insert(
+        CompactString::from("seekable"),
+        PyObject::native_function("seekable", stdio_seekable),
+    );
+    attrs.insert(
+        CompactString::from("_bind_methods"),
+        PyObject::bool_val(true),
+    );
+
     PyObject::module_with_attrs(CompactString::from("_io.TextIOWrapper"), attrs)
 }
 
@@ -681,13 +733,16 @@ fn get_stdio_fd(args: &[PyObjectRef]) -> i64 {
 
 fn stdio_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fd = get_stdio_fd(args);
-    let arg = if args.len() > 1 { &args[1] } else {
+    let arg = if args.len() > 1 {
+        &args[1]
+    } else {
         return Err(PyException::type_error("write() requires 1 argument"));
     };
     // TextIOWrapper rejects bytes (like CPython)
     if matches!(&arg.payload, PyObjectPayload::Bytes(_)) {
         return Err(PyException::type_error(
-            "write() argument must be str, not bytes"));
+            "write() argument must be str, not bytes",
+        ));
     }
     let text = arg.py_to_string();
     let len = text.len();
@@ -701,13 +756,19 @@ fn stdio_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn stdio_writelines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fd = get_stdio_fd(args);
-    let lines_obj = if args.len() > 1 { &args[1] } else {
+    let lines_obj = if args.len() > 1 {
+        &args[1]
+    } else {
         return Err(PyException::type_error("writelines() missing argument"));
     };
     let items = lines_obj.to_list()?;
     for item in items {
         let text = item.py_to_string();
-        if fd == 2 { eprint!("{}", text); } else { print!("{}", text); }
+        if fd == 2 {
+            eprint!("{}", text);
+        } else {
+            print!("{}", text);
+        }
     }
     Ok(PyObject::none())
 }
@@ -718,7 +779,11 @@ fn stdio_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::runtime_error("not readable"));
     }
     use std::io::Read;
-    let max = if args.len() > 1 { args[1].to_int().unwrap_or(-1) } else { -1 };
+    let max = if args.len() > 1 {
+        args[1].to_int().unwrap_or(-1)
+    } else {
+        -1
+    };
     let mut buf = String::new();
     if max < 0 {
         std::io::stdin().read_to_string(&mut buf).unwrap_or(0);
@@ -746,7 +811,9 @@ fn stdio_readlines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     use std::io::BufRead;
     let stdin = std::io::stdin();
-    let lines: Vec<PyObjectRef> = stdin.lock().lines()
+    let lines: Vec<PyObjectRef> = stdin
+        .lock()
+        .lines()
         .filter_map(|l| l.ok())
         .map(|l| PyObject::str_val(CompactString::from(format!("{}\n", l))))
         .collect();
@@ -781,758 +848,1369 @@ fn stdio_seekable(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── os module ──
 
-
 pub fn create_os_module() -> PyObjectRef {
-    make_module("os", vec![
-        ("name", PyObject::str_val(CompactString::from(if cfg!(windows) { "nt" } else { "posix" }))),
-        ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
-        ("linesep", PyObject::str_val(CompactString::from(if cfg!(windows) { "\r\n" } else { "\n" }))),
-        ("curdir", PyObject::str_val(CompactString::from("."))),
-        ("pardir", PyObject::str_val(CompactString::from(".."))),
-        ("extsep", PyObject::str_val(CompactString::from("."))),
-        ("getcwd", make_builtin(os_getcwd)),
-        ("listdir", make_builtin(os_listdir)),
-        ("mkdir", make_builtin(os_mkdir)),
-        ("makedirs", make_builtin(os_makedirs)),
-        ("remove", make_builtin(os_remove)),
-        ("unlink", make_builtin(os_remove)),
-        ("rmdir", make_builtin(os_rmdir)),
-        ("removedirs", make_builtin(os_removedirs)),
-        ("rename", make_builtin(os_rename)),
-        ("replace", make_builtin(os_replace)),
-        ("path", create_os_path_module()),
-        ("getenv", make_builtin(os_getenv)),
-        ("environ", {
-            // Build _Environ instance: a dict-like object that syncs with OS env.
-            // os.environ["X"] = "Y" calls putenv; del os.environ["X"] calls unsetenv.
-            let initial_pairs: Vec<(PyObjectRef, PyObjectRef)> = std::env::vars().map(|(k, v)| (
-                PyObject::str_val(CompactString::from(k)),
-                PyObject::str_val(CompactString::from(v)),
-            )).collect();
-            let data = PyObject::dict_from_pairs(initial_pairs);
-            let data_ref = data.clone();
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("_data"), data.clone());
-
-            // Dunders are called via try_call_dunder which prepends self as args[0].
-            // StoreSubscr/DeleteSubscr Module handler calls directly without self.
-            // Use helper: last 1 arg = key, last 2 args = key+val.
-            attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
-                "__getitem__", move |args| {
-                    // args may be [self, key] or [key]
-                    let key_str = args.last().ok_or_else(|| PyException::key_error("key required"))?.py_to_string();
-                    match std::env::var(&key_str) {
-                        Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
-                        Err(_) => Err(PyException::key_error(format!("'{}'", key_str))),
-                    }
-                }
-            ));
-            let d2 = data_ref.clone();
-            attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
-                "__setitem__", move |args| {
-                    // args may be [self, key, val] or [key, val]
-                    if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
-                    let val_str = args[args.len() - 1].py_to_string();
-                    let key_str = args[args.len() - 2].py_to_string();
-                    unsafe { std::env::set_var(&key_str, &val_str); }
-                    if let PyObjectPayload::Dict(dd) = &d2.payload {
-                        dd.write().insert(
-                            HashableKey::str_key(CompactString::from(&key_str)),
-                            PyObject::str_val(CompactString::from(&val_str)),
-                        );
-                    }
-                    Ok(PyObject::none())
-                }
-            ));
-            let d3 = data_ref.clone();
-            attrs.insert(CompactString::from("__delitem__"), PyObject::native_closure(
-                "__delitem__", move |args| {
-                    let key_str = args.last().ok_or_else(|| PyException::key_error("key required"))?.py_to_string();
-                    unsafe { std::env::remove_var(&key_str); }
-                    if let PyObjectPayload::Dict(dd) = &d3.payload {
-                        dd.write().swap_remove(&HashableKey::str_key(CompactString::from(&key_str)));
-                    }
-                    Ok(PyObject::none())
-                }
-            ));
-            attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
-                "__contains__", move |args| {
-                    let key_str = args.last().map(|a| a.py_to_string()).unwrap_or_default();
-                    Ok(PyObject::bool_val(std::env::var(&key_str).is_ok()))
-                }
-            ));
-            attrs.insert(CompactString::from("get"), PyObject::native_closure(
-                "get", move |args| {
-                    // args: [self, key] or [self, key, default]
-                    // Skip self (first arg if module)
-                    let real_args = if args.len() > 1 && matches!(&args[0].payload, PyObjectPayload::Module(_)) {
-                        &args[1..]
-                    } else { args };
-                    if real_args.is_empty() { return Ok(PyObject::none()); }
-                    let key_str = real_args[0].py_to_string();
-                    match std::env::var(&key_str) {
-                        Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
-                        Err(_) => Ok(real_args.get(1).cloned().unwrap_or_else(PyObject::none)),
-                    }
-                }
-            ));
-            attrs.insert(CompactString::from("keys"), PyObject::native_closure(
-                "keys", move |_| {
-                    let keys: Vec<PyObjectRef> = std::env::vars()
-                        .map(|(k, _)| PyObject::str_val(CompactString::from(k)))
-                        .collect();
-                    Ok(PyObject::list(keys))
-                }
-            ));
-            attrs.insert(CompactString::from("values"), PyObject::native_closure(
-                "values", move |_| {
-                    let vals: Vec<PyObjectRef> = std::env::vars()
-                        .map(|(_, v)| PyObject::str_val(CompactString::from(v)))
-                        .collect();
-                    Ok(PyObject::list(vals))
-                }
-            ));
-            attrs.insert(CompactString::from("items"), PyObject::native_closure(
-                "items", move |_| {
-                    let items: Vec<PyObjectRef> = std::env::vars()
-                        .map(|(k, v)| PyObject::tuple(vec![
+    make_module(
+        "os",
+        vec![
+            (
+                "name",
+                PyObject::str_val(CompactString::from(if cfg!(windows) {
+                    "nt"
+                } else {
+                    "posix"
+                })),
+            ),
+            (
+                "sep",
+                PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string())),
+            ),
+            (
+                "linesep",
+                PyObject::str_val(CompactString::from(if cfg!(windows) {
+                    "\r\n"
+                } else {
+                    "\n"
+                })),
+            ),
+            ("curdir", PyObject::str_val(CompactString::from("."))),
+            ("pardir", PyObject::str_val(CompactString::from(".."))),
+            ("extsep", PyObject::str_val(CompactString::from("."))),
+            ("getcwd", make_builtin(os_getcwd)),
+            ("listdir", make_builtin(os_listdir)),
+            ("mkdir", make_builtin(os_mkdir)),
+            ("makedirs", make_builtin(os_makedirs)),
+            ("remove", make_builtin(os_remove)),
+            ("unlink", make_builtin(os_remove)),
+            ("rmdir", make_builtin(os_rmdir)),
+            ("removedirs", make_builtin(os_removedirs)),
+            ("rename", make_builtin(os_rename)),
+            ("replace", make_builtin(os_replace)),
+            ("path", create_os_path_module()),
+            ("getenv", make_builtin(os_getenv)),
+            ("environ", {
+                // Build _Environ instance: a dict-like object that syncs with OS env.
+                // os.environ["X"] = "Y" calls putenv; del os.environ["X"] calls unsetenv.
+                let initial_pairs: Vec<(PyObjectRef, PyObjectRef)> = std::env::vars()
+                    .map(|(k, v)| {
+                        (
                             PyObject::str_val(CompactString::from(k)),
                             PyObject::str_val(CompactString::from(v)),
-                        ]))
-                        .collect();
-                    Ok(PyObject::list(items))
-                }
-            ));
-            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-                "__repr__", move |_| {
-                    Ok(PyObject::str_val(CompactString::from("environ({...})")))
-                }
-            ));
-            PyObject::module_with_attrs(CompactString::from("_Environ"), attrs)
-        }),
-        ("_Environ", PyObject::class(CompactString::from("_Environ"), vec![], IndexMap::new())),
-        ("cpu_count", make_builtin(os_cpu_count)),
-        ("getpid", make_builtin(os_getpid)),
-        ("fspath", PyObject::native_function("os.fspath", os_fspath)),
-        ("PathLike", PyObject::class(CompactString::from("PathLike"), vec![], {
-            let mut ns = IndexMap::new();
-            ns.insert(CompactString::from("__fspath__"), make_builtin(|_args: &[PyObjectRef]| {
-                Err(PyException::not_implemented_error("PathLike.__fspath__() is abstract"))
-            }));
-            // ABC register method — allows PathLike.register(SomeClass)
-            ns.insert(CompactString::from("register"), make_builtin(|args: &[PyObjectRef]| {
-                // register(cls, subclass) — just returns the subclass (no-op registration)
-                if args.len() >= 2 {
-                    Ok(args[1].clone())
-                } else if args.len() == 1 {
-                    Ok(args[0].clone())
-                } else {
-                    Ok(PyObject::none())
-                }
-            }));
-            ns
-        })),
-        ("walk", make_builtin(os_walk)),
-        ("stat", make_builtin(os_stat)),
-        ("chmod", make_builtin(os_chmod)),
-        ("chown", make_builtin(os_chown)),
-        ("symlink", make_builtin(os_symlink)),
-        ("readlink", make_builtin(os_readlink)),
-        ("isatty", make_builtin(os_isatty)),
-        ("chdir", make_builtin(os_chdir)),
-        ("system", make_builtin(os_system)),
-        ("popen", make_builtin(os_popen)),
-        ("getppid", make_builtin(|_| {
-            Ok(PyObject::int(std::process::id() as i64)) // Approximate with current PID
-        })),
-        ("urandom", make_builtin(|args| {
-            let n = if args.is_empty() { 16 } else { args[0].as_int().unwrap_or(16) as usize };
-            let mut buf = vec![0u8; n];
-            #[cfg(unix)]
-            {
-                use std::io::Read;
-                if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-                    let _ = f.read_exact(&mut buf);
-                }
-            }
-            Ok(PyObject::bytes(buf))
-        })),
-        ("access", make_builtin(|args| {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-            let path = args[0].py_to_string();
-            Ok(PyObject::bool_val(std::path::Path::new(&path).exists()))
-        })),
-        ("umask", make_builtin(|_| Ok(PyObject::int(0o022)))),
-        ("getlogin", make_builtin(|_| {
-            let user = std::env::var("USER")
-                .or_else(|_| std::env::var("LOGNAME"))
-                .or_else(|_| {
-                    // Fallback: try whoami command
-                    std::process::Command::new("whoami")
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .map_err(|_| std::env::VarError::NotPresent)
-                })
-                .unwrap_or_else(|_| String::from("unknown"));
-            Ok(PyObject::str_val(CompactString::from(user)))
-        })),
-        ("devnull", PyObject::str_val(CompactString::from(if cfg!(windows) { "nul" } else { "/dev/null" }))),
-        ("F_OK", PyObject::int(0)),
-        ("R_OK", PyObject::int(4)),
-        ("W_OK", PyObject::int(2)),
-        ("X_OK", PyObject::int(1)),
-        ("O_RDONLY", PyObject::int(0)),
-        ("O_WRONLY", PyObject::int(1)),
-        ("O_RDWR", PyObject::int(2)),
-        ("O_CREAT", PyObject::int(0o100)),
-        ("O_EXCL", PyObject::int(0o200)),
-        ("O_NOCTTY", PyObject::int(0o400)),
-        ("O_TRUNC", PyObject::int(0o1000)),
-        ("O_APPEND", PyObject::int(0o2000)),
-        ("O_NONBLOCK", PyObject::int(0o4000)),
-        ("O_CLOEXEC", PyObject::int(0o2000000)),
-        ("SEEK_SET", PyObject::int(0)),
-        ("SEEK_CUR", PyObject::int(1)),
-        ("SEEK_END", PyObject::int(2)),
-        ("strerror", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("strerror requires an error code")); }
-            let code = args[0].as_int().unwrap_or(0) as i32;
-            #[cfg(unix)] {
-                let msg = unsafe {
-                    let p = libc::strerror(code);
-                    if p.is_null() { "Unknown error".to_string() }
-                    else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() }
-                };
-                Ok(PyObject::str_val(CompactString::from(msg)))
-            }
-            #[cfg(not(unix))] {
-                Ok(PyObject::str_val(CompactString::from(format!("Error {}", code))))
-            }
-        })),
-        ("scandir", make_builtin(os_scandir)),
-        ("putenv", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("putenv requires 2 arguments")); }
-            let key = args[0].py_to_string();
-            let val = args[1].py_to_string();
-            // Safety: we ensure no concurrent modification of env in this single-threaded interpreter
-            unsafe { std::env::set_var(&key, &val); }
-            Ok(PyObject::none())
-        })),
-        ("unsetenv", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("unsetenv requires 1 argument")); }
-            let key = args[0].py_to_string();
-            unsafe { std::env::remove_var(&key); }
-            Ok(PyObject::none())
-        })),
-        ("lstat", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("os.lstat requires path")); }
-            let path = args[0].py_to_string();
-            let meta = std::fs::symlink_metadata(&path)
-                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
-            crate::fs_modules::build_stat_result(meta)
-        })),
-        ("expanduser", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("expanduser requires path")); }
-            let path = args[0].py_to_string();
-            if path.starts_with("~/") || path == "~" {
-                if let Ok(home) = std::env::var("HOME") {
-                    let expanded = if path == "~" { home } else { format!("{}{}", home, &path[1..]) };
-                    return Ok(PyObject::str_val(CompactString::from(expanded)));
-                }
-            }
-            Ok(PyObject::str_val(CompactString::from(path)))
-        })),
-        // Unix ID functions
-        ("getuid", make_builtin(|_| {
-            #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getuid() } as i64)) }
-            #[cfg(not(unix))] { Err(PyException::os_error("getuid() is not supported on this platform")) }
-        })),
-        ("getgid", make_builtin(|_| {
-            #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getgid() } as i64)) }
-            #[cfg(not(unix))] { Err(PyException::os_error("getgid() is not supported on this platform")) }
-        })),
-        ("geteuid", make_builtin(|_| {
-            #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::geteuid() } as i64)) }
-            #[cfg(not(unix))] { Err(PyException::os_error("geteuid() is not supported on this platform")) }
-        })),
-        ("getegid", make_builtin(|_| {
-            #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getegid() } as i64)) }
-            #[cfg(not(unix))] { Err(PyException::os_error("getegid() is not supported on this platform")) }
-        })),
-        ("getppid", make_builtin(|_| {
-            #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getppid() } as i64)) }
-            #[cfg(not(unix))] { Err(PyException::os_error("getppid() is not supported on this platform")) }
-        })),
-        // Process management
-        ("kill", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.kill requires pid and signal")); }
-            let pid = args[0].as_int().ok_or_else(|| PyException::type_error("pid must be int"))?;
-            let sig = args[1].as_int().ok_or_else(|| PyException::type_error("signal must be int"))?;
-            #[cfg(unix)] {
-                let ret = unsafe { libc::kill(pid as i32, sig as i32) };
-                if ret != 0 { return Err(PyException::os_error(format!("kill failed: errno {}", ret))); }
-            }
-            Ok(PyObject::none())
-        })),
-        // File operations
-        ("link", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.link requires src and dst")); }
-            std::fs::hard_link(args[0].py_to_string(), args[1].py_to_string())
-                .map_err(|e| PyException::os_error(format!("{}", e)))?;
-            Ok(PyObject::none())
-        })),
-        ("truncate", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.truncate requires path and length")); }
-            let path = args[0].py_to_string();
-            let length = args[1].as_int().unwrap_or(0) as u64;
-            let f = std::fs::OpenOptions::new().write(true).open(&path)
-                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
-            f.set_len(length).map_err(|e| PyException::os_error(format!("{}", e)))?;
-            Ok(PyObject::none())
-        })),
-        // Pipe and fd operations
-        ("pipe", make_builtin(|_| {
-            #[cfg(unix)] {
-                let mut fds = [0i32; 2];
-                let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
-                if ret != 0 { return Err(PyException::os_error("pipe() failed".to_string())); }
-                Ok(PyObject::tuple(vec![PyObject::int(fds[0] as i64), PyObject::int(fds[1] as i64)]))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.pipe not available on this platform")) }
-        })),
-        ("dup", make_builtin(|args| {
-            check_args("os.dup", args, 1)?;
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))?;
-            #[cfg(unix)] {
-                let new_fd = unsafe { libc::dup(fd as i32) };
-                if new_fd < 0 { return Err(PyException::os_error("dup() failed".to_string())); }
-                Ok(PyObject::int(new_fd as i64))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.dup not available")) }
-        })),
-        ("dup2", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.dup2 requires oldfd and newfd")); }
-            let oldfd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))?;
-            let newfd = args[1].as_int().ok_or_else(|| PyException::type_error("fd must be int"))?;
-            #[cfg(unix)] {
-                let ret = unsafe { libc::dup2(oldfd as i32, newfd as i32) };
-                if ret < 0 { return Err(PyException::os_error("dup2() failed".to_string())); }
-                Ok(PyObject::int(ret as i64))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.dup2 not available")) }
-        })),
-        // terminal_size class exposed on the os module
-        ("terminal_size", make_terminal_size_class()),
-        // Terminal/system info
-        ("get_terminal_size", make_builtin(|_| {
-            // Default fallback; real implementation would use ioctl
-            let cols = std::env::var("COLUMNS").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(80);
-            let lines = std::env::var("LINES").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(24);
-            Ok(make_terminal_size_instance(cols, lines))
-        })),
-        ("uname", make_builtin(|_| {
-            #[cfg(unix)] {
-                let mut info: libc::utsname = unsafe { std::mem::zeroed() };
-                unsafe { libc::uname(&mut info); }
-                let to_str = |arr: &[i8]| -> String {
-                    let bytes: Vec<u8> = arr.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-                    String::from_utf8_lossy(&bytes).to_string()
-                };
-                let cls = PyObject::class(CompactString::from("uname_result"), vec![], IndexMap::new());
-                let inst = PyObject::instance(cls);
-                if let PyObjectPayload::Instance(ref data) = inst.payload {
-                    let mut attrs = data.attrs.write();
-                    attrs.insert(CompactString::from("sysname"), PyObject::str_val(CompactString::from(to_str(&info.sysname))));
-                    attrs.insert(CompactString::from("nodename"), PyObject::str_val(CompactString::from(to_str(&info.nodename))));
-                    attrs.insert(CompactString::from("release"), PyObject::str_val(CompactString::from(to_str(&info.release))));
-                    attrs.insert(CompactString::from("version"), PyObject::str_val(CompactString::from(to_str(&info.version))));
-                    attrs.insert(CompactString::from("machine"), PyObject::str_val(CompactString::from(to_str(&info.machine))));
-                }
-                Ok(inst)
-            }
-            #[cfg(not(unix))] {
-                Err(PyException::not_implemented_error("os.uname not available on this platform"))
-            }
-        })),
-        ("times", make_builtin(|_| {
-            #[cfg(unix)] {
-                let mut tms: libc::tms = unsafe { std::mem::zeroed() };
-                unsafe { libc::times(&mut tms); }
-                let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
-                Ok(PyObject::tuple(vec![
-                    PyObject::float(tms.tms_utime as f64 / ticks),
-                    PyObject::float(tms.tms_stime as f64 / ticks),
-                    PyObject::float(tms.tms_cutime as f64 / ticks),
-                    PyObject::float(tms.tms_cstime as f64 / ticks),
-                    PyObject::float(0.0), // elapsed
-                ]))
-            }
-            #[cfg(not(unix))] { Ok(PyObject::tuple(vec![PyObject::float(0.0); 5])) }
-        })),
-        // Path constants
-        ("pathsep", PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" }))),
-        ("altsep", PyObject::none()),
-        // Low-level file descriptor operations
-        ("close", make_builtin(|args| {
-            check_args("os.close", args, 1)?;
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            #[cfg(unix)] {
-                let ret = unsafe { libc::close(fd) };
-                if ret != 0 { return Err(PyException::os_error(format!("Bad file descriptor: {}", fd))); }
-            }
-            Ok(PyObject::none())
-        })),
-        ("open", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("os.open requires path, flags, and optional mode")); }
-            let path = args[0].py_to_string();
-            let flags = if args.len() > 1 { args[1].as_int().unwrap_or(0) as i32 } else { 0 };
-            let mode = if args.len() > 2 { args[2].as_int().unwrap_or(0o666) as u32 } else { 0o666 };
-            #[cfg(unix)] {
-                let cpath = std::ffi::CString::new(path.as_str())
-                    .map_err(|_| PyException::value_error("invalid path"))?;
-                let fd = unsafe { libc::open(cpath.as_ptr(), flags, mode) };
-                if fd < 0 { return Err(PyException::os_error(format!("No such file or directory: '{}'", path))); }
-                Ok(PyObject::int(fd as i64))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.open not available")) }
-        })),
-        ("read", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.read requires fd and count")); }
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            let count = args[1].as_int().ok_or_else(|| PyException::type_error("count must be int"))? as usize;
-            #[cfg(unix)] {
-                let mut buf = vec![0u8; count];
-                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, count) };
-                if n < 0 { return Err(PyException::os_error("read failed".to_string())); }
-                buf.truncate(n as usize);
-                Ok(PyObject::bytes(buf))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.read not available")) }
-        })),
-        ("write", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.write requires fd and data")); }
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            let data = match &args[1].payload {
-                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
-                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                _ => return Err(PyException::type_error("data must be bytes-like")),
-            };
-            #[cfg(unix)] {
-                let n = unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
-                if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
-                Ok(PyObject::int(n as i64))
-            }
-            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.write not available")) }
-        })),
-        ("fdopen", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("os.fdopen requires fd")); }
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
-            #[cfg(unix)]
-            {
-                
-                let is_binary = mode.contains('b');
-                // State: (fd, closed, name)
-                let state = Rc::new(PyCell::new((fd, false)));
-                let mode_str = mode.clone();
-                let name_str = format!("<fdopen fd={}>", fd);
+                        )
+                    })
+                    .collect();
+                let data = PyObject::dict_from_pairs(initial_pairs);
+                let data_ref = data.clone();
                 let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode_str)));
-                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name_str)));
-                attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-                // read([size])
-                let s1 = state.clone();
-                let is_bin_r = is_binary;
-                attrs.insert(CompactString::from("read"), PyObject::native_closure("fdopen.read", move |a| {
-                    let g = s1.read();
-                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
-                    let fd = g.0;
-                    drop(g);
-                    let size = if !a.is_empty() && a.len() > 1 {
-                        a[1].as_int().unwrap_or(-1) as isize
-                    } else if !a.is_empty() {
-                        a[0].as_int().unwrap_or(-1) as isize
-                    } else {
-                        -1isize
-                    };
-                    let buf = if size < 0 {
-                        // Read all
-                        let mut buf = Vec::new();
-                        let mut tmp = [0u8; 8192];
-                        loop {
-                            let n = unsafe { libc::read(fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
-                            if n <= 0 { break; }
-                            buf.extend_from_slice(&tmp[..n as usize]);
+                attrs.insert(CompactString::from("_data"), data.clone());
+
+                // Dunders are called via try_call_dunder which prepends self as args[0].
+                // StoreSubscr/DeleteSubscr Module handler calls directly without self.
+                // Use helper: last 1 arg = key, last 2 args = key+val.
+                attrs.insert(
+                    CompactString::from("__getitem__"),
+                    PyObject::native_closure("__getitem__", move |args| {
+                        // args may be [self, key] or [key]
+                        let key_str = args
+                            .last()
+                            .ok_or_else(|| PyException::key_error("key required"))?
+                            .py_to_string();
+                        match std::env::var(&key_str) {
+                            Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
+                            Err(_) => Err(PyException::key_error(format!("'{}'", key_str))),
                         }
-                        buf
+                    }),
+                );
+                let d2 = data_ref.clone();
+                attrs.insert(
+                    CompactString::from("__setitem__"),
+                    PyObject::native_closure("__setitem__", move |args| {
+                        // args may be [self, key, val] or [key, val]
+                        if args.len() < 2 {
+                            return Err(PyException::type_error(
+                                "__setitem__ requires key and value",
+                            ));
+                        }
+                        let val_str = args[args.len() - 1].py_to_string();
+                        let key_str = args[args.len() - 2].py_to_string();
+                        unsafe {
+                            std::env::set_var(&key_str, &val_str);
+                        }
+                        if let PyObjectPayload::Dict(dd) = &d2.payload {
+                            dd.write().insert(
+                                HashableKey::str_key(CompactString::from(&key_str)),
+                                PyObject::str_val(CompactString::from(&val_str)),
+                            );
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+                let d3 = data_ref.clone();
+                attrs.insert(
+                    CompactString::from("__delitem__"),
+                    PyObject::native_closure("__delitem__", move |args| {
+                        let key_str = args
+                            .last()
+                            .ok_or_else(|| PyException::key_error("key required"))?
+                            .py_to_string();
+                        unsafe {
+                            std::env::remove_var(&key_str);
+                        }
+                        if let PyObjectPayload::Dict(dd) = &d3.payload {
+                            dd.write()
+                                .swap_remove(&HashableKey::str_key(CompactString::from(&key_str)));
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("__contains__"),
+                    PyObject::native_closure("__contains__", move |args| {
+                        let key_str = args.last().map(|a| a.py_to_string()).unwrap_or_default();
+                        Ok(PyObject::bool_val(std::env::var(&key_str).is_ok()))
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("get"),
+                    PyObject::native_closure("get", move |args| {
+                        // args: [self, key] or [self, key, default]
+                        // Skip self (first arg if module)
+                        let real_args = if args.len() > 1
+                            && matches!(&args[0].payload, PyObjectPayload::Module(_))
+                        {
+                            &args[1..]
+                        } else {
+                            args
+                        };
+                        if real_args.is_empty() {
+                            return Ok(PyObject::none());
+                        }
+                        let key_str = real_args[0].py_to_string();
+                        match std::env::var(&key_str) {
+                            Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
+                            Err(_) => Ok(real_args.get(1).cloned().unwrap_or_else(PyObject::none)),
+                        }
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("keys"),
+                    PyObject::native_closure("keys", move |_| {
+                        let keys: Vec<PyObjectRef> = std::env::vars()
+                            .map(|(k, _)| PyObject::str_val(CompactString::from(k)))
+                            .collect();
+                        Ok(PyObject::list(keys))
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("values"),
+                    PyObject::native_closure("values", move |_| {
+                        let vals: Vec<PyObjectRef> = std::env::vars()
+                            .map(|(_, v)| PyObject::str_val(CompactString::from(v)))
+                            .collect();
+                        Ok(PyObject::list(vals))
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("items"),
+                    PyObject::native_closure("items", move |_| {
+                        let items: Vec<PyObjectRef> = std::env::vars()
+                            .map(|(k, v)| {
+                                PyObject::tuple(vec![
+                                    PyObject::str_val(CompactString::from(k)),
+                                    PyObject::str_val(CompactString::from(v)),
+                                ])
+                            })
+                            .collect();
+                        Ok(PyObject::list(items))
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("__repr__"),
+                    PyObject::native_closure("__repr__", move |_| {
+                        Ok(PyObject::str_val(CompactString::from("environ({...})")))
+                    }),
+                );
+                PyObject::module_with_attrs(CompactString::from("_Environ"), attrs)
+            }),
+            (
+                "_Environ",
+                PyObject::class(CompactString::from("_Environ"), vec![], IndexMap::new()),
+            ),
+            ("cpu_count", make_builtin(os_cpu_count)),
+            ("getpid", make_builtin(os_getpid)),
+            ("fspath", PyObject::native_function("os.fspath", os_fspath)),
+            (
+                "PathLike",
+                PyObject::class(CompactString::from("PathLike"), vec![], {
+                    let mut ns = IndexMap::new();
+                    ns.insert(
+                        CompactString::from("__fspath__"),
+                        make_builtin(|_args: &[PyObjectRef]| {
+                            Err(PyException::not_implemented_error(
+                                "PathLike.__fspath__() is abstract",
+                            ))
+                        }),
+                    );
+                    // ABC register method — allows PathLike.register(SomeClass)
+                    ns.insert(
+                        CompactString::from("register"),
+                        make_builtin(|args: &[PyObjectRef]| {
+                            // register(cls, subclass) — just returns the subclass (no-op registration)
+                            if args.len() >= 2 {
+                                Ok(args[1].clone())
+                            } else if args.len() == 1 {
+                                Ok(args[0].clone())
+                            } else {
+                                Ok(PyObject::none())
+                            }
+                        }),
+                    );
+                    ns
+                }),
+            ),
+            ("walk", make_builtin(os_walk)),
+            ("stat", make_builtin(os_stat)),
+            ("chmod", make_builtin(os_chmod)),
+            ("chown", make_builtin(os_chown)),
+            ("symlink", make_builtin(os_symlink)),
+            ("readlink", make_builtin(os_readlink)),
+            ("isatty", make_builtin(os_isatty)),
+            ("chdir", make_builtin(os_chdir)),
+            ("system", make_builtin(os_system)),
+            ("popen", make_builtin(os_popen)),
+            (
+                "getppid",
+                make_builtin(|_| {
+                    Ok(PyObject::int(std::process::id() as i64)) // Approximate with current PID
+                }),
+            ),
+            (
+                "urandom",
+                make_builtin(|args| {
+                    let n = if args.is_empty() {
+                        16
                     } else {
-                        let mut buf = vec![0u8; size as usize];
-                        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-                        if n < 0 { return Err(PyException::os_error("read failed".to_string())); }
-                        buf.truncate(n as usize);
-                        buf
+                        args[0].as_int().unwrap_or(16) as usize
                     };
-                    if is_bin_r {
-                        Ok(PyObject::bytes(buf))
+                    let mut buf = vec![0u8; n];
+                    #[cfg(unix)]
+                    {
+                        use std::io::Read;
+                        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+                            let _ = f.read_exact(&mut buf);
+                        }
+                    }
+                    Ok(PyObject::bytes(buf))
+                }),
+            ),
+            (
+                "access",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                    let path = args[0].py_to_string();
+                    Ok(PyObject::bool_val(std::path::Path::new(&path).exists()))
+                }),
+            ),
+            ("umask", make_builtin(|_| Ok(PyObject::int(0o022)))),
+            (
+                "getlogin",
+                make_builtin(|_| {
+                    let user = std::env::var("USER")
+                        .or_else(|_| std::env::var("LOGNAME"))
+                        .or_else(|_| {
+                            // Fallback: try whoami command
+                            std::process::Command::new("whoami")
+                                .output()
+                                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                .map_err(|_| std::env::VarError::NotPresent)
+                        })
+                        .unwrap_or_else(|_| String::from("unknown"));
+                    Ok(PyObject::str_val(CompactString::from(user)))
+                }),
+            ),
+            (
+                "devnull",
+                PyObject::str_val(CompactString::from(if cfg!(windows) {
+                    "nul"
+                } else {
+                    "/dev/null"
+                })),
+            ),
+            ("F_OK", PyObject::int(0)),
+            ("R_OK", PyObject::int(4)),
+            ("W_OK", PyObject::int(2)),
+            ("X_OK", PyObject::int(1)),
+            ("O_RDONLY", PyObject::int(0)),
+            ("O_WRONLY", PyObject::int(1)),
+            ("O_RDWR", PyObject::int(2)),
+            ("O_CREAT", PyObject::int(0o100)),
+            ("O_EXCL", PyObject::int(0o200)),
+            ("O_NOCTTY", PyObject::int(0o400)),
+            ("O_TRUNC", PyObject::int(0o1000)),
+            ("O_APPEND", PyObject::int(0o2000)),
+            ("O_NONBLOCK", PyObject::int(0o4000)),
+            ("O_CLOEXEC", PyObject::int(0o2000000)),
+            ("SEEK_SET", PyObject::int(0)),
+            ("SEEK_CUR", PyObject::int(1)),
+            ("SEEK_END", PyObject::int(2)),
+            (
+                "strerror",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("strerror requires an error code"));
+                    }
+                    let code = args[0].as_int().unwrap_or(0) as i32;
+                    #[cfg(unix)]
+                    {
+                        let msg = unsafe {
+                            let p = libc::strerror(code);
+                            if p.is_null() {
+                                "Unknown error".to_string()
+                            } else {
+                                std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+                            }
+                        };
+                        Ok(PyObject::str_val(CompactString::from(msg)))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Ok(PyObject::str_val(CompactString::from(format!(
+                            "Error {}",
+                            code
+                        ))))
+                    }
+                }),
+            ),
+            ("scandir", make_builtin(os_scandir)),
+            (
+                "putenv",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("putenv requires 2 arguments"));
+                    }
+                    let key = args[0].py_to_string();
+                    let val = args[1].py_to_string();
+                    // Safety: we ensure no concurrent modification of env in this single-threaded interpreter
+                    unsafe {
+                        std::env::set_var(&key, &val);
+                    }
+                    Ok(PyObject::none())
+                }),
+            ),
+            (
+                "unsetenv",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("unsetenv requires 1 argument"));
+                    }
+                    let key = args[0].py_to_string();
+                    unsafe {
+                        std::env::remove_var(&key);
+                    }
+                    Ok(PyObject::none())
+                }),
+            ),
+            (
+                "lstat",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("os.lstat requires path"));
+                    }
+                    let path = args[0].py_to_string();
+                    let meta = std::fs::symlink_metadata(&path)
+                        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+                    crate::fs_modules::build_stat_result(meta)
+                }),
+            ),
+            (
+                "expanduser",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("expanduser requires path"));
+                    }
+                    let path = args[0].py_to_string();
+                    if path.starts_with("~/") || path == "~" {
+                        if let Ok(home) = std::env::var("HOME") {
+                            let expanded = if path == "~" {
+                                home
+                            } else {
+                                format!("{}{}", home, &path[1..])
+                            };
+                            return Ok(PyObject::str_val(CompactString::from(expanded)));
+                        }
+                    }
+                    Ok(PyObject::str_val(CompactString::from(path)))
+                }),
+            ),
+            // Unix ID functions
+            (
+                "getuid",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        Ok(PyObject::int(unsafe { libc::getuid() } as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::os_error(
+                            "getuid() is not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "getgid",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        Ok(PyObject::int(unsafe { libc::getgid() } as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::os_error(
+                            "getgid() is not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "geteuid",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        Ok(PyObject::int(unsafe { libc::geteuid() } as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::os_error(
+                            "geteuid() is not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "getegid",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        Ok(PyObject::int(unsafe { libc::getegid() } as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::os_error(
+                            "getegid() is not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "getppid",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        Ok(PyObject::int(unsafe { libc::getppid() } as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::os_error(
+                            "getppid() is not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            // Process management
+            (
+                "kill",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("os.kill requires pid and signal"));
+                    }
+                    let pid = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("pid must be int"))?;
+                    let sig = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("signal must be int"))?;
+                    #[cfg(unix)]
+                    {
+                        let ret = unsafe { libc::kill(pid as i32, sig as i32) };
+                        if ret != 0 {
+                            return Err(PyException::os_error(format!(
+                                "kill failed: errno {}",
+                                ret
+                            )));
+                        }
+                    }
+                    Ok(PyObject::none())
+                }),
+            ),
+            // File operations
+            (
+                "link",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("os.link requires src and dst"));
+                    }
+                    std::fs::hard_link(args[0].py_to_string(), args[1].py_to_string())
+                        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+                    Ok(PyObject::none())
+                }),
+            ),
+            (
+                "truncate",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error(
+                            "os.truncate requires path and length",
+                        ));
+                    }
+                    let path = args[0].py_to_string();
+                    let length = args[1].as_int().unwrap_or(0) as u64;
+                    let f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+                    f.set_len(length)
+                        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+                    Ok(PyObject::none())
+                }),
+            ),
+            // Pipe and fd operations
+            (
+                "pipe",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut fds = [0i32; 2];
+                        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+                        if ret != 0 {
+                            return Err(PyException::os_error("pipe() failed".to_string()));
+                        }
+                        Ok(PyObject::tuple(vec![
+                            PyObject::int(fds[0] as i64),
+                            PyObject::int(fds[1] as i64),
+                        ]))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error(
+                            "os.pipe not available on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "dup",
+                make_builtin(|args| {
+                    check_args("os.dup", args, 1)?;
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?;
+                    #[cfg(unix)]
+                    {
+                        let new_fd = unsafe { libc::dup(fd as i32) };
+                        if new_fd < 0 {
+                            return Err(PyException::os_error("dup() failed".to_string()));
+                        }
+                        Ok(PyObject::int(new_fd as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error("os.dup not available"))
+                    }
+                }),
+            ),
+            (
+                "dup2",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("os.dup2 requires oldfd and newfd"));
+                    }
+                    let oldfd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?;
+                    let newfd = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?;
+                    #[cfg(unix)]
+                    {
+                        let ret = unsafe { libc::dup2(oldfd as i32, newfd as i32) };
+                        if ret < 0 {
+                            return Err(PyException::os_error("dup2() failed".to_string()));
+                        }
+                        Ok(PyObject::int(ret as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error("os.dup2 not available"))
+                    }
+                }),
+            ),
+            // terminal_size class exposed on the os module
+            ("terminal_size", make_terminal_size_class()),
+            // Terminal/system info
+            (
+                "get_terminal_size",
+                make_builtin(|_| {
+                    // Default fallback; real implementation would use ioctl
+                    let cols = std::env::var("COLUMNS")
+                        .ok()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(80);
+                    let lines = std::env::var("LINES")
+                        .ok()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(24);
+                    Ok(make_terminal_size_instance(cols, lines))
+                }),
+            ),
+            (
+                "uname",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut info: libc::utsname = unsafe { std::mem::zeroed() };
+                        unsafe {
+                            libc::uname(&mut info);
+                        }
+                        let to_str = |arr: &[i8]| -> String {
+                            let bytes: Vec<u8> = arr
+                                .iter()
+                                .take_while(|&&c| c != 0)
+                                .map(|&c| c as u8)
+                                .collect();
+                            String::from_utf8_lossy(&bytes).to_string()
+                        };
+                        let cls = PyObject::class(
+                            CompactString::from("uname_result"),
+                            vec![],
+                            IndexMap::new(),
+                        );
+                        let inst = PyObject::instance(cls);
+                        if let PyObjectPayload::Instance(ref data) = inst.payload {
+                            let mut attrs = data.attrs.write();
+                            attrs.insert(
+                                CompactString::from("sysname"),
+                                PyObject::str_val(CompactString::from(to_str(&info.sysname))),
+                            );
+                            attrs.insert(
+                                CompactString::from("nodename"),
+                                PyObject::str_val(CompactString::from(to_str(&info.nodename))),
+                            );
+                            attrs.insert(
+                                CompactString::from("release"),
+                                PyObject::str_val(CompactString::from(to_str(&info.release))),
+                            );
+                            attrs.insert(
+                                CompactString::from("version"),
+                                PyObject::str_val(CompactString::from(to_str(&info.version))),
+                            );
+                            attrs.insert(
+                                CompactString::from("machine"),
+                                PyObject::str_val(CompactString::from(to_str(&info.machine))),
+                            );
+                        }
+                        Ok(inst)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error(
+                            "os.uname not available on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "times",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut tms: libc::tms = unsafe { std::mem::zeroed() };
+                        unsafe {
+                            libc::times(&mut tms);
+                        }
+                        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+                        Ok(PyObject::tuple(vec![
+                            PyObject::float(tms.tms_utime as f64 / ticks),
+                            PyObject::float(tms.tms_stime as f64 / ticks),
+                            PyObject::float(tms.tms_cutime as f64 / ticks),
+                            PyObject::float(tms.tms_cstime as f64 / ticks),
+                            PyObject::float(0.0), // elapsed
+                        ]))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Ok(PyObject::tuple(vec![PyObject::float(0.0); 5]))
+                    }
+                }),
+            ),
+            // Path constants
+            (
+                "pathsep",
+                PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" })),
+            ),
+            ("altsep", PyObject::none()),
+            // Low-level file descriptor operations
+            (
+                "close",
+                make_builtin(|args| {
+                    check_args("os.close", args, 1)?;
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    #[cfg(unix)]
+                    {
+                        let ret = unsafe { libc::close(fd) };
+                        if ret != 0 {
+                            return Err(PyException::os_error(format!(
+                                "Bad file descriptor: {}",
+                                fd
+                            )));
+                        }
+                    }
+                    Ok(PyObject::none())
+                }),
+            ),
+            (
+                "open",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error(
+                            "os.open requires path, flags, and optional mode",
+                        ));
+                    }
+                    let path = args[0].py_to_string();
+                    let flags = if args.len() > 1 {
+                        args[1].as_int().unwrap_or(0) as i32
                     } else {
-                        Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(&buf).as_ref())))
+                        0
+                    };
+                    let mode = if args.len() > 2 {
+                        args[2].as_int().unwrap_or(0o666) as u32
+                    } else {
+                        0o666
+                    };
+                    #[cfg(unix)]
+                    {
+                        let cpath = std::ffi::CString::new(path.as_str())
+                            .map_err(|_| PyException::value_error("invalid path"))?;
+                        let fd = unsafe { libc::open(cpath.as_ptr(), flags, mode) };
+                        if fd < 0 {
+                            return Err(PyException::os_error(format!(
+                                "No such file or directory: '{}'",
+                                path
+                            )));
+                        }
+                        Ok(PyObject::int(fd as i64))
                     }
-                }));
-                // write(data)
-                let s2 = state.clone();
-                attrs.insert(CompactString::from("write"), PyObject::native_closure("fdopen.write", move |a| {
-                    let g = s2.read();
-                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
-                    let fd = g.0;
-                    drop(g);
-                    if a.is_empty() || (a.len() == 1 && matches!(a[0].payload, PyObjectPayload::Instance(_))) {
-                        return Err(PyException::type_error("write requires data"));
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error("os.open not available"))
                     }
-                    let data_arg = if a.len() > 1 { &a[1] } else { &a[0] };
-                    let data_bytes = match &data_arg.payload {
+                }),
+            ),
+            (
+                "read",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("os.read requires fd and count"));
+                    }
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    let count = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("count must be int"))?
+                        as usize;
+                    #[cfg(unix)]
+                    {
+                        let mut buf = vec![0u8; count];
+                        let n =
+                            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, count) };
+                        if n < 0 {
+                            return Err(PyException::os_error("read failed".to_string()));
+                        }
+                        buf.truncate(n as usize);
+                        Ok(PyObject::bytes(buf))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error("os.read not available"))
+                    }
+                }),
+            ),
+            (
+                "write",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error("os.write requires fd and data"));
+                    }
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    let data = match &args[1].payload {
                         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                        _ => return Err(PyException::type_error("write requires str or bytes")),
+                        _ => return Err(PyException::type_error("data must be bytes-like")),
                     };
-                    let n = unsafe { libc::write(fd, data_bytes.as_ptr() as *const libc::c_void, data_bytes.len()) };
-                    if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
-                    Ok(PyObject::int(n as i64))
-                }));
-                // seek(offset, whence=0)
-                let s3 = state.clone();
-                attrs.insert(CompactString::from("seek"), PyObject::native_closure("fdopen.seek", move |a| {
-                    let g = s3.read();
-                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
-                    let fd = g.0;
-                    drop(g);
-                    let offset = if a.len() > 1 {
-                        a[1].as_int().unwrap_or(0) as i64
-                    } else if !a.is_empty() {
-                        a[0].as_int().unwrap_or(0) as i64
-                    } else { 0i64 };
-                    let whence = if a.len() > 2 {
-                        a[2].as_int().unwrap_or(0) as i32
-                    } else { 0i32 };
-                    let pos = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
-                    if pos < 0 { return Err(PyException::os_error("seek failed".to_string())); }
-                    Ok(PyObject::int(pos as i64))
-                }));
-                // tell()
-                let s4 = state.clone();
-                attrs.insert(CompactString::from("tell"), PyObject::native_closure("fdopen.tell", move |_a| {
-                    let g = s4.read();
-                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
-                    let fd = g.0;
-                    drop(g);
-                    let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
-                    Ok(PyObject::int(pos as i64))
-                }));
-                // flush()
-                let s5 = state.clone();
-                attrs.insert(CompactString::from("flush"), PyObject::native_closure("fdopen.flush", move |_a| {
-                    let g = s5.read();
-                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
-                    let fd = g.0;
-                    drop(g);
-                    unsafe { libc::fsync(fd); }
-                    Ok(PyObject::none())
-                }));
-                // close()
-                let s6 = state.clone();
-                attrs.insert(CompactString::from("close"), PyObject::native_closure("fdopen.close", move |_| {
-                    let mut g = s6.write();
-                    if !g.1 {
-                        g.1 = true;
-                        unsafe { libc::close(g.0); }
+                    #[cfg(unix)]
+                    {
+                        let n = unsafe {
+                            libc::write(fd, data.as_ptr() as *const libc::c_void, data.len())
+                        };
+                        if n < 0 {
+                            return Err(PyException::os_error("write failed".to_string()));
+                        }
+                        Ok(PyObject::int(n as i64))
                     }
-                    Ok(PyObject::none())
-                }));
-                // __enter__(self) -> self
-                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("fdopen.__enter__", move |a| {
-                    if a.is_empty() { return Ok(PyObject::none()); }
-                    Ok(a[0].clone())
-                }));
-                // __exit__ -> close
-                let s7 = state.clone();
-                attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("fdopen.__exit__", move |_| {
-                    let mut g = s7.write();
-                    if !g.1 {
-                        g.1 = true;
-                        unsafe { libc::close(g.0); }
+                    #[cfg(not(unix))]
+                    {
+                        Err(PyException::not_implemented_error("os.write not available"))
                     }
-                    Ok(PyObject::bool_val(false))
-                }));
-                // Return as an Instance so it's treated as a file-like object
-                let class = PyObject::class(CompactString::from("_io.FileIO"), vec![], IndexMap::new());
-                Ok(PyObject::instance_with_attrs(class, attrs))
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (fd, mode);
-                Err(PyException::not_implemented_error("os.fdopen not available on this platform"))
-            }
-        })),
-        ("fstat", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("os.fstat requires fd")); }
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::FromRawFd;
-                let file = unsafe { std::fs::File::from_raw_fd(fd) };
-                let meta = file.metadata().map_err(|e| PyException::os_error(format!("{}", e)));
-                std::mem::forget(file);
-                let meta = meta?;
-                build_stat_result_from_meta(&meta)
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = fd;
-                Err(PyException::not_implemented_error("os.fstat not supported on this platform"))
-            }
-        })),
-        ("ftruncate", make_builtin(|args| {
-            check_args_min("os.ftruncate", args, 2)?;
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            let length = args[1].as_int().ok_or_else(|| PyException::type_error("length must be int"))? as u64;
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::FromRawFd;
-                let file = unsafe { std::fs::File::from_raw_fd(fd) };
-                let result = file.set_len(length).map_err(|e| PyException::os_error(format!("{}", e)));
-                std::mem::forget(file);
-                result?;
-                Ok(PyObject::none())
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (fd, length);
-                Err(PyException::not_implemented_error("os.ftruncate not supported on this platform"))
-            }
-        })),
-        ("lseek", make_builtin(|args| {
-            check_args_min("os.lseek", args, 3)?;
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            let offset = args[1].as_int().ok_or_else(|| PyException::type_error("offset must be int"))? as i64;
-            let whence = args[2].as_int().ok_or_else(|| PyException::type_error("whence must be int"))? as i32;
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::FromRawFd;
-                use std::io::Seek;
-                let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
-                let seek_from = match whence {
-                    0 => std::io::SeekFrom::Start(offset as u64),
-                    1 => std::io::SeekFrom::Current(offset),
-                    2 => std::io::SeekFrom::End(offset),
-                    _ => { std::mem::forget(file); return Err(PyException::value_error("invalid whence")); }
-                };
-                let result = file.seek(seek_from);
-                std::mem::forget(file);
-                match result {
-                    Ok(pos) => Ok(PyObject::int(pos as i64)),
-                    Err(e) => Err(PyException::os_error(format!("{}", e))),
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (fd, offset, whence);
-                Err(PyException::not_implemented_error("os.lseek not supported on this platform"))
-            }
-        })),
-        ("fsync", make_builtin(|args| {
-            check_args_min("os.fsync", args, 1)?;
-            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::FromRawFd;
-                let file = unsafe { std::fs::File::from_raw_fd(fd) };
-                let result = file.sync_all().map_err(|e| PyException::os_error(format!("{}", e)));
-                std::mem::forget(file);
-                result?;
-                Ok(PyObject::none())
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = fd;
-                Err(PyException::not_implemented_error("os.fsync not supported on this platform"))
-            }
-        })),
-        ("stat_result", make_builtin(|_| {
-            Ok(PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new()))
-        })),
-        // waitpid and W* macros
-        ("waitpid", make_builtin(|args| {
-            if args.len() < 2 { return Err(PyException::type_error("os.waitpid requires pid and options")); }
-            let pid = args[0].as_int().ok_or_else(|| PyException::type_error("pid must be int"))? as i32;
-            let options = args[1].as_int().ok_or_else(|| PyException::type_error("options must be int"))? as i32;
-            #[cfg(unix)] {
-                let mut status: i32 = 0;
-                let ret = unsafe { libc::waitpid(pid, &mut status, options) };
-                if ret < 0 { return Err(PyException::os_error("waitpid failed".to_string())); }
-                Ok(PyObject::tuple(vec![PyObject::int(ret as i64), PyObject::int(status as i64)]))
-            }
-            #[cfg(not(unix))] {
-                let _ = (pid, options);
-                Err(PyException::not_implemented_error("os.waitpid not available"))
-            }
-        })),
-        ("WNOHANG", PyObject::int(1)),
-        ("WUNTRACED", PyObject::int(2)),
-        ("WIFEXITED", make_builtin(|args| {
-            check_args("os.WIFEXITED", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::bool_val(libc::WIFEXITED(status)))
-        })),
-        ("WEXITSTATUS", make_builtin(|args| {
-            check_args("os.WEXITSTATUS", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::int(libc::WEXITSTATUS(status) as i64))
-        })),
-        ("WIFSIGNALED", make_builtin(|args| {
-            check_args("os.WIFSIGNALED", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::bool_val(libc::WIFSIGNALED(status)))
-        })),
-        ("WTERMSIG", make_builtin(|args| {
-            check_args("os.WTERMSIG", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::int(libc::WTERMSIG(status) as i64))
-        })),
-        ("WIFSTOPPED", make_builtin(|args| {
-            check_args("os.WIFSTOPPED", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::bool_val(libc::WIFSTOPPED(status)))
-        })),
-        ("WSTOPSIG", make_builtin(|args| {
-            check_args("os.WSTOPSIG", args, 1)?;
-            let status = args[0].as_int().unwrap_or(0) as i32;
-            Ok(PyObject::int(libc::WSTOPSIG(status) as i64))
-        })),
-        ("fsencode", make_builtin(|args| {
-            check_args("os.fsencode", args, 1)?;
-            let s = args[0].py_to_string();
-            Ok(PyObject::bytes(s.into_bytes()))
-        })),
-        ("fsdecode", make_builtin(|args| {
-            check_args("os.fsdecode", args, 1)?;
-            match &args[0].payload {
-                PyObjectPayload::Bytes(b) => {
-                    let s = String::from_utf8_lossy(b).to_string();
-                    Ok(PyObject::str_val(CompactString::from(s)))
-                }
-                _ => Ok(PyObject::str_val(CompactString::from(args[0].py_to_string()))),
-            }
-        })),
-    ])
+                }),
+            ),
+            (
+                "fdopen",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("os.fdopen requires fd"));
+                    }
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    let mode = if args.len() > 1 {
+                        args[1].py_to_string()
+                    } else {
+                        "r".to_string()
+                    };
+                    #[cfg(unix)]
+                    {
+                        let is_binary = mode.contains('b');
+                        // State: (fd, closed, name)
+                        let state = Rc::new(PyCell::new((fd, false)));
+                        let mode_str = mode.clone();
+                        let name_str = format!("<fdopen fd={}>", fd);
+                        let mut attrs = IndexMap::new();
+                        attrs.insert(
+                            CompactString::from("mode"),
+                            PyObject::str_val(CompactString::from(&mode_str)),
+                        );
+                        attrs.insert(
+                            CompactString::from("name"),
+                            PyObject::str_val(CompactString::from(&name_str)),
+                        );
+                        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+                        // read([size])
+                        let s1 = state.clone();
+                        let is_bin_r = is_binary;
+                        attrs.insert(
+                            CompactString::from("read"),
+                            PyObject::native_closure("fdopen.read", move |a| {
+                                let g = s1.read();
+                                if g.1 {
+                                    return Err(PyException::value_error(
+                                        "I/O operation on closed file",
+                                    ));
+                                }
+                                let fd = g.0;
+                                drop(g);
+                                let size = if !a.is_empty() && a.len() > 1 {
+                                    a[1].as_int().unwrap_or(-1) as isize
+                                } else if !a.is_empty() {
+                                    a[0].as_int().unwrap_or(-1) as isize
+                                } else {
+                                    -1isize
+                                };
+                                let buf = if size < 0 {
+                                    // Read all
+                                    let mut buf = Vec::new();
+                                    let mut tmp = [0u8; 8192];
+                                    loop {
+                                        let n = unsafe {
+                                            libc::read(
+                                                fd,
+                                                tmp.as_mut_ptr() as *mut libc::c_void,
+                                                tmp.len(),
+                                            )
+                                        };
+                                        if n <= 0 {
+                                            break;
+                                        }
+                                        buf.extend_from_slice(&tmp[..n as usize]);
+                                    }
+                                    buf
+                                } else {
+                                    let mut buf = vec![0u8; size as usize];
+                                    let n = unsafe {
+                                        libc::read(
+                                            fd,
+                                            buf.as_mut_ptr() as *mut libc::c_void,
+                                            buf.len(),
+                                        )
+                                    };
+                                    if n < 0 {
+                                        return Err(PyException::os_error(
+                                            "read failed".to_string(),
+                                        ));
+                                    }
+                                    buf.truncate(n as usize);
+                                    buf
+                                };
+                                if is_bin_r {
+                                    Ok(PyObject::bytes(buf))
+                                } else {
+                                    Ok(PyObject::str_val(CompactString::from(
+                                        String::from_utf8_lossy(&buf).as_ref(),
+                                    )))
+                                }
+                            }),
+                        );
+                        // write(data)
+                        let s2 = state.clone();
+                        attrs.insert(
+                            CompactString::from("write"),
+                            PyObject::native_closure("fdopen.write", move |a| {
+                                let g = s2.read();
+                                if g.1 {
+                                    return Err(PyException::value_error(
+                                        "I/O operation on closed file",
+                                    ));
+                                }
+                                let fd = g.0;
+                                drop(g);
+                                if a.is_empty()
+                                    || (a.len() == 1
+                                        && matches!(a[0].payload, PyObjectPayload::Instance(_)))
+                                {
+                                    return Err(PyException::type_error("write requires data"));
+                                }
+                                let data_arg = if a.len() > 1 { &a[1] } else { &a[0] };
+                                let data_bytes = match &data_arg.payload {
+                                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                                        (**b).clone()
+                                    }
+                                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                                    _ => {
+                                        return Err(PyException::type_error(
+                                            "write requires str or bytes",
+                                        ))
+                                    }
+                                };
+                                let n = unsafe {
+                                    libc::write(
+                                        fd,
+                                        data_bytes.as_ptr() as *const libc::c_void,
+                                        data_bytes.len(),
+                                    )
+                                };
+                                if n < 0 {
+                                    return Err(PyException::os_error("write failed".to_string()));
+                                }
+                                Ok(PyObject::int(n as i64))
+                            }),
+                        );
+                        // seek(offset, whence=0)
+                        let s3 = state.clone();
+                        attrs.insert(
+                            CompactString::from("seek"),
+                            PyObject::native_closure("fdopen.seek", move |a| {
+                                let g = s3.read();
+                                if g.1 {
+                                    return Err(PyException::value_error(
+                                        "I/O operation on closed file",
+                                    ));
+                                }
+                                let fd = g.0;
+                                drop(g);
+                                let offset = if a.len() > 1 {
+                                    a[1].as_int().unwrap_or(0) as i64
+                                } else if !a.is_empty() {
+                                    a[0].as_int().unwrap_or(0) as i64
+                                } else {
+                                    0i64
+                                };
+                                let whence = if a.len() > 2 {
+                                    a[2].as_int().unwrap_or(0) as i32
+                                } else {
+                                    0i32
+                                };
+                                let pos = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+                                if pos < 0 {
+                                    return Err(PyException::os_error("seek failed".to_string()));
+                                }
+                                Ok(PyObject::int(pos as i64))
+                            }),
+                        );
+                        // tell()
+                        let s4 = state.clone();
+                        attrs.insert(
+                            CompactString::from("tell"),
+                            PyObject::native_closure("fdopen.tell", move |_a| {
+                                let g = s4.read();
+                                if g.1 {
+                                    return Err(PyException::value_error(
+                                        "I/O operation on closed file",
+                                    ));
+                                }
+                                let fd = g.0;
+                                drop(g);
+                                let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+                                Ok(PyObject::int(pos as i64))
+                            }),
+                        );
+                        // flush()
+                        let s5 = state.clone();
+                        attrs.insert(
+                            CompactString::from("flush"),
+                            PyObject::native_closure("fdopen.flush", move |_a| {
+                                let g = s5.read();
+                                if g.1 {
+                                    return Err(PyException::value_error(
+                                        "I/O operation on closed file",
+                                    ));
+                                }
+                                let fd = g.0;
+                                drop(g);
+                                unsafe {
+                                    libc::fsync(fd);
+                                }
+                                Ok(PyObject::none())
+                            }),
+                        );
+                        // close()
+                        let s6 = state.clone();
+                        attrs.insert(
+                            CompactString::from("close"),
+                            PyObject::native_closure("fdopen.close", move |_| {
+                                let mut g = s6.write();
+                                if !g.1 {
+                                    g.1 = true;
+                                    unsafe {
+                                        libc::close(g.0);
+                                    }
+                                }
+                                Ok(PyObject::none())
+                            }),
+                        );
+                        // __enter__(self) -> self
+                        attrs.insert(
+                            CompactString::from("__enter__"),
+                            PyObject::native_closure("fdopen.__enter__", move |a| {
+                                if a.is_empty() {
+                                    return Ok(PyObject::none());
+                                }
+                                Ok(a[0].clone())
+                            }),
+                        );
+                        // __exit__ -> close
+                        let s7 = state.clone();
+                        attrs.insert(
+                            CompactString::from("__exit__"),
+                            PyObject::native_closure("fdopen.__exit__", move |_| {
+                                let mut g = s7.write();
+                                if !g.1 {
+                                    g.1 = true;
+                                    unsafe {
+                                        libc::close(g.0);
+                                    }
+                                }
+                                Ok(PyObject::bool_val(false))
+                            }),
+                        );
+                        // Return as an Instance so it's treated as a file-like object
+                        let class = PyObject::class(
+                            CompactString::from("_io.FileIO"),
+                            vec![],
+                            IndexMap::new(),
+                        );
+                        Ok(PyObject::instance_with_attrs(class, attrs))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (fd, mode);
+                        Err(PyException::not_implemented_error(
+                            "os.fdopen not available on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "fstat",
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("os.fstat requires fd"));
+                    }
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::FromRawFd;
+                        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                        let meta = file
+                            .metadata()
+                            .map_err(|e| PyException::os_error(format!("{}", e)));
+                        std::mem::forget(file);
+                        let meta = meta?;
+                        build_stat_result_from_meta(&meta)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = fd;
+                        Err(PyException::not_implemented_error(
+                            "os.fstat not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "ftruncate",
+                make_builtin(|args| {
+                    check_args_min("os.ftruncate", args, 2)?;
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    let length = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("length must be int"))?
+                        as u64;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::FromRawFd;
+                        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                        let result = file
+                            .set_len(length)
+                            .map_err(|e| PyException::os_error(format!("{}", e)));
+                        std::mem::forget(file);
+                        result?;
+                        Ok(PyObject::none())
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (fd, length);
+                        Err(PyException::not_implemented_error(
+                            "os.ftruncate not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "lseek",
+                make_builtin(|args| {
+                    check_args_min("os.lseek", args, 3)?;
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    let offset = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("offset must be int"))?
+                        as i64;
+                    let whence = args[2]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("whence must be int"))?
+                        as i32;
+                    #[cfg(unix)]
+                    {
+                        use std::io::Seek;
+                        use std::os::unix::io::FromRawFd;
+                        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+                        let seek_from = match whence {
+                            0 => std::io::SeekFrom::Start(offset as u64),
+                            1 => std::io::SeekFrom::Current(offset),
+                            2 => std::io::SeekFrom::End(offset),
+                            _ => {
+                                std::mem::forget(file);
+                                return Err(PyException::value_error("invalid whence"));
+                            }
+                        };
+                        let result = file.seek(seek_from);
+                        std::mem::forget(file);
+                        match result {
+                            Ok(pos) => Ok(PyObject::int(pos as i64)),
+                            Err(e) => Err(PyException::os_error(format!("{}", e))),
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (fd, offset, whence);
+                        Err(PyException::not_implemented_error(
+                            "os.lseek not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "fsync",
+                make_builtin(|args| {
+                    check_args_min("os.fsync", args, 1)?;
+                    let fd = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("fd must be int"))?
+                        as i32;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::FromRawFd;
+                        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                        let result = file
+                            .sync_all()
+                            .map_err(|e| PyException::os_error(format!("{}", e)));
+                        std::mem::forget(file);
+                        result?;
+                        Ok(PyObject::none())
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = fd;
+                        Err(PyException::not_implemented_error(
+                            "os.fsync not supported on this platform",
+                        ))
+                    }
+                }),
+            ),
+            (
+                "stat_result",
+                make_builtin(|_| {
+                    Ok(PyObject::class(
+                        CompactString::from("stat_result"),
+                        vec![],
+                        IndexMap::new(),
+                    ))
+                }),
+            ),
+            // waitpid and W* macros
+            (
+                "waitpid",
+                make_builtin(|args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error(
+                            "os.waitpid requires pid and options",
+                        ));
+                    }
+                    let pid = args[0]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("pid must be int"))?
+                        as i32;
+                    let options = args[1]
+                        .as_int()
+                        .ok_or_else(|| PyException::type_error("options must be int"))?
+                        as i32;
+                    #[cfg(unix)]
+                    {
+                        let mut status: i32 = 0;
+                        let ret = unsafe { libc::waitpid(pid, &mut status, options) };
+                        if ret < 0 {
+                            return Err(PyException::os_error("waitpid failed".to_string()));
+                        }
+                        Ok(PyObject::tuple(vec![
+                            PyObject::int(ret as i64),
+                            PyObject::int(status as i64),
+                        ]))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (pid, options);
+                        Err(PyException::not_implemented_error(
+                            "os.waitpid not available",
+                        ))
+                    }
+                }),
+            ),
+            ("WNOHANG", PyObject::int(1)),
+            ("WUNTRACED", PyObject::int(2)),
+            (
+                "WIFEXITED",
+                make_builtin(|args| {
+                    check_args("os.WIFEXITED", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::bool_val(libc::WIFEXITED(status)))
+                }),
+            ),
+            (
+                "WEXITSTATUS",
+                make_builtin(|args| {
+                    check_args("os.WEXITSTATUS", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::int(libc::WEXITSTATUS(status) as i64))
+                }),
+            ),
+            (
+                "WIFSIGNALED",
+                make_builtin(|args| {
+                    check_args("os.WIFSIGNALED", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::bool_val(libc::WIFSIGNALED(status)))
+                }),
+            ),
+            (
+                "WTERMSIG",
+                make_builtin(|args| {
+                    check_args("os.WTERMSIG", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::int(libc::WTERMSIG(status) as i64))
+                }),
+            ),
+            (
+                "WIFSTOPPED",
+                make_builtin(|args| {
+                    check_args("os.WIFSTOPPED", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::bool_val(libc::WIFSTOPPED(status)))
+                }),
+            ),
+            (
+                "WSTOPSIG",
+                make_builtin(|args| {
+                    check_args("os.WSTOPSIG", args, 1)?;
+                    let status = args[0].as_int().unwrap_or(0) as i32;
+                    Ok(PyObject::int(libc::WSTOPSIG(status) as i64))
+                }),
+            ),
+            (
+                "fsencode",
+                make_builtin(|args| {
+                    check_args("os.fsencode", args, 1)?;
+                    let s = args[0].py_to_string();
+                    Ok(PyObject::bytes(s.into_bytes()))
+                }),
+            ),
+            (
+                "fsdecode",
+                make_builtin(|args| {
+                    check_args("os.fsdecode", args, 1)?;
+                    match &args[0].payload {
+                        PyObjectPayload::Bytes(b) => {
+                            let s = String::from_utf8_lossy(b).to_string();
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        }
+                        _ => Ok(PyObject::str_val(CompactString::from(
+                            args[0].py_to_string(),
+                        ))),
+                    }
+                }),
+            ),
+        ],
+    )
 }
 
 /// Create the os.terminal_size class (namedtuple-like).
 pub fn make_terminal_size_class() -> PyObjectRef {
     let mut ns = IndexMap::new();
-    ns.insert(CompactString::from("__init__"), PyObject::native_closure(
-        "terminal_size.__init__", |args| {
+    ns.insert(
+        CompactString::from("__init__"),
+        PyObject::native_closure("terminal_size.__init__", |args| {
             // terminal_size((columns, lines))
             if args.len() < 2 {
-                return Err(PyException::type_error("terminal_size requires a (columns, lines) argument"));
+                return Err(PyException::type_error(
+                    "terminal_size requires a (columns, lines) argument",
+                ));
             }
             let seq = &args[1];
             let (cols, lines) = match &seq.payload {
@@ -1541,7 +2219,11 @@ pub fn make_terminal_size_class() -> PyObjectRef {
                     let l = items[1].as_int().unwrap_or(24);
                     (c, l)
                 }
-                _ => return Err(PyException::type_error("terminal_size requires a 2-item sequence")),
+                _ => {
+                    return Err(PyException::type_error(
+                        "terminal_size requires a 2-item sequence",
+                    ))
+                }
             };
             if let PyObjectPayload::Instance(ref data) = args[0].payload {
                 let mut attrs = data.attrs.write();
@@ -1549,8 +2231,8 @@ pub fn make_terminal_size_class() -> PyObjectRef {
                 attrs.insert(CompactString::from("lines"), PyObject::int(lines));
             }
             Ok(PyObject::none())
-        }
-    ));
+        }),
+    );
     PyObject::class(CompactString::from("terminal_size"), vec![], ns)
 }
 
@@ -1563,58 +2245,79 @@ pub fn make_terminal_size_instance(cols: i64, lines: i64) -> PyObjectRef {
     // Support tuple-like indexing, iteration, length, and repr
     let c = cols;
     let l = lines;
-    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
-        "terminal_size.__getitem__", move |args| {
+    attrs.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_closure("terminal_size.__getitem__", move |args| {
             let idx = args.last().and_then(|a| a.as_int()).unwrap_or(0);
             match idx {
                 0 => Ok(PyObject::int(c)),
                 1 => Ok(PyObject::int(l)),
                 _ => Err(PyException::index_error("tuple index out of range")),
             }
-        }
-    ));
-    attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
-        "terminal_size.__len__", |_| Ok(PyObject::int(2))
-    ));
-    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
-        "terminal_size.__iter__", move |_| {
+        }),
+    );
+    attrs.insert(
+        CompactString::from("__len__"),
+        PyObject::native_closure("terminal_size.__len__", |_| Ok(PyObject::int(2))),
+    );
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("terminal_size.__iter__", move |_| {
             Ok(PyObject::tuple(vec![PyObject::int(c), PyObject::int(l)]))
-        }
-    ));
-    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-        "terminal_size.__repr__", move |_| {
-            Ok(PyObject::str_val(CompactString::from(
-                format!("os.terminal_size(columns={}, lines={})", c, l)
-            )))
-        }
-    ));
+        }),
+    );
+    attrs.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("terminal_size.__repr__", move |_| {
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "os.terminal_size(columns={}, lines={})",
+                c, l
+            ))))
+        }),
+    );
     PyObject::instance_with_attrs(cls, attrs)
 }
 
 fn os_getcwd(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| PyException::os_error(format!("{}", e)))?;
-    Ok(PyObject::str_val(CompactString::from(cwd.to_string_lossy().to_string())))
+    let cwd = std::env::current_dir().map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::str_val(CompactString::from(
+        cwd.to_string_lossy().to_string(),
+    )))
 }
 fn os_listdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let path = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
+    let path = if args.is_empty() {
+        ".".to_string()
+    } else {
+        args[0].py_to_string()
+    };
     let entries = std::fs::read_dir(&path)
         .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
     let items: Vec<PyObjectRef> = entries
         .filter_map(|e| e.ok())
-        .map(|e| PyObject::str_val(CompactString::from(e.file_name().to_string_lossy().to_string())))
+        .map(|e| {
+            PyObject::str_val(CompactString::from(
+                e.file_name().to_string_lossy().to_string(),
+            ))
+        })
         .collect();
     Ok(PyObject::list(items))
 }
 fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("os.mkdir() requires at least 1 argument")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "os.mkdir() requires at least 1 argument",
+        ));
+    }
     let path = args[0].py_to_string();
     let exist_ok = args.iter().skip(1).any(|a| {
         if let PyObjectPayload::Dict(kw) = &a.payload {
-            kw.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
+            kw.read()
+                .get(&HashableKey::str_key(CompactString::from("exist_ok")))
                 .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
                 .unwrap_or(false)
-        } else { false }
+        } else {
+            false
+        }
     });
     match std::fs::create_dir(&path) {
         Ok(_) => Ok(PyObject::none()),
@@ -1623,12 +2326,17 @@ fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("os.makedirs() requires at least 1 argument")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "os.makedirs() requires at least 1 argument",
+        ));
+    }
     let path = args[0].py_to_string();
     // Check for exist_ok kwarg (may be in trailing dict)
     let exist_ok = args.iter().skip(1).any(|a| {
         if let PyObjectPayload::Dict(kw) = &a.payload {
-            kw.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
+            kw.read()
+                .get(&HashableKey::str_key(CompactString::from("exist_ok")))
                 .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
                 .unwrap_or(false)
         } else {
@@ -1658,8 +2366,7 @@ fn os_removedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path_str = args[0].py_to_string();
     let mut path = std::path::PathBuf::from(&*path_str);
     // Remove the leaf directory first
-    std::fs::remove_dir(&path)
-        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    std::fs::remove_dir(&path).map_err(|e| PyException::os_error(format!("{}", e)))?;
     // Walk up, removing empty parent directories until one fails
     while let Some(parent) = path.parent() {
         if parent.as_os_str().is_empty() {
@@ -1686,9 +2393,17 @@ fn os_replace(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::none())
 }
 fn os_getenv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("os.getenv requires at least 1 argument")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "os.getenv requires at least 1 argument",
+        ));
+    }
     let key = args[0].py_to_string();
-    let default = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
+    let default = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        PyObject::none()
+    };
     match std::env::var(&key) {
         Ok(v) => Ok(PyObject::str_val(CompactString::from(v))),
         Err(_) => Ok(default),
@@ -1712,16 +2427,18 @@ fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 match &method.payload {
                     PyObjectPayload::NativeFunction(nf) => (nf.func)(&[args[0].clone()]),
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[args[0].clone()]),
-                    PyObjectPayload::Function(_) => {
-                        Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
-                    }
+                    PyObjectPayload::Function(_) => Ok(PyObject::str_val(CompactString::from(
+                        args[0].py_to_string(),
+                    ))),
                     _ => Err(PyException::type_error(format!(
-                        "expected str, bytes or os.PathLike object, not '{}'", args[0].type_name()
+                        "expected str, bytes or os.PathLike object, not '{}'",
+                        args[0].type_name()
                     ))),
                 }
             } else {
                 Err(PyException::type_error(format!(
-                    "expected str, bytes or os.PathLike object, not '{}'", args[0].type_name()
+                    "expected str, bytes or os.PathLike object, not '{}'",
+                    args[0].type_name()
                 )))
             }
         }
@@ -1729,15 +2446,23 @@ fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn num_cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 fn os_walk(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("os.walk() requires at least 1 argument"));
+        return Err(PyException::type_error(
+            "os.walk() requires at least 1 argument",
+        ));
     }
     let path = args[0].py_to_string();
-    let topdown = if args.len() > 1 { args[1].is_truthy() } else { true };
+    let topdown = if args.len() > 1 {
+        args[1].is_truthy()
+    } else {
+        true
+    };
     let mut results = Vec::new();
     walk_dir_recursive(&path, topdown, &mut results);
     Ok(PyObject::list(results))
@@ -1760,8 +2485,18 @@ fn walk_dir_recursive(dir: &str, topdown: bool, results: &mut Vec<PyObjectRef>) 
     }
     let tuple = PyObject::tuple(vec![
         PyObject::str_val(CompactString::from(dir)),
-        PyObject::list(dirnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()),
-        PyObject::list(filenames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()),
+        PyObject::list(
+            dirnames
+                .iter()
+                .map(|n| PyObject::str_val(CompactString::from(n.as_str())))
+                .collect(),
+        ),
+        PyObject::list(
+            filenames
+                .iter()
+                .map(|n| PyObject::str_val(CompactString::from(n.as_str())))
+                .collect(),
+        ),
     ]);
     if topdown {
         results.push(tuple);
@@ -1783,12 +2518,30 @@ fn build_stat_result_from_meta(meta: &std::fs::Metadata) -> PyResult<PyObjectRef
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        attrs.insert(CompactString::from("st_mode"), PyObject::int(meta.mode() as i64));
-        attrs.insert(CompactString::from("st_ino"), PyObject::int(meta.ino() as i64));
-        attrs.insert(CompactString::from("st_dev"), PyObject::int(meta.dev() as i64));
-        attrs.insert(CompactString::from("st_nlink"), PyObject::int(meta.nlink() as i64));
-        attrs.insert(CompactString::from("st_uid"), PyObject::int(meta.uid() as i64));
-        attrs.insert(CompactString::from("st_gid"), PyObject::int(meta.gid() as i64));
+        attrs.insert(
+            CompactString::from("st_mode"),
+            PyObject::int(meta.mode() as i64),
+        );
+        attrs.insert(
+            CompactString::from("st_ino"),
+            PyObject::int(meta.ino() as i64),
+        );
+        attrs.insert(
+            CompactString::from("st_dev"),
+            PyObject::int(meta.dev() as i64),
+        );
+        attrs.insert(
+            CompactString::from("st_nlink"),
+            PyObject::int(meta.nlink() as i64),
+        );
+        attrs.insert(
+            CompactString::from("st_uid"),
+            PyObject::int(meta.uid() as i64),
+        );
+        attrs.insert(
+            CompactString::from("st_gid"),
+            PyObject::int(meta.gid() as i64),
+        );
     }
     #[cfg(not(unix))]
     {
@@ -1799,24 +2552,36 @@ fn build_stat_result_from_meta(meta: &std::fs::Metadata) -> PyResult<PyObjectRef
         attrs.insert(CompactString::from("st_uid"), PyObject::int(0));
         attrs.insert(CompactString::from("st_gid"), PyObject::int(0));
     }
-    attrs.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
+    attrs.insert(
+        CompactString::from("st_size"),
+        PyObject::int(meta.len() as i64),
+    );
     let epoch = std::time::SystemTime::UNIX_EPOCH;
-    let mtime = meta.modified().ok()
+    let mtime = meta
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(epoch).ok())
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let atime = meta.accessed().ok()
+    let atime = meta
+        .accessed()
+        .ok()
         .and_then(|t| t.duration_since(epoch).ok())
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let ctime = meta.created().ok()
+    let ctime = meta
+        .created()
+        .ok()
         .and_then(|t| t.duration_since(epoch).ok())
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     attrs.insert(CompactString::from("st_mtime"), PyObject::float(mtime));
     attrs.insert(CompactString::from("st_atime"), PyObject::float(atime));
     attrs.insert(CompactString::from("st_ctime"), PyObject::float(ctime));
-    Ok(PyObject::module_with_attrs(CompactString::from("os.stat_result"), attrs))
+    Ok(PyObject::module_with_attrs(
+        CompactString::from("os.stat_result"),
+        attrs,
+    ))
 }
 
 fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1832,7 +2597,8 @@ fn os_chmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     #[cfg(unix)]
     {
         let path = args[0].py_to_string();
-        let mode = args[1].as_int()
+        let mode = args[1]
+            .as_int()
             .ok_or_else(|| PyException::type_error("an integer is required"))?;
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(mode as u32);
@@ -1844,7 +2610,9 @@ fn os_chmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn os_chown(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 3 {
-        return Err(PyException::type_error("chown requires at least 3 arguments"));
+        return Err(PyException::type_error(
+            "chown requires at least 3 arguments",
+        ));
     }
     #[cfg(unix)]
     {
@@ -1856,7 +2624,9 @@ fn os_chown(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let ret = unsafe { libc::chown(cpath.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
         if ret != 0 {
             return Err(PyException::os_error(format!(
-                "{}: '{}'", std::io::Error::last_os_error(), path
+                "{}: '{}'",
+                std::io::Error::last_os_error(),
+                path
             )));
         }
     }
@@ -1875,7 +2645,9 @@ fn os_symlink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     #[cfg(not(unix))]
     {
         let _ = (&src, &dst);
-        return Err(PyException::os_error("os.symlink() not available on this platform"));
+        return Err(PyException::os_error(
+            "os.symlink() not available on this platform",
+        ));
     }
     Ok(PyObject::none())
 }
@@ -1885,12 +2657,15 @@ fn os_readlink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = args[0].py_to_string();
     let target = std::fs::read_link(&path)
         .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
-    Ok(PyObject::str_val(CompactString::from(target.to_string_lossy().to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        target.to_string_lossy().to_string(),
+    )))
 }
 
 fn os_isatty(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.isatty", args, 1)?;
-    let fd = args[0].as_int()
+    let fd = args[0]
+        .as_int()
         .ok_or_else(|| PyException::type_error("an integer is required"))?;
     Ok(PyObject::bool_val(is_fd_terminal(fd)))
 }
@@ -1898,7 +2673,9 @@ fn os_isatty(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 #[cfg(unix)]
 fn is_fd_terminal(fd: i64) -> bool {
     unsafe {
-        extern "C" { fn isatty(fd: i32) -> i32; }
+        extern "C" {
+            fn isatty(fd: i32) -> i32;
+        }
         isatty(fd as i32) != 0
     }
 }
@@ -1944,20 +2721,33 @@ fn os_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {
         let mut attrs = inst_data.attrs.write();
         let d = data_arc.clone();
-        attrs.insert(CompactString::from("read"), PyObject::native_closure("popen.read", move |_: &[PyObjectRef]| {
-            Ok(PyObject::str_val(CompactString::from(d.read().as_str())))
-        }));
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        attrs.insert(
+            CompactString::from("read"),
+            PyObject::native_closure("popen.read", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(d.read().as_str())))
+            }),
+        );
+        attrs.insert(
+            CompactString::from("close"),
+            make_builtin(|_| Ok(PyObject::none())),
+        );
         let d2 = data_arc;
-        attrs.insert(CompactString::from("readline"), PyObject::native_closure("popen.readline", move |_: &[PyObjectRef]| {
-            Ok(PyObject::str_val(CompactString::from(d2.read().as_str())))
-        }));
+        attrs.insert(
+            CompactString::from("readline"),
+            PyObject::native_closure("popen.readline", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(d2.read().as_str())))
+            }),
+        );
     }
     Ok(inst)
 }
 
 fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let path = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
+    let path = if args.is_empty() {
+        ".".to_string()
+    } else {
+        args[0].py_to_string()
+    };
     let entries = std::fs::read_dir(&path)
         .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
     let mut items = Vec::new();
@@ -1967,120 +2757,196 @@ fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let file_type = entry.file_type().ok();
         let is_file = file_type.as_ref().map(|ft| ft.is_file()).unwrap_or(false);
         let is_dir = file_type.as_ref().map(|ft| ft.is_dir()).unwrap_or(false);
-        let is_symlink = file_type.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+        let is_symlink = file_type
+            .as_ref()
+            .map(|ft| ft.is_symlink())
+            .unwrap_or(false);
 
         let cls = PyObject::class(CompactString::from("DirEntry"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
-        attrs.insert(CompactString::from("path"), PyObject::str_val(CompactString::from(&full_path)));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(&name)),
+        );
+        attrs.insert(
+            CompactString::from("path"),
+            PyObject::str_val(CompactString::from(&full_path)),
+        );
 
         let is_file_val = is_file;
-        attrs.insert(CompactString::from("is_file"), PyObject::native_closure(
-            "DirEntry.is_file", move |_| Ok(PyObject::bool_val(is_file_val))));
+        attrs.insert(
+            CompactString::from("is_file"),
+            PyObject::native_closure("DirEntry.is_file", move |_| {
+                Ok(PyObject::bool_val(is_file_val))
+            }),
+        );
         let is_dir_val = is_dir;
-        attrs.insert(CompactString::from("is_dir"), PyObject::native_closure(
-            "DirEntry.is_dir", move |_| Ok(PyObject::bool_val(is_dir_val))));
+        attrs.insert(
+            CompactString::from("is_dir"),
+            PyObject::native_closure("DirEntry.is_dir", move |_| {
+                Ok(PyObject::bool_val(is_dir_val))
+            }),
+        );
         let is_sym_val = is_symlink;
-        attrs.insert(CompactString::from("is_symlink"), PyObject::native_closure(
-            "DirEntry.is_symlink", move |_| Ok(PyObject::bool_val(is_sym_val))));
+        attrs.insert(
+            CompactString::from("is_symlink"),
+            PyObject::native_closure("DirEntry.is_symlink", move |_| {
+                Ok(PyObject::bool_val(is_sym_val))
+            }),
+        );
         let stat_path = full_path.clone();
-        attrs.insert(CompactString::from("stat"), PyObject::native_closure(
-            "DirEntry.stat", move |_| {
+        attrs.insert(
+            CompactString::from("stat"),
+            PyObject::native_closure("DirEntry.stat", move |_| {
                 let meta = std::fs::metadata(&stat_path)
                     .map_err(|e| PyException::os_error(format!("{}: '{}'", e, stat_path)))?;
                 crate::fs_modules::build_stat_result(meta)
-            }));
+            }),
+        );
         let repr_name = name.clone();
-        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-            "DirEntry.__repr__", move |_| {
-                Ok(PyObject::str_val(CompactString::from(format!("<DirEntry '{}'>", repr_name))))
-            }));
+        attrs.insert(
+            CompactString::from("__repr__"),
+            PyObject::native_closure("DirEntry.__repr__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "<DirEntry '{}'>",
+                    repr_name
+                ))))
+            }),
+        );
         let str_name = name.clone();
-        attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
-            "DirEntry.__str__", move |_| {
+        attrs.insert(
+            CompactString::from("__str__"),
+            PyObject::native_closure("DirEntry.__str__", move |_| {
                 Ok(PyObject::str_val(CompactString::from(str_name.as_str())))
-            }));
+            }),
+        );
         items.push(PyObject::instance_with_attrs(cls, attrs));
     }
     // Wrap in a ScandirIterator with context manager support
     let items_list = PyObject::list(items);
-    let cls = PyObject::class(CompactString::from("ScandirIterator"), vec![], IndexMap::new());
+    let cls = PyObject::class(
+        CompactString::from("ScandirIterator"),
+        vec![],
+        IndexMap::new(),
+    );
     let mut attrs = IndexMap::new();
     let items_ref = items_list.clone();
     attrs.insert(CompactString::from("_entries"), items_list);
-    attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
-        "ScandirIterator.__enter__", move |args| {
-            if args.is_empty() { return Err(PyException::type_error("expected self")); }
+    attrs.insert(
+        CompactString::from("__enter__"),
+        PyObject::native_closure("ScandirIterator.__enter__", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("expected self"));
+            }
             Ok(args[0].clone())
-        }));
-    attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
-        "ScandirIterator.__exit__", move |_| Ok(PyObject::none())));
+        }),
+    );
+    attrs.insert(
+        CompactString::from("__exit__"),
+        PyObject::native_closure("ScandirIterator.__exit__", move |_| Ok(PyObject::none())),
+    );
     let iter_items = items_ref;
-    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
-        "ScandirIterator.__iter__", move |_| {
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("ScandirIterator.__iter__", move |_| {
             ferrython_core::object::PyObjectMethods::get_iter(&iter_items)
-        }));
+        }),
+    );
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
 // ── os.path module ──
 
-
 pub fn create_os_path_module() -> PyObjectRef {
-    make_module("os.path", vec![
-        ("join", make_builtin(os_path_join)),
-        ("exists", make_builtin(os_path_exists)),
-        ("isfile", make_builtin(os_path_isfile)),
-        ("isdir", make_builtin(os_path_isdir)),
-        ("islink", make_builtin(os_path_islink)),
-        ("basename", make_builtin(os_path_basename)),
-        ("dirname", make_builtin(os_path_dirname)),
-        ("abspath", make_builtin(os_path_abspath)),
-        ("splitext", make_builtin(os_path_splitext)),
-        ("split", make_builtin(os_path_split)),
-        ("isabs", make_builtin(os_path_isabs)),
-        ("normpath", make_builtin(os_path_normpath)),
-        ("expanduser", make_builtin(os_path_expanduser)),
-        ("expandvars", make_builtin(os_path_expandvars)),
-        ("getsize", make_builtin(os_path_getsize)),
-        ("getmtime", make_builtin(os_path_getmtime)),
-        ("getctime", make_builtin(os_path_getctime)),
-        ("getatime", make_builtin(os_path_getatime)),
-        ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
-        ("realpath", make_builtin(os_path_realpath)),
-        ("relpath", make_builtin(os_path_relpath)),
-        ("commonpath", make_builtin(os_path_commonpath)),
-        ("commonprefix", make_builtin(os_path_commonprefix)),
-        ("samefile", make_builtin(os_path_samefile)),
-        ("pardir", PyObject::str_val(CompactString::from(".."))),
-        ("curdir", PyObject::str_val(CompactString::from("."))),
-        ("extsep", PyObject::str_val(CompactString::from("."))),
-        ("altsep", PyObject::none()),
-        ("pathsep", PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" }))),
-        ("defpath", PyObject::str_val(CompactString::from(if cfg!(windows) { ".;C:\\bin" } else { "/bin:/usr/bin" }))),
-        ("devnull", PyObject::str_val(CompactString::from(if cfg!(windows) { "nul" } else { "/dev/null" }))),
-    ])
+    make_module(
+        "os.path",
+        vec![
+            ("join", make_builtin(os_path_join)),
+            ("exists", make_builtin(os_path_exists)),
+            ("isfile", make_builtin(os_path_isfile)),
+            ("isdir", make_builtin(os_path_isdir)),
+            ("islink", make_builtin(os_path_islink)),
+            ("basename", make_builtin(os_path_basename)),
+            ("dirname", make_builtin(os_path_dirname)),
+            ("abspath", make_builtin(os_path_abspath)),
+            ("splitext", make_builtin(os_path_splitext)),
+            ("split", make_builtin(os_path_split)),
+            ("isabs", make_builtin(os_path_isabs)),
+            ("normpath", make_builtin(os_path_normpath)),
+            ("expanduser", make_builtin(os_path_expanduser)),
+            ("expandvars", make_builtin(os_path_expandvars)),
+            ("getsize", make_builtin(os_path_getsize)),
+            ("getmtime", make_builtin(os_path_getmtime)),
+            ("getctime", make_builtin(os_path_getctime)),
+            ("getatime", make_builtin(os_path_getatime)),
+            (
+                "sep",
+                PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string())),
+            ),
+            ("realpath", make_builtin(os_path_realpath)),
+            ("relpath", make_builtin(os_path_relpath)),
+            ("commonpath", make_builtin(os_path_commonpath)),
+            ("commonprefix", make_builtin(os_path_commonprefix)),
+            ("samefile", make_builtin(os_path_samefile)),
+            ("pardir", PyObject::str_val(CompactString::from(".."))),
+            ("curdir", PyObject::str_val(CompactString::from("."))),
+            ("extsep", PyObject::str_val(CompactString::from("."))),
+            ("altsep", PyObject::none()),
+            (
+                "pathsep",
+                PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" })),
+            ),
+            (
+                "defpath",
+                PyObject::str_val(CompactString::from(if cfg!(windows) {
+                    ".;C:\\bin"
+                } else {
+                    "/bin:/usr/bin"
+                })),
+            ),
+            (
+                "devnull",
+                PyObject::str_val(CompactString::from(if cfg!(windows) {
+                    "nul"
+                } else {
+                    "/dev/null"
+                })),
+            ),
+        ],
+    )
 }
 
 fn os_path_join(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("os.path.join requires at least 1 argument")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "os.path.join requires at least 1 argument",
+        ));
+    }
     let mut path = std::path::PathBuf::from(args[0].py_to_string());
     for arg in &args[1..] {
         path.push(arg.py_to_string());
     }
-    Ok(PyObject::str_val(CompactString::from(path.to_string_lossy().to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        path.to_string_lossy().to_string(),
+    )))
 }
 fn os_path_exists(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.exists", args, 1)?;
-    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).exists()))
+    Ok(PyObject::bool_val(
+        std::path::Path::new(&args[0].py_to_string()).exists(),
+    ))
 }
 fn os_path_isfile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.isfile", args, 1)?;
-    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_file()))
+    Ok(PyObject::bool_val(
+        std::path::Path::new(&args[0].py_to_string()).is_file(),
+    ))
 }
 fn os_path_isdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.isdir", args, 1)?;
-    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_dir()))
+    Ok(PyObject::bool_val(
+        std::path::Path::new(&args[0].py_to_string()).is_dir(),
+    ))
 }
 fn os_path_basename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.basename", args, 1)?;
@@ -2100,7 +2966,10 @@ fn os_path_dirname(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.dirname", args, 1)?;
     let s = args[0].py_to_string();
     let p = std::path::Path::new(&s);
-    let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    let dir = p
+        .parent()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
     Ok(PyObject::str_val(CompactString::from(dir)))
 }
 fn os_path_abspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -2112,14 +2981,19 @@ fn os_path_abspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         cwd.push(&s);
         cwd
     });
-    Ok(PyObject::str_val(CompactString::from(abs.to_string_lossy().to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        abs.to_string_lossy().to_string(),
+    )))
 }
 fn os_path_splitext(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.splitext", args, 1)?;
     let s = args[0].py_to_string();
     let p = std::path::Path::new(&s);
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    let stem = s[..s.len()-ext.len()].to_string();
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let stem = s[..s.len() - ext.len()].to_string();
     Ok(PyObject::tuple(vec![
         PyObject::str_val(CompactString::from(stem)),
         PyObject::str_val(CompactString::from(ext)),
@@ -2152,7 +3026,9 @@ fn os_path_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn os_path_isabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.isabs", args, 1)?;
-    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_absolute()))
+    Ok(PyObject::bool_val(
+        std::path::Path::new(&args[0].py_to_string()).is_absolute(),
+    ))
 }
 fn os_path_normpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.normpath", args, 1)?;
@@ -2162,7 +3038,9 @@ fn os_path_normpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for part in s.split('/') {
         match part {
             "" | "." => {}
-            ".." => { parts.pop(); }
+            ".." => {
+                parts.pop();
+            }
             other => parts.push(other),
         }
     }
@@ -2180,7 +3058,11 @@ fn os_path_expanduser(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     if s.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
-            return Ok(PyObject::str_val(CompactString::from(format!("{}{}", home, &s[1..]))));
+            return Ok(PyObject::str_val(CompactString::from(format!(
+                "{}{}",
+                home,
+                &s[1..]
+            ))));
         }
     }
     Ok(PyObject::str_val(CompactString::from(s)))
@@ -2203,12 +3085,16 @@ fn os_path_realpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         cwd.push(&s);
         cwd
     });
-    Ok(PyObject::str_val(CompactString::from(real.to_string_lossy().to_string())))
+    Ok(PyObject::str_val(CompactString::from(
+        real.to_string_lossy().to_string(),
+    )))
 }
 
 fn os_path_relpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Err(PyException::type_error("os.path.relpath() requires at least 1 argument"));
+        return Err(PyException::type_error(
+            "os.path.relpath() requires at least 1 argument",
+        ));
     }
     let path_str = args[0].py_to_string();
     let start_str = if args.len() > 1 {
@@ -2232,7 +3118,9 @@ fn os_path_relpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let start_abs = make_abs(&start_str);
     let path_components: Vec<_> = path_abs.components().collect();
     let start_components: Vec<_> = start_abs.components().collect();
-    let common_len = path_components.iter().zip(start_components.iter())
+    let common_len = path_components
+        .iter()
+        .zip(start_components.iter())
         .take_while(|(a, b)| a == b)
         .count();
     let mut result = std::path::PathBuf::new();
@@ -2254,16 +3142,21 @@ fn os_path_commonpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.commonpath", args, 1)?;
     let paths = args[0].to_list()?;
     if paths.is_empty() {
-        return Err(PyException::value_error("commonpath() arg is an empty sequence"));
+        return Err(PyException::value_error(
+            "commonpath() arg is an empty sequence",
+        ));
     }
     let path_strs: Vec<String> = paths.iter().map(|p| p.py_to_string()).collect();
     let first_abs = path_strs[0].starts_with('/');
     for p in &path_strs[1..] {
         if p.starts_with('/') != first_abs {
-            return Err(PyException::value_error("Can't mix absolute and relative paths"));
+            return Err(PyException::value_error(
+                "Can't mix absolute and relative paths",
+            ));
         }
     }
-    let split: Vec<Vec<&str>> = path_strs.iter()
+    let split: Vec<Vec<&str>> = path_strs
+        .iter()
         .map(|p| p.split('/').filter(|s| !s.is_empty()).collect())
         .collect();
     let min_len = split.iter().map(|p| p.len()).min().unwrap_or(0);
@@ -2294,8 +3187,12 @@ fn os_path_getmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.getmtime", args, 1)?;
     let s = args[0].py_to_string();
     let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
-    let mtime = meta.modified().map_err(|_| PyException::runtime_error("getmtime failed"))?;
-    let epoch = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let mtime = meta
+        .modified()
+        .map_err(|_| PyException::runtime_error("getmtime failed"))?;
+    let epoch = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     Ok(PyObject::float(epoch.as_secs_f64()))
 }
 
@@ -2304,9 +3201,13 @@ fn os_path_getctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
     // On Unix, ctime is metadata change time (use created or modified as fallback)
-    let ctime = meta.created().or_else(|_| meta.modified())
+    let ctime = meta
+        .created()
+        .or_else(|_| meta.modified())
         .map_err(|_| PyException::runtime_error("getctime failed"))?;
-    let epoch = ctime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let epoch = ctime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     Ok(PyObject::float(epoch.as_secs_f64()))
 }
 
@@ -2314,8 +3215,12 @@ fn os_path_getatime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.getatime", args, 1)?;
     let s = args[0].py_to_string();
     let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
-    let atime = meta.accessed().map_err(|_| PyException::runtime_error("getatime failed"))?;
-    let epoch = atime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let atime = meta
+        .accessed()
+        .map_err(|_| PyException::runtime_error("getatime failed"))?;
+    let epoch = atime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     Ok(PyObject::float(epoch.as_secs_f64()))
 }
 
@@ -2331,13 +3236,19 @@ fn os_path_expandvars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if i < bytes.len() && bytes[i] == b'{' {
                 i += 1; // skip {
                 let start = i;
-                while i < bytes.len() && bytes[i] != b'}' { i += 1; }
+                while i < bytes.len() && bytes[i] != b'}' {
+                    i += 1;
+                }
                 let var = &s[start..i];
-                if i < bytes.len() { i += 1; } // skip }
+                if i < bytes.len() {
+                    i += 1;
+                } // skip }
                 result.push_str(&std::env::var(var).unwrap_or(format!("${{{}}}", var)));
             } else {
                 let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
                 let var = &s[start..i];
                 if var.is_empty() {
                     result.push('$');
@@ -2356,7 +3267,9 @@ fn os_path_expandvars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_commonprefix(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.commonprefix", args, 1)?;
     let paths = args[0].to_list()?;
-    if paths.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+    if paths.is_empty() {
+        return Ok(PyObject::str_val(CompactString::from("")));
+    }
     let strs: Vec<String> = paths.iter().map(|p| p.py_to_string()).collect();
     let first = strs[0].as_bytes();
     let mut prefix_len = first.len();
@@ -2364,14 +3277,21 @@ fn os_path_commonprefix(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let b = s.as_bytes();
         prefix_len = prefix_len.min(b.len());
         for i in 0..prefix_len {
-            if first[i] != b[i] { prefix_len = i; break; }
+            if first[i] != b[i] {
+                prefix_len = i;
+                break;
+            }
         }
     }
-    Ok(PyObject::str_val(CompactString::from(&strs[0][..prefix_len])))
+    Ok(PyObject::str_val(CompactString::from(
+        &strs[0][..prefix_len],
+    )))
 }
 
 fn os_path_samefile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 { return Err(PyException::type_error("samefile() requires 2 arguments")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error("samefile() requires 2 arguments"));
+    }
     let a = std::fs::canonicalize(args[0].py_to_string());
     let b = std::fs::canonicalize(args[1].py_to_string());
     match (a, b) {
@@ -2383,140 +3303,291 @@ fn os_path_samefile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_islink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.islink", args, 1)?;
     let s = args[0].py_to_string();
-    Ok(PyObject::bool_val(std::fs::symlink_metadata(&s).map(|m| m.file_type().is_symlink()).unwrap_or(false)))
+    Ok(PyObject::bool_val(
+        std::fs::symlink_metadata(&s)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false),
+    ))
 }
 
-
 pub fn create_platform_module() -> PyObjectRef {
-    make_module("platform", vec![
-        ("system", make_builtin(|_| {
-            let os = std::env::consts::OS;
-            // CPython capitalizes: "Linux", "Darwin", "Windows"
-            let capitalized = match os {
-                "linux" => "Linux",
-                "macos" => "Darwin",
-                "windows" => "Windows",
-                "freebsd" => "FreeBSD",
-                "openbsd" => "OpenBSD",
-                "netbsd" => "NetBSD",
-                other => other,
-            };
-            Ok(PyObject::str_val(CompactString::from(capitalized)))
-        })),
-        ("machine", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
-        ("python_version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.8.0"))))),
-        ("python_implementation", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython"))))),
-        ("node", make_builtin(|_| {
-            #[cfg(unix)]
-            {
-                let mut buf = [0u8; 256];
-                let cstr = unsafe {
-                    libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
-                    std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char)
-                };
-                Ok(PyObject::str_val(CompactString::from(cstr.to_str().unwrap_or("localhost"))))
-            }
-            #[cfg(not(unix))]
-            Ok(PyObject::str_val(CompactString::from("localhost")))
-        })),
-        ("release", make_builtin(|_| {
-            #[cfg(unix)]
-            {
-                let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
-                unsafe { libc::uname(&mut utsname); }
-                let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
-                Ok(PyObject::str_val(CompactString::from(release.to_str().unwrap_or(""))))
-            }
-            #[cfg(not(unix))]
-            Ok(PyObject::str_val(CompactString::from("")))
-        })),
-        ("version", make_builtin(|_| {
-            #[cfg(unix)]
-            {
-                let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
-                unsafe { libc::uname(&mut utsname); }
-                let version = unsafe { std::ffi::CStr::from_ptr(utsname.version.as_ptr()) };
-                Ok(PyObject::str_val(CompactString::from(version.to_str().unwrap_or(""))))
-            }
-            #[cfg(not(unix))]
-            Ok(PyObject::str_val(CompactString::from("")))
-        })),
-        ("processor", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
-        ("architecture", make_builtin(|_| Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from(if cfg!(target_pointer_width = "64") { "64bit" } else { "32bit" })),
-            PyObject::str_val(CompactString::from("ELF")),
-        ])))),
-        ("python_version_tuple", make_builtin(|_| Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("3")),
-            PyObject::str_val(CompactString::from("8")),
-            PyObject::str_val(CompactString::from("0")),
-        ])))),
-        ("python_compiler", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython (Rust)"))))),
-        ("python_build", make_builtin(|_| Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("default")),
-            PyObject::str_val(CompactString::from("")),
-        ])))),
-        ("platform", make_builtin(|_| {
-            let system = match std::env::consts::OS {
-                "linux" => "Linux", "macos" => "Darwin", "windows" => "Windows", o => o,
-            };
-            let machine = std::env::consts::ARCH;
-            #[cfg(unix)]
-            {
-                let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
-                unsafe { libc::uname(&mut utsname); }
-                let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
-                Ok(PyObject::str_val(CompactString::from(format!("{}-{}-{}", system, release.to_str().unwrap_or(""), machine))))
-            }
-            #[cfg(not(unix))]
-            Ok(PyObject::str_val(CompactString::from(format!("{}-{}", system, machine))))
-        })),
-        ("python_branch", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
-        ("python_revision", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
-        ("mac_ver", make_builtin(|_| Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("")),
-            PyObject::tuple(vec![PyObject::str_val(CompactString::from("")), PyObject::str_val(CompactString::from("")), PyObject::str_val(CompactString::from(""))]),
-            PyObject::str_val(CompactString::from("")),
-        ])))),
-        ("linux_distribution", make_builtin(|_| Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("")),
-            PyObject::str_val(CompactString::from("")),
-            PyObject::str_val(CompactString::from("")),
-        ])))),
-        ("uname", make_builtin(|_| {
-            let system = match std::env::consts::OS {
-                "linux" => "Linux", "macos" => "Darwin", "windows" => "Windows", o => o,
-            };
-            let machine = std::env::consts::ARCH;
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("system"), PyObject::str_val(CompactString::from(system)));
-            #[cfg(unix)]
-            {
-                let mut buf = [0u8; 256];
-                unsafe {
-                    libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
-                }
-                let hostname = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
-                attrs.insert(CompactString::from("node"), PyObject::str_val(CompactString::from(hostname.to_str().unwrap_or("localhost"))));
-                let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
-                unsafe { libc::uname(&mut utsname); }
-                let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
-                let version = unsafe { std::ffi::CStr::from_ptr(utsname.version.as_ptr()) };
-                attrs.insert(CompactString::from("release"), PyObject::str_val(CompactString::from(release.to_str().unwrap_or(""))));
-                attrs.insert(CompactString::from("version"), PyObject::str_val(CompactString::from(version.to_str().unwrap_or(""))));
-            }
-            #[cfg(not(unix))]
-            {
-                attrs.insert(CompactString::from("node"), PyObject::str_val(CompactString::from("localhost")));
-                attrs.insert(CompactString::from("release"), PyObject::str_val(CompactString::from("")));
-                attrs.insert(CompactString::from("version"), PyObject::str_val(CompactString::from("")));
-            }
-            attrs.insert(CompactString::from("machine"), PyObject::str_val(CompactString::from(machine)));
-            attrs.insert(CompactString::from("processor"), PyObject::str_val(CompactString::from(machine)));
-            let cls = PyObject::class(CompactString::from("uname_result"), vec![], IndexMap::new());
-            Ok(PyObject::instance_with_attrs(cls, attrs))
-        })),
-    ])
+    make_module(
+        "platform",
+        vec![
+            (
+                "system",
+                make_builtin(|_| {
+                    let os = std::env::consts::OS;
+                    // CPython capitalizes: "Linux", "Darwin", "Windows"
+                    let capitalized = match os {
+                        "linux" => "Linux",
+                        "macos" => "Darwin",
+                        "windows" => "Windows",
+                        "freebsd" => "FreeBSD",
+                        "openbsd" => "OpenBSD",
+                        "netbsd" => "NetBSD",
+                        other => other,
+                    };
+                    Ok(PyObject::str_val(CompactString::from(capitalized)))
+                }),
+            ),
+            (
+                "machine",
+                make_builtin(|_| {
+                    Ok(PyObject::str_val(CompactString::from(
+                        std::env::consts::ARCH,
+                    )))
+                }),
+            ),
+            (
+                "python_version",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.8.0")))),
+            ),
+            (
+                "python_implementation",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython")))),
+            ),
+            (
+                "node",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut buf = [0u8; 256];
+                        let cstr = unsafe {
+                            libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
+                            std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char)
+                        };
+                        Ok(PyObject::str_val(CompactString::from(
+                            cstr.to_str().unwrap_or("localhost"),
+                        )))
+                    }
+                    #[cfg(not(unix))]
+                    Ok(PyObject::str_val(CompactString::from("localhost")))
+                }),
+            ),
+            (
+                "release",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
+                        unsafe {
+                            libc::uname(&mut utsname);
+                        }
+                        let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
+                        Ok(PyObject::str_val(CompactString::from(
+                            release.to_str().unwrap_or(""),
+                        )))
+                    }
+                    #[cfg(not(unix))]
+                    Ok(PyObject::str_val(CompactString::from("")))
+                }),
+            ),
+            (
+                "version",
+                make_builtin(|_| {
+                    #[cfg(unix)]
+                    {
+                        let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
+                        unsafe {
+                            libc::uname(&mut utsname);
+                        }
+                        let version = unsafe { std::ffi::CStr::from_ptr(utsname.version.as_ptr()) };
+                        Ok(PyObject::str_val(CompactString::from(
+                            version.to_str().unwrap_or(""),
+                        )))
+                    }
+                    #[cfg(not(unix))]
+                    Ok(PyObject::str_val(CompactString::from("")))
+                }),
+            ),
+            (
+                "processor",
+                make_builtin(|_| {
+                    Ok(PyObject::str_val(CompactString::from(
+                        std::env::consts::ARCH,
+                    )))
+                }),
+            ),
+            (
+                "architecture",
+                make_builtin(|_| {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from(
+                            if cfg!(target_pointer_width = "64") {
+                                "64bit"
+                            } else {
+                                "32bit"
+                            },
+                        )),
+                        PyObject::str_val(CompactString::from("ELF")),
+                    ]))
+                }),
+            ),
+            (
+                "python_version_tuple",
+                make_builtin(|_| {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("3")),
+                        PyObject::str_val(CompactString::from("8")),
+                        PyObject::str_val(CompactString::from("0")),
+                    ]))
+                }),
+            ),
+            (
+                "python_compiler",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython (Rust)")))),
+            ),
+            (
+                "python_build",
+                make_builtin(|_| {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("default")),
+                        PyObject::str_val(CompactString::from("")),
+                    ]))
+                }),
+            ),
+            (
+                "platform",
+                make_builtin(|_| {
+                    let system = match std::env::consts::OS {
+                        "linux" => "Linux",
+                        "macos" => "Darwin",
+                        "windows" => "Windows",
+                        o => o,
+                    };
+                    let machine = std::env::consts::ARCH;
+                    #[cfg(unix)]
+                    {
+                        let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
+                        unsafe {
+                            libc::uname(&mut utsname);
+                        }
+                        let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
+                        Ok(PyObject::str_val(CompactString::from(format!(
+                            "{}-{}-{}",
+                            system,
+                            release.to_str().unwrap_or(""),
+                            machine
+                        ))))
+                    }
+                    #[cfg(not(unix))]
+                    Ok(PyObject::str_val(CompactString::from(format!(
+                        "{}-{}",
+                        system, machine
+                    ))))
+                }),
+            ),
+            (
+                "python_branch",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))),
+            ),
+            (
+                "python_revision",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))),
+            ),
+            (
+                "mac_ver",
+                make_builtin(|_| {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("")),
+                        PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from("")),
+                            PyObject::str_val(CompactString::from("")),
+                            PyObject::str_val(CompactString::from("")),
+                        ]),
+                        PyObject::str_val(CompactString::from("")),
+                    ]))
+                }),
+            ),
+            (
+                "linux_distribution",
+                make_builtin(|_| {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from("")),
+                        PyObject::str_val(CompactString::from("")),
+                        PyObject::str_val(CompactString::from("")),
+                    ]))
+                }),
+            ),
+            (
+                "uname",
+                make_builtin(|_| {
+                    let system = match std::env::consts::OS {
+                        "linux" => "Linux",
+                        "macos" => "Darwin",
+                        "windows" => "Windows",
+                        o => o,
+                    };
+                    let machine = std::env::consts::ARCH;
+                    let mut attrs = IndexMap::new();
+                    attrs.insert(
+                        CompactString::from("system"),
+                        PyObject::str_val(CompactString::from(system)),
+                    );
+                    #[cfg(unix)]
+                    {
+                        let mut buf = [0u8; 256];
+                        unsafe {
+                            libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len());
+                        }
+                        let hostname = unsafe {
+                            std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char)
+                        };
+                        attrs.insert(
+                            CompactString::from("node"),
+                            PyObject::str_val(CompactString::from(
+                                hostname.to_str().unwrap_or("localhost"),
+                            )),
+                        );
+                        let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
+                        unsafe {
+                            libc::uname(&mut utsname);
+                        }
+                        let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
+                        let version = unsafe { std::ffi::CStr::from_ptr(utsname.version.as_ptr()) };
+                        attrs.insert(
+                            CompactString::from("release"),
+                            PyObject::str_val(CompactString::from(release.to_str().unwrap_or(""))),
+                        );
+                        attrs.insert(
+                            CompactString::from("version"),
+                            PyObject::str_val(CompactString::from(version.to_str().unwrap_or(""))),
+                        );
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        attrs.insert(
+                            CompactString::from("node"),
+                            PyObject::str_val(CompactString::from("localhost")),
+                        );
+                        attrs.insert(
+                            CompactString::from("release"),
+                            PyObject::str_val(CompactString::from("")),
+                        );
+                        attrs.insert(
+                            CompactString::from("version"),
+                            PyObject::str_val(CompactString::from("")),
+                        );
+                    }
+                    attrs.insert(
+                        CompactString::from("machine"),
+                        PyObject::str_val(CompactString::from(machine)),
+                    );
+                    attrs.insert(
+                        CompactString::from("processor"),
+                        PyObject::str_val(CompactString::from(machine)),
+                    );
+                    let cls = PyObject::class(
+                        CompactString::from("uname_result"),
+                        vec![],
+                        IndexMap::new(),
+                    );
+                    Ok(PyObject::instance_with_attrs(cls, attrs))
+                }),
+            ),
+        ],
+    )
 }
 
 // ── locale module ──
@@ -2534,7 +3605,8 @@ pub fn create_locale_module() -> PyObjectRef {
         // Parse "en_US.UTF-8" into ("en_US", "UTF-8")
         if let Some(dot) = lang.find('.') {
             let locale_name = &lang[..dot];
-            let encoding = lang[dot+1..].trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
+            let encoding =
+                lang[dot + 1..].trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
             (locale_name.to_string(), encoding.to_string())
         } else {
             (lang.clone(), "UTF-8".to_string())
@@ -2554,19 +3626,29 @@ pub fn create_locale_module() -> PyObjectRef {
 
     let cl2 = current_locale.clone();
     let setlocale_fn = PyObject::native_closure("setlocale", move |args: &[PyObjectRef]| {
-        let _category = if !args.is_empty() { args[0].to_int().unwrap_or(0) } else { 0 };
+        let _category = if !args.is_empty() {
+            args[0].to_int().unwrap_or(0)
+        } else {
+            0
+        };
         if args.len() >= 2 {
             let locale_str = args[1].py_to_string();
             if locale_str.is_empty() || locale_str == "C" || locale_str == "POSIX" {
                 *cl2.write() = ("C".to_string(), "ANSI_X3.4-1968".to_string());
             } else if let Some(dot) = locale_str.find('.') {
-                *cl2.write() = (locale_str[..dot].to_string(), locale_str[dot+1..].to_string());
+                *cl2.write() = (
+                    locale_str[..dot].to_string(),
+                    locale_str[dot + 1..].to_string(),
+                );
             } else {
                 *cl2.write() = (locale_str.clone(), "UTF-8".to_string());
             }
         }
         let (name, enc) = cl2.read().clone();
-        Ok(PyObject::str_val(CompactString::from(format!("{}.{}", name, enc))))
+        Ok(PyObject::str_val(CompactString::from(format!(
+            "{}.{}",
+            name, enc
+        ))))
     });
 
     let cl3 = current_locale.clone();
@@ -2574,74 +3656,141 @@ pub fn create_locale_module() -> PyObjectRef {
         let (name, _) = cl3.read().clone();
         let is_c = name == "C" || name == "POSIX";
         let mut conv = IndexMap::new();
-        conv.insert(CompactString::from("decimal_point"), PyObject::str_val(CompactString::from(".")));
-        conv.insert(CompactString::from("thousands_sep"), PyObject::str_val(CompactString::from(if is_c { "" } else { "," })));
-        conv.insert(CompactString::from("grouping"), PyObject::list(if is_c { vec![] } else { vec![PyObject::int(3), PyObject::int(0)] }));
-        conv.insert(CompactString::from("int_curr_symbol"), PyObject::str_val(CompactString::from("")));
-        conv.insert(CompactString::from("currency_symbol"), PyObject::str_val(CompactString::from("")));
-        conv.insert(CompactString::from("mon_decimal_point"), PyObject::str_val(CompactString::from(".")));
-        conv.insert(CompactString::from("mon_thousands_sep"), PyObject::str_val(CompactString::from(if is_c { "" } else { "," })));
+        conv.insert(
+            CompactString::from("decimal_point"),
+            PyObject::str_val(CompactString::from(".")),
+        );
+        conv.insert(
+            CompactString::from("thousands_sep"),
+            PyObject::str_val(CompactString::from(if is_c { "" } else { "," })),
+        );
+        conv.insert(
+            CompactString::from("grouping"),
+            PyObject::list(if is_c {
+                vec![]
+            } else {
+                vec![PyObject::int(3), PyObject::int(0)]
+            }),
+        );
+        conv.insert(
+            CompactString::from("int_curr_symbol"),
+            PyObject::str_val(CompactString::from("")),
+        );
+        conv.insert(
+            CompactString::from("currency_symbol"),
+            PyObject::str_val(CompactString::from("")),
+        );
+        conv.insert(
+            CompactString::from("mon_decimal_point"),
+            PyObject::str_val(CompactString::from(".")),
+        );
+        conv.insert(
+            CompactString::from("mon_thousands_sep"),
+            PyObject::str_val(CompactString::from(if is_c { "" } else { "," })),
+        );
         conv.insert(CompactString::from("p_sign_posn"), PyObject::int(1));
         conv.insert(CompactString::from("n_sign_posn"), PyObject::int(1));
-        let dict = PyObject::dict_from_pairs(conv.into_iter().map(|(k, v)| (PyObject::str_val(k), v)).collect());
+        let dict = PyObject::dict_from_pairs(
+            conv.into_iter()
+                .map(|(k, v)| (PyObject::str_val(k), v))
+                .collect(),
+        );
         Ok(dict)
     });
 
     let normalize_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() { return Err(PyException::type_error("normalize() requires 1 argument")); }
+        if args.is_empty() {
+            return Err(PyException::type_error("normalize() requires 1 argument"));
+        }
         let s = args[0].py_to_string();
         // Simple normalization: "en_US" → "en_US.UTF-8"
         if !s.contains('.') {
-            Ok(PyObject::str_val(CompactString::from(format!("{}.UTF-8", s))))
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "{}.UTF-8",
+                s
+            ))))
         } else {
             Ok(PyObject::str_val(CompactString::from(s)))
         }
     });
 
-    make_module("locale", vec![
-        ("getlocale", getlocale_fn),
-        ("setlocale", setlocale_fn),
-        ("localeconv", localeconv_fn),
-        ("normalize", normalize_fn),
-        ("getpreferredencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("UTF-8"))))),
-        ("getdefaultlocale", make_builtin(|_| {
-            let lang = std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string());
-            let (name, enc) = if let Some(dot) = lang.find('.') {
-                (lang[..dot].to_string(), lang[dot+1..].to_string())
-            } else {
-                (lang, "UTF-8".to_string())
-            };
-            Ok(PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(name)),
-                PyObject::str_val(CompactString::from(enc)),
-            ]))
-        })),
-        ("LC_CTYPE", PyObject::int(0)),
-        ("LC_NUMERIC", PyObject::int(1)),
-        ("LC_TIME", PyObject::int(2)),
-        ("LC_COLLATE", PyObject::int(3)),
-        ("LC_MONETARY", PyObject::int(4)),
-        ("LC_MESSAGES", PyObject::int(5)),
-        ("LC_ALL", PyObject::int(6)),
-        ("CHAR_MAX", PyObject::int(127)),
-        ("Error", PyObject::builtin_type(CompactString::from("locale.Error"))),
-        ("str", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
-            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
-        })),
-        ("atof", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("atof() requires 1 argument")); }
-            let s = args[0].py_to_string().replace(',', "");
-            let f: f64 = s.parse().map_err(|_| PyException::value_error(format!("could not convert '{}' to float", s)))?;
-            Ok(PyObject::float(f))
-        })),
-        ("atoi", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("atoi() requires 1 argument")); }
-            let s = args[0].py_to_string().replace(',', "");
-            let n: i64 = s.parse().map_err(|_| PyException::value_error(format!("could not convert '{}' to int", s)))?;
-            Ok(PyObject::int(n))
-        })),
-    ])
+    make_module(
+        "locale",
+        vec![
+            ("getlocale", getlocale_fn),
+            ("setlocale", setlocale_fn),
+            ("localeconv", localeconv_fn),
+            ("normalize", normalize_fn),
+            (
+                "getpreferredencoding",
+                make_builtin(|_| Ok(PyObject::str_val(CompactString::from("UTF-8")))),
+            ),
+            (
+                "getdefaultlocale",
+                make_builtin(|_| {
+                    let lang = std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string());
+                    let (name, enc) = if let Some(dot) = lang.find('.') {
+                        (lang[..dot].to_string(), lang[dot + 1..].to_string())
+                    } else {
+                        (lang, "UTF-8".to_string())
+                    };
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from(name)),
+                        PyObject::str_val(CompactString::from(enc)),
+                    ]))
+                }),
+            ),
+            ("LC_CTYPE", PyObject::int(0)),
+            ("LC_NUMERIC", PyObject::int(1)),
+            ("LC_TIME", PyObject::int(2)),
+            ("LC_COLLATE", PyObject::int(3)),
+            ("LC_MONETARY", PyObject::int(4)),
+            ("LC_MESSAGES", PyObject::int(5)),
+            ("LC_ALL", PyObject::int(6)),
+            ("CHAR_MAX", PyObject::int(127)),
+            (
+                "Error",
+                PyObject::builtin_type(CompactString::from("locale.Error")),
+            ),
+            (
+                "str",
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Ok(PyObject::str_val(CompactString::from("")));
+                    }
+                    Ok(PyObject::str_val(CompactString::from(
+                        args[0].py_to_string(),
+                    )))
+                }),
+            ),
+            (
+                "atof",
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("atof() requires 1 argument"));
+                    }
+                    let s = args[0].py_to_string().replace(',', "");
+                    let f: f64 = s.parse().map_err(|_| {
+                        PyException::value_error(format!("could not convert '{}' to float", s))
+                    })?;
+                    Ok(PyObject::float(f))
+                }),
+            ),
+            (
+                "atoi",
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("atoi() requires 1 argument"));
+                    }
+                    let s = args[0].py_to_string().replace(',', "");
+                    let n: i64 = s.parse().map_err(|_| {
+                        PyException::value_error(format!("could not convert '{}' to int", s))
+                    })?;
+                    Ok(PyObject::int(n))
+                }),
+            ),
+        ],
+    )
 }
 
 // ── inspect module (stub) ──
@@ -2667,94 +3816,117 @@ pub fn create_getpass_module() -> PyObjectRef {
     }
 
     fn getpass_getpass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let prompt = if args.is_empty() { "Password: " } else { args[0].as_str().unwrap_or("Password: ") };
+        let prompt = if args.is_empty() {
+            "Password: "
+        } else {
+            args[0].as_str().unwrap_or("Password: ")
+        };
         eprint!("{}", prompt);
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).map_err(|e|
-            PyException::runtime_error(format!("getpass failed: {}", e)))?;
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| PyException::runtime_error(format!("getpass failed: {}", e)))?;
         Ok(PyObject::str_val(CompactString::from(input.trim_end())))
     }
 
-    make_module("getpass", vec![
-        ("getuser", make_builtin(getpass_getuser)),
-        ("getpass", make_builtin(getpass_getpass)),
-    ])
+    make_module(
+        "getpass",
+        vec![
+            ("getuser", make_builtin(getpass_getuser)),
+            ("getpass", make_builtin(getpass_getpass)),
+        ],
+    )
 }
 
 // ── errno module ──
 
 pub fn create_errno_module() -> PyObjectRef {
-    make_module("errno", vec![
-        ("EPERM", PyObject::int(1)),
-        ("ENOENT", PyObject::int(2)),
-        ("ESRCH", PyObject::int(3)),
-        ("EINTR", PyObject::int(4)),
-        ("EIO", PyObject::int(5)),
-        ("ENXIO", PyObject::int(6)),
-        ("E2BIG", PyObject::int(7)),
-        ("ENOEXEC", PyObject::int(8)),
-        ("EBADF", PyObject::int(9)),
-        ("ECHILD", PyObject::int(10)),
-        ("EAGAIN", PyObject::int(11)),
-        ("ENOMEM", PyObject::int(12)),
-        ("EACCES", PyObject::int(13)),
-        ("EFAULT", PyObject::int(14)),
-        ("EBUSY", PyObject::int(16)),
-        ("EEXIST", PyObject::int(17)),
-        ("EXDEV", PyObject::int(18)),
-        ("ENODEV", PyObject::int(19)),
-        ("ENOTDIR", PyObject::int(20)),
-        ("EISDIR", PyObject::int(21)),
-        ("EINVAL", PyObject::int(22)),
-        ("ENFILE", PyObject::int(23)),
-        ("EMFILE", PyObject::int(24)),
-        ("ENOTTY", PyObject::int(25)),
-        ("EFBIG", PyObject::int(27)),
-        ("ENOSPC", PyObject::int(28)),
-        ("ESPIPE", PyObject::int(29)),
-        ("EROFS", PyObject::int(30)),
-        ("EMLINK", PyObject::int(31)),
-        ("EPIPE", PyObject::int(32)),
-        ("EDOM", PyObject::int(33)),
-        ("ERANGE", PyObject::int(34)),
-        ("EDEADLK", PyObject::int(35)),
-        ("ENAMETOOLONG", PyObject::int(36)),
-        ("ENOLCK", PyObject::int(37)),
-        ("ENOSYS", PyObject::int(38)),
-        ("ENOTEMPTY", PyObject::int(39)),
-        ("ECONNREFUSED", PyObject::int(111)),
-        ("ETIMEDOUT", PyObject::int(110)),
-        ("EWOULDBLOCK", PyObject::int(11)),
-        ("EINPROGRESS", PyObject::int(115)),
-        ("EALREADY", PyObject::int(114)),
-        ("ECONNRESET", PyObject::int(104)),
-        ("ECONNABORTED", PyObject::int(103)),
-        ("ENETUNREACH", PyObject::int(101)),
-        ("EHOSTUNREACH", PyObject::int(113)),
-        ("ENOTCONN", PyObject::int(107)),
-        ("EADDRINUSE", PyObject::int(98)),
-        ("EADDRNOTAVAIL", PyObject::int(99)),
-        ("EISCONN", PyObject::int(106)),
-        ("EPFNOSUPPORT", PyObject::int(96)),
-        ("EAFNOSUPPORT", PyObject::int(97)),
-        ("ENOBUFS", PyObject::int(105)),
-        ("EPROTONOSUPPORT", PyObject::int(93)),
-        ("ESHUTDOWN", PyObject::int(108)),
-        ("EMSGSIZE", PyObject::int(90)),
-        ("ENOTSOCK", PyObject::int(88)),
-        ("EDESTADDRREQ", PyObject::int(89)),
-        ("errorcode", make_builtin(|_| {
-            let mut map = IndexMap::new();
-            let codes: Vec<(i64, &str)> = vec![
-                (1, "EPERM"), (2, "ENOENT"), (13, "EACCES"), (17, "EEXIST"),
-                (22, "EINVAL"), (32, "EPIPE"), (110, "ETIMEDOUT"), (111, "ECONNREFUSED"),
-            ];
-            for (num, name) in codes {
-                map.insert(HashableKey::Int(PyInt::Small(num)), PyObject::str_val(CompactString::from(name)));
-            }
-            Ok(PyObject::dict(map))
-        })),
-    ])
+    make_module(
+        "errno",
+        vec![
+            ("EPERM", PyObject::int(1)),
+            ("ENOENT", PyObject::int(2)),
+            ("ESRCH", PyObject::int(3)),
+            ("EINTR", PyObject::int(4)),
+            ("EIO", PyObject::int(5)),
+            ("ENXIO", PyObject::int(6)),
+            ("E2BIG", PyObject::int(7)),
+            ("ENOEXEC", PyObject::int(8)),
+            ("EBADF", PyObject::int(9)),
+            ("ECHILD", PyObject::int(10)),
+            ("EAGAIN", PyObject::int(11)),
+            ("ENOMEM", PyObject::int(12)),
+            ("EACCES", PyObject::int(13)),
+            ("EFAULT", PyObject::int(14)),
+            ("EBUSY", PyObject::int(16)),
+            ("EEXIST", PyObject::int(17)),
+            ("EXDEV", PyObject::int(18)),
+            ("ENODEV", PyObject::int(19)),
+            ("ENOTDIR", PyObject::int(20)),
+            ("EISDIR", PyObject::int(21)),
+            ("EINVAL", PyObject::int(22)),
+            ("ENFILE", PyObject::int(23)),
+            ("EMFILE", PyObject::int(24)),
+            ("ENOTTY", PyObject::int(25)),
+            ("EFBIG", PyObject::int(27)),
+            ("ENOSPC", PyObject::int(28)),
+            ("ESPIPE", PyObject::int(29)),
+            ("EROFS", PyObject::int(30)),
+            ("EMLINK", PyObject::int(31)),
+            ("EPIPE", PyObject::int(32)),
+            ("EDOM", PyObject::int(33)),
+            ("ERANGE", PyObject::int(34)),
+            ("EDEADLK", PyObject::int(35)),
+            ("ENAMETOOLONG", PyObject::int(36)),
+            ("ENOLCK", PyObject::int(37)),
+            ("ENOSYS", PyObject::int(38)),
+            ("ENOTEMPTY", PyObject::int(39)),
+            ("ECONNREFUSED", PyObject::int(111)),
+            ("ETIMEDOUT", PyObject::int(110)),
+            ("EWOULDBLOCK", PyObject::int(11)),
+            ("EINPROGRESS", PyObject::int(115)),
+            ("EALREADY", PyObject::int(114)),
+            ("ECONNRESET", PyObject::int(104)),
+            ("ECONNABORTED", PyObject::int(103)),
+            ("ENETUNREACH", PyObject::int(101)),
+            ("EHOSTUNREACH", PyObject::int(113)),
+            ("ENOTCONN", PyObject::int(107)),
+            ("EADDRINUSE", PyObject::int(98)),
+            ("EADDRNOTAVAIL", PyObject::int(99)),
+            ("EISCONN", PyObject::int(106)),
+            ("EPFNOSUPPORT", PyObject::int(96)),
+            ("EAFNOSUPPORT", PyObject::int(97)),
+            ("ENOBUFS", PyObject::int(105)),
+            ("EPROTONOSUPPORT", PyObject::int(93)),
+            ("ESHUTDOWN", PyObject::int(108)),
+            ("EMSGSIZE", PyObject::int(90)),
+            ("ENOTSOCK", PyObject::int(88)),
+            ("EDESTADDRREQ", PyObject::int(89)),
+            (
+                "errorcode",
+                make_builtin(|_| {
+                    let mut map = IndexMap::new();
+                    let codes: Vec<(i64, &str)> = vec![
+                        (1, "EPERM"),
+                        (2, "ENOENT"),
+                        (13, "EACCES"),
+                        (17, "EEXIST"),
+                        (22, "EINVAL"),
+                        (32, "EPIPE"),
+                        (110, "ETIMEDOUT"),
+                        (111, "ECONNREFUSED"),
+                    ];
+                    for (num, name) in codes {
+                        map.insert(
+                            HashableKey::Int(PyInt::Small(num)),
+                            PyObject::str_val(CompactString::from(name)),
+                        );
+                    }
+                    Ok(PyObject::dict(map))
+                }),
+            ),
+        ],
+    )
 }
 
 // ── atexit module ──
@@ -2764,25 +3936,37 @@ pub fn create_atexit_module() -> PyObjectRef {
     let callbacks: Arc<Mutex<Vec<PyObjectRef>>> = Arc::new(Mutex::new(Vec::new()));
     let cb_reg = callbacks.clone();
     let register_fn = PyObject::native_closure("atexit.register", move |args: &[PyObjectRef]| {
-        if args.is_empty() { return Err(PyException::type_error("atexit.register requires a callable")); }
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "atexit.register requires a callable",
+            ));
+        }
         cb_reg.lock().unwrap().push(args[0].clone());
         Ok(args[0].clone())
     });
     let cb_unreg = callbacks.clone();
-    let unregister_fn = PyObject::native_closure("atexit.unregister", move |_args: &[PyObjectRef]| {
-        let _cbs = cb_unreg.lock().unwrap();
-        Ok(PyObject::none())
-    });
-    let _ncallbacks = PyObject::native_closure("atexit._ncallbacks", move |_args: &[PyObjectRef]| {
-        let cbs = callbacks.lock().unwrap();
-        Ok(PyObject::int(cbs.len() as i64))
-    });
-    make_module("atexit", vec![
-        ("register", register_fn),
-        ("unregister", unregister_fn),
-        ("_run_exitfuncs", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
-        ("_ncallbacks", _ncallbacks),
-    ])
+    let unregister_fn =
+        PyObject::native_closure("atexit.unregister", move |_args: &[PyObjectRef]| {
+            let _cbs = cb_unreg.lock().unwrap();
+            Ok(PyObject::none())
+        });
+    let _ncallbacks =
+        PyObject::native_closure("atexit._ncallbacks", move |_args: &[PyObjectRef]| {
+            let cbs = callbacks.lock().unwrap();
+            Ok(PyObject::int(cbs.len() as i64))
+        });
+    make_module(
+        "atexit",
+        vec![
+            ("register", register_fn),
+            ("unregister", unregister_fn),
+            (
+                "_run_exitfuncs",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())),
+            ),
+            ("_ncallbacks", _ncallbacks),
+        ],
+    )
 }
 
 // ── site module ──
@@ -2793,11 +3977,12 @@ pub fn create_site_module() -> PyObjectRef {
     let prefix_str = layout.prefix.to_string_lossy().to_string();
 
     let sp_clone = site_packages_str.clone();
-    let getsitepackages = PyObject::native_closure("getsitepackages", move |_args: &[PyObjectRef]| {
-        Ok(PyObject::list(vec![
-            PyObject::str_val(CompactString::from(sp_clone.as_str())),
-        ]))
-    });
+    let getsitepackages =
+        PyObject::native_closure("getsitepackages", move |_args: &[PyObjectRef]| {
+            Ok(PyObject::list(vec![PyObject::str_val(
+                CompactString::from(sp_clone.as_str()),
+            )]))
+        });
 
     let getusersitepackages = make_builtin(|_args: &[PyObjectRef]| {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -2807,7 +3992,9 @@ pub fn create_site_module() -> PyObjectRef {
 
     let addsitedir = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
-            return Err(ferrython_core::error::PyException::type_error("addsitedir requires 1 argument"));
+            return Err(ferrython_core::error::PyException::type_error(
+                "addsitedir requires 1 argument",
+            ));
         }
         let _dir = args[0].py_to_string();
         Ok(PyObject::none())
@@ -2817,17 +4004,29 @@ pub fn create_site_module() -> PyObjectRef {
     let user_base = format!("{}/.local", home);
     let user_site = format!("{}/lib/ferrython/site-packages", user_base);
 
-    make_module("site", vec![
-        ("ENABLE_USER_SITE", PyObject::bool_val(true)),
-        ("USER_SITE", PyObject::str_val(CompactString::from(user_site.as_str()))),
-        ("USER_BASE", PyObject::str_val(CompactString::from(user_base.as_str()))),
-        ("PREFIXES", PyObject::list(vec![
-            PyObject::str_val(CompactString::from(prefix_str.as_str())),
-        ])),
-        ("getusersitepackages", getusersitepackages),
-        ("getsitepackages", getsitepackages),
-        ("addsitedir", addsitedir),
-    ])
+    make_module(
+        "site",
+        vec![
+            ("ENABLE_USER_SITE", PyObject::bool_val(true)),
+            (
+                "USER_SITE",
+                PyObject::str_val(CompactString::from(user_site.as_str())),
+            ),
+            (
+                "USER_BASE",
+                PyObject::str_val(CompactString::from(user_base.as_str())),
+            ),
+            (
+                "PREFIXES",
+                PyObject::list(vec![PyObject::str_val(CompactString::from(
+                    prefix_str.as_str(),
+                ))]),
+            ),
+            ("getusersitepackages", getusersitepackages),
+            ("getsitepackages", getsitepackages),
+            ("addsitedir", addsitedir),
+        ],
+    )
 }
 
 // ── sched module ──
@@ -2859,15 +4058,21 @@ pub fn create_sched_module() -> PyObjectRef {
             let q = queue.clone();
             let seq = seq_counter.clone();
             let ev_cls = event_cls2.clone();
-            w.insert(CompactString::from("enterabs"), PyObject::native_closure(
-                "enterabs", move |args: &[PyObjectRef]| {
+            w.insert(
+                CompactString::from("enterabs"),
+                PyObject::native_closure("enterabs", move |args: &[PyObjectRef]| {
                     if args.len() < 3 {
-                        return Err(PyException::type_error("enterabs() requires at least 3 arguments"));
+                        return Err(PyException::type_error(
+                            "enterabs() requires at least 3 arguments",
+                        ));
                     }
                     let time_val = args[0].to_float()?;
                     let priority = args[1].to_int().unwrap_or(1);
                     let action = args[2].clone();
-                    let argument = args.get(3).cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
+                    let argument = args
+                        .get(3)
+                        .cloned()
+                        .unwrap_or_else(|| PyObject::tuple(vec![]));
                     let kwargs = args.get(4).cloned().unwrap_or_else(PyObject::none);
                     let s = seq.fetch_add(1, Ordering::SeqCst);
 
@@ -2886,28 +4091,35 @@ pub fn create_sched_module() -> PyObjectRef {
                     qw.push((time_val, priority, s, action, argument, kwargs));
                     // Sort by (time, priority, sequence) ascending
                     qw.sort_by(|a, b| {
-                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        a.0.partial_cmp(&b.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                             .then(a.1.cmp(&b.1))
                             .then(a.2.cmp(&b.2))
                     });
 
                     Ok(event)
-                }
-            ));
+                }),
+            );
 
             // enter(delay, priority, action, argument=(), kwargs={})
             let q2 = queue.clone();
             let seq2 = seq_counter.clone();
             let ev_cls2 = event_cls2.clone();
-            w.insert(CompactString::from("enter"), PyObject::native_closure(
-                "enter", move |args: &[PyObjectRef]| {
+            w.insert(
+                CompactString::from("enter"),
+                PyObject::native_closure("enter", move |args: &[PyObjectRef]| {
                     if args.len() < 3 {
-                        return Err(PyException::type_error("enter() requires at least 3 arguments"));
+                        return Err(PyException::type_error(
+                            "enter() requires at least 3 arguments",
+                        ));
                     }
                     let delay = args[0].to_float()?;
                     let priority = args[1].to_int().unwrap_or(1);
                     let action = args[2].clone();
-                    let argument = args.get(3).cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
+                    let argument = args
+                        .get(3)
+                        .cloned()
+                        .unwrap_or_else(|| PyObject::tuple(vec![]));
                     let kwargs = args.get(4).cloned().unwrap_or_else(PyObject::none);
                     let s = seq2.fetch_add(1, Ordering::SeqCst);
 
@@ -2931,25 +4143,26 @@ pub fn create_sched_module() -> PyObjectRef {
                     let mut qw = q2.write();
                     qw.push((time_val, priority, s, action, argument, kwargs));
                     qw.sort_by(|a, b| {
-                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        a.0.partial_cmp(&b.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                             .then(a.1.cmp(&b.1))
                             .then(a.2.cmp(&b.2))
                     });
 
                     Ok(event)
-                }
-            ));
+                }),
+            );
 
             // cancel(event) — remove matching event from queue
             let q3 = queue.clone();
-            w.insert(CompactString::from("cancel"), PyObject::native_closure(
-                "cancel", move |args: &[PyObjectRef]| {
+            w.insert(
+                CompactString::from("cancel"),
+                PyObject::native_closure("cancel", move |args: &[PyObjectRef]| {
                     if args.is_empty() {
                         return Err(PyException::type_error("cancel() requires 1 argument"));
                     }
                     let event = &args[0];
-                    let ev_seq = event.get_attr("sequence")
-                        .and_then(|s| s.as_int());
+                    let ev_seq = event.get_attr("sequence").and_then(|s| s.as_int());
                     if let Some(seq_val) = ev_seq {
                         let mut qw = q3.write();
                         qw.retain(|e| e.2 != seq_val);
@@ -2957,29 +4170,34 @@ pub fn create_sched_module() -> PyObjectRef {
                     } else {
                         Err(PyException::runtime_error("event not in queue"))
                     }
-                }
-            ));
+                }),
+            );
 
             // empty() -> bool
             let q4 = queue.clone();
-            w.insert(CompactString::from("empty"), PyObject::native_closure(
-                "empty", move |_args: &[PyObjectRef]| {
+            w.insert(
+                CompactString::from("empty"),
+                PyObject::native_closure("empty", move |_args: &[PyObjectRef]| {
                     Ok(PyObject::bool_val(q4.read().is_empty()))
-                }
-            ));
+                }),
+            );
 
             // run(blocking=True) — execute events in order
             let q5 = queue.clone();
-            w.insert(CompactString::from("run"), PyObject::native_closure(
-                "run", move |args: &[PyObjectRef]| {
-                    let blocking = args.first()
+            w.insert(
+                CompactString::from("run"),
+                PyObject::native_closure("run", move |args: &[PyObjectRef]| {
+                    let blocking = args
+                        .first()
                         .map(|a| !matches!(&a.payload, PyObjectPayload::Bool(false)))
                         .unwrap_or(true);
 
                     loop {
                         let next = {
                             let qr = q5.read();
-                            if qr.is_empty() { break; }
+                            if qr.is_empty() {
+                                break;
+                            }
                             qr[0].clone()
                         };
 
@@ -2989,7 +4207,9 @@ pub fn create_sched_module() -> PyObjectRef {
                             .as_secs_f64();
 
                         if next.0 > now {
-                            if !blocking { break; }
+                            if !blocking {
+                                break;
+                            }
                             let delay = next.0 - now;
                             if delay > 0.0 {
                                 std::thread::sleep(std::time::Duration::from_secs_f64(delay));
@@ -3009,14 +4229,19 @@ pub fn create_sched_module() -> PyObjectRef {
                         // Call action(*argument)
                         let action = &next.3;
                         let argument = &next.4;
-                        let call_args: Vec<PyObjectRef> = if let PyObjectPayload::Tuple(items) = &argument.payload {
-                            (**items).clone()
-                        } else {
-                            vec![]
-                        };
+                        let call_args: Vec<PyObjectRef> =
+                            if let PyObjectPayload::Tuple(items) = &argument.payload {
+                                (**items).clone()
+                            } else {
+                                vec![]
+                            };
                         match &action.payload {
-                            PyObjectPayload::NativeFunction(nf) => { (nf.func)(&call_args)?; }
-                            PyObjectPayload::NativeClosure(nc) => { (nc.func)(&call_args)?; }
+                            PyObjectPayload::NativeFunction(nf) => {
+                                (nf.func)(&call_args)?;
+                            }
+                            PyObjectPayload::NativeClosure(nc) => {
+                                (nc.func)(&call_args)?;
+                            }
                             _ => {
                                 // Python function — defer via request_vm_call
                                 ferrython_core::error::request_vm_call(action.clone(), call_args);
@@ -3024,42 +4249,45 @@ pub fn create_sched_module() -> PyObjectRef {
                         }
                     }
                     Ok(PyObject::none())
-                }
-            ));
+                }),
+            );
 
             // queue property — list of pending events (read-only snapshot)
             let q6 = queue.clone();
             let ev_cls3 = event_cls2.clone();
-            w.insert(CompactString::from("queue"), PyObject::native_closure(
-                "queue", move |_args: &[PyObjectRef]| {
+            w.insert(
+                CompactString::from("queue"),
+                PyObject::native_closure("queue", move |_args: &[PyObjectRef]| {
                     let qr = q6.read();
-                    let events: Vec<PyObjectRef> = qr.iter().map(|(t, p, s, act, arg, kw)| {
-                        let event = PyObject::instance(ev_cls3.clone());
-                        if let PyObjectPayload::Instance(ref ed) = event.payload {
-                            let mut ew = ed.attrs.write();
-                            ew.insert(CompactString::from("time"), PyObject::float(*t));
-                            ew.insert(CompactString::from("priority"), PyObject::int(*p));
-                            ew.insert(CompactString::from("sequence"), PyObject::int(*s));
-                            ew.insert(CompactString::from("action"), act.clone());
-                            ew.insert(CompactString::from("argument"), arg.clone());
-                            ew.insert(CompactString::from("kwargs"), kw.clone());
-                        }
-                        event
-                    }).collect();
+                    let events: Vec<PyObjectRef> = qr
+                        .iter()
+                        .map(|(t, p, s, act, arg, kw)| {
+                            let event = PyObject::instance(ev_cls3.clone());
+                            if let PyObjectPayload::Instance(ref ed) = event.payload {
+                                let mut ew = ed.attrs.write();
+                                ew.insert(CompactString::from("time"), PyObject::float(*t));
+                                ew.insert(CompactString::from("priority"), PyObject::int(*p));
+                                ew.insert(CompactString::from("sequence"), PyObject::int(*s));
+                                ew.insert(CompactString::from("action"), act.clone());
+                                ew.insert(CompactString::from("argument"), arg.clone());
+                                ew.insert(CompactString::from("kwargs"), kw.clone());
+                            }
+                            event
+                        })
+                        .collect();
                     Ok(PyObject::list(events))
-                }
-            ));
+                }),
+            );
         }
 
         Ok(inst)
     });
 
-    make_module("sched", vec![
-        ("scheduler", scheduler_fn),
-        ("Event", event_cls),
-    ])
+    make_module(
+        "sched",
+        vec![("scheduler", scheduler_fn), ("Event", event_cls)],
+    )
 }
-
 
 // ── mmap module ──
 
@@ -3067,8 +4295,16 @@ pub fn create_mmap_module() -> PyObjectRef {
     // mmap.mmap(fileno, length, ...) → mmap object
     // Simplified: backed by Vec<u8> (not real file-backed mapping)
     let mmap_fn = make_builtin(|args: &[PyObjectRef]| {
-        let fileno = if !args.is_empty() { args[0].to_int().unwrap_or(-1) } else { -1 };
-        let length = if args.len() > 1 { args[1].to_int().unwrap_or(0) as usize } else { 0 };
+        let fileno = if !args.is_empty() {
+            args[0].to_int().unwrap_or(-1)
+        } else {
+            -1
+        };
+        let length = if args.len() > 1 {
+            args[1].to_int().unwrap_or(0) as usize
+        } else {
+            0
+        };
 
         // If fileno >= 0, try to read the file contents
         let initial_data: Vec<u8> = if fileno >= 0 {
@@ -3082,7 +4318,9 @@ pub fn create_mmap_module() -> PyObjectRef {
                     use std::io::Read;
                     let mut buf = Vec::new();
                     let _ = file.read_to_end(&mut buf);
-                    if length > 0 { buf.resize(length, 0); }
+                    if length > 0 {
+                        buf.resize(length, 0);
+                    }
                     buf
                 } else {
                     vec![0u8; length]
@@ -3109,308 +4347,450 @@ pub fn create_mmap_module() -> PyObjectRef {
             // read(n=-1)
             let d2 = data.clone();
             let p2 = pos.clone();
-            w.insert(CompactString::from("read"), PyObject::native_closure("read", move |args| {
-                let n = if !args.is_empty() { args[0].to_int().unwrap_or(-1) } else { -1 };
-                let mut p = p2.write();
-                let d = d2.read();
-                let start = *p;
-                let end = if n < 0 { d.len() } else { std::cmp::min(start + n as usize, d.len()) };
-                let slice = d[start..end].to_vec();
-                *p = end;
-                Ok(PyObject::bytes(slice))
-            }));
+            w.insert(
+                CompactString::from("read"),
+                PyObject::native_closure("read", move |args| {
+                    let n = if !args.is_empty() {
+                        args[0].to_int().unwrap_or(-1)
+                    } else {
+                        -1
+                    };
+                    let mut p = p2.write();
+                    let d = d2.read();
+                    let start = *p;
+                    let end = if n < 0 {
+                        d.len()
+                    } else {
+                        std::cmp::min(start + n as usize, d.len())
+                    };
+                    let slice = d[start..end].to_vec();
+                    *p = end;
+                    Ok(PyObject::bytes(slice))
+                }),
+            );
 
             // read_byte()
             let d_rb = data.clone();
             let p_rb = pos.clone();
-            w.insert(CompactString::from("read_byte"), PyObject::native_closure("read_byte", move |_args| {
-                let mut p = p_rb.write();
-                let d = d_rb.read();
-                if *p >= d.len() {
-                    return Err(PyException::value_error("read byte out of range"));
-                }
-                let byte = d[*p];
-                *p += 1;
-                Ok(PyObject::int(byte as i64))
-            }));
+            w.insert(
+                CompactString::from("read_byte"),
+                PyObject::native_closure("read_byte", move |_args| {
+                    let mut p = p_rb.write();
+                    let d = d_rb.read();
+                    if *p >= d.len() {
+                        return Err(PyException::value_error("read byte out of range"));
+                    }
+                    let byte = d[*p];
+                    *p += 1;
+                    Ok(PyObject::int(byte as i64))
+                }),
+            );
 
             // write(data)
             let d3 = data.clone();
             let p3 = pos.clone();
-            w.insert(CompactString::from("write"), PyObject::native_closure("write", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("write requires bytes")); }
-                let bytes = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
-                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                    _ => return Err(PyException::type_error("write requires bytes argument")),
-                };
-                let mut d = d3.write();
-                let mut p = p3.write();
-                let start = *p;
-                for (i, &byte) in bytes.iter().enumerate() {
-                    let idx = start + i;
-                    if idx < d.len() {
-                        d[idx] = byte;
-                    } else {
-                        d.push(byte);
+            w.insert(
+                CompactString::from("write"),
+                PyObject::native_closure("write", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("write requires bytes"));
                     }
-                }
-                *p = start + bytes.len();
-                Ok(PyObject::int(bytes.len() as i64))
-            }));
+                    let bytes = match &args[0].payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        _ => return Err(PyException::type_error("write requires bytes argument")),
+                    };
+                    let mut d = d3.write();
+                    let mut p = p3.write();
+                    let start = *p;
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        let idx = start + i;
+                        if idx < d.len() {
+                            d[idx] = byte;
+                        } else {
+                            d.push(byte);
+                        }
+                    }
+                    *p = start + bytes.len();
+                    Ok(PyObject::int(bytes.len() as i64))
+                }),
+            );
 
             // write_byte(byte)
             let d_wb = data.clone();
             let p_wb = pos.clone();
-            w.insert(CompactString::from("write_byte"), PyObject::native_closure("write_byte", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("write_byte requires an integer")); }
-                let byte = args[0].to_int()? as u8;
-                let mut d = d_wb.write();
-                let mut p = p_wb.write();
-                if *p < d.len() {
-                    d[*p] = byte;
-                } else {
-                    d.push(byte);
-                }
-                *p += 1;
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("write_byte"),
+                PyObject::native_closure("write_byte", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("write_byte requires an integer"));
+                    }
+                    let byte = args[0].to_int()? as u8;
+                    let mut d = d_wb.write();
+                    let mut p = p_wb.write();
+                    if *p < d.len() {
+                        d[*p] = byte;
+                    } else {
+                        d.push(byte);
+                    }
+                    *p += 1;
+                    Ok(PyObject::none())
+                }),
+            );
 
             // seek(pos, whence=0)
             let d_seek = data.clone();
             let p4 = pos.clone();
-            w.insert(CompactString::from("seek"), PyObject::native_closure("seek", move |args| {
-                if args.is_empty() { return Ok(PyObject::none()); }
-                let offset = args[0].to_int().unwrap_or(0);
-                let whence = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
-                let mut p = p4.write();
-                let len = d_seek.read().len() as i64;
-                let new_pos = match whence {
-                    0 => offset,           // SEEK_SET
-                    1 => *p as i64 + offset, // SEEK_CUR
-                    2 => len + offset,     // SEEK_END
-                    _ => return Err(PyException::value_error("invalid whence")),
-                };
-                *p = new_pos.max(0) as usize;
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("seek"),
+                PyObject::native_closure("seek", move |args| {
+                    if args.is_empty() {
+                        return Ok(PyObject::none());
+                    }
+                    let offset = args[0].to_int().unwrap_or(0);
+                    let whence = if args.len() > 1 {
+                        args[1].to_int().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let mut p = p4.write();
+                    let len = d_seek.read().len() as i64;
+                    let new_pos = match whence {
+                        0 => offset,             // SEEK_SET
+                        1 => *p as i64 + offset, // SEEK_CUR
+                        2 => len + offset,       // SEEK_END
+                        _ => return Err(PyException::value_error("invalid whence")),
+                    };
+                    *p = new_pos.max(0) as usize;
+                    Ok(PyObject::none())
+                }),
+            );
 
             // tell()
             let p5 = pos.clone();
-            w.insert(CompactString::from("tell"), PyObject::native_closure("tell", move |_args| {
-                Ok(PyObject::int(*p5.read() as i64))
-            }));
+            w.insert(
+                CompactString::from("tell"),
+                PyObject::native_closure("tell", move |_args| Ok(PyObject::int(*p5.read() as i64))),
+            );
 
             // size()
             let d6 = data.clone();
-            w.insert(CompactString::from("size"), PyObject::native_closure("size", move |_args| {
-                Ok(PyObject::int(d6.read().len() as i64))
-            }));
+            w.insert(
+                CompactString::from("size"),
+                PyObject::native_closure("size", move |_args| {
+                    Ok(PyObject::int(d6.read().len() as i64))
+                }),
+            );
 
             // find(sub, start=0, end=len)
             let d_find = data.clone();
-            w.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("find requires bytes argument")); }
-                let sub = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
-                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                    PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
-                    _ => return Err(PyException::type_error("expected bytes")),
-                };
-                let d = d_find.read();
-                let start = if args.len() > 1 { args[1].to_int().unwrap_or(0) as usize } else { 0 };
-                let end = if args.len() > 2 { args[2].to_int().unwrap_or(d.len() as i64) as usize } else { d.len() };
-                let end = end.min(d.len());
-                if start >= end || sub.is_empty() {
-                    return Ok(PyObject::int(if sub.is_empty() && start <= end { start as i64 } else { -1 }));
-                }
-                let haystack = &d[start..end];
-                for i in 0..=(haystack.len().saturating_sub(sub.len())) {
-                    if haystack[i..].starts_with(&sub) {
-                        return Ok(PyObject::int((start + i) as i64));
+            w.insert(
+                CompactString::from("find"),
+                PyObject::native_closure("find", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("find requires bytes argument"));
                     }
-                }
-                Ok(PyObject::int(-1))
-            }));
+                    let sub = match &args[0].payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
+                        _ => return Err(PyException::type_error("expected bytes")),
+                    };
+                    let d = d_find.read();
+                    let start = if args.len() > 1 {
+                        args[1].to_int().unwrap_or(0) as usize
+                    } else {
+                        0
+                    };
+                    let end = if args.len() > 2 {
+                        args[2].to_int().unwrap_or(d.len() as i64) as usize
+                    } else {
+                        d.len()
+                    };
+                    let end = end.min(d.len());
+                    if start >= end || sub.is_empty() {
+                        return Ok(PyObject::int(if sub.is_empty() && start <= end {
+                            start as i64
+                        } else {
+                            -1
+                        }));
+                    }
+                    let haystack = &d[start..end];
+                    for i in 0..=(haystack.len().saturating_sub(sub.len())) {
+                        if haystack[i..].starts_with(&sub) {
+                            return Ok(PyObject::int((start + i) as i64));
+                        }
+                    }
+                    Ok(PyObject::int(-1))
+                }),
+            );
 
             // rfind(sub, start=0, end=len)
             let d_rfind = data.clone();
-            w.insert(CompactString::from("rfind"), PyObject::native_closure("rfind", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("rfind requires bytes argument")); }
-                let sub = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
-                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                    PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
-                    _ => return Err(PyException::type_error("expected bytes")),
-                };
-                let d = d_rfind.read();
-                let start = if args.len() > 1 { args[1].to_int().unwrap_or(0) as usize } else { 0 };
-                let end = if args.len() > 2 { args[2].to_int().unwrap_or(d.len() as i64) as usize } else { d.len() };
-                let end = end.min(d.len());
-                if start >= end || sub.is_empty() {
-                    return Ok(PyObject::int(if sub.is_empty() && start <= end { end as i64 } else { -1 }));
-                }
-                let haystack = &d[start..end];
-                for i in (0..=(haystack.len().saturating_sub(sub.len()))).rev() {
-                    if haystack[i..].starts_with(&sub) {
-                        return Ok(PyObject::int((start + i) as i64));
+            w.insert(
+                CompactString::from("rfind"),
+                PyObject::native_closure("rfind", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("rfind requires bytes argument"));
                     }
-                }
-                Ok(PyObject::int(-1))
-            }));
+                    let sub = match &args[0].payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
+                        _ => return Err(PyException::type_error("expected bytes")),
+                    };
+                    let d = d_rfind.read();
+                    let start = if args.len() > 1 {
+                        args[1].to_int().unwrap_or(0) as usize
+                    } else {
+                        0
+                    };
+                    let end = if args.len() > 2 {
+                        args[2].to_int().unwrap_or(d.len() as i64) as usize
+                    } else {
+                        d.len()
+                    };
+                    let end = end.min(d.len());
+                    if start >= end || sub.is_empty() {
+                        return Ok(PyObject::int(if sub.is_empty() && start <= end {
+                            end as i64
+                        } else {
+                            -1
+                        }));
+                    }
+                    let haystack = &d[start..end];
+                    for i in (0..=(haystack.len().saturating_sub(sub.len()))).rev() {
+                        if haystack[i..].starts_with(&sub) {
+                            return Ok(PyObject::int((start + i) as i64));
+                        }
+                    }
+                    Ok(PyObject::int(-1))
+                }),
+            );
 
             // readline()
             let d_rl = data.clone();
             let p_rl = pos.clone();
-            w.insert(CompactString::from("readline"), PyObject::native_closure("readline", move |_args| {
-                let mut p = p_rl.write();
-                let d = d_rl.read();
-                if *p >= d.len() {
-                    return Ok(PyObject::bytes(vec![]));
-                }
-                let start = *p;
-                let mut end = start;
-                while end < d.len() && d[end] != b'\n' {
-                    end += 1;
-                }
-                if end < d.len() { end += 1; } // include the newline
-                let line = d[start..end].to_vec();
-                *p = end;
-                Ok(PyObject::bytes(line))
-            }));
+            w.insert(
+                CompactString::from("readline"),
+                PyObject::native_closure("readline", move |_args| {
+                    let mut p = p_rl.write();
+                    let d = d_rl.read();
+                    if *p >= d.len() {
+                        return Ok(PyObject::bytes(vec![]));
+                    }
+                    let start = *p;
+                    let mut end = start;
+                    while end < d.len() && d[end] != b'\n' {
+                        end += 1;
+                    }
+                    if end < d.len() {
+                        end += 1;
+                    } // include the newline
+                    let line = d[start..end].to_vec();
+                    *p = end;
+                    Ok(PyObject::bytes(line))
+                }),
+            );
 
             // resize(newsize)
             let d_resize = data.clone();
-            w.insert(CompactString::from("resize"), PyObject::native_closure("resize", move |args| {
-                if args.is_empty() { return Err(PyException::type_error("resize requires length")); }
-                let new_size = args[0].to_int()? as usize;
-                d_resize.write().resize(new_size, 0);
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("resize"),
+                PyObject::native_closure("resize", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("resize requires length"));
+                    }
+                    let new_size = args[0].to_int()? as usize;
+                    d_resize.write().resize(new_size, 0);
+                    Ok(PyObject::none())
+                }),
+            );
 
             // flush(offset=0, size=len)
-            w.insert(CompactString::from("flush"), make_builtin(|_args: &[PyObjectRef]| {
-                // For Vec-backed mmap, flush is a no-op
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("flush"),
+                make_builtin(|_args: &[PyObjectRef]| {
+                    // For Vec-backed mmap, flush is a no-op
+                    Ok(PyObject::none())
+                }),
+            );
 
             // move(dest, src, count)
             let d_move = data.clone();
-            w.insert(CompactString::from("move"), PyObject::native_closure("move", move |args| {
-                if args.len() < 3 {
-                    return Err(PyException::type_error("move requires dest, src, count"));
-                }
-                let dest = args[0].to_int()? as usize;
-                let src = args[1].to_int()? as usize;
-                let count = args[2].to_int()? as usize;
-                let mut d = d_move.write();
-                let len = d.len();
-                if src + count > len || dest + count > len {
-                    return Err(PyException::value_error("source or destination out of range"));
-                }
-                // Use copy_within for safe overlapping moves
-                d.copy_within(src..src + count, dest);
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("move"),
+                PyObject::native_closure("move", move |args| {
+                    if args.len() < 3 {
+                        return Err(PyException::type_error("move requires dest, src, count"));
+                    }
+                    let dest = args[0].to_int()? as usize;
+                    let src = args[1].to_int()? as usize;
+                    let count = args[2].to_int()? as usize;
+                    let mut d = d_move.write();
+                    let len = d.len();
+                    if src + count > len || dest + count > len {
+                        return Err(PyException::value_error(
+                            "source or destination out of range",
+                        ));
+                    }
+                    // Use copy_within for safe overlapping moves
+                    d.copy_within(src..src + count, dest);
+                    Ok(PyObject::none())
+                }),
+            );
 
             // close()
             let c_close = closed.clone();
-            w.insert(CompactString::from("close"), PyObject::native_closure("close", move |_args| {
-                *c_close.write() = true;
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("close"),
+                PyObject::native_closure("close", move |_args| {
+                    *c_close.write() = true;
+                    Ok(PyObject::none())
+                }),
+            );
 
             // __len__
             let d7 = data.clone();
-            w.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_args| {
-                Ok(PyObject::int(d7.read().len() as i64))
-            }));
+            w.insert(
+                CompactString::from("__len__"),
+                PyObject::native_closure("__len__", move |_args| {
+                    Ok(PyObject::int(d7.read().len() as i64))
+                }),
+            );
 
             // __getitem__ (indexing and slicing)
             let d8 = data.clone();
-            w.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
-                if args.is_empty() { return Err(PyException::index_error("mmap index out of range")); }
-                let d = d8.read();
-                let len = d.len() as i64;
-                // Check for slice (Tuple with start/stop/step from VM slice dispatch)
-                if let PyObjectPayload::Slice(sd) = &args[0].payload {
-                    let s = sd.start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
-                    let e = sd.stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
-                    let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
-                    let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
-                    let result = if s < e { d[s..e].to_vec() } else { vec![] };
-                    return Ok(PyObject::bytes(result));
-                }
-                let idx = args[0].to_int().unwrap_or(0);
-                let resolved = if idx < 0 { len + idx } else { idx };
-                if resolved < 0 || resolved >= len {
-                    return Err(PyException::index_error("mmap index out of range"));
-                }
-                Ok(PyObject::int(d[resolved as usize] as i64))
-            }));
+            w.insert(
+                CompactString::from("__getitem__"),
+                PyObject::native_closure("__getitem__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::index_error("mmap index out of range"));
+                    }
+                    let d = d8.read();
+                    let len = d.len() as i64;
+                    // Check for slice (Tuple with start/stop/step from VM slice dispatch)
+                    if let PyObjectPayload::Slice(sd) = &args[0].payload {
+                        let s = sd.start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                        let e = sd.stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
+                        let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
+                        let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
+                        let result = if s < e { d[s..e].to_vec() } else { vec![] };
+                        return Ok(PyObject::bytes(result));
+                    }
+                    let idx = args[0].to_int().unwrap_or(0);
+                    let resolved = if idx < 0 { len + idx } else { idx };
+                    if resolved < 0 || resolved >= len {
+                        return Err(PyException::index_error("mmap index out of range"));
+                    }
+                    Ok(PyObject::int(d[resolved as usize] as i64))
+                }),
+            );
 
             // __setitem__ (indexing)
             let d_si = data.clone();
-            w.insert(CompactString::from("__setitem__"), PyObject::native_closure("__setitem__", move |args| {
-                if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires index and value")); }
-                let idx = args[0].to_int().unwrap_or(0);
-                let val = args[1].to_int()? as u8;
-                let mut d = d_si.write();
-                let len = d.len() as i64;
-                let resolved = if idx < 0 { len + idx } else { idx };
-                if resolved < 0 || resolved >= len {
-                    return Err(PyException::index_error("mmap assignment index out of range"));
-                }
-                d[resolved as usize] = val;
-                Ok(PyObject::none())
-            }));
+            w.insert(
+                CompactString::from("__setitem__"),
+                PyObject::native_closure("__setitem__", move |args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error(
+                            "__setitem__ requires index and value",
+                        ));
+                    }
+                    let idx = args[0].to_int().unwrap_or(0);
+                    let val = args[1].to_int()? as u8;
+                    let mut d = d_si.write();
+                    let len = d.len() as i64;
+                    let resolved = if idx < 0 { len + idx } else { idx };
+                    if resolved < 0 || resolved >= len {
+                        return Err(PyException::index_error(
+                            "mmap assignment index out of range",
+                        ));
+                    }
+                    d[resolved as usize] = val;
+                    Ok(PyObject::none())
+                }),
+            );
 
             // __enter__ / __exit__ for context manager
             let inst_ref = inst.clone();
-            w.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_| Ok(inst_ref.clone())));
-            w.insert(CompactString::from("__exit__"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+            w.insert(
+                CompactString::from("__enter__"),
+                PyObject::native_closure("__enter__", move |_| Ok(inst_ref.clone())),
+            );
+            w.insert(
+                CompactString::from("__exit__"),
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(false))),
+            );
 
             // __repr__
             let d_repr = data.clone();
-            w.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |_args| {
-                let len = d_repr.read().len();
-                Ok(PyObject::str_val(CompactString::from(format!("<mmap.mmap object, length={}>", len))))
-            }));
+            w.insert(
+                CompactString::from("__repr__"),
+                PyObject::native_closure("__repr__", move |_args| {
+                    let len = d_repr.read().len();
+                    Ok(PyObject::str_val(CompactString::from(format!(
+                        "<mmap.mmap object, length={}>",
+                        len
+                    ))))
+                }),
+            );
         }
         Ok(inst)
     });
 
-    make_module("mmap", vec![
-        ("mmap", mmap_fn),
-        ("ACCESS_READ", PyObject::int(1)),
-        ("ACCESS_WRITE", PyObject::int(2)),
-        ("ACCESS_COPY", PyObject::int(3)),
-        ("ACCESS_DEFAULT", PyObject::int(0)),
-        ("PAGESIZE", PyObject::int({
-            #[cfg(unix)]
-            { unsafe { libc::sysconf(libc::_SC_PAGESIZE) as i64 } }
-            #[cfg(not(unix))]
-            { 4096i64 }
-        })),
-        ("ALLOCATIONGRANULARITY", PyObject::int({
-            #[cfg(unix)]
-            { unsafe { libc::sysconf(libc::_SC_PAGESIZE) as i64 } }
-            #[cfg(not(unix))]
-            { 65536i64 }
-        })),
-        ("MAP_SHARED", PyObject::int(1)),
-        ("MAP_PRIVATE", PyObject::int(2)),
-        ("PROT_READ", PyObject::int(1)),
-        ("PROT_WRITE", PyObject::int(2)),
-        ("PROT_EXEC", PyObject::int(4)),
-    ])
+    make_module(
+        "mmap",
+        vec![
+            ("mmap", mmap_fn),
+            ("ACCESS_READ", PyObject::int(1)),
+            ("ACCESS_WRITE", PyObject::int(2)),
+            ("ACCESS_COPY", PyObject::int(3)),
+            ("ACCESS_DEFAULT", PyObject::int(0)),
+            (
+                "PAGESIZE",
+                PyObject::int({
+                    #[cfg(unix)]
+                    {
+                        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as i64 }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        4096i64
+                    }
+                }),
+            ),
+            (
+                "ALLOCATIONGRANULARITY",
+                PyObject::int({
+                    #[cfg(unix)]
+                    {
+                        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as i64 }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        65536i64
+                    }
+                }),
+            ),
+            ("MAP_SHARED", PyObject::int(1)),
+            ("MAP_PRIVATE", PyObject::int(2)),
+            ("PROT_READ", PyObject::int(1)),
+            ("PROT_WRITE", PyObject::int(2)),
+            ("PROT_EXEC", PyObject::int(4)),
+        ],
+    )
 }
 
 // ── resource module (unix) ──
 
 pub fn create_resource_module() -> PyObjectRef {
     let getrlimit_fn = make_builtin(|args: &[PyObjectRef]| {
-        let resource = if !args.is_empty() { args[0].to_int().unwrap_or(0) as i32 } else { 0 };
+        let resource = if !args.is_empty() {
+            args[0].to_int().unwrap_or(0) as i32
+        } else {
+            0
+        };
         #[cfg(unix)]
         {
             let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -3423,14 +4803,27 @@ pub fn create_resource_module() -> PyObjectRef {
                 let err = std::io::Error::last_os_error();
                 return Err(PyException::os_error(format!("getrlimit: {}", err)));
             }
-            let soft = if rlim.rlim_cur == libc::RLIM_INFINITY { -1i64 } else { rlim.rlim_cur as i64 };
-            let hard = if rlim.rlim_max == libc::RLIM_INFINITY { -1i64 } else { rlim.rlim_max as i64 };
-            Ok(PyObject::tuple(vec![PyObject::int(soft), PyObject::int(hard)]))
+            let soft = if rlim.rlim_cur == libc::RLIM_INFINITY {
+                -1i64
+            } else {
+                rlim.rlim_cur as i64
+            };
+            let hard = if rlim.rlim_max == libc::RLIM_INFINITY {
+                -1i64
+            } else {
+                rlim.rlim_max as i64
+            };
+            Ok(PyObject::tuple(vec![
+                PyObject::int(soft),
+                PyObject::int(hard),
+            ]))
         }
         #[cfg(not(unix))]
         {
             let _ = resource;
-            Err(PyException::os_error("getrlimit() is not supported on this platform"))
+            Err(PyException::os_error(
+                "getrlimit() is not supported on this platform",
+            ))
         }
     });
 
@@ -3448,8 +4841,16 @@ pub fn create_resource_module() -> PyObjectRef {
             let soft = limits[0].to_int()?;
             let hard = limits[1].to_int()?;
             let rlim = libc::rlimit {
-                rlim_cur: if soft < 0 { libc::RLIM_INFINITY } else { soft as libc::rlim_t },
-                rlim_max: if hard < 0 { libc::RLIM_INFINITY } else { hard as libc::rlim_t },
+                rlim_cur: if soft < 0 {
+                    libc::RLIM_INFINITY
+                } else {
+                    soft as libc::rlim_t
+                },
+                rlim_max: if hard < 0 {
+                    libc::RLIM_INFINITY
+                } else {
+                    hard as libc::rlim_t
+                },
             };
             #[cfg(target_os = "linux")]
             let resource_arg = resource as libc::__rlimit_resource_t;
@@ -3464,13 +4865,19 @@ pub fn create_resource_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (resource, limits);
-            return Err(PyException::os_error("setrlimit() is not supported on this platform"));
+            return Err(PyException::os_error(
+                "setrlimit() is not supported on this platform",
+            ));
         }
         Ok(PyObject::none())
     });
 
     let getrusage_fn = make_builtin(|args: &[PyObjectRef]| {
-        let who = if !args.is_empty() { args[0].to_int().unwrap_or(0) as i32 } else { 0 };
+        let who = if !args.is_empty() {
+            args[0].to_int().unwrap_or(0) as i32
+        } else {
+            0
+        };
         #[cfg(unix)]
         {
             let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -3479,32 +4886,90 @@ pub fn create_resource_module() -> PyObjectRef {
                 let err = std::io::Error::last_os_error();
                 return Err(PyException::os_error(format!("getrusage: {}", err)));
             }
-            let cls = PyObject::class(CompactString::from("struct_rusage"), vec![], IndexMap::new());
+            let cls = PyObject::class(
+                CompactString::from("struct_rusage"),
+                vec![],
+                IndexMap::new(),
+            );
             let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("ru_utime"),
-                PyObject::float(usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 / 1_000_000.0));
-            attrs.insert(CompactString::from("ru_stime"),
-                PyObject::float(usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 / 1_000_000.0));
-            attrs.insert(CompactString::from("ru_maxrss"), PyObject::int(usage.ru_maxrss));
-            attrs.insert(CompactString::from("ru_ixrss"), PyObject::int(usage.ru_ixrss));
-            attrs.insert(CompactString::from("ru_idrss"), PyObject::int(usage.ru_idrss));
-            attrs.insert(CompactString::from("ru_isrss"), PyObject::int(usage.ru_isrss));
-            attrs.insert(CompactString::from("ru_minflt"), PyObject::int(usage.ru_minflt));
-            attrs.insert(CompactString::from("ru_majflt"), PyObject::int(usage.ru_majflt));
-            attrs.insert(CompactString::from("ru_nswap"), PyObject::int(usage.ru_nswap));
-            attrs.insert(CompactString::from("ru_inblock"), PyObject::int(usage.ru_inblock));
-            attrs.insert(CompactString::from("ru_oublock"), PyObject::int(usage.ru_oublock));
-            attrs.insert(CompactString::from("ru_msgsnd"), PyObject::int(usage.ru_msgsnd));
-            attrs.insert(CompactString::from("ru_msgrcv"), PyObject::int(usage.ru_msgrcv));
-            attrs.insert(CompactString::from("ru_nsignals"), PyObject::int(usage.ru_nsignals));
-            attrs.insert(CompactString::from("ru_nvcsw"), PyObject::int(usage.ru_nvcsw));
-            attrs.insert(CompactString::from("ru_nivcsw"), PyObject::int(usage.ru_nivcsw));
+            attrs.insert(
+                CompactString::from("ru_utime"),
+                PyObject::float(
+                    usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 / 1_000_000.0,
+                ),
+            );
+            attrs.insert(
+                CompactString::from("ru_stime"),
+                PyObject::float(
+                    usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 / 1_000_000.0,
+                ),
+            );
+            attrs.insert(
+                CompactString::from("ru_maxrss"),
+                PyObject::int(usage.ru_maxrss),
+            );
+            attrs.insert(
+                CompactString::from("ru_ixrss"),
+                PyObject::int(usage.ru_ixrss),
+            );
+            attrs.insert(
+                CompactString::from("ru_idrss"),
+                PyObject::int(usage.ru_idrss),
+            );
+            attrs.insert(
+                CompactString::from("ru_isrss"),
+                PyObject::int(usage.ru_isrss),
+            );
+            attrs.insert(
+                CompactString::from("ru_minflt"),
+                PyObject::int(usage.ru_minflt),
+            );
+            attrs.insert(
+                CompactString::from("ru_majflt"),
+                PyObject::int(usage.ru_majflt),
+            );
+            attrs.insert(
+                CompactString::from("ru_nswap"),
+                PyObject::int(usage.ru_nswap),
+            );
+            attrs.insert(
+                CompactString::from("ru_inblock"),
+                PyObject::int(usage.ru_inblock),
+            );
+            attrs.insert(
+                CompactString::from("ru_oublock"),
+                PyObject::int(usage.ru_oublock),
+            );
+            attrs.insert(
+                CompactString::from("ru_msgsnd"),
+                PyObject::int(usage.ru_msgsnd),
+            );
+            attrs.insert(
+                CompactString::from("ru_msgrcv"),
+                PyObject::int(usage.ru_msgrcv),
+            );
+            attrs.insert(
+                CompactString::from("ru_nsignals"),
+                PyObject::int(usage.ru_nsignals),
+            );
+            attrs.insert(
+                CompactString::from("ru_nvcsw"),
+                PyObject::int(usage.ru_nvcsw),
+            );
+            attrs.insert(
+                CompactString::from("ru_nivcsw"),
+                PyObject::int(usage.ru_nivcsw),
+            );
             Ok(PyObject::instance_with_attrs(cls, attrs))
         }
         #[cfg(not(unix))]
         {
             let _ = who;
-            let cls = PyObject::class(CompactString::from("struct_rusage"), vec![], IndexMap::new());
+            let cls = PyObject::class(
+                CompactString::from("struct_rusage"),
+                vec![],
+                IndexMap::new(),
+            );
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("ru_utime"), PyObject::float(0.0));
             attrs.insert(CompactString::from("ru_stime"), PyObject::float(0.0));
@@ -3527,34 +4992,39 @@ pub fn create_resource_module() -> PyObjectRef {
         }
     });
 
-    make_module("resource", vec![
-        ("getrlimit", getrlimit_fn),
-        ("setrlimit", setrlimit_fn),
-        ("getrusage", getrusage_fn),
-        ("getpagesize", getpagesize_fn),
-        ("RLIMIT_CPU", PyObject::int(0)),
-        ("RLIMIT_FSIZE", PyObject::int(1)),
-        ("RLIMIT_DATA", PyObject::int(2)),
-        ("RLIMIT_STACK", PyObject::int(3)),
-        ("RLIMIT_CORE", PyObject::int(4)),
-        ("RLIMIT_RSS", PyObject::int(5)),
-        ("RLIMIT_NPROC", PyObject::int(6)),
-        ("RLIMIT_NOFILE", PyObject::int(7)),
-        ("RLIMIT_MEMLOCK", PyObject::int(8)),
-        ("RLIMIT_AS", PyObject::int(9)),
-        ("RLIMIT_LOCKS", PyObject::int(10)),
-        ("RLIMIT_SIGPENDING", PyObject::int(11)),
-        ("RLIMIT_MSGQUEUE", PyObject::int(12)),
-        ("RLIM_INFINITY", PyObject::int(-1)),
-        ("RUSAGE_SELF", PyObject::int(0)),
-        ("RUSAGE_CHILDREN", PyObject::int(-1)),
-        ("RUSAGE_THREAD", PyObject::int(1)),
-    ])
+    make_module(
+        "resource",
+        vec![
+            ("getrlimit", getrlimit_fn),
+            ("setrlimit", setrlimit_fn),
+            ("getrusage", getrusage_fn),
+            ("getpagesize", getpagesize_fn),
+            ("RLIMIT_CPU", PyObject::int(0)),
+            ("RLIMIT_FSIZE", PyObject::int(1)),
+            ("RLIMIT_DATA", PyObject::int(2)),
+            ("RLIMIT_STACK", PyObject::int(3)),
+            ("RLIMIT_CORE", PyObject::int(4)),
+            ("RLIMIT_RSS", PyObject::int(5)),
+            ("RLIMIT_NPROC", PyObject::int(6)),
+            ("RLIMIT_NOFILE", PyObject::int(7)),
+            ("RLIMIT_MEMLOCK", PyObject::int(8)),
+            ("RLIMIT_AS", PyObject::int(9)),
+            ("RLIMIT_LOCKS", PyObject::int(10)),
+            ("RLIMIT_SIGPENDING", PyObject::int(11)),
+            ("RLIMIT_MSGQUEUE", PyObject::int(12)),
+            ("RLIM_INFINITY", PyObject::int(-1)),
+            ("RUSAGE_SELF", PyObject::int(0)),
+            ("RUSAGE_CHILDREN", PyObject::int(-1)),
+            ("RUSAGE_THREAD", PyObject::int(1)),
+        ],
+    )
 }
 
 pub fn create_fcntl_module() -> PyObjectRef {
     let fcntl_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.len() < 2 { return Err(PyException::type_error("fcntl() requires at least 2 args")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error("fcntl() requires at least 2 args"));
+        }
         let fd = args[0].to_int()? as i32;
         let cmd = args[1].to_int()? as i32;
         #[cfg(unix)]
@@ -3574,12 +5044,16 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, cmd);
-            Err(PyException::os_error("fcntl() is not supported on this platform"))
+            Err(PyException::os_error(
+                "fcntl() is not supported on this platform",
+            ))
         }
     });
 
     let flock_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.len() < 2 { return Err(PyException::type_error("flock() requires 2 args")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error("flock() requires 2 args"));
+        }
         let fd = args[0].to_int()? as i32;
         let operation = args[1].to_int()? as i32;
         #[cfg(unix)]
@@ -3593,18 +5067,26 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, operation);
-            return Err(PyException::os_error("flock() is not supported on this platform"));
+            return Err(PyException::os_error(
+                "flock() is not supported on this platform",
+            ));
         }
         Ok(PyObject::none())
     });
 
     let lockf_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.len() < 2 { return Err(PyException::type_error("lockf() requires at least 2 args")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error("lockf() requires at least 2 args"));
+        }
         let fd = args[0].to_int()? as i32;
         let cmd = args[1].to_int()? as i32;
         let len: i64 = if args.len() > 2 { args[2].to_int()? } else { 0 };
         let start: i64 = if args.len() > 3 { args[3].to_int()? } else { 0 };
-        let whence: i32 = if args.len() > 4 { args[4].to_int()? as i32 } else { 0 };
+        let whence: i32 = if args.len() > 4 {
+            args[4].to_int()? as i32
+        } else {
+            0
+        };
         #[cfg(unix)]
         {
             let mut lock: libc::flock = unsafe { std::mem::zeroed() };
@@ -3619,12 +5101,19 @@ pub fn create_fcntl_module() -> PyObjectRef {
             }
         }
         #[cfg(not(unix))]
-        { let _ = (fd, cmd, len, start, whence); return Err(PyException::os_error("lockf() is not supported on this platform")); }
+        {
+            let _ = (fd, cmd, len, start, whence);
+            return Err(PyException::os_error(
+                "lockf() is not supported on this platform",
+            ));
+        }
         Ok(PyObject::none())
     });
 
     let ioctl_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.len() < 2 { return Err(PyException::type_error("ioctl() requires at least 2 args")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error("ioctl() requires at least 2 args"));
+        }
         let fd = args[0].to_int()? as i32;
         let request = args[1].to_int()? as u64;
         #[cfg(unix)]
@@ -3644,31 +5133,36 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, request);
-            Err(PyException::os_error("ioctl() is not supported on this platform"))
+            Err(PyException::os_error(
+                "ioctl() is not supported on this platform",
+            ))
         }
     });
 
-    make_module("fcntl", vec![
-        ("fcntl", fcntl_fn),
-        ("flock", flock_fn),
-        ("lockf", lockf_fn),
-        ("ioctl", ioctl_fn),
-        // Lock constants
-        ("LOCK_SH", PyObject::int(1)),
-        ("LOCK_EX", PyObject::int(2)),
-        ("LOCK_NB", PyObject::int(4)),
-        ("LOCK_UN", PyObject::int(8)),
-        // fcntl constants
-        ("F_DUPFD", PyObject::int(0)),
-        ("F_GETFD", PyObject::int(1)),
-        ("F_SETFD", PyObject::int(2)),
-        ("F_GETFL", PyObject::int(3)),
-        ("F_SETFL", PyObject::int(4)),
-        ("F_GETLK", PyObject::int(5)),
-        ("F_SETLK", PyObject::int(6)),
-        ("F_SETLKW", PyObject::int(7)),
-        ("FD_CLOEXEC", PyObject::int(1)),
-    ])
+    make_module(
+        "fcntl",
+        vec![
+            ("fcntl", fcntl_fn),
+            ("flock", flock_fn),
+            ("lockf", lockf_fn),
+            ("ioctl", ioctl_fn),
+            // Lock constants
+            ("LOCK_SH", PyObject::int(1)),
+            ("LOCK_EX", PyObject::int(2)),
+            ("LOCK_NB", PyObject::int(4)),
+            ("LOCK_UN", PyObject::int(8)),
+            // fcntl constants
+            ("F_DUPFD", PyObject::int(0)),
+            ("F_GETFD", PyObject::int(1)),
+            ("F_SETFD", PyObject::int(2)),
+            ("F_GETFL", PyObject::int(3)),
+            ("F_SETFL", PyObject::int(4)),
+            ("F_GETLK", PyObject::int(5)),
+            ("F_SETLK", PyObject::int(6)),
+            ("F_SETLKW", PyObject::int(7)),
+            ("FD_CLOEXEC", PyObject::int(1)),
+        ],
+    )
 }
 
 // ── sysconfig module ──
@@ -3676,9 +5170,8 @@ pub fn create_fcntl_module() -> PyObjectRef {
 pub fn create_sysconfig_module() -> PyObjectRef {
     let layout = ferrython_toolchain::paths::InstallLayout::discover();
 
-    let get_python_version = make_builtin(|_args: &[PyObjectRef]| {
-        Ok(PyObject::str_val(CompactString::from("3.11")))
-    });
+    let get_python_version =
+        make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from("3.11"))));
 
     let get_platform = make_builtin(|_args: &[PyObjectRef]| {
         let platform = if cfg!(target_os = "linux") {
@@ -3695,8 +5188,13 @@ pub fn create_sysconfig_module() -> PyObjectRef {
 
     let layout_path = layout.clone();
     let get_path = PyObject::native_closure("get_path", move |args: &[PyObjectRef]| {
-        let name = if args.is_empty() { String::from("stdlib") } else { args[0].py_to_string() };
-        let path_val = layout_path.get_path(&name)
+        let name = if args.is_empty() {
+            String::from("stdlib")
+        } else {
+            args[0].py_to_string()
+        };
+        let path_val = layout_path
+            .get_path(&name)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         Ok(PyObject::str_val(CompactString::from(path_val)))
@@ -3705,9 +5203,11 @@ pub fn create_sysconfig_module() -> PyObjectRef {
     let layout_paths = layout.clone();
     let get_paths = PyObject::native_closure("get_paths", move |_args: &[PyObjectRef]| {
         let names = ["stdlib", "purelib", "platlib", "include", "scripts", "data"];
-        let pairs: Vec<(PyObjectRef, PyObjectRef)> = names.iter()
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = names
+            .iter()
             .map(|name| {
-                let path_val = layout_paths.get_path(name)
+                let path_val = layout_paths
+                    .get_path(name)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
                 (
@@ -3720,29 +5220,45 @@ pub fn create_sysconfig_module() -> PyObjectRef {
     });
 
     let layout_var = layout.clone();
-    let get_config_var = PyObject::native_closure("get_config_var", move |args: &[PyObjectRef]| {
-        if args.is_empty() { return Ok(PyObject::none()); }
-        let name = args[0].py_to_string();
-        match layout_var.get_config_var(&name) {
-            Some(val) => Ok(PyObject::str_val(CompactString::from(val))),
-            None => Ok(PyObject::none()),
-        }
-    });
+    let get_config_var =
+        PyObject::native_closure("get_config_var", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            let name = args[0].py_to_string();
+            match layout_var.get_config_var(&name) {
+                Some(val) => Ok(PyObject::str_val(CompactString::from(val))),
+                None => Ok(PyObject::none()),
+            }
+        });
 
     let layout_vars = layout.clone();
-    let get_config_vars = PyObject::native_closure("get_config_vars", move |_args: &[PyObjectRef]| {
-        let keys = ["prefix", "exec_prefix", "base_prefix", "BINDIR", "py_version_short",
-                     "SOABI", "EXT_SUFFIX", "SIZEOF_VOID_P", "installed_base"];
-        let pairs: Vec<(PyObjectRef, PyObjectRef)> = keys.iter()
-            .filter_map(|k| {
-                layout_vars.get_config_var(k).map(|v| (
-                    PyObject::str_val(CompactString::from(*k)),
-                    PyObject::str_val(CompactString::from(v)),
-                ))
-            })
-            .collect();
-        Ok(PyObject::dict_from_pairs(pairs))
-    });
+    let get_config_vars =
+        PyObject::native_closure("get_config_vars", move |_args: &[PyObjectRef]| {
+            let keys = [
+                "prefix",
+                "exec_prefix",
+                "base_prefix",
+                "BINDIR",
+                "py_version_short",
+                "SOABI",
+                "EXT_SUFFIX",
+                "SIZEOF_VOID_P",
+                "installed_base",
+            ];
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = keys
+                .iter()
+                .filter_map(|k| {
+                    layout_vars.get_config_var(k).map(|v| {
+                        (
+                            PyObject::str_val(CompactString::from(*k)),
+                            PyObject::str_val(CompactString::from(v)),
+                        )
+                    })
+                })
+                .collect();
+            Ok(PyObject::dict_from_pairs(pairs))
+        });
 
     let get_default_scheme = make_builtin(|_args: &[PyObjectRef]| {
         Ok(PyObject::str_val(CompactString::from("posix_prefix")))
@@ -3757,16 +5273,19 @@ pub fn create_sysconfig_module() -> PyObjectRef {
         ]))
     });
 
-    make_module("sysconfig", vec![
-        ("get_python_version", get_python_version),
-        ("get_platform", get_platform),
-        ("get_path", get_path),
-        ("get_paths", get_paths),
-        ("get_config_var", get_config_var),
-        ("get_config_vars", get_config_vars),
-        ("get_default_scheme", get_default_scheme),
-        ("get_scheme_names", get_scheme_names),
-    ])
+    make_module(
+        "sysconfig",
+        vec![
+            ("get_python_version", get_python_version),
+            ("get_platform", get_platform),
+            ("get_path", get_path),
+            ("get_paths", get_paths),
+            ("get_config_var", get_config_var),
+            ("get_config_vars", get_config_vars),
+            ("get_default_scheme", get_default_scheme),
+            ("get_scheme_names", get_scheme_names),
+        ],
+    )
 }
 
 // ── grp module (Unix group database) ──
@@ -3776,12 +5295,24 @@ pub fn create_grp_module() -> PyObjectRef {
     fn make_grp_struct(name: &str, passwd: &str, gid: u32, members: Vec<String>) -> PyObjectRef {
         let cls = PyObject::class(CompactString::from("struct_group"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("gr_name"), PyObject::str_val(CompactString::from(name)));
-        attrs.insert(CompactString::from("gr_passwd"), PyObject::str_val(CompactString::from(passwd)));
+        attrs.insert(
+            CompactString::from("gr_name"),
+            PyObject::str_val(CompactString::from(name)),
+        );
+        attrs.insert(
+            CompactString::from("gr_passwd"),
+            PyObject::str_val(CompactString::from(passwd)),
+        );
         attrs.insert(CompactString::from("gr_gid"), PyObject::int(gid as i64));
-        attrs.insert(CompactString::from("gr_mem"), PyObject::list(
-            members.iter().map(|m| PyObject::str_val(CompactString::from(m.as_str()))).collect()
-        ));
+        attrs.insert(
+            CompactString::from("gr_mem"),
+            PyObject::list(
+                members
+                    .iter()
+                    .map(|m| PyObject::str_val(CompactString::from(m.as_str())))
+                    .collect(),
+            ),
+        );
         PyObject::instance_with_attrs(cls, attrs)
     }
 
@@ -3794,15 +5325,23 @@ pub fn create_grp_module() -> PyObjectRef {
                 .map_err(|_| PyException::value_error("invalid group name"))?;
             let grp = unsafe { libc::getgrnam(c_name.as_ptr()) };
             if grp.is_null() {
-                return Err(PyException::key_error(format!("getgrnam(): name not found: '{}'", name)));
+                return Err(PyException::key_error(format!(
+                    "getgrnam(): name not found: '{}'",
+                    name
+                )));
             }
             unsafe {
-                let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name).to_string_lossy().into_owned();
-                let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd).to_string_lossy().into_owned();
+                let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name)
+                    .to_string_lossy()
+                    .into_owned();
+                let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd)
+                    .to_string_lossy()
+                    .into_owned();
                 let gid = (*grp).gr_gid;
                 let mut members = Vec::new();
                 let mut p = (*grp).gr_mem;
-                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0
+                {
                     while !(*p).is_null() {
                         members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
                         p = p.add(1);
@@ -3813,7 +5352,9 @@ pub fn create_grp_module() -> PyObjectRef {
         }
         #[cfg(not(unix))]
         {
-            Err(PyException::runtime_error("grp module not available on this platform"))
+            Err(PyException::runtime_error(
+                "grp module not available on this platform",
+            ))
         }
     });
 
@@ -3824,15 +5365,23 @@ pub fn create_grp_module() -> PyObjectRef {
         {
             let grp = unsafe { libc::getgrgid(gid) };
             if grp.is_null() {
-                return Err(PyException::key_error(format!("getgrgid(): gid not found: {}", gid)));
+                return Err(PyException::key_error(format!(
+                    "getgrgid(): gid not found: {}",
+                    gid
+                )));
             }
             unsafe {
-                let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name).to_string_lossy().into_owned();
-                let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd).to_string_lossy().into_owned();
+                let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name)
+                    .to_string_lossy()
+                    .into_owned();
+                let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd)
+                    .to_string_lossy()
+                    .into_owned();
                 let gid = (*grp).gr_gid;
                 let mut members = Vec::new();
                 let mut p = (*grp).gr_mem;
-                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0
+                {
                     while !(*p).is_null() {
                         members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
                         p = p.add(1);
@@ -3844,7 +5393,9 @@ pub fn create_grp_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = gid;
-            Err(PyException::runtime_error("grp module not available on this platform"))
+            Err(PyException::runtime_error(
+                "grp module not available on this platform",
+            ))
         }
     });
 
@@ -3856,15 +5407,24 @@ pub fn create_grp_module() -> PyObjectRef {
                 libc::setgrent();
                 loop {
                     let grp = libc::getgrent();
-                    if grp.is_null() { break; }
-                    let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name).to_string_lossy().into_owned();
-                    let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd).to_string_lossy().into_owned();
+                    if grp.is_null() {
+                        break;
+                    }
+                    let gr_name = std::ffi::CStr::from_ptr((*grp).gr_name)
+                        .to_string_lossy()
+                        .into_owned();
+                    let gr_passwd = std::ffi::CStr::from_ptr((*grp).gr_passwd)
+                        .to_string_lossy()
+                        .into_owned();
                     let gid = (*grp).gr_gid;
                     let mut members = Vec::new();
                     let mut p = (*grp).gr_mem;
-                    if !p.is_null() && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0 {
+                    if !p.is_null()
+                        && (p as usize) % std::mem::align_of::<*mut std::ffi::c_char>() == 0
+                    {
                         while !(*p).is_null() {
-                            members.push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
+                            members
+                                .push(std::ffi::CStr::from_ptr(*p).to_string_lossy().into_owned());
                             p = p.add(1);
                         }
                     }
@@ -3880,28 +5440,57 @@ pub fn create_grp_module() -> PyObjectRef {
         }
     });
 
-    make_module("grp", vec![
-        ("getgrnam", getgrnam_fn),
-        ("getgrgid", getgrgid_fn),
-        ("getgrall", getgrall_fn),
-    ])
+    make_module(
+        "grp",
+        vec![
+            ("getgrnam", getgrnam_fn),
+            ("getgrgid", getgrgid_fn),
+            ("getgrall", getgrall_fn),
+        ],
+    )
 }
 
 // ── pwd module (Unix password database) ──
 
 pub fn create_pwd_module() -> PyObjectRef {
     #[cfg(unix)]
-    fn make_pwd_struct(name: &str, passwd: &str, uid: u32, gid: u32,
-                       gecos: &str, dir: &str, shell: &str) -> PyObjectRef {
-        let cls = PyObject::class(CompactString::from("struct_passwd"), vec![], IndexMap::new());
+    fn make_pwd_struct(
+        name: &str,
+        passwd: &str,
+        uid: u32,
+        gid: u32,
+        gecos: &str,
+        dir: &str,
+        shell: &str,
+    ) -> PyObjectRef {
+        let cls = PyObject::class(
+            CompactString::from("struct_passwd"),
+            vec![],
+            IndexMap::new(),
+        );
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("pw_name"), PyObject::str_val(CompactString::from(name)));
-        attrs.insert(CompactString::from("pw_passwd"), PyObject::str_val(CompactString::from(passwd)));
+        attrs.insert(
+            CompactString::from("pw_name"),
+            PyObject::str_val(CompactString::from(name)),
+        );
+        attrs.insert(
+            CompactString::from("pw_passwd"),
+            PyObject::str_val(CompactString::from(passwd)),
+        );
         attrs.insert(CompactString::from("pw_uid"), PyObject::int(uid as i64));
         attrs.insert(CompactString::from("pw_gid"), PyObject::int(gid as i64));
-        attrs.insert(CompactString::from("pw_gecos"), PyObject::str_val(CompactString::from(gecos)));
-        attrs.insert(CompactString::from("pw_dir"), PyObject::str_val(CompactString::from(dir)));
-        attrs.insert(CompactString::from("pw_shell"), PyObject::str_val(CompactString::from(shell)));
+        attrs.insert(
+            CompactString::from("pw_gecos"),
+            PyObject::str_val(CompactString::from(gecos)),
+        );
+        attrs.insert(
+            CompactString::from("pw_dir"),
+            PyObject::str_val(CompactString::from(dir)),
+        );
+        attrs.insert(
+            CompactString::from("pw_shell"),
+            PyObject::str_val(CompactString::from(shell)),
+        );
         PyObject::instance_with_attrs(cls, attrs)
     }
 
@@ -3914,7 +5503,10 @@ pub fn create_pwd_module() -> PyObjectRef {
                 .map_err(|_| PyException::value_error("invalid user name"))?;
             let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
             if pw.is_null() {
-                return Err(PyException::key_error(format!("getpwnam(): name not found: '{}'", name)));
+                return Err(PyException::key_error(format!(
+                    "getpwnam(): name not found: '{}'",
+                    name
+                )));
             }
             unsafe {
                 Ok(make_pwd_struct(
@@ -3930,7 +5522,9 @@ pub fn create_pwd_module() -> PyObjectRef {
         }
         #[cfg(not(unix))]
         {
-            Err(PyException::runtime_error("pwd module not available on this platform"))
+            Err(PyException::runtime_error(
+                "pwd module not available on this platform",
+            ))
         }
     });
 
@@ -3941,7 +5535,10 @@ pub fn create_pwd_module() -> PyObjectRef {
         {
             let pw = unsafe { libc::getpwuid(uid) };
             if pw.is_null() {
-                return Err(PyException::key_error(format!("getpwuid(): uid not found: {}", uid)));
+                return Err(PyException::key_error(format!(
+                    "getpwuid(): uid not found: {}",
+                    uid
+                )));
             }
             unsafe {
                 Ok(make_pwd_struct(
@@ -3958,7 +5555,9 @@ pub fn create_pwd_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = uid;
-            Err(PyException::runtime_error("pwd module not available on this platform"))
+            Err(PyException::runtime_error(
+                "pwd module not available on this platform",
+            ))
         }
     });
 
@@ -3970,7 +5569,9 @@ pub fn create_pwd_module() -> PyObjectRef {
                 libc::setpwent();
                 loop {
                     let pw = libc::getpwent();
-                    if pw.is_null() { break; }
+                    if pw.is_null() {
+                        break;
+                    }
                     users.push(make_pwd_struct(
                         &std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy(),
                         &std::ffi::CStr::from_ptr((*pw).pw_passwd).to_string_lossy(),
@@ -3991,9 +5592,12 @@ pub fn create_pwd_module() -> PyObjectRef {
         }
     });
 
-    make_module("pwd", vec![
-        ("getpwnam", getpwnam_fn),
-        ("getpwuid", getpwuid_fn),
-        ("getpwall", getpwall_fn),
-    ])
+    make_module(
+        "pwd",
+        vec![
+            ("getpwnam", getpwnam_fn),
+            ("getpwuid", getpwuid_fn),
+            ("getpwall", getpwall_fn),
+        ],
+    )
 }

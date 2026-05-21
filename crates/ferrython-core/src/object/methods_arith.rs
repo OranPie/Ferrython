@@ -435,10 +435,9 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::Str(s), PyObjectPayload::Bool(b))
         | (PyObjectPayload::Bool(b), PyObjectPayload::Str(s)) => {
-            checked_repeat_len(s.len(), *b as usize, "str repeat")?;
-            Ok(PyObject::str_val(CompactString::from(
-                s.repeat(*b as usize),
-            )))
+            let count = *b as usize;
+            checked_repeat_len(s.len(), count, "str repeat")?;
+            Ok(PyObject::str_val(CompactString::from(s.repeat(count))))
         }
         (PyObjectPayload::List(items), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {

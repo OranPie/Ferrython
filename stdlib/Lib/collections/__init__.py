@@ -1,6 +1,9 @@
 """High-performance container datatypes - pure Python implementations."""
 
+import copy
+import keyword
 import sys
+import reprlib
 
 
 class OrderedDict(dict):
@@ -129,6 +132,44 @@ class Counter(dict):
         """Sum of all counts."""
         return sum(self.values())
 
+    def copy(self):
+        return Counter(self)
+
+
+def most_common(counter, n=None):
+    return counter.most_common(n)
+
+
+def counter_elements(counter):
+    return list(counter.elements())
+
+
+def counter_update(counter, iterable=None, **kwds):
+    counter.update(iterable, **kwds)
+    return counter
+
+
+def counter_subtract(counter, iterable=None, **kwds):
+    counter.subtract(iterable, **kwds)
+    return counter
+
+
+def counter_total(counter):
+    return counter.total()
+
+
+def counter_copy(counter):
+    return counter.copy()
+
+
+def counter_clear(counter):
+    counter.clear()
+    return None
+
+
+def _count_elements(mapping, iterable):
+    mapping.update(iterable)
+
 
 class defaultdict(dict):
     """Dict subclass that calls a factory function to supply missing values."""
@@ -150,77 +191,208 @@ class defaultdict(dict):
         return defaultdict(self.default_factory, self)
 
 
+class _DequeIterator:
+    def __init__(self, deq, reverse=False):
+        self._deque = deq
+        self._state = deq._state
+        self._reverse = reverse
+        self._index = len(deq._data) - 1 if reverse else 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._state != self._deque._state:
+            raise RuntimeError('deque mutated during iteration')
+        data = self._deque._data
+        if self._reverse:
+            if self._index < 0:
+                raise StopIteration
+            item = data[self._index]
+            self._index -= 1
+            return item
+        if self._index >= len(data):
+            raise StopIteration
+        item = data[self._index]
+        self._index += 1
+        return item
+
+    def __reduce__(self):
+        return (type(self), (self._deque.copy(), self._reverse),
+                (self._index, self._state))
+
+    def __setstate__(self, state):
+        self._index, self._state = state
+
+
+class _DequeReverseIterator(_DequeIterator):
+    def __init__(self, deq):
+        super().__init__(deq, True)
+
+    def __reduce__(self):
+        return (type(self), (self._deque.copy(),), (self._index, self._state))
+
+
 class deque:
     """Double-ended queue implemented with a list (simplified)."""
 
+    __hash__ = None
+
     def __init__(self, iterable=None, maxlen=None):
         self._data = []
-        self.maxlen = maxlen
+        self._maxlen = maxlen
+        self._state = 0
         if iterable is not None:
-            for item in iterable:
-                self.append(item)
+            self.extend(iterable)
+
+    @property
+    def maxlen(self):
+        return self._maxlen
+
+    def _bump(self):
+        self._state += 1
+
+    def _trim_left(self):
+        if self._maxlen is not None:
+            while len(self._data) > self._maxlen:
+                self._data.pop(0)
+
+    def _trim_right(self):
+        if self._maxlen is not None:
+            while len(self._data) > self._maxlen:
+                self._data.pop()
 
     def append(self, x):
         self._data.append(x)
-        if self.maxlen is not None and len(self._data) > self.maxlen:
-            self._data.pop(0)
+        self._trim_left()
+        self._bump()
 
     def appendleft(self, x):
         self._data.insert(0, x)
-        if self.maxlen is not None and len(self._data) > self.maxlen:
-            self._data.pop()
+        self._trim_right()
+        self._bump()
 
     def pop(self):
         if not self._data:
             raise IndexError('pop from an empty deque')
+        self._bump()
         return self._data.pop()
 
     def popleft(self):
         if not self._data:
             raise IndexError('pop from an empty deque')
+        self._bump()
         return self._data.pop(0)
 
     def extend(self, iterable):
-        for item in iterable:
-            self.append(item)
+        items = list(iterable)
+        for item in items:
+            self._data.append(item)
+        self._trim_left()
+        self._bump()
 
     def extendleft(self, iterable):
-        for item in iterable:
-            self.appendleft(item)
+        items = list(iterable)
+        for item in items:
+            self._data.insert(0, item)
+        self._trim_right()
+        self._bump()
 
     def rotate(self, n=1):
         if not self._data:
             return
         n = n % len(self._data)
-        self._data = self._data[-n:] + self._data[:-n]
+        if n:
+            self._data = self._data[-n:] + self._data[:-n]
+            self._bump()
 
     def clear(self):
-        self._data.clear()
+        if self._data:
+            self._data.clear()
+            self._bump()
+
+    def _compare(self, a, b):
+        try:
+            return a == b
+        except Exception:
+            raise RuntimeError
 
     def count(self, x):
-        return self._data.count(x)
+        state = self._state
+        count = 0
+        for item in self._data:
+            if self._state != state:
+                raise RuntimeError
+            if self._compare(item, x):
+                count += 1
+            if self._state != state:
+                raise RuntimeError
+        return count
 
     def index(self, x, start=0, stop=None):
         if stop is None:
             stop = len(self._data)
+        data = self._data
+        state = self._state
+        n = len(data)
+        if start < 0:
+            start += n
+            if start < 0:
+                start = 0
+        elif start > n:
+            start = n
+        if stop < 0:
+            stop += n
+            if stop < 0:
+                stop = 0
+        elif stop > n:
+            stop = n
         for i in range(start, stop):
-            if self._data[i] == x:
+            if self._state != state:
+                raise RuntimeError
+            if self._compare(data[i], x):
+                if self._state != state:
+                    raise RuntimeError
                 return i
+            if self._state != state:
+                raise RuntimeError
         raise ValueError('%r is not in deque' % x)
 
     def insert(self, i, x):
-        if self.maxlen is not None and len(self._data) >= self.maxlen:
+        if self._maxlen is not None and len(self._data) >= self._maxlen:
             raise IndexError('deque already at its maximum size')
         self._data.insert(i, x)
+        self._trim_left()
+        self._bump()
 
     def remove(self, value):
-        self._data.remove(value)
+        state = self._state
+        for i, item in enumerate(self._data):
+            if self._state != state:
+                raise RuntimeError
+            if self._compare(item, value):
+                del self._data[i]
+                self._bump()
+                return
+            if self._state != state:
+                raise RuntimeError
+        raise ValueError('deque.remove(x): x not in deque')
 
     def reverse(self):
         self._data.reverse()
+        self._bump()
 
     def copy(self):
-        return deque(self._data, self.maxlen)
+        return type(self)(self._data, self._maxlen)
+
+    def __copy__(self):
+        return self.copy()
+
+    def __deepcopy__(self, memo):
+        return type(self)(copy.deepcopy(self._data, memo), self._maxlen)
+
+    def __reduce__(self):
+        return (type(self), (list(self._data), self._maxlen))
 
     def __len__(self):
         return len(self._data)
@@ -229,36 +401,76 @@ class deque:
         return bool(self._data)
 
     def __contains__(self, item):
-        return item in self._data
+        state = self._state
+        for elem in self._data:
+            if self._state != state:
+                raise RuntimeError
+            if self._compare(elem, item):
+                if self._state != state:
+                    raise RuntimeError
+                return True
+            if self._state != state:
+                raise RuntimeError
+        return False
 
     def __getitem__(self, index):
         return self._data[index]
 
     def __setitem__(self, index, value):
         self._data[index] = value
+        self._bump()
 
     def __delitem__(self, index):
         del self._data[index]
+        self._bump()
 
     def __iter__(self):
-        return iter(self._data)
+        return _DequeIterator(self)
 
     def __reversed__(self):
-        return reversed(self._data)
+        return _DequeReverseIterator(self)
+
+    def __add__(self, other):
+        try:
+            items = list(other)
+        except TypeError:
+            return NotImplemented
+        return type(self)(list(self._data) + items, self._maxlen)
+
+    def __iadd__(self, other):
+        self.extend(other)
+        return self
+
+    def __mul__(self, n):
+        if not isinstance(n, int):
+            return NotImplemented
+        return type(self)(self._data * n, self._maxlen)
+
+    def __rmul__(self, n):
+        return self.__mul__(n)
+
+    def __imul__(self, n):
+        if not isinstance(n, int):
+            return NotImplemented
+        self._data *= n
+        self._trim_left()
+        self._bump()
+        return self
 
     def __eq__(self, other):
         if isinstance(other, deque):
             return self._data == other._data
         return NotImplemented
 
+    @reprlib.recursive_repr()
     def __repr__(self):
         items = ', '.join(repr(x) for x in self._data)
-        if self.maxlen is not None:
-            return 'deque([%s], maxlen=%d)' % (items, self.maxlen)
+        if self._maxlen is not None:
+            return 'deque([%s], maxlen=%d)' % (items, self._maxlen)
         return 'deque([%s])' % items
 
 
-def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
+def namedtuple(typename, field_names, *, rename=False, defaults=None, module=None):
     """Returns a new subclass of tuple with named fields.
 
     >>> Point = namedtuple('Point', ['x', 'y'])
@@ -266,6 +478,10 @@ def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
     >>> p.x + p.y
     33
     """
+    if not isinstance(typename, str):
+        raise TypeError('Type names and field names must be strings')
+    if not typename.isidentifier() or keyword.iskeyword(typename):
+        raise ValueError('Type names and field names must be valid identifiers')
     if isinstance(field_names, str):
         field_names = field_names.replace(',', ' ').split()
     field_names = list(field_names)
@@ -273,24 +489,34 @@ def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
     if rename:
         seen = set()
         for index, name in enumerate(field_names):
-            if (not name.isidentifier() or name.startswith('_') or
+            if (not isinstance(name, str) or not name.isidentifier() or
+                    keyword.iskeyword(name) or name.startswith('_') or
                     name in seen):
                 field_names[index] = '_%d' % index
             seen.add(field_names[index])
 
-    for name in [typename] + field_names:
-        if not isinstance(name, str):
-            raise TypeError('Type names and field names must be strings')
-
     seen = set()
     for name in field_names:
+        if not isinstance(name, str):
+            raise TypeError('Type names and field names must be strings')
         if name.startswith('_') and not rename:
             raise ValueError('Field names cannot start with an underscore: %r' % name)
+        if not name.isidentifier() or keyword.iskeyword(name):
+            raise ValueError('Field names must be valid identifiers: %r' % name)
         if name in seen:
             raise ValueError('Encountered duplicate field name: %r' % name)
         seen.add(name)
 
     num_fields = len(field_names)
+    if defaults is not None:
+        defaults = tuple(defaults)
+        if len(defaults) > num_fields:
+            raise TypeError('Too many default values')
+    if module is None:
+        try:
+            module = sys._getframe(1).f_globals.get('__name__', '__main__')
+        except Exception:
+            module = '__main__'
 
     def __new__(cls, *args, **kwargs):
         if defaults:
@@ -321,7 +547,10 @@ def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
         parts = []
         for i, name in enumerate(field_names):
             parts.append('%s=%r' % (name, self[i]))
-        return '%s(%s)' % (typename, ', '.join(parts))
+        return '%s(%s)' % (type(self).__name__, ', '.join(parts))
+
+    def __getnewargs__(self):
+        return tuple(self)
 
     def _asdict(self):
         return dict(zip(field_names, self))
@@ -343,6 +572,7 @@ def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
         '_make': _make,
         '_fields': tuple(field_names),
         '__slots__': (),
+        '__getnewargs__': __getnewargs__,
     }
 
     for index, name in enumerate(field_names):
@@ -353,13 +583,14 @@ def namedtuple(typename, field_names, rename=False, defaults=None, module=None):
 
     result = type(typename, (tuple,), namespace)
 
+    result.__doc__ = '%s(%s)' % (typename, ', '.join(field_names))
     if defaults is not None:
         result._field_defaults = dict(zip(field_names[-len(defaults):], defaults))
     else:
         result._field_defaults = {}
-
-    if module is not None:
-        result.__module__ = module
+    result.__module__ = module
+    __new__.__defaults__ = defaults if defaults is not None else None
+    result.__new__.__defaults__ = defaults if defaults is not None else None
 
     return result
 

@@ -3,6 +3,7 @@
 use crate::error::{PyException, PyResult};
 use crate::types::HashableKey;
 use compact_str::CompactString;
+use indexmap::IndexMap;
 
 use super::helpers::*;
 use super::methods::PyObjectMethods;
@@ -48,6 +49,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             match &*guard {
                 IteratorData::Map { .. } => "map",
                 IteratorData::Filter { .. } => "filter",
+                IteratorData::FilterFalse { .. } => "itertools.filterfalse",
                 IteratorData::Zip { .. } => "zip",
                 IteratorData::Enumerate { .. } => "enumerate",
                 IteratorData::Sentinel { .. } => "callable_iterator",
@@ -58,6 +60,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 IteratorData::Repeat { .. } => "itertools.repeat",
                 IteratorData::Chain { .. } => "itertools.chain",
                 IteratorData::Starmap { .. } => "itertools.starmap",
+                IteratorData::Tee { .. } => "itertools._tee",
                 IteratorData::Range { .. } => "range_iterator",
                 IteratorData::List { .. } => "list_iterator",
                 IteratorData::Tuple { .. } => "tuple_iterator",
@@ -679,6 +682,23 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 .map(|k| k.to_object())
                 .collect())
         }
+        PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__chainmap__") => {
+            let maps = inst
+                .attrs
+                .read()
+                .get("maps")
+                .cloned()
+                .ok_or_else(|| PyException::type_error("ChainMap missing maps"))?;
+            let maps = maps.to_list()?;
+            let mut combined = IndexMap::new();
+            for mapping in maps.iter().rev() {
+                for key in mapping.to_list()? {
+                    let hk = key.to_hashable_key()?;
+                    combined.insert(hk, key);
+                }
+            }
+            Ok(combined.keys().map(|k| k.to_object()).collect())
+        }
         PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
             if let Some(storage) = inst.dict_storage.as_ref() {
                 let read = storage.read();
@@ -769,6 +789,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 | IteratorData::Zip { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
+                | IteratorData::FilterFalse { .. }
                 | IteratorData::Sentinel { .. }
                 | IteratorData::TakeWhile { .. }
                 | IteratorData::DropWhile { .. }
@@ -778,6 +799,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 | IteratorData::Chain { .. }
                 | IteratorData::SeqIter { .. }
                 | IteratorData::Starmap { .. }
+                | IteratorData::Tee { .. }
                 | IteratorData::DictEntries { .. } => Err(PyException::type_error(
                     "lazy iterator requires VM to collect",
                 )),
@@ -836,11 +858,19 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
         PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
-                    guard_eager_allocation(items.len(), "namedtuple -> list")?;
                     return Ok((**items).clone());
                 }
             }
             Ok(vec![])
+        }
+        PyObjectPayload::Instance(_) => {
+            if obj.get_attr("__iter__").is_some() || obj.get_attr("__next__").is_some() {
+                return obj.get_iter().and_then(|iter| iter.to_list());
+            }
+            Err(PyException::type_error(format!(
+                "'{}' object is not iterable",
+                obj.type_name()
+            )))
         }
         PyObjectPayload::DictKeys(m) => {
             let read = m.read();

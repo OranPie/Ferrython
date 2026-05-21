@@ -1,7 +1,7 @@
 //! Error types and exception hierarchy for Ferrython.
 
-use std::fmt;
 use compact_str::CompactString;
+use std::fmt;
 use thiserror::Error;
 
 use crate::object::PyObjectRef;
@@ -95,74 +95,116 @@ impl fmt::Display for ExceptionKind {
 impl ExceptionKind {
     /// Check if this exception kind is a subclass of `parent`, following CPython's hierarchy.
     pub fn is_subclass_of(&self, parent: &ExceptionKind) -> bool {
-        if std::mem::discriminant(self) == std::mem::discriminant(parent) { return true; }
+        if std::mem::discriminant(self) == std::mem::discriminant(parent) {
+            return true;
+        }
         match parent {
             ExceptionKind::BaseException => true,
-            ExceptionKind::Exception => !matches!(self,
-                ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit |
-                ExceptionKind::BaseExceptionGroup
+            ExceptionKind::Exception => !matches!(
+                self,
+                ExceptionKind::SystemExit
+                    | ExceptionKind::KeyboardInterrupt
+                    | ExceptionKind::GeneratorExit
+                    | ExceptionKind::BaseExceptionGroup
             ),
-            ExceptionKind::ArithmeticError => matches!(self,
-                ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
-                ExceptionKind::OverflowError | ExceptionKind::ZeroDivisionError
+            ExceptionKind::ArithmeticError => matches!(
+                self,
+                ExceptionKind::ArithmeticError
+                    | ExceptionKind::FloatingPointError
+                    | ExceptionKind::OverflowError
+                    | ExceptionKind::ZeroDivisionError
             ),
-            ExceptionKind::LookupError => matches!(self,
+            ExceptionKind::LookupError => matches!(
+                self,
                 ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
             ),
-            ExceptionKind::OSError => matches!(self,
-                ExceptionKind::OSError | ExceptionKind::FileExistsError |
-                ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError |
-                ExceptionKind::TimeoutError | ExceptionKind::IsADirectoryError |
-                ExceptionKind::NotADirectoryError | ExceptionKind::ProcessLookupError |
-                ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
-                ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError |
-                ExceptionKind::InterruptedError | ExceptionKind::ChildProcessError |
-                ExceptionKind::BlockingIOError | ExceptionKind::BrokenPipeError
+            ExceptionKind::OSError => matches!(
+                self,
+                ExceptionKind::OSError
+                    | ExceptionKind::FileExistsError
+                    | ExceptionKind::FileNotFoundError
+                    | ExceptionKind::PermissionError
+                    | ExceptionKind::TimeoutError
+                    | ExceptionKind::IsADirectoryError
+                    | ExceptionKind::NotADirectoryError
+                    | ExceptionKind::ProcessLookupError
+                    | ExceptionKind::ConnectionError
+                    | ExceptionKind::ConnectionResetError
+                    | ExceptionKind::ConnectionAbortedError
+                    | ExceptionKind::ConnectionRefusedError
+                    | ExceptionKind::InterruptedError
+                    | ExceptionKind::ChildProcessError
+                    | ExceptionKind::BlockingIOError
+                    | ExceptionKind::BrokenPipeError
             ),
-            ExceptionKind::ConnectionError => matches!(self,
-                ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
-                ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError |
-                ExceptionKind::BrokenPipeError
+            ExceptionKind::ConnectionError => matches!(
+                self,
+                ExceptionKind::ConnectionError
+                    | ExceptionKind::ConnectionResetError
+                    | ExceptionKind::ConnectionAbortedError
+                    | ExceptionKind::ConnectionRefusedError
+                    | ExceptionKind::BrokenPipeError
             ),
-            ExceptionKind::ValueError => matches!(self,
-                ExceptionKind::ValueError | ExceptionKind::UnicodeError |
-                ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError |
-                ExceptionKind::JSONDecodeError
+            ExceptionKind::ValueError => matches!(
+                self,
+                ExceptionKind::ValueError
+                    | ExceptionKind::UnicodeError
+                    | ExceptionKind::UnicodeDecodeError
+                    | ExceptionKind::UnicodeEncodeError
+                    | ExceptionKind::JSONDecodeError
             ),
-            ExceptionKind::UnicodeError => matches!(self,
-                ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
-                ExceptionKind::UnicodeEncodeError
+            ExceptionKind::UnicodeError => matches!(
+                self,
+                ExceptionKind::UnicodeError
+                    | ExceptionKind::UnicodeDecodeError
+                    | ExceptionKind::UnicodeEncodeError
             ),
-            ExceptionKind::Warning => matches!(self,
-                ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
-                ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning |
-                ExceptionKind::SyntaxWarning | ExceptionKind::FutureWarning |
-                ExceptionKind::ImportWarning | ExceptionKind::UnicodeWarning |
-                ExceptionKind::BytesWarning | ExceptionKind::ResourceWarning |
-                ExceptionKind::PendingDeprecationWarning
+            ExceptionKind::Warning => matches!(
+                self,
+                ExceptionKind::Warning
+                    | ExceptionKind::DeprecationWarning
+                    | ExceptionKind::RuntimeWarning
+                    | ExceptionKind::UserWarning
+                    | ExceptionKind::SyntaxWarning
+                    | ExceptionKind::FutureWarning
+                    | ExceptionKind::ImportWarning
+                    | ExceptionKind::UnicodeWarning
+                    | ExceptionKind::BytesWarning
+                    | ExceptionKind::ResourceWarning
+                    | ExceptionKind::PendingDeprecationWarning
             ),
-            ExceptionKind::ImportError => matches!(self,
+            ExceptionKind::ImportError => matches!(
+                self,
                 ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
             ),
-            ExceptionKind::RuntimeError => matches!(self,
-                ExceptionKind::RuntimeError | ExceptionKind::RecursionError |
-                ExceptionKind::NotImplementedError
+            ExceptionKind::RuntimeError => matches!(
+                self,
+                ExceptionKind::RuntimeError
+                    | ExceptionKind::RecursionError
+                    | ExceptionKind::NotImplementedError
             ),
-            ExceptionKind::SyntaxError => matches!(self,
-                ExceptionKind::SyntaxError | ExceptionKind::IndentationError |
-                ExceptionKind::TabError
+            ExceptionKind::SyntaxError => matches!(
+                self,
+                ExceptionKind::SyntaxError
+                    | ExceptionKind::IndentationError
+                    | ExceptionKind::TabError
             ),
-            ExceptionKind::IndentationError => matches!(self,
+            ExceptionKind::IndentationError => matches!(
+                self,
                 ExceptionKind::IndentationError | ExceptionKind::TabError
             ),
-            ExceptionKind::NameError => matches!(self,
+            ExceptionKind::NameError => matches!(
+                self,
                 ExceptionKind::NameError | ExceptionKind::UnboundLocalError
             ),
-            ExceptionKind::SubprocessError => matches!(self,
-                ExceptionKind::SubprocessError | ExceptionKind::CalledProcessError |
-                ExceptionKind::TimeoutExpired
+            ExceptionKind::SubprocessError => matches!(
+                self,
+                ExceptionKind::SubprocessError
+                    | ExceptionKind::CalledProcessError
+                    | ExceptionKind::TimeoutExpired
             ),
-            ExceptionKind::BaseExceptionGroup => matches!(self,
+            ExceptionKind::BaseExceptionGroup => matches!(
+                self,
                 ExceptionKind::BaseExceptionGroup | ExceptionKind::ExceptionGroup
             ),
             _ => false,
@@ -281,36 +323,91 @@ pub struct TracebackEntry {
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<CompactString>) -> Self {
-        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
+        Self {
+            kind,
+            message: message.into(),
+            original: None,
+            traceback: Vec::new(),
+            cause: None,
+            context: None,
+            value: None,
+            os_error_info: None,
+        }
     }
-    pub fn with_original(kind: ExceptionKind, message: impl Into<CompactString>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
+    pub fn with_original(
+        kind: ExceptionKind,
+        message: impl Into<CompactString>,
+        obj: PyObjectRef,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            original: Some(obj),
+            traceback: Vec::new(),
+            cause: None,
+            context: None,
+            value: None,
+            os_error_info: None,
+        }
     }
     /// Ensure this exception has an `original` ExceptionInstance object.
     /// Creates one from `kind`/`message` if absent.
     pub fn ensure_original(&mut self) {
         if self.original.is_none() {
             self.original = Some(crate::object::PyObject::exception_instance(
-                self.kind, self.message.clone(),
+                self.kind,
+                self.message.clone(),
             ));
         }
     }
-    pub fn type_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
-    pub fn value_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ValueError, msg) }
-    pub fn lookup_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::LookupError, msg) }
-    pub fn name_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::NameError, msg) }
-    pub fn attribute_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::AttributeError, msg) }
-    pub fn runtime_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::RuntimeError, msg) }
-    pub fn import_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ImportError, msg) }
-    pub fn module_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ModuleNotFoundError, msg) }
-    pub fn index_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::IndexError, msg) }
-    pub fn key_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::KeyError, msg) }
-    pub fn zero_division_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ZeroDivisionError, msg) }
-    pub fn overflow_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OverflowError, msg) }
-    pub fn stop_iteration() -> Self { Self::new(ExceptionKind::StopIteration, "") }
-    pub fn os_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OSError, msg) }
-    pub fn file_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }
-    pub fn permission_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::PermissionError, msg) }
+    pub fn type_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::TypeError, msg)
+    }
+    pub fn value_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::ValueError, msg)
+    }
+    pub fn lookup_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::LookupError, msg)
+    }
+    pub fn name_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::NameError, msg)
+    }
+    pub fn attribute_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::AttributeError, msg)
+    }
+    pub fn runtime_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::RuntimeError, msg)
+    }
+    pub fn import_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::ImportError, msg)
+    }
+    pub fn module_not_found_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::ModuleNotFoundError, msg)
+    }
+    pub fn index_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::IndexError, msg)
+    }
+    pub fn key_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::KeyError, msg)
+    }
+    pub fn zero_division_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::ZeroDivisionError, msg)
+    }
+    pub fn overflow_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::OverflowError, msg)
+    }
+    pub fn stop_iteration() -> Self {
+        Self::new(ExceptionKind::StopIteration, "")
+    }
+    pub fn os_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::OSError, msg)
+    }
+    pub fn file_not_found_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::FileNotFoundError, msg)
+    }
+    pub fn permission_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::PermissionError, msg)
+    }
 
     /// Create an OSError (or appropriate subclass) from a `std::io::Error`, with
     /// `.errno`, `.strerror`, and `.filename` attributes like CPython.
@@ -338,12 +435,24 @@ impl PyException {
         });
         exc
     }
-    pub fn assertion_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::AssertionError, msg) }
-    pub fn not_implemented_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::NotImplementedError, msg) }
-    pub fn recursion_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }
-    pub fn unbound_local_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::UnboundLocalError, msg) }
-    pub fn syntax_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::SyntaxError, msg) }
-    pub fn json_decode_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::JSONDecodeError, msg) }
+    pub fn assertion_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::AssertionError, msg)
+    }
+    pub fn not_implemented_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::NotImplementedError, msg)
+    }
+    pub fn recursion_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::RecursionError, msg)
+    }
+    pub fn unbound_local_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::UnboundLocalError, msg)
+    }
+    pub fn syntax_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::SyntaxError, msg)
+    }
+    pub fn json_decode_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::JSONDecodeError, msg)
+    }
     pub fn system_exit(code: PyObjectRef) -> Self {
         let mut exc = Self::new(ExceptionKind::SystemExit, "");
         exc.value = Some(code);
@@ -370,7 +479,7 @@ pub type PyResult<T> = Result<T, PyException>;
 
 // ── Thread-local exception info (for sys.exc_info() / traceback.format_exc()) ──
 
-use std::cell::{RefCell, Cell};
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, CompactString, Vec<TracebackEntry>)>>
@@ -392,7 +501,9 @@ pub fn register_active_exc_ptr(ptr: *const Option<PyException>) {
 pub fn get_active_exc_info() -> Option<(ExceptionKind, CompactString)> {
     ACTIVE_EXC_PTR.with(|c| {
         let ptr = c.get();
-        if ptr.is_null() { return None; }
+        if ptr.is_null() {
+            return None;
+        }
         // SAFETY: pointer registered by VM, valid during VM lifetime, single-threaded
         let exc_opt = unsafe { &*ptr };
         exc_opt.as_ref().map(|exc| (exc.kind, exc.message.clone()))
@@ -400,12 +511,20 @@ pub fn get_active_exc_info() -> Option<(ExceptionKind, CompactString)> {
 }
 
 /// Read the active exception's original PyObjectRef (for sys.exc_info() value).
-pub fn get_active_exc_object() -> Option<(ExceptionKind, CompactString, Option<crate::object::PyObjectRef>)> {
+pub fn get_active_exc_object() -> Option<(
+    ExceptionKind,
+    CompactString,
+    Option<crate::object::PyObjectRef>,
+)> {
     ACTIVE_EXC_PTR.with(|c| {
         let ptr = c.get();
-        if ptr.is_null() { return None; }
+        if ptr.is_null() {
+            return None;
+        }
         let exc_opt = unsafe { &*ptr };
-        exc_opt.as_ref().map(|exc| (exc.kind, exc.message.clone(), exc.original.clone()))
+        exc_opt
+            .as_ref()
+            .map(|exc| (exc.kind, exc.message.clone(), exc.original.clone()))
     })
 }
 
@@ -447,7 +566,11 @@ pub fn request_vm_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
 pub fn take_pending_vm_call() -> Option<(PyObjectRef, Vec<PyObjectRef>)> {
     PENDING_VM_CALLS.with(|c| {
         let mut calls = c.borrow_mut();
-        if calls.is_empty() { None } else { Some(calls.remove(0)) }
+        if calls.is_empty() {
+            None
+        } else {
+            Some(calls.remove(0))
+        }
     })
 }
 

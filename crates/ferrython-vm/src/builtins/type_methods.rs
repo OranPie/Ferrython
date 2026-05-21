@@ -625,6 +625,11 @@ pub(crate) fn call_dict_method(
         "copy" => Ok(PyObject::dict(map.read().clone())),
         "update" => {
             check_args_min("update", args, 1)?;
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "update expected at most 1 positional argument",
+                ));
+            }
             // Check if this is a Counter (has __counter__ key)
             let is_counter = map
                 .read()
@@ -662,7 +667,11 @@ pub(crate) fn call_dict_method(
                             w.insert(key, PyObject::int(count + 1));
                         }
                     }
-                    _ => {}
+                    _ => {
+                        return Err(PyException::type_error(
+                            "Counter.update() argument must be a mapping or iterable",
+                        ));
+                    }
                 }
             } else {
                 match &args[0].payload {
@@ -699,7 +708,11 @@ pub(crate) fn call_dict_method(
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        return Err(PyException::type_error(
+                            "update() argument must be a mapping or iterable",
+                        ));
+                    }
                 }
             }
             Ok(PyObject::none())
@@ -707,6 +720,11 @@ pub(crate) fn call_dict_method(
         "subtract" => {
             // Counter.subtract — subtract counts from iterable or mapping
             check_args_min("subtract", args, 1)?;
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "subtract expected at most 1 positional argument",
+                ));
+            }
             match &args[0].payload {
                 PyObjectPayload::Dict(other) => {
                     let other_items = other.read().clone();
@@ -738,7 +756,11 @@ pub(crate) fn call_dict_method(
                         w.insert(key, PyObject::int(count - 1));
                     }
                 }
-                _ => {}
+                _ => {
+                    return Err(PyException::type_error(
+                        "Counter.subtract() argument must be a mapping or iterable",
+                    ));
+                }
             }
             Ok(PyObject::none())
         }
@@ -883,11 +905,23 @@ pub(crate) fn call_dict_method(
                     .unwrap_or(HashableKey::str_key(CompactString::from(
                         args[0].py_to_string(),
                     )));
+            if is_hidden_dict_key(&key) {
+                return Ok(PyObject::bool_val(false));
+            }
             Ok(PyObject::bool_val(map.read().contains_key(&key)))
         }
-        "__len__" => Ok(PyObject::int(map.read().len() as i64)),
+        "__len__" => {
+            let r = map.read();
+            let hidden = r.keys().filter(|k| is_hidden_dict_key(k)).count();
+            Ok(PyObject::int((r.len() - hidden) as i64))
+        }
         "__iter__" => {
-            let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
+            let keys: Vec<PyObjectRef> = map
+                .read()
+                .keys()
+                .filter(|k| !is_hidden_dict_key(k))
+                .map(|k| k.to_object())
+                .collect();
             Ok(PyObject::list(keys))
         }
         "__getitem__" => {
@@ -898,9 +932,35 @@ pub(crate) fn call_dict_method(
                     .unwrap_or(HashableKey::str_key(CompactString::from(
                         args[0].py_to_string(),
                     )));
-            match map.read().get(&key) {
-                Some(v) => Ok(v.clone()),
-                None => Err(PyException::key_error(args[0].repr())),
+            if is_hidden_dict_key(&key) {
+                return Err(PyException::key_error(args[0].repr()));
+            }
+            match map.read().get(&key).cloned() {
+                Some(v) => Ok(v),
+                None => {
+                    let factory_key =
+                        HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
+                    if let Some(factory) = map.read().get(&factory_key).cloned() {
+                        let default = match &factory.payload {
+                            PyObjectPayload::BuiltinType(name) => match name.as_str() {
+                                "int" => PyObject::int(0),
+                                "float" => PyObject::float(0.0),
+                                "str" => PyObject::str_val(CompactString::new("")),
+                                "list" => PyObject::list(vec![]),
+                                "bool" => PyObject::bool_val(false),
+                                "tuple" => PyObject::tuple(vec![]),
+                                "set" => PyObject::set(new_fx_hashkey_map()),
+                                "dict" => PyObject::dict(new_fx_hashkey_map()),
+                                _ => return Err(PyException::key_error(args[0].repr())),
+                            },
+                            _ => return Err(PyException::key_error(args[0].repr())),
+                        };
+                        map.write().insert(key, default.clone());
+                        Ok(default)
+                    } else {
+                        Err(PyException::key_error(args[0].repr()))
+                    }
+                }
             }
         }
         "__eq__" => {
@@ -908,11 +968,13 @@ pub(crate) fn call_dict_method(
             if let PyObjectPayload::Dict(other) = &args[0].payload {
                 let a = map.read();
                 let b = other.read();
-                if a.len() != b.len() {
+                let a_visible: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                let b_visible: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                if a_visible.len() != b_visible.len() {
                     return Ok(PyObject::bool_val(false));
                 }
-                let eq = a.iter().all(|(k, v)| {
-                    b.get(k)
+                let eq = a_visible.iter().all(|(k, v)| {
+                    b.get(*k)
                         .map_or(false, |v2| v.py_to_string() == v2.py_to_string())
                 });
                 Ok(PyObject::bool_val(eq))
@@ -925,11 +987,13 @@ pub(crate) fn call_dict_method(
             if let PyObjectPayload::Dict(other) = &args[0].payload {
                 let a = map.read();
                 let b = other.read();
-                if a.len() != b.len() {
+                let a_visible: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                let b_visible: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                if a_visible.len() != b_visible.len() {
                     return Ok(PyObject::bool_val(true));
                 }
-                let eq = a.iter().all(|(k, v)| {
-                    b.get(k)
+                let eq = a_visible.iter().all(|(k, v)| {
+                    b.get(*k)
                         .map_or(false, |v2| v.py_to_string() == v2.py_to_string())
                 });
                 Ok(PyObject::bool_val(!eq))
@@ -939,7 +1003,28 @@ pub(crate) fn call_dict_method(
         }
         "__repr__" | "__str__" => {
             let r = map.read();
-            let inner: Vec<String> = r
+            let is_counter =
+                r.contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
+            let mut visible: Vec<(HashableKey, PyObjectRef)> = r
+                .iter()
+                .filter(|(k, _)| !is_hidden_dict_key(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if is_counter {
+                visible.sort_by(|a, b| b.1.as_int().unwrap_or(0).cmp(&a.1.as_int().unwrap_or(0)));
+                if visible.is_empty() {
+                    return Ok(PyObject::str_val(CompactString::from("Counter()")));
+                }
+                let inner: Vec<String> = visible
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
+                    .collect();
+                return Ok(PyObject::str_val(CompactString::from(format!(
+                    "Counter({{{}}})",
+                    inner.join(", ")
+                ))));
+            }
+            let inner: Vec<String> = visible
                 .iter()
                 .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
                 .collect();
@@ -958,8 +1043,12 @@ pub(crate) fn call_dict_method(
         "__delitem__" => {
             check_args_min("dict.__delitem__", args, 1)?;
             let key = args[0].to_hashable_key()?;
+            let is_counter = map
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
             match map.write().swap_remove(&key) {
                 Some(_) => Ok(PyObject::none()),
+                None if is_counter => Ok(PyObject::none()),
                 None => Err(PyException::key_error(args[0].py_to_string())),
             }
         }

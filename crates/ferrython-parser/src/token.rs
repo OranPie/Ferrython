@@ -14,7 +14,12 @@ pub struct Span {
 
 impl Span {
     pub fn new(start_line: u32, start_col: u32, end_line: u32, end_col: u32) -> Self {
-        Self { start_line, start_col, end_line, end_col }
+        Self {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+        }
     }
 
     pub fn point(line: u32, col: u32) -> Self {
@@ -99,57 +104,57 @@ pub enum TokenKind {
     Yield,
 
     // ── Operators ──
-    Plus,           // +
-    Minus,          // -
-    Star,           // *
-    DoubleStar,     // **
-    Slash,          // /
-    DoubleSlash,    // //
-    Percent,        // %
-    At,             // @
-    LeftShift,      // <<
-    RightShift,     // >>
-    Ampersand,      // &
-    Pipe,           // |
-    Caret,          // ^
-    Tilde,          // ~
-    ColonEqual,     // :=
-    Less,           // <
-    Greater,        // >
-    LessEqual,      // <=
-    GreaterEqual,   // >=
-    EqualEqual,     // ==
-    NotEqual,       // !=
-    Arrow,          // ->
+    Plus,         // +
+    Minus,        // -
+    Star,         // *
+    DoubleStar,   // **
+    Slash,        // /
+    DoubleSlash,  // //
+    Percent,      // %
+    At,           // @
+    LeftShift,    // <<
+    RightShift,   // >>
+    Ampersand,    // &
+    Pipe,         // |
+    Caret,        // ^
+    Tilde,        // ~
+    ColonEqual,   // :=
+    Less,         // <
+    Greater,      // >
+    LessEqual,    // <=
+    GreaterEqual, // >=
+    EqualEqual,   // ==
+    NotEqual,     // !=
+    Arrow,        // ->
 
     // ── Augmented assignment ──
-    PlusEqual,      // +=
-    MinusEqual,     // -=
-    StarEqual,      // *=
-    SlashEqual,     // /=
+    PlusEqual,        // +=
+    MinusEqual,       // -=
+    StarEqual,        // *=
+    SlashEqual,       // /=
     DoubleSlashEqual, // //=
-    PercentEqual,   // %=
-    AtEqual,        // @=
-    AmpersandEqual, // &=
-    PipeEqual,      // |=
-    CaretEqual,     // ^=
-    RightShiftEqual, // >>=
-    LeftShiftEqual, // <<=
-    DoubleStarEqual, // **=
+    PercentEqual,     // %=
+    AtEqual,          // @=
+    AmpersandEqual,   // &=
+    PipeEqual,        // |=
+    CaretEqual,       // ^=
+    RightShiftEqual,  // >>=
+    LeftShiftEqual,   // <<=
+    DoubleStarEqual,  // **=
 
     // ── Delimiters ──
-    LeftParen,      // (
-    RightParen,     // )
-    LeftBracket,    // [
-    RightBracket,   // ]
-    LeftBrace,      // {
-    RightBrace,     // }
-    Comma,          // ,
-    Colon,          // :
-    Dot,            // .
-    Semicolon,      // ;
-    Equal,          // =
-    Ellipsis,       // ...
+    LeftParen,    // (
+    RightParen,   // )
+    LeftBracket,  // [
+    RightBracket, // ]
+    LeftBrace,    // {
+    RightBrace,   // }
+    Comma,        // ,
+    Colon,        // :
+    Dot,          // .
+    Semicolon,    // ;
+    Equal,        // =
+    Ellipsis,     // ...
 
     // ── Structural ──
     Newline,

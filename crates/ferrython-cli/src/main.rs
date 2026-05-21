@@ -17,14 +17,90 @@ enum PipelineError {
     Runtime(ferrython_core::error::PyException),
 }
 
+struct TestRunOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+}
+
+fn join_output_reader(handle: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+fn run_test_process_with_timeout(
+    exe: &std::path::Path,
+    test_file: &std::path::Path,
+    cwd: &std::path::Path,
+    timeout: std::time::Duration,
+) -> io::Result<TestRunOutput> {
+    let mut child = std::process::Command::new(exe)
+        .arg(test_file)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stdout {
+            pipe.read_to_end(&mut buf)?;
+        }
+        Ok(buf)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stderr {
+            pipe.read_to_end(&mut buf)?;
+        }
+        Ok(buf)
+    });
+
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(TestRunOutput {
+                status,
+                stdout: join_output_reader(stdout_reader)?,
+                stderr: join_output_reader(stderr_reader)?,
+                timed_out: false,
+            });
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let status = child.wait()?;
+            return Ok(TestRunOutput {
+                status,
+                stdout: join_output_reader(stdout_reader)?,
+                stderr: join_output_reader(stderr_reader)?,
+                timed_out: true,
+            });
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 impl From<ferrython_parser::ParseError> for PipelineError {
-    fn from(e: ferrython_parser::ParseError) -> Self { Self::Parse(e) }
+    fn from(e: ferrython_parser::ParseError) -> Self {
+        Self::Parse(e)
+    }
 }
 impl From<ferrython_compiler::CompileError> for PipelineError {
-    fn from(e: ferrython_compiler::CompileError) -> Self { Self::Compile(e) }
+    fn from(e: ferrython_compiler::CompileError) -> Self {
+        Self::Compile(e)
+    }
 }
 impl From<ferrython_core::error::PyException> for PipelineError {
-    fn from(e: ferrython_core::error::PyException) -> Self { Self::Runtime(e) }
+    fn from(e: ferrython_core::error::PyException) -> Self {
+        Self::Runtime(e)
+    }
 }
 
 impl PipelineError {
@@ -51,7 +127,9 @@ fn main() {
     let builder = std::thread::Builder::new()
         .name("ferrython-main".into())
         .stack_size(64 * 1024 * 1024);
-    let handler = builder.spawn(main_inner).expect("failed to spawn main thread");
+    let handler = builder
+        .spawn(main_inner)
+        .expect("failed to spawn main thread");
     if let Err(e) = handler.join() {
         if let Some(msg) = e.downcast_ref::<&str>() {
             eprintln!("Fatal error: {}", msg);
@@ -68,13 +146,15 @@ fn main_inner() {
     // Initialize import search paths (discovers stdlib, site-packages)
     // Must happen before any module is imported so sys.path reflects them.
     ferrython_import::init();
-    
+
     let raw_args: Vec<String> = env::args().collect();
 
     // Check for --compat flag or FERRYTHON_COMPAT env var: disable superinstructions
     // to emit only standard CPython 3.8 opcodes for fair performance comparison.
     let compat_mode = raw_args.iter().any(|a| a == "--compat")
-        || env::var("FERRYTHON_COMPAT").map(|v| v == "1" || v == "true").unwrap_or(false);
+        || env::var("FERRYTHON_COMPAT")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
     if compat_mode {
         ferrython_compiler::set_superinstructions_enabled(false);
     }
@@ -128,7 +208,9 @@ fn main_inner() {
                 }
                 _ => {
                     // Unknown flag — pass through so the dispatcher can error
-                    let remaining: String = std::iter::once('-').chain(chars[i..].iter().cloned()).collect();
+                    let remaining: String = std::iter::once('-')
+                        .chain(chars[i..].iter().cloned())
+                        .collect();
                     args.push(remaining);
                     i = chars.len();
                     continue;
@@ -170,7 +252,9 @@ fn main_inner() {
         argv.extend_from_slice(&args[2..]);
         ferrython_stdlib::set_argv(argv);
         run_string_with_opts(&source, "<stdin>", skip_first_line);
-        if inspect_after { ferrython_repl::run_repl(); }
+        if inspect_after {
+            ferrython_repl::run_repl();
+        }
         return;
     }
 
@@ -184,7 +268,9 @@ fn main_inner() {
         argv.extend_from_slice(&args[3..]);
         ferrython_stdlib::set_argv(argv);
         run_string_with_opts(&args[2], "<string>", skip_first_line);
-        if inspect_after { ferrython_repl::run_repl(); }
+        if inspect_after {
+            ferrython_repl::run_repl();
+        }
         return;
     }
 
@@ -201,7 +287,10 @@ fn main_inner() {
     }
 
     if args[1] == "--version" || args[1] == "-V" {
-        println!("Ferrython {} (Python 3.8 compatible)", env!("CARGO_PKG_VERSION"));
+        println!(
+            "Ferrython {} (Python 3.8 compatible)",
+            env!("CARGO_PKG_VERSION")
+        );
         return;
     }
 
@@ -340,7 +429,9 @@ fn main_inner() {
     match fs::read_to_string(filename) {
         Ok(source) => {
             run_string_with_opts(&source, filename, skip_first_line);
-            if inspect_after { ferrython_repl::run_repl(); }
+            if inspect_after {
+                ferrython_repl::run_repl();
+            }
         }
         Err(e) => {
             eprintln!("ferrython: can't open file '{}': {}", filename, e);
@@ -349,9 +440,12 @@ fn main_inner() {
     }
 }
 
-fn execute_pipeline(source: &str, filename: &str) -> Result<(), (PipelineError, Option<ferrython_vm::VirtualMachine>)> {
-    let module = ferrython_parser::parse(source, filename)
-        .map_err(|e| (PipelineError::from(e), None))?;
+fn execute_pipeline(
+    source: &str,
+    filename: &str,
+) -> Result<(), (PipelineError, Option<ferrython_vm::VirtualMachine>)> {
+    let module =
+        ferrython_parser::parse(source, filename).map_err(|e| (PipelineError::from(e), None))?;
     let code = ferrython_compiler::compile(&module, filename)
         .map_err(|e| (PipelineError::from(e), None))?;
     let mut vm = ferrython_vm::VirtualMachine::new();
@@ -418,7 +512,9 @@ fn dis_and_run_string(source: &str, filename: &str) {
     if let Err(e) = dis_and_run_pipeline(source, filename) {
         if let PipelineError::Runtime(ref exc) = e {
             if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
-                let code = exc.value.as_ref()
+                let code = exc
+                    .value
+                    .as_ref()
                     .map(|v| v.to_int().unwrap_or(1) as i32)
                     .unwrap_or(0);
                 process::exit(code);
@@ -445,7 +541,9 @@ fn run_profiled(source: &str, filename: &str) {
     if let Err(e) = profiled_pipeline(source, filename) {
         if let PipelineError::Runtime(ref exc) = e {
             if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
-                let code = exc.value.as_ref()
+                let code = exc
+                    .value
+                    .as_ref()
                     .map(|v| v.to_int().unwrap_or(1) as i32)
                     .unwrap_or(0);
                 process::exit(code);
@@ -495,7 +593,9 @@ fn run_module(module_name: &str, _module_args: &[String]) {
             match status {
                 Ok(s) => process::exit(s.code().unwrap_or(1)),
                 Err(_) => {
-                    eprintln!("ferrython: ferryip not found. Build with `cargo build -p ferrython-pip`");
+                    eprintln!(
+                        "ferrython: ferryip not found. Build with `cargo build -p ferrython-pip`"
+                    );
                     process::exit(1);
                 }
             }
@@ -511,14 +611,29 @@ fn run_module(module_name: &str, _module_args: &[String]) {
                 println!("    '{}',", p.display());
             }
             println!("]");
-            println!("USER_BASE: '{}/.local' (exists)", std::env::var("HOME").unwrap_or_default());
-            println!("USER_SITE: '{}/.local/lib/ferrython/site-packages'", std::env::var("HOME").unwrap_or_default());
+            println!(
+                "USER_BASE: '{}/.local' (exists)",
+                std::env::var("HOME").unwrap_or_default()
+            );
+            println!(
+                "USER_SITE: '{}/.local/lib/ferrython/site-packages'",
+                std::env::var("HOME").unwrap_or_default()
+            );
             println!("ENABLE_USER_SITE: True");
         }
         "sysconfig" => {
             // Print sysconfig info
             let layout = ferrython_toolchain::paths::InstallLayout::discover();
-            println!("Platform: \"{}\"", if cfg!(target_os = "linux") { "linux" } else if cfg!(target_os = "macos") { "darwin" } else { "unknown" });
+            println!(
+                "Platform: \"{}\"",
+                if cfg!(target_os = "linux") {
+                    "linux"
+                } else if cfg!(target_os = "macos") {
+                    "darwin"
+                } else {
+                    "unknown"
+                }
+            );
             println!("Python version: \"3.11\"");
             println!("Paths:");
             for name in &["stdlib", "purelib", "platlib", "include", "scripts", "data"] {
@@ -531,7 +646,11 @@ fn run_module(module_name: &str, _module_args: &[String]) {
             // Try to find and execute the module as Python code
             // Look for module/__main__.py or module.py
             match ferrython_import::resolve_module(module_name, "<cli>") {
-                Ok(ferrython_import::ResolvedModule::Source { code, name: _, file_path }) => {
+                Ok(ferrython_import::ResolvedModule::Source {
+                    code,
+                    name: _,
+                    file_path,
+                }) => {
                     // Check for __main__.py in package
                     let file = file_path.as_deref().unwrap_or("<module>");
                     if file.ends_with("__init__.py") {
@@ -555,7 +674,9 @@ fn run_module(module_name: &str, _module_args: &[String]) {
                     let mut vm = ferrython_vm::VirtualMachine::new();
                     if let Err(e) = vm.execute((*code).clone()) {
                         if e.kind == ferrython_core::error::ExceptionKind::SystemExit {
-                            let exit_code = e.value.as_ref()
+                            let exit_code = e
+                                .value
+                                .as_ref()
                                 .map(|v| v.to_int().unwrap_or(1) as i32)
                                 .unwrap_or(0);
                             process::exit(exit_code);
@@ -565,7 +686,10 @@ fn run_module(module_name: &str, _module_args: &[String]) {
                     }
                 }
                 Ok(ferrython_import::ResolvedModule::Builtin(_module)) => {
-                    eprintln!("ferrython: No code to run for built-in module '{}'", module_name);
+                    eprintln!(
+                        "ferrython: No code to run for built-in module '{}'",
+                        module_name
+                    );
                     process::exit(1);
                 }
                 Err(e) => {
@@ -605,7 +729,9 @@ fn run_venv_module() {
                 println!();
                 println!("optional arguments:");
                 println!("  -h, --help            show this help message and exit");
-                println!("  --clear               Delete the contents of the environment directory");
+                println!(
+                    "  --clear               Delete the contents of the environment directory"
+                );
                 println!("  --system-site-packages Give access to the system site-packages");
                 println!("  --without-pip         Skip installing pip");
                 println!("  --prompt PROMPT       Set the environment prompt prefix");
@@ -651,7 +777,10 @@ fn run_venv_module() {
     match ferrython_toolchain::venv::create_venv(venv_dir, &opts) {
         Ok(()) => {
             println!("Created virtual environment in '{}'", venv_dir.display());
-            println!("  Activate with: source {}/bin/activate", venv_dir.display());
+            println!(
+                "  Activate with: source {}/bin/activate",
+                venv_dir.display()
+            );
         }
         Err(e) => {
             eprintln!("Error creating venv: {}", e);
@@ -715,7 +844,8 @@ fn run_new_project(name: &str, extra_args: &[String]) {
 /// Handle `ferrython init` — initialize current directory as a project.
 fn run_init_project(extra_args: &[String]) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let name = cwd.file_name()
+    let name = cwd
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("myproject")
         .to_string();
@@ -817,12 +947,18 @@ fn run_project_build(_extra_args: &[String]) {
 
     let content = match fs::read_to_string(&pyproject_path) {
         Ok(c) => c,
-        Err(e) => { eprintln!("ferrython build: {}", e); process::exit(1); }
+        Err(e) => {
+            eprintln!("ferrython build: {}", e);
+            process::exit(1);
+        }
     };
 
     let config = match ferrython_toolchain::pyproject::parse_pyproject_str(&content) {
         Ok(c) => c,
-        Err(e) => { eprintln!("ferrython build: invalid pyproject.toml: {}", e); process::exit(1); }
+        Err(e) => {
+            eprintln!("ferrython build: invalid pyproject.toml: {}", e);
+            process::exit(1);
+        }
     };
 
     let name = config.name().unwrap_or_else(|| "unknown".to_string());
@@ -895,7 +1031,9 @@ fn run_project_tests(extra_args: &[String]) {
 
     let use_color = atty::is(atty::Stream::Stdout);
     let (green, red, yellow, bold, reset, dim) = if use_color {
-        ("\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[1m", "\x1b[0m", "\x1b[2m")
+        (
+            "\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[1m", "\x1b[0m", "\x1b[2m",
+        )
     } else {
         ("", "", "", "", "", "")
     };
@@ -905,15 +1043,35 @@ fn run_project_tests(extra_args: &[String]) {
 
     // Helper: compute display width (handles emojis and CJK properly)
     fn display_width(s: &str) -> usize {
-        s.chars().map(|c| {
-            if c.is_ascii() { 1 }
-            else if c >= '\u{1F000}' { 2 }  // Supplementary plane emojis (🧪📊🎉)
-            else if c >= '\u{1100}' && c <= '\u{115F}' { 2 }  // Korean Jamo
-            else if c >= '\u{2E80}' && c <= '\u{A4CF}' { 2 }  // CJK
-            else if c >= '\u{AC00}' && c <= '\u{D7AF}' { 2 }  // Korean syllables
-            else if c >= '\u{FF01}' && c <= '\u{FF60}' { 2 }  // Fullwidth
-            else { 1 }  // BMP symbols (✔✘⏱⚠═║─) are single-width
-        }).sum()
+        s.chars()
+            .map(|c| {
+                if c.is_ascii() {
+                    1
+                } else if c >= '\u{1F000}' {
+                    2
+                }
+                // Supplementary plane emojis (🧪📊🎉)
+                else if c >= '\u{1100}' && c <= '\u{115F}' {
+                    2
+                }
+                // Korean Jamo
+                else if c >= '\u{2E80}' && c <= '\u{A4CF}' {
+                    2
+                }
+                // CJK
+                else if c >= '\u{AC00}' && c <= '\u{D7AF}' {
+                    2
+                }
+                // Korean syllables
+                else if c >= '\u{FF01}' && c <= '\u{FF60}' {
+                    2
+                }
+                // Fullwidth
+                else {
+                    1
+                } // BMP symbols (✔✘⏱⚠═║─) are single-width
+            })
+            .sum()
     }
     fn pad_to(s: &str, target: usize) -> String {
         let dw = display_width(s);
@@ -930,6 +1088,12 @@ fn run_project_tests(extra_args: &[String]) {
 
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("ferrython"));
     let start = std::time::Instant::now();
+    let timeout_secs = std::env::var("FERRYTHON_TEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(30);
+    let per_file_timeout = std::time::Duration::from_secs(timeout_secs);
 
     let mut passed: usize = 0;
     let mut failed: usize = 0;
@@ -940,32 +1104,45 @@ fn run_project_tests(extra_args: &[String]) {
         let rel = test_file.strip_prefix(&cwd).unwrap_or(test_file);
         let rel_str = rel.display().to_string();
 
-        // Run each test as a subprocess for clean capture and crash isolation
-        let result = std::process::Command::new(&exe)
-            .arg(test_file)
-            .current_dir(&cwd)
-            .output();
+        // Run each test as a subprocess for clean capture, crash isolation, and timeout isolation.
+        let result = run_test_process_with_timeout(&exe, test_file, &cwd, per_file_timeout);
 
         match result {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                let combined = if stderr.is_empty() {
+                let mut combined = if stderr.is_empty() {
                     stdout.to_string()
                 } else {
                     format!("{}{}", stdout, stderr)
                 };
+                if out.timed_out {
+                    combined.push_str(&format!(
+                        "ferrython test: timed out after {}s\n",
+                        timeout_secs
+                    ));
+                }
 
-                if out.status.success() {
+                if !out.timed_out && out.status.success() {
                     // Check for internal "FAIL:" markers in test output
-                    let fail_lines: Vec<&str> = combined.lines()
+                    let fail_lines: Vec<&str> = combined
+                        .lines()
                         .filter(|l| l.starts_with("FAIL:") || l.starts_with("  FAIL:"))
                         .collect();
                     if fail_lines.is_empty() {
                         println!("  {}{} OK{}  {}", green, bold, reset, rel_str);
                         passed += 1;
                     } else {
-                        println!("  {}{}\u{26a0} WARN{}  {}  {}({} internal failure(s)){}", yellow, bold, reset, rel_str, dim, fail_lines.len(), reset);
+                        println!(
+                            "  {}{}\u{26a0} WARN{}  {}  {}({} internal failure(s)){}",
+                            yellow,
+                            bold,
+                            reset,
+                            rel_str,
+                            dim,
+                            fail_lines.len(),
+                            reset
+                        );
                         for line in &fail_lines {
                             println!("         {}{}{}", dim, line.trim(), reset);
                         }
@@ -979,9 +1156,11 @@ fn run_project_tests(extra_args: &[String]) {
                     // Show output in bordered box
                     let lines: Vec<&str> = combined.lines().collect();
                     if !lines.is_empty() {
-                        let max_len = lines.iter()
+                        let max_len = lines
+                            .iter()
                             .map(|l| display_width(&l.chars().take(74).collect::<String>()))
-                            .max().unwrap_or(0)
+                            .max()
+                            .unwrap_or(0)
                             .min(76);
                         let box_w = max_len + 2;
                         println!("     {}┌{}┐{}", dim, "─".repeat(box_w), reset);
@@ -996,7 +1175,10 @@ fn run_project_tests(extra_args: &[String]) {
                 }
             }
             Err(e) => {
-                println!("  {}{}\u{2718} FAIL{}  {} — {}", red, bold, reset, rel_str, e);
+                println!(
+                    "  {}{}\u{2718} FAIL{}  {} — {}",
+                    red, bold, reset, rel_str, e
+                );
                 failed += 1;
                 failed_names.push(rel_str);
             }
@@ -1010,15 +1192,26 @@ fn run_project_tests(extra_args: &[String]) {
         let msg = format!("  🎉 All {} tests passed!", total);
         println!("{}║{}{}{}║{}", bold, green, pad_to(&msg, w), reset, bold);
     } else {
-        let msg = format!("  📊 {} ✔ passed   {} ✘ failed   ({} total)",
-            passed, failed, passed + failed);
+        let msg = format!(
+            "  📊 {} ✔ passed   {} ✘ failed   ({} total)",
+            passed,
+            failed,
+            passed + failed
+        );
         println!("{}║{}║{}", bold, pad_to(&msg, w), reset);
     }
     let time_msg = format!("  ⏱  {:.1}s elapsed", elapsed.as_secs_f64());
     println!("{}║{}║{}", bold, pad_to(&time_msg, w), reset);
     if warned > 0 {
         let warn_msg = format!("  ⚠  {} test(s) with internal failures", warned);
-        println!("{}║{}{}{}║{}", bold, yellow, pad_to(&warn_msg, w), reset, bold);
+        println!(
+            "{}║{}{}{}║{}",
+            bold,
+            yellow,
+            pad_to(&warn_msg, w),
+            reset,
+            bold
+        );
     }
     println!("{}╚{}╝{}", bold, "═".repeat(w), reset);
 
@@ -1030,7 +1223,9 @@ fn run_project_tests(extra_args: &[String]) {
         }
     }
 
-    if failed > 0 { process::exit(1); }
+    if failed > 0 {
+        process::exit(1);
+    }
 }
 
 // ── Helper functions for project commands ──
@@ -1120,7 +1315,8 @@ fn build_sdist(
             &mut header,
             format!("{}/pyproject.toml", prefix),
             data.as_slice(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     // Add PKG-INFO
@@ -1136,7 +1332,8 @@ fn build_sdist(
         &mut header,
         format!("{}/PKG-INFO", prefix),
         pkg_info.as_bytes(),
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     let enc = tar.into_inner().map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())?;
@@ -1183,19 +1380,24 @@ fn build_wheel(
     for dep in config.dependencies() {
         metadata.push_str(&format!("Requires-Dist: {}\n", dep));
     }
-    zip.start_file(format!("{}/METADATA", dist_info), options).map_err(|e| e.to_string())?;
-    zip.write_all(metadata.as_bytes()).map_err(|e| e.to_string())?;
+    zip.start_file(format!("{}/METADATA", dist_info), options)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(metadata.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // WHEEL
     let wheel_content = format!(
         "Wheel-Version: 1.0\nGenerator: ferrython {}\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         "0.1.0"
     );
-    zip.start_file(format!("{}/WHEEL", dist_info), options).map_err(|e| e.to_string())?;
-    zip.write_all(wheel_content.as_bytes()).map_err(|e| e.to_string())?;
+    zip.start_file(format!("{}/WHEEL", dist_info), options)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(wheel_content.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // RECORD (empty — we'd normally hash all files)
-    zip.start_file(format!("{}/RECORD", dist_info), options).map_err(|e| e.to_string())?;
+    zip.start_file(format!("{}/RECORD", dist_info), options)
+        .map_err(|e| e.to_string())?;
     zip.write_all(b"").map_err(|e| e.to_string())?;
 
     zip.finish().map_err(|e| e.to_string())?;
@@ -1252,11 +1454,11 @@ fn add_python_files_to_zip<W: std::io::Write + std::io::Seek>(
                 let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
                 let zip_path = rel.display().to_string();
                 let data = fs::read(&path).map_err(|e| e.to_string())?;
-                zip.start_file(&zip_path, *options).map_err(|e| e.to_string())?;
+                zip.start_file(&zip_path, *options)
+                    .map_err(|e| e.to_string())?;
                 zip.write_all(&data).map_err(|e| e.to_string())?;
             }
         }
     }
-    Ok(()
-    )
+    Ok(())
 }

@@ -5,13 +5,14 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
-    ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+use ferrython_core::object::{
+    new_fx_hashkey_map, ClassData, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::cell::Cell;
 use rustc_hash::FxHashMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
 impl VirtualMachine {
@@ -40,7 +41,8 @@ impl VirtualMachine {
                 PyObjectPayload::Instance(inst) => {
                     // Check for GenericAlias (__origin__ attribute)
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                        if cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias")
+                        if cd.name.contains("GenericAlias")
+                            || cd.name.contains("_GenericAlias")
                             || cd.name.contains("_SpecialForm")
                         {
                             // Use __origin__ as the real base class
@@ -66,27 +68,41 @@ impl VirtualMachine {
 
     /// Remove `Generic` from bases if another base already has it in its MRO.
     fn deduplicate_generic_bases(bases: &mut Vec<PyObjectRef>) {
-        if bases.len() < 2 { return; }
+        if bases.len() < 2 {
+            return;
+        }
         // Find which bases are "Generic" (the typing.Generic class)
-        let generic_indices: Vec<usize> = bases.iter().enumerate()
+        let generic_indices: Vec<usize> = bases
+            .iter()
+            .enumerate()
             .filter_map(|(i, b)| {
                 if let PyObjectPayload::Class(cd) = &b.payload {
-                    if cd.name == "Generic" { return Some(i); }
+                    if cd.name == "Generic" {
+                        return Some(i);
+                    }
                 }
                 None
             })
             .collect();
-        if generic_indices.is_empty() { return; }
+        if generic_indices.is_empty() {
+            return;
+        }
         // Check if any OTHER base already has Generic in its MRO
         let other_has_generic = bases.iter().enumerate().any(|(i, b)| {
-            if generic_indices.contains(&i) { return false; }
+            if generic_indices.contains(&i) {
+                return false;
+            }
             if let PyObjectPayload::Class(cd) = &b.payload {
                 cd.mro.iter().any(|m| {
                     if let PyObjectPayload::Class(mc) = &m.payload {
                         mc.name == "Generic"
-                    } else { false }
+                    } else {
+                        false
+                    }
                 })
-            } else { false }
+            } else {
+                false
+            }
         });
         if other_has_generic {
             // Remove Generic bases (iterate in reverse to preserve indices)
@@ -99,7 +115,8 @@ impl VirtualMachine {
     pub(crate) fn build_class(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error(
-                "__build_class__ requires at least 2 arguments"));
+                "__build_class__ requires at least 2 arguments",
+            ));
         }
         let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
 
@@ -107,9 +124,9 @@ impl VirtualMachine {
         for base in &bases {
             if let PyObjectPayload::BuiltinType(n) = &base.payload {
                 if n.as_str() == "bool" {
-                    return Err(PyException::type_error(
-                        CompactString::from("type 'bool' is not an acceptable base type"),
-                    ));
+                    return Err(PyException::type_error(CompactString::from(
+                        "type 'bool' is not an acceptable base type",
+                    )));
                 }
             }
         }
@@ -131,7 +148,13 @@ impl VirtualMachine {
                 let code = Rc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_from_pool(code, globals, self.builtins.clone(), cc, &mut self.frame_pool);
+                let mut frame = Frame::new_from_pool(
+                    code,
+                    globals,
+                    self.builtins.clone(),
+                    cc,
+                    &mut self.frame_pool,
+                );
                 frame.scope_kind = ScopeKind::Class;
                 // Wire up closure cells from the captured function
                 let n_cell = frame.code.cellvars.len();
@@ -146,7 +169,10 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
+                (
+                    frame.local_names.map(|b| *b).unwrap_or_default(),
+                    Some((cellvar_names, cells)),
+                )
             }
             _ => (FxAttrMap::default(), None),
         };
@@ -156,7 +182,11 @@ impl VirtualMachine {
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
         let mro = Self::compute_mro(&bases)?;
         let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
-            class_name, bases.clone(), namespace, mro, None,
+            class_name,
+            bases.clone(),
+            namespace,
+            mro,
+            None,
         ))));
 
         // Populate __class__ cell so methods can access it via super() (PEP 3135)
@@ -175,7 +205,7 @@ impl VirtualMachine {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: cls.clone(),
                                 method: method.clone(),
-                            }
+                            },
                         })
                     } else {
                         init_sub
@@ -185,7 +215,7 @@ impl VirtualMachine {
                         payload: PyObjectPayload::BoundMethod {
                             receiver: cls.clone(),
                             method: init_sub,
-                        }
+                        },
                     })
                 };
                 self.call_object(bound, vec![])?;
@@ -220,7 +250,9 @@ impl VirtualMachine {
                 false
             }
         });
-        if !is_namedtuple { return; }
+        if !is_namedtuple {
+            return;
+        }
 
         let cd = match &cls.payload {
             PyObjectPayload::Class(cd) => cd,
@@ -233,55 +265,64 @@ impl VirtualMachine {
             let names: Vec<CompactString> = if let Some(ann) = ns.get("__annotations__") {
                 if let PyObjectPayload::Dict(d) = &ann.payload {
                     let d = d.read();
-                    d.keys().map(|k| {
-                        if let HashableKey::Str(s) = k {
-                            s.as_ref().clone()
-                        } else {
-                            CompactString::from(k.to_object().py_to_string())
-                        }
-                    }).collect()
-                } else { vec![] }
-            } else { vec![] };
+                    d.keys()
+                        .map(|k| {
+                            if let HashableKey::Str(s) = k {
+                                s.as_ref().clone()
+                            } else {
+                                CompactString::from(k.to_object().py_to_string())
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
             // Collect defaults: field names that have a value in the namespace
-            let defs: Vec<(CompactString, PyObjectRef)> = names.iter()
-                .filter_map(|name| {
-                    ns.get(name.as_str()).map(|v| (name.clone(), v.clone()))
-                })
+            let defs: Vec<(CompactString, PyObjectRef)> = names
+                .iter()
+                .filter_map(|name| ns.get(name.as_str()).map(|v| (name.clone(), v.clone())))
                 .collect();
             (names, defs)
         };
 
         let fields_tuple = PyObject::tuple(
-            field_names.iter().map(|n| PyObject::str_val(n.clone())).collect()
+            field_names
+                .iter()
+                .map(|n| PyObject::str_val(n.clone()))
+                .collect(),
         );
 
         // Store _field_defaults as a dict
         let mut defaults_map = IndexMap::new();
         for (name, val) in &defaults {
-            defaults_map.insert(
-                HashableKey::str_key(name.clone()),
-                val.clone(),
-            );
+            defaults_map.insert(HashableKey::str_key(name.clone()), val.clone());
         }
 
         let mut ns = cd.namespace.write();
         ns.insert(intern_or_new("__namedtuple__"), PyObject::bool_val(true));
         ns.insert(CompactString::from("_fields"), fields_tuple);
-        ns.insert(CompactString::from("_field_defaults"), PyObject::dict(defaults_map));
+        ns.insert(
+            CompactString::from("_field_defaults"),
+            PyObject::dict(defaults_map),
+        );
 
         // Generate __init__ that stores positional args as named attributes
         let field_names_for_init = field_names.clone();
         let defaults_for_init: Vec<(CompactString, PyObjectRef)> = defaults.clone();
-        ns.insert(CompactString::from("__init__"), PyObject::native_closure(
-            "__init__",
-            move |args: &[PyObjectRef]| {
+        ns.insert(
+            CompactString::from("__init__"),
+            PyObject::native_closure("__init__", move |args: &[PyObjectRef]| {
                 if args.is_empty() {
                     return Err(PyException::type_error("__init__ missing self"));
                 }
                 let instance = &args[0];
                 let pos_args = &args[1..];
                 // Build a map of default values
-                let def_map: std::collections::HashMap<&str, &PyObjectRef> = defaults_for_init.iter()
+                let def_map: std::collections::HashMap<&str, &PyObjectRef> = defaults_for_init
+                    .iter()
                     .map(|(k, v)| (k.as_str(), v))
                     .collect();
                 if let PyObjectPayload::Instance(inst) = &instance.payload {
@@ -293,28 +334,33 @@ impl VirtualMachine {
                             (*def).clone()
                         } else {
                             return Err(PyException::type_error(format!(
-                                "__init__() missing required argument: '{}'", field
+                                "__init__() missing required argument: '{}'",
+                                field
                             )));
                         };
                         attrs.insert(field.clone(), val);
                     }
                 }
                 Ok(PyObject::none())
-            }
-        ));
+            }),
+        );
 
         // Generate __getitem__ for indexing by position
         let field_names_for_getitem = field_names.clone();
-        ns.insert(CompactString::from("__getitem__"), PyObject::native_closure(
-            "__getitem__",
-            move |args: &[PyObjectRef]| {
+        ns.insert(
+            CompactString::from("__getitem__"),
+            PyObject::native_closure("__getitem__", move |args: &[PyObjectRef]| {
                 if args.len() < 2 {
                     return Err(PyException::type_error("__getitem__ missing argument"));
                 }
                 let instance = &args[0];
                 let idx = &args[1];
                 if let Some(i) = idx.as_int() {
-                    let i = if i < 0 { i + field_names_for_getitem.len() as i64 } else { i } as usize;
+                    let i = if i < 0 {
+                        i + field_names_for_getitem.len() as i64
+                    } else {
+                        i
+                    } as usize;
                     if i < field_names_for_getitem.len() {
                         if let Some(v) = instance.get_attr(&field_names_for_getitem[i]) {
                             return Ok(v);
@@ -323,57 +369,62 @@ impl VirtualMachine {
                     return Err(PyException::index_error("tuple index out of range"));
                 }
                 Err(PyException::type_error("tuple indices must be integers"))
-            }
-        ));
+            }),
+        );
 
         // Generate __len__
         let n_fields = field_names.len();
-        ns.insert(CompactString::from("__len__"), PyObject::native_closure(
-            "__len__",
-            move |_args: &[PyObjectRef]| {
+        ns.insert(
+            CompactString::from("__len__"),
+            PyObject::native_closure("__len__", move |_args: &[PyObjectRef]| {
                 Ok(PyObject::int(n_fields as i64))
-            }
-        ));
+            }),
+        );
 
         // Generate __iter__ for unpacking
         let field_names_for_iter = field_names.clone();
-        ns.insert(CompactString::from("__iter__"), PyObject::native_closure(
-            "__iter__",
-            move |args: &[PyObjectRef]| {
+        ns.insert(
+            CompactString::from("__iter__"),
+            PyObject::native_closure("__iter__", move |args: &[PyObjectRef]| {
                 if args.is_empty() {
                     return Err(PyException::type_error("__iter__ missing self"));
                 }
                 let instance = &args[0];
-                let vals: Vec<PyObjectRef> = field_names_for_iter.iter()
+                let vals: Vec<PyObjectRef> = field_names_for_iter
+                    .iter()
                     .map(|f| instance.get_attr(f).unwrap_or_else(PyObject::none))
                     .collect();
                 Ok(PyObject::tuple(vals))
-            }
-        ));
+            }),
+        );
 
         // Generate __repr__
         let class_name = cd.name.clone();
         let field_names_for_repr = field_names.clone();
-        ns.insert(CompactString::from("__repr__"), PyObject::native_closure(
-            "__repr__",
-            move |args: &[PyObjectRef]| {
+        ns.insert(
+            CompactString::from("__repr__"),
+            PyObject::native_closure("__repr__", move |args: &[PyObjectRef]| {
                 if args.is_empty() {
                     return Ok(PyObject::str_val(CompactString::from("()")));
                 }
                 let instance = &args[0];
-                let parts: Vec<String> = field_names_for_repr.iter()
+                let parts: Vec<String> = field_names_for_repr
+                    .iter()
                     .map(|f| {
-                        let val = instance.get_attr(f)
+                        let val = instance
+                            .get_attr(f)
                             .map(|v| v.repr())
                             .unwrap_or_else(|| "None".to_string());
                         format!("{}={}", f, val)
                     })
                     .collect();
-                Ok(PyObject::str_val(CompactString::from(
-                    format!("{}({})", class_name, parts.join(", "))
-                )))
-            }
-        ));
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "{}({})",
+                    class_name,
+                    parts.join(", ")
+                ))))
+            }),
+        );
 
         // Invalidate stale vtable/cache
         drop(ns);
@@ -381,7 +432,11 @@ impl VirtualMachine {
     }
 
     /// Process enum class: transform simple attributes into enum member instances.
-    pub(crate) fn process_enum_class(&mut self, cls: &PyObjectRef, bases: &[PyObjectRef]) -> PyResult<()> {
+    pub(crate) fn process_enum_class(
+        &mut self,
+        cls: &PyObjectRef,
+        bases: &[PyObjectRef],
+    ) -> PyResult<()> {
         // Check if any base has __enum__ marker
         let is_enum = bases.iter().any(|b| {
             if let Some(marker) = b.get_attr("__enum__") {
@@ -390,7 +445,9 @@ impl VirtualMachine {
                 false
             }
         });
-        if !is_enum { return Ok(()); }
+        if !is_enum {
+            return Ok(());
+        }
 
         let cd = match &cls.payload {
             PyObjectPayload::Class(cd) => cd,
@@ -403,14 +460,16 @@ impl VirtualMachine {
             ns.iter()
                 .filter(|(k, v)| {
                     !k.starts_with('_')
-                    && !matches!(&v.payload,
-                        PyObjectPayload::Function(_) |
-                        PyObjectPayload::NativeFunction(_) |
-                        PyObjectPayload::BuiltinFunction(_) |
-                        PyObjectPayload::Property(_) |
-                        PyObjectPayload::NativeClosure(_) |
-                        PyObjectPayload::StaticMethod(_) |
-                        PyObjectPayload::ClassMethod(_))
+                        && !matches!(
+                            &v.payload,
+                            PyObjectPayload::Function(_)
+                                | PyObjectPayload::NativeFunction(_)
+                                | PyObjectPayload::BuiltinFunction(_)
+                                | PyObjectPayload::Property(_)
+                                | PyObjectPayload::NativeClosure(_)
+                                | PyObjectPayload::StaticMethod(_)
+                                | PyObjectPayload::ClassMethod(_)
+                        )
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()
@@ -424,7 +483,9 @@ impl VirtualMachine {
 
         // Check if this is a Flag enum (auto() should generate powers of 2)
         let is_flag = bases.iter().any(|b| {
-            b.get_attr("__flag__").map(|m| m.is_truthy()).unwrap_or(false)
+            b.get_attr("__flag__")
+                .map(|m| m.is_truthy())
+                .unwrap_or(false)
         });
 
         // Check if class has a custom __init__ (not inherited from Enum base)
@@ -448,15 +509,23 @@ impl VirtualMachine {
                         } else {
                             value.clone()
                         }
-                    } else { value.clone() }
-                } else { value.clone() }
+                    } else {
+                        value.clone()
+                    }
+                } else {
+                    value.clone()
+                }
             } else {
                 // Track max int value for auto() continuation
                 if let Some(iv) = value.as_int() {
                     if is_flag {
-                        if iv >= auto_counter { auto_counter = (iv as u64).next_power_of_two() as i64 * 2; }
+                        if iv >= auto_counter {
+                            auto_counter = (iv as u64).next_power_of_two() as i64 * 2;
+                        }
                     } else {
-                        if iv >= auto_counter { auto_counter = iv + 1; }
+                        if iv >= auto_counter {
+                            auto_counter = iv + 1;
+                        }
                     }
                 }
                 value.clone()
@@ -465,31 +534,35 @@ impl VirtualMachine {
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
             attrs.insert(CompactString::from("value"), resolved_value.clone());
-            attrs.insert(CompactString::from("_name_"), PyObject::str_val(name.clone()));
+            attrs.insert(
+                CompactString::from("_name_"),
+                PyObject::str_val(name.clone()),
+            );
             attrs.insert(CompactString::from("_value_"), resolved_value.clone());
 
             // Enum __repr__: "<ClassName.MemberName: value>" (CPython format)
             // Only set default if user didn't define custom __repr__ in the class body
             if ns.get("__repr__").is_none() {
                 let val_repr = resolved_value.repr();
-                let full_repr = CompactString::from(format!("<{}.{}: {}>", class_name, name, val_repr));
+                let full_repr =
+                    CompactString::from(format!("<{}.{}: {}>", class_name, name, val_repr));
                 let repr_copy = full_repr;
-                attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
-                    "__repr__",
-                    move |_args| {
+                attrs.insert(
+                    intern_or_new("__repr__"),
+                    PyObject::native_closure("__repr__", move |_args| {
                         Ok(PyObject::str_val(repr_copy.clone()))
-                    }
-                ));
+                    }),
+                );
             }
             // __str__: use custom __str__ from class body if defined, else "ClassName.MemberName"
             if ns.get("__str__").is_none() {
                 let str_val = CompactString::from(format!("{}.{}", class_name, name));
-                attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
-                    "__str__",
-                    move |_args| {
+                attrs.insert(
+                    intern_or_new("__str__"),
+                    PyObject::native_closure("__str__", move |_args| {
                         Ok(PyObject::str_val(str_val.clone()))
-                    }
-                ));
+                    }),
+                );
             }
 
             // If custom __init__ exists and value is a tuple, unpack it and call __init__
@@ -531,17 +604,23 @@ impl VirtualMachine {
         }
 
         // Add __members__ dict
-        let pairs: Vec<(PyObjectRef, PyObjectRef)> = member_map.iter()
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = member_map
+            .iter()
             .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
             .collect();
-        ns.insert(intern_or_new("__members__"), PyObject::dict_from_pairs(pairs));
+        ns.insert(
+            intern_or_new("__members__"),
+            PyObject::dict_from_pairs(pairs),
+        );
 
         // Mark as enum
         ns.insert(intern_or_new("__enum__"), PyObject::bool_val(true));
 
         // For Flag-based enums, add bitwise operations (__or__, __and__, __xor__, __invert__, __contains__, __int__, __bool__)
         let is_flag = bases.iter().any(|b| {
-            b.get_attr("__flag__").map(|m| m.is_truthy()).unwrap_or(false)
+            b.get_attr("__flag__")
+                .map(|m| m.is_truthy())
+                .unwrap_or(false)
         });
         if is_flag {
             ns.insert(intern_or_new("__flag__"), PyObject::bool_val(true));
@@ -562,16 +641,21 @@ impl VirtualMachine {
                         if let PyObjectPayload::Dict(map) = &members.payload {
                             let members_map = map.read();
                             // Collect members in definition order (IndexMap preserves insertion order)
-                            let member_list: Vec<(CompactString, i64)> = members_map.iter()
+                            let member_list: Vec<(CompactString, i64)> = members_map
+                                .iter()
                                 .filter_map(|(k, v)| {
                                     if let HashableKey::Str(name) = k {
-                                        v.get_attr("value").and_then(|v| v.as_int())
+                                        v.get_attr("value")
+                                            .and_then(|v| v.as_int())
                                             .map(|val| (name.as_ref().clone(), val))
-                                    } else { None }
+                                    } else {
+                                        None
+                                    }
                                 })
                                 .collect();
                             // Greedy decomposition: highest values first, but output in definition order
-                            let mut sorted_by_val: Vec<(usize, &CompactString, i64)> = member_list.iter()
+                            let mut sorted_by_val: Vec<(usize, &CompactString, i64)> = member_list
+                                .iter()
                                 .enumerate()
                                 .map(|(i, (n, v))| (i, n, *v))
                                 .collect();
@@ -596,10 +680,17 @@ impl VirtualMachine {
                 let name_str = if names.is_empty() {
                     CompactString::from("None")
                 } else {
-                    CompactString::from(names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("|"))
+                    CompactString::from(
+                        names
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("|"),
+                    )
                 };
 
-                let repr_str = CompactString::from(format!("<{}.{}: {}>", class_name, name_str, combined));
+                let repr_str =
+                    CompactString::from(format!("<{}.{}: {}>", class_name, name_str, combined));
                 let str_val = CompactString::from(format!("{}.{}", class_name, name_str));
                 let repr_copy = repr_str.clone();
                 let str_copy = str_val.clone();
@@ -607,80 +698,156 @@ impl VirtualMachine {
                 let mut attrs = IndexMap::new();
                 attrs.insert(CompactString::from("value"), PyObject::int(combined));
                 attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
-                attrs.insert(CompactString::from("name"), PyObject::str_val(name_str.clone()));
+                attrs.insert(
+                    CompactString::from("name"),
+                    PyObject::str_val(name_str.clone()),
+                );
                 attrs.insert(CompactString::from("_name_"), PyObject::str_val(name_str));
-                attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
-                    "__repr__", move |_args| Ok(PyObject::str_val(repr_copy.clone()))
-                ));
-                attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
-                    "__str__", move |_args| Ok(PyObject::str_val(str_copy.clone()))
-                ));
+                attrs.insert(
+                    intern_or_new("__repr__"),
+                    PyObject::native_closure("__repr__", move |_args| {
+                        Ok(PyObject::str_val(repr_copy.clone()))
+                    }),
+                );
+                attrs.insert(
+                    intern_or_new("__str__"),
+                    PyObject::native_closure("__str__", move |_args| {
+                        Ok(PyObject::str_val(str_copy.clone()))
+                    }),
+                );
                 PyObject::instance_with_attrs(cls.clone(), attrs)
             }
 
             let cls_or = cls.clone();
-            ns.insert(intern_or_new("__or__"), PyObject::native_closure("Flag.__or__", move |args: &[PyObjectRef]| {
-                if args.len() < 2 { return Ok(PyObject::none()); }
-                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                Ok(make_flag_instance(&cls_or, a_val | b_val))
-            }));
+            ns.insert(
+                intern_or_new("__or__"),
+                PyObject::native_closure("Flag.__or__", move |args: &[PyObjectRef]| {
+                    if args.len() < 2 {
+                        return Ok(PyObject::none());
+                    }
+                    let a_val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    let b_val = args[1]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    Ok(make_flag_instance(&cls_or, a_val | b_val))
+                }),
+            );
             let cls_and = cls.clone();
-            ns.insert(intern_or_new("__and__"), PyObject::native_closure("Flag.__and__", move |args: &[PyObjectRef]| {
-                if args.len() < 2 { return Ok(PyObject::none()); }
-                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                Ok(make_flag_instance(&cls_and, a_val & b_val))
-            }));
+            ns.insert(
+                intern_or_new("__and__"),
+                PyObject::native_closure("Flag.__and__", move |args: &[PyObjectRef]| {
+                    if args.len() < 2 {
+                        return Ok(PyObject::none());
+                    }
+                    let a_val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    let b_val = args[1]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    Ok(make_flag_instance(&cls_and, a_val & b_val))
+                }),
+            );
             let cls_xor = cls.clone();
-            ns.insert(intern_or_new("__xor__"), PyObject::native_closure("Flag.__xor__", move |args: &[PyObjectRef]| {
-                if args.len() < 2 { return Ok(PyObject::none()); }
-                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                Ok(make_flag_instance(&cls_xor, a_val ^ b_val))
-            }));
+            ns.insert(
+                intern_or_new("__xor__"),
+                PyObject::native_closure("Flag.__xor__", move |args: &[PyObjectRef]| {
+                    if args.len() < 2 {
+                        return Ok(PyObject::none());
+                    }
+                    let a_val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    let b_val = args[1]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    Ok(make_flag_instance(&cls_xor, a_val ^ b_val))
+                }),
+            );
             let cls_inv = cls.clone();
-            ns.insert(intern_or_new("__invert__"), PyObject::native_closure("Flag.__invert__", move |args: &[PyObjectRef]| {
-                if args.is_empty() { return Ok(PyObject::none()); }
-                let self_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                // Compute the bitmask of all defined member values
-                let mut all_bits: i64 = 0;
-                if let PyObjectPayload::Class(cd) = &cls_inv.payload {
-                    let ns = cd.namespace.read();
-                    if let Some(members) = ns.get("__members__") {
-                        if let PyObjectPayload::Dict(map) = &members.payload {
-                            for v in map.read().values() {
-                                if let Some(val) = v.get_attr("value").and_then(|v| v.as_int()) {
-                                    all_bits |= val;
+            ns.insert(
+                intern_or_new("__invert__"),
+                PyObject::native_closure("Flag.__invert__", move |args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Ok(PyObject::none());
+                    }
+                    let self_val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    // Compute the bitmask of all defined member values
+                    let mut all_bits: i64 = 0;
+                    if let PyObjectPayload::Class(cd) = &cls_inv.payload {
+                        let ns = cd.namespace.read();
+                        if let Some(members) = ns.get("__members__") {
+                            if let PyObjectPayload::Dict(map) = &members.payload {
+                                for v in map.read().values() {
+                                    if let Some(val) = v.get_attr("value").and_then(|v| v.as_int())
+                                    {
+                                        all_bits |= val;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Ok(make_flag_instance(&cls_inv, all_bits & !self_val))
-            }));
-            ns.insert(intern_or_new("__contains__"), PyObject::native_closure("Flag.__contains__", move |args: &[PyObjectRef]| {
-                if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
-                let self_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let other_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                Ok(PyObject::bool_val(self_val & other_val == other_val && other_val != 0))
-            }));
+                    Ok(make_flag_instance(&cls_inv, all_bits & !self_val))
+                }),
+            );
+            ns.insert(
+                intern_or_new("__contains__"),
+                PyObject::native_closure("Flag.__contains__", move |args: &[PyObjectRef]| {
+                    if args.len() < 2 {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                    let self_val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    let other_val = args[1]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
+                    Ok(PyObject::bool_val(
+                        self_val & other_val == other_val && other_val != 0,
+                    ))
+                }),
+            );
             // __int__ — allow int() on flag members
-            ns.insert(intern_or_new("__int__"), PyObject::native_function(
-                "Flag.__int__", |args: &[PyObjectRef]| {
-                    if args.is_empty() { return Ok(PyObject::int(0)); }
-                    let val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+            ns.insert(
+                intern_or_new("__int__"),
+                PyObject::native_function("Flag.__int__", |args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Ok(PyObject::int(0));
+                    }
+                    let val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
                     Ok(PyObject::int(val))
-                }
-            ));
+                }),
+            );
             // __bool__ — non-zero flag is truthy
-            ns.insert(intern_or_new("__bool__"), PyObject::native_function(
-                "Flag.__bool__", |args: &[PyObjectRef]| {
-                    if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-                    let val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+            ns.insert(
+                intern_or_new("__bool__"),
+                PyObject::native_function("Flag.__bool__", |args: &[PyObjectRef]| {
+                    if args.is_empty() {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                    let val = args[0]
+                        .get_attr("value")
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0);
                     Ok(PyObject::bool_val(val != 0))
-                }
-            ));
+                }),
+            );
         }
 
         // Namespace was mutated (__enum__, __members__, __or__ etc.) after
@@ -700,7 +867,8 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error(
-                "__build_class__ requires at least 2 arguments"));
+                "__build_class__ requires at least 2 arguments",
+            ));
         }
         let body_func = args[0].clone();
         let class_name = match &args[1].payload {
@@ -710,7 +878,8 @@ impl VirtualMachine {
         let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
 
         // Extract metaclass from kwargs, falling back to inherited metaclass from bases
-        let metaclass = kwargs.iter()
+        let metaclass = kwargs
+            .iter()
             .find(|(k, _)| k.as_str() == "metaclass")
             .map(|(_, v)| v.clone())
             .or_else(|| Self::inherited_metaclass(&bases));
@@ -750,7 +919,13 @@ impl VirtualMachine {
                 let code = Rc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_from_pool(code, globals, self.builtins.clone(), cc, &mut self.frame_pool);
+                let mut frame = Frame::new_from_pool(
+                    code,
+                    globals,
+                    self.builtins.clone(),
+                    cc,
+                    &mut self.frame_pool,
+                );
                 frame.scope_kind = ScopeKind::Class;
                 for (k, v) in &prepared_ns {
                     frame.local_names_insert(k.clone(), v.clone());
@@ -769,7 +944,10 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
+                (
+                    frame.local_names.map(|b| *b).unwrap_or_default(),
+                    Some((cellvar_names, cells)),
+                )
             }
             _ => (FxAttrMap::default(), None),
         };
@@ -780,7 +958,7 @@ impl VirtualMachine {
             // which should return the class object.
             let bases_list: Vec<PyObjectRef> = bases.clone();
             let mro = Self::compute_mro(&bases_list)?;
-            
+
             // Build namespace dict for passing to __new__.
             // If __prepare__ returned a dict, reuse that object so metaclass.__new__
             // receives the original (possibly custom) dict with all class body assignments.
@@ -823,7 +1001,7 @@ impl VirtualMachine {
             };
             let name_obj = PyObject::str_val(class_name.clone());
             let bases_tuple = PyObject::tuple(bases_list.clone());
-            
+
             // Try calling metaclass.__new__(mcs, name, bases, namespace)
             let own_new = if let PyObjectPayload::Class(cd) = &meta.payload {
                 cd.namespace.read().get("__new__").cloned()
@@ -836,7 +1014,15 @@ impl VirtualMachine {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                     _ => new_method,
                 };
-                let result = self.call_object(new_fn, vec![meta.clone(), name_obj.clone(), bases_tuple.clone(), ns_dict.clone()])?;
+                let result = self.call_object(
+                    new_fn,
+                    vec![
+                        meta.clone(),
+                        name_obj.clone(),
+                        bases_tuple.clone(),
+                        ns_dict.clone(),
+                    ],
+                )?;
                 // Ensure metaclass is set on the class returned by __new__
                 if let PyObjectPayload::Class(cd) = &result.payload {
                     if cd.metaclass.is_none() {
@@ -882,7 +1068,7 @@ impl VirtualMachine {
                     Some(meta.clone()),
                 ))))
             };
-            
+
             // Ensure metaclass is set on the returned class
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 if cd.metaclass.is_none() {
@@ -892,10 +1078,11 @@ impl VirtualMachine {
                     drop(ns);
                 }
             }
-            
+
             // Call metaclass's __init__ if it has one
             if let Some(init) = meta.get_attr("__init__") {
-                if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_))) {
+                if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_)))
+                {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init,
@@ -905,26 +1092,29 @@ impl VirtualMachine {
             }
             // __init_subclass__ handling
             // Collect non-metaclass kwargs to forward to __init_subclass__
-            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
+            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs
+                .iter()
                 .filter(|(k, _)| k.as_str() != "metaclass")
                 .cloned()
                 .collect();
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 if let Some(base) = cd.bases.first() {
                     if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                        let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+                        let bound = if let PyObjectPayload::BoundMethod { method, .. } =
+                            &init_sub.payload
+                        {
                             PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: cls.clone(),
                                     method: method.clone(),
-                                }
+                                },
                             })
                         } else {
                             PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: cls.clone(),
                                     method: init_sub,
-                                }
+                                },
                             })
                         };
                         if init_sub_kwargs.is_empty() {
@@ -956,26 +1146,34 @@ impl VirtualMachine {
                             let cls_ref = cls.clone();
                             cd.namespace.write().insert(
                                 CompactString::from("register"),
-                                PyObject::native_closure("register", move |args: &[PyObjectRef]| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error("register() requires a subclass argument"));
-                                    }
-                                    let subclass = &args[0];
-                                    if let PyObjectPayload::Class(cd) = &cls_ref.payload {
-                                        let mut ns = cd.namespace.write();
-                                        let registry = ns.entry(CompactString::from("_abc_registry"))
-                                            .or_insert_with(|| PyObject::dict(new_fx_hashkey_map()))
-                                            .clone();
-                                        if let PyObjectPayload::Dict(map) = &registry.payload {
-                                            let ptr = PyObjectRef::as_ptr(subclass) as usize;
-                                            map.write().insert(
-                                                HashableKey::Identity(ptr, subclass.clone()),
-                                                PyObject::bool_val(true),
-                                            );
+                                PyObject::native_closure(
+                                    "register",
+                                    move |args: &[PyObjectRef]| {
+                                        if args.is_empty() {
+                                            return Err(PyException::type_error(
+                                                "register() requires a subclass argument",
+                                            ));
                                         }
-                                    }
-                                    Ok(subclass.clone())
-                                }),
+                                        let subclass = &args[0];
+                                        if let PyObjectPayload::Class(cd) = &cls_ref.payload {
+                                            let mut ns = cd.namespace.write();
+                                            let registry = ns
+                                                .entry(CompactString::from("_abc_registry"))
+                                                .or_insert_with(|| {
+                                                    PyObject::dict(new_fx_hashkey_map())
+                                                })
+                                                .clone();
+                                            if let PyObjectPayload::Dict(map) = &registry.payload {
+                                                let ptr = PyObjectRef::as_ptr(subclass) as usize;
+                                                map.write().insert(
+                                                    HashableKey::Identity(ptr, subclass.clone()),
+                                                    PyObject::bool_val(true),
+                                                );
+                                            }
+                                        }
+                                        Ok(subclass.clone())
+                                    },
+                                ),
                             );
                         }
                     }
@@ -984,32 +1182,39 @@ impl VirtualMachine {
             Ok(cls)
         } else {
             // No metaclass: build normally
-            let mro = Self::compute_mro(&bases)?;            let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
-                class_name, bases.clone(), namespace, mro, None,
+            let mro = Self::compute_mro(&bases)?;
+            let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+                class_name,
+                bases.clone(),
+                namespace,
+                mro,
+                None,
             ))));
             // __init_subclass__: bind to new subclass (cls), not parent
             // Forward non-metaclass kwargs to __init_subclass__
-            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
+            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs
+                .iter()
                 .filter(|(k, _)| k.as_str() != "metaclass")
                 .cloned()
                 .collect();
             if let Some(base) = bases.first() {
                 if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                    let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                        PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: cls.clone(),
-                                method: method.clone(),
-                            }
-                        })
-                    } else {
-                        PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: cls.clone(),
-                                method: init_sub,
-                            }
-                        })
-                    };
+                    let bound =
+                        if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+                            PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: cls.clone(),
+                                    method: method.clone(),
+                                },
+                            })
+                        } else {
+                            PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: cls.clone(),
+                                    method: init_sub,
+                                },
+                            })
+                        };
                     if init_sub_kwargs.is_empty() {
                         self.call_object(bound, vec![])?;
                     } else {
@@ -1059,25 +1264,32 @@ impl VirtualMachine {
             // Quick scan: skip snapshot if no Instance values exist in namespace
             let has_instances = {
                 let ns = cd.namespace.read();
-                ns.values().any(|v| matches!(&v.payload, PyObjectPayload::Instance(_)))
+                ns.values()
+                    .any(|v| matches!(&v.payload, PyObjectPayload::Instance(_)))
             };
-            if !has_instances { return Ok(()); }
+            if !has_instances {
+                return Ok(());
+            }
             let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
                 let ns = cd.namespace.read();
                 ns.iter()
                     .filter(|(_, v)| matches!(&v.payload, PyObjectPayload::Instance(_)))
-                    .map(|(k, v)| (k.clone(), v.clone())).collect()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
             };
             for (attr_name, attr_val) in &ns_snapshot {
                 if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
-                    let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                    let bound = if matches!(
+                        &set_name_method.payload,
+                        PyObjectPayload::BoundMethod { .. }
+                    ) {
                         set_name_method
                     } else {
                         PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: attr_val.clone(),
                                 method: set_name_method,
-                            }
+                            },
                         })
                     };
                     let name_arg = PyObject::str_val(attr_name.clone());
@@ -1108,25 +1320,36 @@ impl VirtualMachine {
         Self::c3_merge(&mut linearizations)
     }
 
-    pub(crate) fn c3_merge(linearizations: &mut Vec<Vec<PyObjectRef>>) -> PyResult<Vec<PyObjectRef>> {
+    pub(crate) fn c3_merge(
+        linearizations: &mut Vec<Vec<PyObjectRef>>,
+    ) -> PyResult<Vec<PyObjectRef>> {
         let mut result = Vec::new();
         // Track start index per linearization to avoid O(n) vec.remove(0)
         let mut starts: Vec<usize> = vec![0; linearizations.len()];
         loop {
             // Check if all lists are exhausted
-            let any_remaining = starts.iter().enumerate().any(|(i, &s)| s < linearizations[i].len());
+            let any_remaining = starts
+                .iter()
+                .enumerate()
+                .any(|(i, &s)| s < linearizations[i].len());
             if !any_remaining {
                 break;
             }
             // Find a good head: first element of some list that doesn't appear in the tail of any list
             let mut found = None;
             for (i, lin) in linearizations.iter().enumerate() {
-                if starts[i] >= lin.len() { continue; }
+                if starts[i] >= lin.len() {
+                    continue;
+                }
                 let candidate_ptr = PyObjectRef::as_ptr(&lin[starts[i]]);
                 let in_tail = linearizations.iter().enumerate().any(|(j, other)| {
                     let s = starts[j];
-                    if s >= other.len() { return false; }
-                    other[s+1..].iter().any(|x| PyObjectRef::as_ptr(x) == candidate_ptr)
+                    if s >= other.len() {
+                        return false;
+                    }
+                    other[s + 1..]
+                        .iter()
+                        .any(|x| PyObjectRef::as_ptr(x) == candidate_ptr)
                 });
                 if !in_tail {
                     found = Some(lin[starts[i]].clone());
@@ -1143,11 +1366,10 @@ impl VirtualMachine {
                 }
             } else {
                 return Err(PyException::type_error(
-                    "Cannot create a consistent method resolution order (MRO)"
+                    "Cannot create a consistent method resolution order (MRO)",
                 ));
             }
         }
         Ok(result)
     }
-
 }

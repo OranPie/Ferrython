@@ -3,44 +3,49 @@
 //! This crate provides all built-in Python standard library modules.
 //! The VM calls `load_module(name)` to resolve `import` statements.
 
-mod math_modules;
-mod sys_modules;
-pub mod text_modules;
 mod collection_modules;
-mod serial_modules;
-mod fs_modules;
-mod time_modules;
-mod misc_modules;
-mod crypto_modules;
-mod config_modules;
-mod testing_modules;
-mod type_modules;
-mod introspection_modules;
+mod compression_modules;
 mod concurrency_modules;
-mod import_modules;
-mod network_modules;
-pub mod xml_modules;
+mod config_modules;
+mod crypto_modules;
 pub mod db_modules;
 mod email_modules;
-mod compression_modules;
+mod fs_modules;
+mod import_modules;
+mod introspection_modules;
+mod math_modules;
+mod misc_modules;
+mod network_modules;
+mod serial_modules;
+mod sys_modules;
+mod testing_modules;
+pub mod text_modules;
+mod time_modules;
+mod type_modules;
+pub mod xml_modules;
 
-use ferrython_core::object::{PyObjectRef, PyObjectMethods};
+use ferrython_core::object::{PyObjectMethods, PyObjectRef};
 use parking_lot::RwLock;
 
-pub use sys_modules::get_recursion_limit;
-pub use sys_modules::get_exc_info;
-pub use sys_modules::{get_trace_func, set_trace_func, get_profile_func, set_profile_func, get_excepthook, set_excepthook};
-pub use sys_modules::{is_trace_active, is_profile_active};
-pub use sys_modules::{set_current_frame, get_current_frame};
-pub use sys_modules::{set_current_globals, get_current_globals};
-pub use sys_modules::set_argv;
-pub use sys_modules::get_argv;
 pub use concurrency_modules::drain_deferred_calls;
 pub use ferrython_async::take_asyncio_run_coro;
-pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
-pub use serial_modules::json_dumps_fn;
+pub use import_modules::{
+    take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest,
+};
 pub use introspection_modules::ast_unparse_module;
 pub use introspection_modules::pyobj_ast_to_module;
+pub use serial_modules::json_dumps_fn;
+pub use sys_modules::get_argv;
+pub use sys_modules::get_exc_info;
+pub use sys_modules::get_recursion_limit;
+pub use sys_modules::set_argv;
+pub use sys_modules::{get_current_frame, set_current_frame};
+pub use sys_modules::{get_current_globals, set_current_globals};
+pub use sys_modules::{
+    get_excepthook, get_profile_func, get_trace_func, set_excepthook, set_profile_func,
+    set_trace_func,
+};
+pub use sys_modules::{is_profile_active, is_trace_active};
 
 // ── Global stdout/stderr override for redirect_stdout/redirect_stderr ──
 // When set, print() writes here instead of real stdout.
@@ -263,9 +268,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
         // concurrent — handled by stdlib/Lib/concurrent/futures.py (pure Python)
-        "concurrent" => {
-            Some(ferrython_core::object::make_module("concurrent", vec![]))
-        }
+        "concurrent" => Some(ferrython_core::object::make_module("concurrent", vec![])),
         // HTML parser & unicode
         "html.parser" => Some(text_modules::create_html_parser_module()),
         "unicodedata" => Some(text_modules::create_unicodedata_module()),
@@ -312,7 +315,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // dbm stub
         "dbm" | "dbm.dumb" | "dbm.gnu" | "dbm.ndbm" => Some(serial_modules::create_dbm_module()),
         // xmlrpc stubs
-        "xmlrpc" | "xmlrpc.client" | "xmlrpc.server" => Some(network_modules::create_xmlrpc_module()),
+        "xmlrpc" | "xmlrpc.client" | "xmlrpc.server" => {
+            Some(network_modules::create_xmlrpc_module())
+        }
         // Additional modules
         "cmd" => Some(misc_modules::create_cmd_module()),
         "compileall" => Some(misc_modules::create_compileall_module()),
@@ -325,9 +330,15 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_sysconfig" => Some(sys_modules::create_sysconfig_module()),
         // Encodings
         "encodings" => Some(text_modules::create_encodings_module()),
-        "encodings.utf_8" => Some(text_modules::create_encodings_codec_module("encodings.utf_8")),
-        "encodings.ascii" => Some(text_modules::create_encodings_codec_module("encodings.ascii")),
-        "encodings.latin_1" => Some(text_modules::create_encodings_codec_module("encodings.latin_1")),
+        "encodings.utf_8" => Some(text_modules::create_encodings_codec_module(
+            "encodings.utf_8",
+        )),
+        "encodings.ascii" => Some(text_modules::create_encodings_codec_module(
+            "encodings.ascii",
+        )),
+        "encodings.latin_1" => Some(text_modules::create_encodings_codec_module(
+            "encodings.latin_1",
+        )),
         "encodings.aliases" => Some(text_modules::create_encodings_aliases_module()),
         "encodings.idna" => Some(text_modules::create_encodings_idna_module()),
         // Unix user/group info
@@ -342,21 +353,42 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "ctypes.util" => {
             let m = misc_modules::create_ctypes_module();
             m.get_attr("util")
-        },
+        }
         // Import resources
         "importlib.resources" => Some(import_modules::create_importlib_resources_module()),
         // Misc sub-module aliases
         "html.entities" => None, // uses pure-python fallback in stdlib/Lib/html/entities.py
-        "tabnanny" => Some(ferrython_core::object::make_module("tabnanny", vec![
-            ("check", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::none()))),
-            ("verbose", ferrython_core::object::PyObject::int(0)),
-        ])),
-        "pyclbr" => Some(ferrython_core::object::make_module("pyclbr", vec![
-            ("readmodule", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![])))),
-            ("readmodule_ex", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![])))),
-        ])),
-        "email.parser" => None,  // uses pure-python fallback
-        "email.header" => None,  // uses pure-python fallback
+        "tabnanny" => Some(ferrython_core::object::make_module(
+            "tabnanny",
+            vec![
+                (
+                    "check",
+                    ferrython_core::object::make_builtin(|_| {
+                        Ok(ferrython_core::object::PyObject::none())
+                    }),
+                ),
+                ("verbose", ferrython_core::object::PyObject::int(0)),
+            ],
+        )),
+        "pyclbr" => Some(ferrython_core::object::make_module(
+            "pyclbr",
+            vec![
+                (
+                    "readmodule",
+                    ferrython_core::object::make_builtin(|_| {
+                        Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![]))
+                    }),
+                ),
+                (
+                    "readmodule_ex",
+                    ferrython_core::object::make_builtin(|_| {
+                        Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![]))
+                    }),
+                ),
+            ],
+        )),
+        "email.parser" => None, // uses pure-python fallback
+        "email.header" => None, // uses pure-python fallback
         _ => {
             // Catch-all: handle encodings.* submodules dynamically
             if name.starts_with("encodings.") {

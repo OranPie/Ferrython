@@ -1,7 +1,7 @@
 //! Package registry — tracks installed packages via dist-info directories
 
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// Information about an installed package
 #[derive(Debug, Clone)]
@@ -20,7 +20,9 @@ pub struct InstalledPackage {
 /// List all installed packages by scanning site-packages for .dist-info dirs
 pub fn list_installed(site_packages: &str) -> Vec<InstalledPackage> {
     let site = Path::new(site_packages);
-    if !site.exists() { return vec![]; }
+    if !site.exists() {
+        return vec![];
+    }
 
     let mut packages = Vec::new();
     let entries = match fs::read_dir(site) {
@@ -52,12 +54,13 @@ pub fn get_installed(name: &str, site_packages: &str) -> Option<InstalledPackage
 /// Uninstall a package by removing its files, dist-info, .pth files, and console scripts.
 pub fn uninstall(name: &str, site_packages: &str) -> Result<(), String> {
     let site = Path::new(site_packages);
-    let pkg = get_installed(name, site_packages)
-        .ok_or_else(|| format!(
+    let pkg = get_installed(name, site_packages).ok_or_else(|| {
+        format!(
             "Package '{}' is not installed.\n\
              Hint: Use 'ferryip list' to see installed packages.",
             name
-        ))?;
+        )
+    })?;
 
     // Remove files listed in RECORD
     for file in &pkg.files {
@@ -147,7 +150,8 @@ fn read_dist_info(dist_info_path: &Path) -> Option<InstalledPackage> {
     // Read RECORD for file list
     let record_path = dist_info_path.join("RECORD");
     let files = if let Ok(content) = fs::read_to_string(&record_path) {
-        content.lines()
+        content
+            .lines()
             .filter(|l| !l.is_empty())
             .map(|l| l.split(',').next().unwrap_or("").to_string())
             .filter(|f| !f.is_empty())
@@ -164,7 +168,11 @@ fn read_dist_info(dist_info_path: &Path) -> Option<InstalledPackage> {
         license,
         requires_python,
         home_page,
-        requires: if requires.is_empty() { None } else { Some(requires) },
+        requires: if requires.is_empty() {
+            None
+        } else {
+            Some(requires)
+        },
         files,
     })
 }
@@ -216,7 +224,8 @@ fn remove_console_scripts(site: &Path, entry_points_path: &Path) {
         Err(_) => return,
     };
 
-    let bin_dir = site.parent()
+    let bin_dir = site
+        .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("bin"))
         .unwrap_or_else(|| site.join("../bin"));

@@ -7,8 +7,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult, TracebackEntry};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args_min,
+    check_args_min, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use indexmap::IndexMap;
 
@@ -16,22 +16,28 @@ use crate::source_cache::SourceCache;
 
 /// Create the `traceback` module with Rust-backed functions.
 pub fn create_traceback_module() -> PyObjectRef {
-    make_module("traceback", vec![
-        ("format_exc", make_builtin(traceback_format_exc)),
-        ("format_exception", make_builtin(traceback_format_exception)),
-        ("format_tb", make_builtin(traceback_format_tb)),
-        ("format_stack", make_builtin(traceback_format_stack)),
-        ("extract_stack", make_builtin(traceback_extract_stack)),
-        ("extract_tb", make_builtin(traceback_extract_tb)),
-        ("print_exc", make_builtin(traceback_print_exc)),
-        ("print_exception", make_builtin(traceback_print_exception)),
-        ("format_exception_only", make_builtin(traceback_format_exception_only)),
-        ("print_tb", make_builtin(traceback_print_tb)),
-        ("TracebackException", create_traceback_exception_class()),
-        ("FrameSummary", make_builtin(frame_summary_cls)),
-        ("StackSummary", make_builtin(stack_summary_cls)),
-        ("linecache", make_linecache_module()),
-    ])
+    make_module(
+        "traceback",
+        vec![
+            ("format_exc", make_builtin(traceback_format_exc)),
+            ("format_exception", make_builtin(traceback_format_exception)),
+            ("format_tb", make_builtin(traceback_format_tb)),
+            ("format_stack", make_builtin(traceback_format_stack)),
+            ("extract_stack", make_builtin(traceback_extract_stack)),
+            ("extract_tb", make_builtin(traceback_extract_tb)),
+            ("print_exc", make_builtin(traceback_print_exc)),
+            ("print_exception", make_builtin(traceback_print_exception)),
+            (
+                "format_exception_only",
+                make_builtin(traceback_format_exception_only),
+            ),
+            ("print_tb", make_builtin(traceback_print_tb)),
+            ("TracebackException", create_traceback_exception_class()),
+            ("FrameSummary", make_builtin(frame_summary_cls)),
+            ("StackSummary", make_builtin(stack_summary_cls)),
+            ("linecache", make_linecache_module()),
+        ],
+    )
 }
 
 // ── traceback.format_exc() ──────────────────────────────────────────────
@@ -43,10 +49,18 @@ fn traceback_format_exc(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let exc_info = ferrython_core::error::get_thread_exc_info();
     if let Some((kind, message, tb_entries)) = exc_info {
         let exc = PyException {
-            kind, message, original: None,
-            traceback: tb_entries, cause: None, context: None, value: None, os_error_info: None,
+            kind,
+            message,
+            original: None,
+            traceback: tb_entries,
+            cause: None,
+            context: None,
+            value: None,
+            os_error_info: None,
         };
-        Ok(PyObject::str_val(CompactString::from(crate::format_traceback(&exc))))
+        Ok(PyObject::str_val(CompactString::from(
+            crate::format_traceback(&exc),
+        )))
     } else {
         Ok(PyObject::str_val(CompactString::from("NoneType: None")))
     }
@@ -65,7 +79,9 @@ fn traceback_format_exception(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     let mut result = Vec::new();
     if !entries.is_empty() {
-        result.push(PyObject::str_val(CompactString::from("Traceback (most recent call last):\n")));
+        result.push(PyObject::str_val(CompactString::from(
+            "Traceback (most recent call last):\n",
+        )));
         for entry in &entries {
             result.push(PyObject::str_val(CompactString::from(
                 crate::formatting::format_entry(entry),
@@ -143,8 +159,14 @@ fn traceback_print_exc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let exc_info = ferrython_core::error::get_thread_exc_info();
     if let Some((kind, message, tb_entries)) = exc_info {
         let exc = PyException {
-            kind, message, original: None,
-            traceback: tb_entries, cause: None, context: None, value: None, os_error_info: None,
+            kind,
+            message,
+            original: None,
+            traceback: tb_entries,
+            cause: None,
+            context: None,
+            value: None,
+            os_error_info: None,
         };
         let text = crate::format_traceback(&exc);
         write_to_file_or_stderr(&file_obj, &text);
@@ -189,7 +211,9 @@ fn traceback_format_exception_only(args: &[PyObjectRef]) -> PyResult<PyObjectRef
     } else {
         format!("{}: {}\n", kind_str, msg)
     };
-    Ok(PyObject::list(vec![PyObject::str_val(CompactString::from(line))]))
+    Ok(PyObject::list(vec![PyObject::str_val(
+        CompactString::from(line),
+    )]))
 }
 
 // ── traceback.print_tb(tb, limit=None, file=None) ──────────────────────
@@ -215,59 +239,98 @@ fn create_traceback_exception_class() -> PyObjectRef {
     let mut ns = IndexMap::new();
 
     // __init__(self, exc_type, exc_value, exc_tb, ...)
-    ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() {
-            return Err(PyException::type_error("TracebackException.__init__ requires self"));
-        }
-        let self_obj = &args[0];
-        let rest = &args[1..];
-        let (kind_str, msg) = extract_exc_type_msg(rest);
-        let entries = extract_tb_from_arg(rest.get(2));
-        let formatted = if msg.is_empty() { kind_str.clone() } else { format!("{}: {}", kind_str, msg) };
+    ns.insert(
+        CompactString::from("__init__"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "TracebackException.__init__ requires self",
+                ));
+            }
+            let self_obj = &args[0];
+            let rest = &args[1..];
+            let (kind_str, msg) = extract_exc_type_msg(rest);
+            let entries = extract_tb_from_arg(rest.get(2));
+            let formatted = if msg.is_empty() {
+                kind_str.clone()
+            } else {
+                format!("{}: {}", kind_str, msg)
+            };
 
-        if let PyObjectPayload::Instance(inst) = &self_obj.payload {
-            let mut attrs = inst.attrs.write();
-            if !rest.is_empty() {
-                attrs.insert(CompactString::from("exc_type"), rest[0].clone());
+            if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+                let mut attrs = inst.attrs.write();
+                if !rest.is_empty() {
+                    attrs.insert(CompactString::from("exc_type"), rest[0].clone());
+                }
+                attrs.insert(
+                    CompactString::from("_str"),
+                    PyObject::str_val(CompactString::from(&formatted)),
+                );
+                if rest.len() > 1 {
+                    attrs.insert(CompactString::from("exc_value"), rest[1].clone());
+                }
+                let fmt_lines: Vec<PyObjectRef> = entries
+                    .iter()
+                    .map(|e| {
+                        PyObject::str_val(CompactString::from(crate::formatting::format_entry(e)))
+                    })
+                    .collect();
+                attrs.insert(CompactString::from("stack"), PyObject::list(fmt_lines));
             }
-            attrs.insert(CompactString::from("_str"), PyObject::str_val(CompactString::from(&formatted)));
-            if rest.len() > 1 {
-                attrs.insert(CompactString::from("exc_value"), rest[1].clone());
-            }
-            let fmt_lines: Vec<PyObjectRef> = entries.iter()
-                .map(|e| PyObject::str_val(CompactString::from(crate::formatting::format_entry(e))))
-                .collect();
-            attrs.insert(CompactString::from("stack"), PyObject::list(fmt_lines));
-        }
-        Ok(PyObject::none())
-    }));
+            Ok(PyObject::none())
+        }),
+    );
 
     // format(self) → list of str
-    ns.insert(CompactString::from("format"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() {
-            return Err(PyException::type_error("format requires self"));
-        }
-        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
-        Ok(PyObject::list(vec![PyObject::str_val(CompactString::from(&s))]))
-    }));
+    ns.insert(
+        CompactString::from("format"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("format requires self"));
+            }
+            let s = args[0]
+                .get_attr("_str")
+                .map(|v| v.py_to_string())
+                .unwrap_or_default();
+            Ok(PyObject::list(vec![PyObject::str_val(
+                CompactString::from(&s),
+            )]))
+        }),
+    );
 
     // format_exception_only(self) → list of str
-    ns.insert(CompactString::from("format_exception_only"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() {
-            return Err(PyException::type_error("format_exception_only requires self"));
-        }
-        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
-        Ok(PyObject::list(vec![PyObject::str_val(CompactString::from(format!("{}\n", s)))]))
-    }));
+    ns.insert(
+        CompactString::from("format_exception_only"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "format_exception_only requires self",
+                ));
+            }
+            let s = args[0]
+                .get_attr("_str")
+                .map(|v| v.py_to_string())
+                .unwrap_or_default();
+            Ok(PyObject::list(vec![PyObject::str_val(
+                CompactString::from(format!("{}\n", s)),
+            )]))
+        }),
+    );
 
     // __str__(self)
-    ns.insert(CompactString::from("__str__"), make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() {
-            return Err(PyException::type_error("__str__ requires self"));
-        }
-        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
-        Ok(PyObject::str_val(CompactString::from(&s)))
-    }));
+    ns.insert(
+        CompactString::from("__str__"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("__str__ requires self"));
+            }
+            let s = args[0]
+                .get_attr("_str")
+                .map(|v| v.py_to_string())
+                .unwrap_or_default();
+            Ok(PyObject::str_val(CompactString::from(&s)))
+        }),
+    );
 
     PyObject::class(CompactString::from("TracebackException"), vec![], ns)
 }
@@ -287,7 +350,10 @@ fn traceback_exception_cls(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let cls = PyObject::builtin_type(CompactString::from("TracebackException"));
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("exc_type"), args[0].clone());
-    attrs.insert(CompactString::from("_str"), PyObject::str_val(CompactString::from(&formatted)));
+    attrs.insert(
+        CompactString::from("_str"),
+        PyObject::str_val(CompactString::from(&formatted)),
+    );
     if args.len() > 1 {
         attrs.insert(CompactString::from("exc_value"), args[1].clone());
     }
@@ -301,20 +367,22 @@ fn traceback_exception_cls(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // format() method
     let formatted_clone = formatted.clone();
-    attrs.insert(CompactString::from("format"), PyObject::native_closure(
-        "TracebackException.format",
-        move |_| {
-            Ok(PyObject::list(vec![
-                PyObject::str_val(CompactString::from(&formatted_clone)),
-            ]))
-        },
-    ));
+    attrs.insert(
+        CompactString::from("format"),
+        PyObject::native_closure("TracebackException.format", move |_| {
+            Ok(PyObject::list(vec![PyObject::str_val(
+                CompactString::from(&formatted_clone),
+            )]))
+        }),
+    );
 
     // __str__
-    attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
-        "TracebackException.__str__",
-        move |_| Ok(PyObject::str_val(CompactString::from(&formatted))),
-    ));
+    attrs.insert(
+        CompactString::from("__str__"),
+        PyObject::native_closure("TracebackException.__str__", move |_| {
+            Ok(PyObject::str_val(CompactString::from(&formatted)))
+        }),
+    );
 
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
@@ -345,11 +413,14 @@ fn stack_summary_cls(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── linecache sub-module ────────────────────────────────────────────────
 
 fn make_linecache_module() -> PyObjectRef {
-    make_module("linecache", vec![
-        ("getline", make_builtin(linecache_getline)),
-        ("clearcache", make_builtin(linecache_clearcache)),
-        ("checkcache", make_builtin(linecache_checkcache)),
-    ])
+    make_module(
+        "linecache",
+        vec![
+            ("getline", make_builtin(linecache_getline)),
+            ("clearcache", make_builtin(linecache_clearcache)),
+            ("checkcache", make_builtin(linecache_checkcache)),
+        ],
+    )
 }
 
 fn linecache_getline(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -389,9 +460,15 @@ fn make_frame_summary(filename: &str, lineno: u32, name: &str) -> PyObjectRef {
     let fname_s = CompactString::from(filename);
     let lineno_i = lineno as i64;
     let name_s = CompactString::from(name);
-    attrs.insert(CompactString::from("filename"), PyObject::str_val(fname_s.clone()));
+    attrs.insert(
+        CompactString::from("filename"),
+        PyObject::str_val(fname_s.clone()),
+    );
     attrs.insert(CompactString::from("lineno"), PyObject::int(lineno_i));
-    attrs.insert(CompactString::from("name"), PyObject::str_val(name_s.clone()));
+    attrs.insert(
+        CompactString::from("name"),
+        PyObject::str_val(name_s.clone()),
+    );
 
     // Source line (may be None)
     let line = SourceCache::get_line(filename, lineno);
@@ -409,36 +486,36 @@ fn make_frame_summary(filename: &str, lineno: u32, name: &str) -> PyObjectRef {
         PyObject::str_val(name_s.clone()),
         line_val,
     ];
-    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
-        "FrameSummary.__getitem__",
-        move |args| {
-            let idx = args.first()
-                .and_then(|a| a.as_int())
-                .unwrap_or(0) as usize;
+    attrs.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_closure("FrameSummary.__getitem__", move |args| {
+            let idx = args.first().and_then(|a| a.as_int()).unwrap_or(0) as usize;
             Ok(items.get(idx).cloned().unwrap_or(PyObject::none()))
-        },
-    ));
+        }),
+    );
 
     // __repr__
     let fname = filename.to_string();
     let flineno = lineno;
     let fname_disp = name.to_string();
-    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-        "FrameSummary.__repr__",
-        move |_| {
+    attrs.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("FrameSummary.__repr__", move |_| {
             Ok(PyObject::str_val(CompactString::from(format!(
                 "<FrameSummary file {}, line {} in {}>",
                 fname, flineno, fname_disp,
             ))))
-        },
-    ));
+        }),
+    );
 
     PyObject::instance_with_attrs(cls, attrs)
 }
 
 /// Walk a traceback chain object and extract TracebackEntry values.
 fn extract_tb_from_arg(tb_arg: Option<&PyObjectRef>) -> Vec<TracebackEntry> {
-    let Some(tb) = tb_arg else { return vec![]; };
+    let Some(tb) = tb_arg else {
+        return vec![];
+    };
 
     match &tb.payload {
         PyObjectPayload::None => vec![],
@@ -451,20 +528,27 @@ fn extract_tb_from_arg(tb_arg: Option<&PyObjectRef>) -> Vec<TracebackEntry> {
                     PyObjectPayload::Instance(inst) => inst.attrs.read().clone(),
                     _ => break,
                 };
-                let lineno = attrs.get("tb_lineno")
+                let lineno = attrs
+                    .get("tb_lineno")
                     .and_then(|v| match &v.payload {
                         PyObjectPayload::Int(n) => Some(n.to_i64().unwrap_or(0) as u32),
                         _ => None,
                     })
                     .unwrap_or(0);
-                let filename = attrs.get("tb_filename")
+                let filename = attrs
+                    .get("tb_filename")
                     .map(|v| v.py_to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
-                let function = attrs.get("tb_name")
+                let function = attrs
+                    .get("tb_name")
                     .map(|v| v.py_to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
 
-                entries.push(TracebackEntry { filename, function, lineno });
+                entries.push(TracebackEntry {
+                    filename,
+                    function,
+                    lineno,
+                });
 
                 match attrs.get("tb_next") {
                     Some(next) if !matches!(next.payload, PyObjectPayload::None) => {
@@ -478,8 +562,9 @@ fn extract_tb_from_arg(tb_arg: Option<&PyObjectRef>) -> Vec<TracebackEntry> {
         // If passed a list of FrameSummary objects
         PyObjectPayload::List(items) => {
             let items = items.read();
-            items.iter().filter_map(|item| {
-                match &item.payload {
+            items
+                .iter()
+                .filter_map(|item| match &item.payload {
                     PyObjectPayload::Instance(inst) => {
                         let attrs = inst.attrs.read();
                         let filename = attrs.get("filename").map(|v| v.py_to_string())?;
@@ -488,11 +573,15 @@ fn extract_tb_from_arg(tb_arg: Option<&PyObjectRef>) -> Vec<TracebackEntry> {
                             _ => None,
                         })?;
                         let function = attrs.get("name").map(|v| v.py_to_string())?;
-                        Some(TracebackEntry { filename, function, lineno })
+                        Some(TracebackEntry {
+                            filename,
+                            function,
+                            lineno,
+                        })
                     }
                     _ => None,
-                }
-            }).collect()
+                })
+                .collect()
         }
         _ => vec![],
     }
@@ -508,9 +597,7 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
     match &first.payload {
         // Exception type object
         PyObjectPayload::ExceptionType(kind) => {
-            let msg = args.get(1)
-                .map(|v| v.py_to_string())
-                .unwrap_or_default();
+            let msg = args.get(1).map(|v| v.py_to_string()).unwrap_or_default();
             (format!("{}", kind), msg)
         }
         // Exception instance
@@ -526,7 +613,8 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
                 PyObjectPayload::ExceptionType(kind) => format!("{}", kind),
                 _ => "Exception".to_string(),
             };
-            let msg = attrs.get("args")
+            let msg = attrs
+                .get("args")
                 .map(|v| v.py_to_string())
                 .or_else(|| args.get(1).map(|v| v.py_to_string()))
                 .unwrap_or_default();
@@ -534,16 +622,12 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
         }
         // String (simple case)
         PyObjectPayload::Str(s) => {
-            let msg = args.get(1)
-                .map(|v| v.py_to_string())
-                .unwrap_or_default();
+            let msg = args.get(1).map(|v| v.py_to_string()).unwrap_or_default();
             (s.to_string(), msg)
         }
         _ => {
             let type_name = first.py_to_string();
-            let msg = args.get(1)
-                .map(|v| v.py_to_string())
-                .unwrap_or_default();
+            let msg = args.get(1).map(|v| v.py_to_string()).unwrap_or_default();
             (type_name, msg)
         }
     }
@@ -584,19 +668,17 @@ fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
                     let _ = (nf.func)(&[text_obj]);
                     return;
                 }
-                PyObjectPayload::BoundMethod { receiver, method } => {
-                    match &method.payload {
-                        PyObjectPayload::NativeClosure(nc) => {
-                            let _ = (nc.func)(&[text_obj]);
-                            return;
-                        }
-                        PyObjectPayload::NativeFunction(nf) => {
-                            let _ = (nf.func)(&[receiver.clone(), text_obj]);
-                            return;
-                        }
-                        _ => {}
+                PyObjectPayload::BoundMethod { receiver, method } => match &method.payload {
+                    PyObjectPayload::NativeClosure(nc) => {
+                        let _ = (nc.func)(&[text_obj]);
+                        return;
                     }
-                }
+                    PyObjectPayload::NativeFunction(nf) => {
+                        let _ = (nf.func)(&[receiver.clone(), text_obj]);
+                        return;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }

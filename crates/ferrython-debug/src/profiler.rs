@@ -57,7 +57,9 @@ impl ExecutionProfiler {
             }
         }
         #[cfg(not(feature = "profiling"))]
-        { let _ = enabled; }
+        {
+            let _ = enabled;
+        }
     }
 
     /// Returns whether profiling is enabled.
@@ -67,9 +69,13 @@ impl ExecutionProfiler {
     #[inline(always)]
     pub fn is_enabled(&self) -> bool {
         #[cfg(feature = "profiling")]
-        { self.enabled }
+        {
+            self.enabled
+        }
         #[cfg(not(feature = "profiling"))]
-        { false }
+        {
+            false
+        }
     }
 
     /// Record the start of an instruction execution.
@@ -83,7 +89,9 @@ impl ExecutionProfiler {
     /// Record the end of an instruction execution, accumulating stats.
     #[inline]
     pub fn end_instruction(&mut self, op: Opcode) {
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         self.total_instructions += 1;
         let elapsed = self.current_start.map(|s| s.elapsed()).unwrap_or_default();
         let entry = self.opcode_stats.entry(op as u8).or_default();
@@ -93,8 +101,13 @@ impl ExecutionProfiler {
 
     /// Record a function call by name.
     pub fn record_call(&mut self, func_name: &str) {
-        if !self.enabled { return; }
-        *self.function_calls.entry(func_name.to_string()).or_default() += 1;
+        if !self.enabled {
+            return;
+        }
+        *self
+            .function_calls
+            .entry(func_name.to_string())
+            .or_default() += 1;
     }
 
     /// Reset all accumulated statistics.
@@ -121,11 +134,20 @@ impl ExecutionProfiler {
         println!("╔══════════════════════════════════════════════════════════╗");
         println!("║          Ferrython Execution Profile                    ║");
         println!("╠══════════════════════════════════════════════════════════╣");
-        println!("║ Total instructions: {:>12}                         ║", self.total_instructions);
-        println!("║ Wall clock time:    {:>12.3}ms                      ║", wall.as_secs_f64() * 1000.0);
+        println!(
+            "║ Total instructions: {:>12}                         ║",
+            self.total_instructions
+        );
+        println!(
+            "║ Wall clock time:    {:>12.3}ms                      ║",
+            wall.as_secs_f64() * 1000.0
+        );
         if self.total_instructions > 0 {
             let ns_per_op = wall.as_nanos() as f64 / self.total_instructions as f64;
-            println!("║ Avg ns/instruction: {:>12.1}                         ║", ns_per_op);
+            println!(
+                "║ Avg ns/instruction: {:>12.1}                         ║",
+                ns_per_op
+            );
         }
         println!("╠══════════════════════════════════════════════════════════╣");
 
@@ -133,15 +155,30 @@ impl ExecutionProfiler {
         let mut stats: Vec<_> = self.opcode_stats.iter().collect();
         stats.sort_by(|a, b| b.1.total_time.cmp(&a.1.total_time));
 
-        println!("║ {:24} {:>10} {:>10} {:>8} ║", "Opcode", "Count", "Time(ms)", "%");
-        println!("║ {:24} {:>10} {:>10} {:>8} ║", "──────", "─────", "───────", "──");
+        println!(
+            "║ {:24} {:>10} {:>10} {:>8} ║",
+            "Opcode", "Count", "Time(ms)", "%"
+        );
+        println!(
+            "║ {:24} {:>10} {:>10} {:>8} ║",
+            "──────", "─────", "───────", "──"
+        );
 
         let total_ns = wall.as_nanos() as f64;
         for (op_byte, stat) in stats.iter().take(20) {
             let op = opcode_from_byte(**op_byte);
-            let pct = if total_ns > 0.0 { stat.total_time.as_nanos() as f64 / total_ns * 100.0 } else { 0.0 };
-            println!("║ {:24} {:>10} {:>10.2} {:>7.1}% ║",
-                op, stat.count, stat.total_time.as_secs_f64() * 1000.0, pct);
+            let pct = if total_ns > 0.0 {
+                stat.total_time.as_nanos() as f64 / total_ns * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "║ {:24} {:>10} {:>10.2} {:>7.1}% ║",
+                op,
+                stat.count,
+                stat.total_time.as_secs_f64() * 1000.0,
+                pct
+            );
         }
 
         if !self.function_calls.is_empty() {
@@ -162,7 +199,9 @@ impl ExecutionProfiler {
 }
 
 impl Default for ExecutionProfiler {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Convert a raw opcode byte back to a display string.

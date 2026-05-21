@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::{ PyCell, FxAttrMap, PyObjectRef};
+use ferrython_core::object::{FxAttrMap, PyCell, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -49,10 +49,20 @@ pub fn globals_version() -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
+pub enum BlockKind {
+    Loop,
+    Except,
+    Finally,
+    With,
+    ExceptHandler,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeKind { Module, Function, Class }
+pub enum ScopeKind {
+    Module,
+    Function,
+    Class,
+}
 
 /// Packed block entry — 8 bytes (down from 24 with usize fields).
 /// handler: u32 covers up to 4B instruction indices (more than enough).
@@ -69,14 +79,25 @@ pub struct Block {
 impl Block {
     #[inline(always)]
     pub fn new(kind: BlockKind, handler: usize, stack_level: usize) -> Self {
-        Self { handler: handler as u32, stack_level: stack_level as u16, kind, _pad: 0 }
+        Self {
+            handler: handler as u32,
+            stack_level: stack_level as u16,
+            kind,
+            _pad: 0,
+        }
     }
     #[inline(always)]
-    pub fn kind(&self) -> BlockKind { self.kind }
+    pub fn kind(&self) -> BlockKind {
+        self.kind
+    }
     #[inline(always)]
-    pub fn handler(&self) -> usize { self.handler as usize }
+    pub fn handler(&self) -> usize {
+        self.handler as usize
+    }
     #[inline(always)]
-    pub fn stack_level(&self) -> usize { self.stack_level as usize }
+    pub fn stack_level(&self) -> usize {
+        self.stack_level as usize
+    }
 }
 
 /// Compact block stack — `None` when empty (common case), Vec when blocks exist.
@@ -86,7 +107,9 @@ pub struct BlockStack(Option<Vec<Block>>);
 
 impl BlockStack {
     #[inline(always)]
-    pub fn new() -> Self { Self(None) }
+    pub fn new() -> Self {
+        Self(None)
+    }
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
@@ -95,7 +118,9 @@ impl BlockStack {
 
     #[inline(always)]
     pub fn push(&mut self, block: Block) {
-        self.0.get_or_insert_with(|| Vec::with_capacity(4)).push(block);
+        self.0
+            .get_or_insert_with(|| Vec::with_capacity(4))
+            .push(block);
     }
 
     #[inline(always)]
@@ -237,9 +262,12 @@ impl Frame {
         let stack_cap = (code.max_stack_size as usize).max(8);
         let cells: Vec<CellRef> = if nc > 0 {
             (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         Self {
-            code, ip: 0,
+            code,
+            ip: 0,
             stack: Vec::with_capacity(stack_cap),
             block_stack: BlockStack::new(),
             locals: vec![None; nl],
@@ -293,9 +321,12 @@ impl Frame {
 
         let cells: Vec<CellRef> = if nc > 0 {
             (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         Self {
-            code, ip: 0,
+            code,
+            ip: 0,
             stack,
             block_stack: BlockStack::new(),
             locals,
@@ -356,10 +387,13 @@ impl Frame {
                 }
             }
             cells
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
 
         Self {
-            code, ip: 0,
+            code,
+            ip: 0,
             stack,
             block_stack: BlockStack::new(),
             locals,
@@ -388,10 +422,7 @@ impl Frame {
     /// iterative call-stack design where child frames are always popped before
     /// the parent. recycle_borrowed() must be used instead of recycle().
     #[inline(always)]
-    pub unsafe fn new_recursive(
-        parent: &Frame,
-        pool: &mut FramePool,
-    ) -> Self {
+    pub unsafe fn new_recursive(parent: &Frame, pool: &mut FramePool) -> Self {
         let nl = parent.code.varnames.len();
 
         let mut stack = pool.take_stack();
@@ -485,11 +516,7 @@ impl Frame {
         }
     }
 
-    pub fn new(
-        code: Rc<CodeObject>,
-        globals: SharedGlobals,
-        builtins: SharedBuiltins,
-    ) -> Self {
+    pub fn new(code: Rc<CodeObject>, globals: SharedGlobals, builtins: SharedBuiltins) -> Self {
         use ferrython_core::types::PyFunction;
         // For ephemeral code objects (exec/eval), always build a fresh cache.
         // The CODE_CONSTANT_CACHE is keyed by Rc pointer address, which can be
@@ -535,9 +562,18 @@ impl Frame {
         }
     }
 
-    #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
-    #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
-    #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }
+    #[inline]
+    pub fn push(&mut self, v: PyObjectRef) {
+        self.stack.push(v);
+    }
+    #[inline]
+    pub fn pop(&mut self) -> PyObjectRef {
+        self.stack.pop().expect("stack underflow")
+    }
+    #[inline]
+    pub fn peek(&self) -> &PyObjectRef {
+        self.stack.last().expect("stack underflow")
+    }
 
     /// Unchecked push — caller guarantees stack has capacity.
     /// Stack capacity is pre-allocated (32) and grows automatically; for typical code
@@ -588,19 +624,30 @@ impl Frame {
         *self.stack.get_unchecked_mut(len - 2) = val;
         self.stack.set_len(len - 1);
     }
-    pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> { self.locals[idx].as_ref() }
-    pub fn set_local(&mut self, idx: usize, v: PyObjectRef) { self.locals[idx] = Some(v); }
-    pub fn push_block(&mut self, kind: BlockKind, handler: usize) {
-        self.block_stack.push(Block::new(kind, handler, self.stack.len()));
+    pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> {
+        self.locals[idx].as_ref()
     }
-    pub fn pop_block(&mut self) -> Option<Block> { self.block_stack.pop() }
+    pub fn set_local(&mut self, idx: usize, v: PyObjectRef) {
+        self.locals[idx] = Some(v);
+    }
+    pub fn push_block(&mut self, kind: BlockKind, handler: usize) {
+        self.block_stack
+            .push(Block::new(kind, handler, self.stack.len()));
+    }
+    pub fn pop_block(&mut self) -> Option<Block> {
+        self.block_stack.pop()
+    }
     pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {
-        self.local_names.as_ref().and_then(|m| m.get(name).cloned())
+        self.local_names
+            .as_ref()
+            .and_then(|m| m.get(name).cloned())
             .or_else(|| self.globals.read().get(name).cloned())
             .or_else(|| self.builtins.get(name).cloned())
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
-        self.local_names.get_or_insert_with(|| Box::new(FxAttrMap::default())).insert(name, value);
+        self.local_names
+            .get_or_insert_with(|| Box::new(FxAttrMap::default()))
+            .insert(name, value);
     }
     /// Get a value from local_names (class/module namespace).
     #[inline]
@@ -610,7 +657,9 @@ impl Frame {
     /// Check if local_names contains a key.
     #[inline]
     pub fn local_names_contains_key(&self, name: &str) -> bool {
-        self.local_names.as_ref().map_or(false, |m| m.contains_key(name))
+        self.local_names
+            .as_ref()
+            .map_or(false, |m| m.contains_key(name))
     }
     /// Remove a key from local_names.
     #[inline]
@@ -620,7 +669,9 @@ impl Frame {
     /// Insert into local_names (allocates if needed).
     #[inline]
     pub fn local_names_insert(&mut self, name: CompactString, value: PyObjectRef) {
-        self.local_names.get_or_insert_with(|| Box::new(FxAttrMap::default())).insert(name, value);
+        self.local_names
+            .get_or_insert_with(|| Box::new(FxAttrMap::default()))
+            .insert(name, value);
     }
     /// Iterate over local_names. Returns empty iter if None.
     #[inline]

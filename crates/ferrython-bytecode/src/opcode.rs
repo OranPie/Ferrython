@@ -339,8 +339,12 @@ impl Opcode {
             Self::YieldFrom => -1,
             Self::LoadBuildClass => 1,
             Self::LoadConst => 1,
-            Self::LoadName | Self::LoadGlobal | Self::LoadFast | Self::LoadDeref
-            | Self::LoadClassderef | Self::LoadClosure => 1,
+            Self::LoadName
+            | Self::LoadGlobal
+            | Self::LoadFast
+            | Self::LoadDeref
+            | Self::LoadClassderef
+            | Self::LoadClosure => 1,
             Self::StoreName | Self::StoreGlobal | Self::StoreFast | Self::StoreDeref => -1,
             Self::DeleteName | Self::DeleteGlobal | Self::DeleteFast | Self::DeleteDeref => 0,
             Self::LoadAttr => 0,
@@ -352,31 +356,50 @@ impl Opcode {
             Self::BuildMap => -(2 * arg as i32) + 1,
             Self::BuildConstKeyMap => -(arg as i32),
             Self::BuildString => -(arg as i32) + 1,
-            Self::BuildSlice => if arg == 3 { -2 } else { -1 },
+            Self::BuildSlice => {
+                if arg == 3 {
+                    -2
+                } else {
+                    -1
+                }
+            }
             Self::CompareOp => -1,
             Self::JumpForward | Self::JumpAbsolute => 0,
             Self::PopJumpIfFalse | Self::PopJumpIfTrue => -1,
             Self::JumpIfFalseOrPop | Self::JumpIfTrueOrPop => 0, // varies
-            Self::ForIter => 1, // pushes next or jumps
+            Self::ForIter => 1,                                  // pushes next or jumps
             Self::UnpackSequence => arg as i32 - 1,
             Self::UnpackEx => (arg as i32 & 0xFF) + (arg as i32 >> 8),
             Self::CallFunction => -(arg as i32),
             Self::CallFunctionKw => -(arg as i32) - 1,
-            Self::CallFunctionEx => if arg & 1 != 0 { -3 } else { -2 },
+            Self::CallFunctionEx => {
+                if arg & 1 != 0 {
+                    -3
+                } else {
+                    -2
+                }
+            }
             Self::CallMethod => -(arg as i32) - 1,
             Self::MakeFunction => {
                 let mut effect: i32 = -1; // qualname
-                if arg & 0x01 != 0 { effect -= 1; } // defaults
-                if arg & 0x02 != 0 { effect -= 1; } // kwdefaults
-                if arg & 0x04 != 0 { effect -= 1; } // annotations
-                if arg & 0x08 != 0 { effect -= 1; } // closure
+                if arg & 0x01 != 0 {
+                    effect -= 1;
+                } // defaults
+                if arg & 0x02 != 0 {
+                    effect -= 1;
+                } // kwdefaults
+                if arg & 0x04 != 0 {
+                    effect -= 1;
+                } // annotations
+                if arg & 0x08 != 0 {
+                    effect -= 1;
+                } // closure
                 effect
             }
             Self::ImportName => -1,
             Self::ImportFrom => 1,
             Self::ImportStar => -1,
-            Self::SetupFinally | Self::SetupWith | Self::SetupExcept
-            | Self::SetupAsyncWith => 0,
+            Self::SetupFinally | Self::SetupWith | Self::SetupExcept | Self::SetupAsyncWith => 0,
             Self::EndForLoop => -1,
             Self::PopBlock | Self::PopExcept => 0,
             Self::EndFinally | Self::BeginFinally => 0,
@@ -384,9 +407,14 @@ impl Opcode {
             Self::ListAppend | Self::SetAdd | Self::MapAdd => -1,
             Self::ListExtend | Self::SetUpdate | Self::DictMerge | Self::DictUpdate => -1,
             Self::ListToTuple => 0, // pops list, pushes tuple
-            Self::FormatValue => if arg & 0x04 != 0 { -1 } else { 0 },
-            Self::GetAwaitable | Self::GetAiter | Self::GetAnext
-            | Self::GetYieldFromIter => 0,
+            Self::FormatValue => {
+                if arg & 0x04 != 0 {
+                    -1
+                } else {
+                    0
+                }
+            }
+            Self::GetAwaitable | Self::GetAiter | Self::GetAnext | Self::GetYieldFromIter => 0,
             Self::BeforeAsyncWith => 1,
             Self::EndAsyncFor => -7,
             Self::WithCleanupStart => 1,
@@ -400,7 +428,7 @@ impl Opcode {
             Self::LoadFastLoadConstBinarySub => 1, // loads local + const, subtracts, pushes result
             Self::LoadFastLoadConstBinaryAdd => 1, // loads local + const, adds, pushes result
             Self::LoadFastLoadFastBinaryAdd => 1, // loads two locals, adds, pushes result
-            Self::ForIterStoreFast => 0, // either jumps (pops iter) or stores to local (net 0)
+            Self::ForIterStoreFast => 0,  // either jumps (pops iter) or stores to local (net 0)
             Self::LoadGlobalCallFunction => {
                 // Pops arg_count args from stack, pushes result (function never on stack)
                 let arg_count = (arg & 0xFFFF) as i32;
@@ -408,14 +436,14 @@ impl Opcode {
             }
             Self::LoadFastLoadAttr => 1, // push local, replace TOS with attr → net +1
             Self::LoadFastCompareConstJump => 0, // reads local+const by ref, compares, no stack change
-            Self::StoreFastJumpAbsolute => -1, // pops TOS and stores to local, then jumps
-            Self::PopTopJumpAbsolute => -1, // pops TOS, then jumps
-            Self::LoadFastLoadMethod => 2, // pushes [slot_0, slot_1] like LoadMethod
+            Self::StoreFastJumpAbsolute => -1,   // pops TOS and stores to local, then jumps
+            Self::PopTopJumpAbsolute => -1,      // pops TOS, then jumps
+            Self::LoadFastLoadMethod => 2,       // pushes [slot_0, slot_1] like LoadMethod
             Self::LoadFastLoadFastBinaryAddStoreFast => 0,
             Self::LoadFastLoadConstBinaryAddStoreFast => 0,
             Self::LoadFastReturnValue => 0, // reads local, returns it (no net stack change)
             Self::LoadConstReturnValue => 0, // reads const, returns it
-            Self::LoadConstStoreFast => 0, // reads const, stores to local (net 0)
+            Self::LoadConstStoreFast => 0,  // reads const, stores to local (net 0)
             Self::CallMethodPopTop => {
                 // Pops: method + receiver + arg_count args. Pushes nothing (result discarded).
                 -(arg as i32) - 2
@@ -424,13 +452,13 @@ impl Opcode {
             Self::LoadFastLoadConstBinaryMul => 1, // pushes result
             Self::LoadFastLoadConstBinaryMulStoreFast => 0, // stores to local
             Self::LoadFastLoadConstBinarySubStoreFast => 0, // stores to local
-            Self::LoadFastMulModStoreFast => 0, // x = (x * c1) % c2
+            Self::LoadFastMulModStoreFast => 0,   // x = (x * c1) % c2
             Self::LoadFastLoadFastCompareJump => 0, // reads two locals by ref, compares, no stack change
-            Self::LoadGlobalStoreFast => 0, // stores global directly to local (net 0)
-            Self::PopBlockJump => 0, // pops block, jumps (no stack change)
+            Self::LoadGlobalStoreFast => 0,         // stores global directly to local (net 0)
+            Self::PopBlockJump => 0,                // pops block, jumps (no stack change)
             Self::LoadConstLoadFastContainsStoreFast => 0, // reads const+local by ref, stores bool to local
             Self::LoadFastLoadConstSubscrStoreFast => 0, // reads local+const by ref, stores element to local
-            Self::LoadFastLoadFastSubscrStoreFast => 0,  // reads 2 locals by ref, stores element to local
+            Self::LoadFastLoadFastSubscrStoreFast => 0, // reads 2 locals by ref, stores element to local
             Self::LoadFastLoadFastLoadFastStoreSubscr => -3, // reads 3 locals, stores to container (net: 0 but pops 3 pushes)
             Self::LoadFastLoadFastContainsStoreFast => 0, // borrows 2 locals, stores bool in local
         }

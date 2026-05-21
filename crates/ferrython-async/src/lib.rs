@@ -11,10 +11,12 @@
 //! schedules them round-robin.
 
 mod event_loop;
-mod task;
 mod module;
 mod primitives;
+mod task;
 
 pub use event_loop::{EventLoop, EventLoopState};
-pub use task::{TaskState, TaskHandle};
-pub use module::{create_asyncio_module, take_asyncio_run_coro, get_wait_for_deadline, set_wait_for_deadline};
+pub use module::{
+    create_asyncio_module, get_wait_for_deadline, set_wait_for_deadline, take_asyncio_run_coro,
+};
+pub use task::{TaskHandle, TaskState};

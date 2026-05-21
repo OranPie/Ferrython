@@ -1,16 +1,16 @@
 //! Singleton values and PyObject factory/constructor methods.
 
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::mem::ManuallyDrop;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
+use std::cell::RefCell;
+use std::mem::ManuallyDrop;
+use std::rc::Rc;
 
-use super::payload::*;
 use super::methods::PyObjectMethods;
+use super::payload::*;
 
 // ── Thread-local freelists ──
 // Each thread (including parallel test threads) gets its own independent
@@ -56,7 +56,9 @@ pub(crate) fn recycle_str_box(mut b: Box<CompactString>) {
     b.clear();
     let _ = STR_BOX_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < STR_BOX_FREELIST_MAX { list.push(b); }
+        if list.len() < STR_BOX_FREELIST_MAX {
+            list.push(b);
+        }
     });
 }
 
@@ -77,7 +79,11 @@ pub fn alloc_tuple_box(items: Vec<PyObjectRef>) -> Box<Vec<PyObjectRef>> {
 #[inline(always)]
 pub fn alloc_tuple_box_empty() -> Box<Vec<PyObjectRef>> {
     TUPLE_BOX_FREELIST.with(|f| {
-        if let Some(b) = f.borrow_mut().pop() { b } else { Box::new(Vec::new()) }
+        if let Some(b) = f.borrow_mut().pop() {
+            b
+        } else {
+            Box::new(Vec::new())
+        }
     })
 }
 
@@ -87,7 +93,9 @@ pub(crate) fn recycle_tuple_box(mut b: Box<Vec<PyObjectRef>>) {
     b.clear();
     let _ = TUPLE_BOX_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < TUPLE_BOX_FREELIST_MAX { list.push(b); }
+        if list.len() < TUPLE_BOX_FREELIST_MAX {
+            list.push(b);
+        }
     });
 }
 
@@ -96,7 +104,9 @@ pub(crate) fn recycle_tuple_box(mut b: Box<Vec<PyObjectRef>>) {
 pub fn alloc_list_box(items: Vec<PyObjectRef>) -> Box<PyCell<Vec<PyObjectRef>>> {
     LIST_BOX_FREELIST.with(|f| {
         if let Some(b) = f.borrow_mut().pop() {
-            unsafe { *b.data_ptr() = items; }
+            unsafe {
+                *b.data_ptr() = items;
+            }
             b
         } else {
             Box::new(PyCell::new(items))
@@ -108,30 +118,44 @@ pub fn alloc_list_box(items: Vec<PyObjectRef>) -> Box<PyCell<Vec<PyObjectRef>>> 
 #[inline(always)]
 pub fn alloc_list_box_empty() -> Box<PyCell<Vec<PyObjectRef>>> {
     LIST_BOX_FREELIST.with(|f| {
-        if let Some(b) = f.borrow_mut().pop() { b } else { Box::new(PyCell::new(Vec::new())) }
+        if let Some(b) = f.borrow_mut().pop() {
+            b
+        } else {
+            Box::new(PyCell::new(Vec::new()))
+        }
     })
 }
 
 /// Return a Box<PyCell<Vec<PyObjectRef>>> to the freelist.
 #[inline(always)]
 pub(crate) fn recycle_list_box(b: Box<PyCell<Vec<PyObjectRef>>>) {
-    unsafe { (*b.data_ptr()).clear(); }
+    unsafe {
+        (*b.data_ptr()).clear();
+    }
     let _ = LIST_BOX_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < LIST_BOX_FREELIST_MAX { list.push(b); }
+        if list.len() < LIST_BOX_FREELIST_MAX {
+            list.push(b);
+        }
     });
 }
 
 /// Allocate a Box<BuiltinBoundMethodData>, reusing from freelist if possible.
 #[inline(always)]
-pub fn alloc_bbm_box(receiver: PyObjectRef, method_name: CompactString) -> Box<BuiltinBoundMethodData> {
+pub fn alloc_bbm_box(
+    receiver: PyObjectRef,
+    method_name: CompactString,
+) -> Box<BuiltinBoundMethodData> {
     BBM_BOX_FREELIST.with(|f| {
         if let Some(mut b) = f.borrow_mut().pop() {
             b.receiver = receiver;
             b.method_name = method_name;
             b
         } else {
-            Box::new(BuiltinBoundMethodData { receiver, method_name })
+            Box::new(BuiltinBoundMethodData {
+                receiver,
+                method_name,
+            })
         }
     })
 }
@@ -143,7 +167,9 @@ pub(crate) fn recycle_bbm_box(mut b: Box<BuiltinBoundMethodData>) {
     b.method_name = CompactString::new("");
     let _ = BBM_BOX_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < BBM_BOX_FREELIST_MAX { list.push(b); }
+        if list.len() < BBM_BOX_FREELIST_MAX {
+            list.push(b);
+        }
     });
 }
 
@@ -175,13 +201,20 @@ pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
     data.message = CompactString::default();
     let _ = EXCEPTION_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < EXCEPTION_FREELIST_MAX { list.push(data); }
+        if list.len() < EXCEPTION_FREELIST_MAX {
+            list.push(data);
+        }
     });
 }
 
 /// Allocate an InstanceData box, reusing from freelist if possible.
 #[inline]
-pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>, expected_attrs: usize) -> Box<InstanceData> {
+pub fn alloc_instance_box(
+    class: PyObjectRef,
+    class_flags: u8,
+    dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>,
+    expected_attrs: usize,
+) -> Box<InstanceData> {
     INSTANCE_FREELIST.with(|f| {
         if let Some(mut data) = f.borrow_mut().pop() {
             data.class = class;
@@ -225,31 +258,43 @@ pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
     drop(old_class);
     let _ = INSTANCE_FREELIST.try_with(|f| {
         let mut list = f.borrow_mut();
-        if list.len() < INSTANCE_FREELIST_MAX { list.push(data); }
+        if list.len() < INSTANCE_FREELIST_MAX {
+            list.push(data);
+        }
     });
 }
 
 /// Allocate an attr map (Rc<PyCell<FxAttrMap>>), reusing from freelist if possible.
 #[inline]
 pub fn alloc_attr_map() -> SharedFxAttrMap {
-    ATTR_FREELIST.try_with(|f| {
-        if let Some(rc) = f.borrow_mut().pop() { rc } else { Rc::new(PyCell::new(FxAttrMap::default())) }
-    }).unwrap_or_else(|_| Rc::new(PyCell::new(FxAttrMap::default())))
+    ATTR_FREELIST
+        .try_with(|f| {
+            if let Some(rc) = f.borrow_mut().pop() {
+                rc
+            } else {
+                Rc::new(PyCell::new(FxAttrMap::default()))
+            }
+        })
+        .unwrap_or_else(|_| Rc::new(PyCell::new(FxAttrMap::default())))
 }
 
 /// Allocate an attr map with initial data.
 #[inline]
 fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
     let mut attrs_opt = Some(attrs);
-    ATTR_FREELIST.try_with(|f| {
-        let a = attrs_opt.take().unwrap();
-        if let Some(rc) = f.borrow_mut().pop() {
-            unsafe { *rc.data_ptr() = a; }
-            rc
-        } else {
-            Rc::new(PyCell::new(a))
-        }
-    }).unwrap_or_else(|_| Rc::new(PyCell::new(attrs_opt.take().unwrap())))
+    ATTR_FREELIST
+        .try_with(|f| {
+            let a = attrs_opt.take().unwrap();
+            if let Some(rc) = f.borrow_mut().pop() {
+                unsafe {
+                    *rc.data_ptr() = a;
+                }
+                rc
+            } else {
+                Rc::new(PyCell::new(a))
+            }
+        })
+        .unwrap_or_else(|_| Rc::new(PyCell::new(attrs_opt.take().unwrap())))
 }
 
 /// Try to recycle an attr map back to the freelist (if uniquely owned).
@@ -258,15 +303,17 @@ fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
 pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        ATTR_FREELIST.try_with(|f| {
-            let mut list = f.borrow_mut();
-            if list.len() < ATTR_FREELIST_MAX {
-                list.push(rc.clone());
-                true
-            } else {
-                false
-            }
-        }).unwrap_or(false)
+        ATTR_FREELIST
+            .try_with(|f| {
+                let mut list = f.borrow_mut();
+                if list.len() < ATTR_FREELIST_MAX {
+                    list.push(rc.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     } else {
         false
     }
@@ -276,7 +323,11 @@ pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
 #[inline]
 pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
     MAP_FREELIST.with(|f| {
-        if let Some(rc) = f.borrow_mut().pop() { rc } else { Rc::new(PyCell::new(new_fx_hashkey_map())) }
+        if let Some(rc) = f.borrow_mut().pop() {
+            rc
+        } else {
+            Rc::new(PyCell::new(new_fx_hashkey_map()))
+        }
     })
 }
 
@@ -286,15 +337,17 @@ pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
 pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        MAP_FREELIST.try_with(|f| {
-            let mut list = f.borrow_mut();
-            if list.len() < MAP_FREELIST_MAX {
-                list.push(rc.clone());
-                true
-            } else {
-                false
-            }
-        }).unwrap_or(false)
+        MAP_FREELIST
+            .try_with(|f| {
+                let mut list = f.borrow_mut();
+                if list.len() < MAP_FREELIST_MAX {
+                    list.push(rc.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     } else {
         false
     }
@@ -302,11 +355,31 @@ pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
 
 // ── Singletons ──
 use std::sync::LazyLock;
-static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::None }));
-static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bool(true) }));
-static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bool(false) }));
-static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Ellipsis }));
-static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::NotImplemented }));
+static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::None,
+    })
+});
+static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Bool(true),
+    })
+});
+static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Bool(false),
+    })
+});
+static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Ellipsis,
+    })
+});
+static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::NotImplemented,
+    })
+});
 
 // ── Small-int cache (CPython caches -5..=256, we go wider for loop bounds) ──
 const SMALL_INT_MIN: i64 = -5;
@@ -314,26 +387,56 @@ const SMALL_INT_MAX: i64 = 65536;
 
 static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
     (SMALL_INT_MIN..=SMALL_INT_MAX)
-        .map(|n| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
+        .map(|n| {
+            PyObjectRef::new_immortal(PyObject {
+                payload: PyObjectPayload::Int(PyInt::Small(n)),
+            })
+        })
         .collect()
 });
 
 // ── Float singleton cache for common values ──
-static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(0.0) }));
-static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(1.0) }));
-static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(-1.0) }));
+static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Float(0.0),
+    })
+});
+static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Float(1.0),
+    })
+});
+static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Float(-1.0),
+    })
+});
 
 // ── Empty collection singletons ──
-static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Tuple(Box::new(vec![])) }));
-static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(b"")) }));
-static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(Box::new(vec![])) }));
+static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Tuple(Box::new(vec![])),
+    })
+});
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(b"")),
+    })
+});
+static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::Bytes(Box::new(vec![])),
+    })
+});
 
 // ── Single-character ASCII string cache (like CPython's unicode_latin1) ──
 // Pre-allocates all 128 ASCII single-char strings as immortal objects.
 // str_val() checks this cache to avoid per-char allocation in split/etc.
 static CHAR_CACHE: LazyLock<[PyObjectRef; 128]> = LazyLock::new(|| {
     std::array::from_fn(|i| {
-        PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(&[i as u8])) })
+        PyObjectRef::new_immortal(PyObject {
+            payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(&[i as u8])),
+        })
     })
 });
 
@@ -363,9 +466,7 @@ fn run_cycle_collection() -> usize {
         let tracked = &mut *TRACKED_OBJECTS.0.get();
 
         // 1. Upgrade weak refs, purge dead ones
-        let alive: Vec<PyObjectRef> = tracked.iter()
-            .filter_map(|w| w.upgrade())
-            .collect();
+        let alive: Vec<PyObjectRef> = tracked.iter().filter_map(|w| w.upgrade()).collect();
         tracked.retain(|w| w.strong_count() > 0);
 
         if alive.is_empty() {
@@ -373,7 +474,8 @@ fn run_cycle_collection() -> usize {
         }
 
         // 2. Build pointer → index map for fast lookup
-        let ptr_map: std::collections::HashMap<usize, usize> = alive.iter()
+        let ptr_map: std::collections::HashMap<usize, usize> = alive
+            .iter()
             .enumerate()
             .map(|(i, obj)| (PyObjectRef::as_ptr(obj) as usize, i))
             .collect();
@@ -396,7 +498,8 @@ fn run_cycle_collection() -> usize {
 
         // 5. Verify: all garbage objects must only reference other garbage objects
         // (conservative: only collect fully isolated cycles)
-        let garbage_set: std::collections::HashSet<usize> = garbage_indices.iter().copied().collect();
+        let garbage_set: std::collections::HashSet<usize> =
+            garbage_indices.iter().copied().collect();
         let mut confirmed_garbage: Vec<usize> = Vec::new();
         for &gi in &garbage_indices {
             let obj = &alive[gi];
@@ -531,7 +634,7 @@ fn track_object(_obj: &PyObjectRef) {
 
 impl PyObject {
     #[inline]
-    
+
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
         // GC notify_alloc skipped: return value is ignored (GC never auto-triggers).
         // Re-enable when GC auto-collection is implemented.
@@ -544,18 +647,34 @@ impl PyObject {
         PyObjectRef::new(PyObject { payload })
     }
     #[inline(always)]
-    pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
+    pub fn none() -> PyObjectRef {
+        NONE_SINGLETON.clone()
+    }
     #[inline(always)]
-    pub fn ellipsis() -> PyObjectRef { ELLIPSIS_SINGLETON.clone() }
+    pub fn ellipsis() -> PyObjectRef {
+        ELLIPSIS_SINGLETON.clone()
+    }
     #[inline(always)]
-    pub fn not_implemented() -> PyObjectRef { NOT_IMPLEMENTED_SINGLETON.clone() }
+    pub fn not_implemented() -> PyObjectRef {
+        NOT_IMPLEMENTED_SINGLETON.clone()
+    }
     #[inline(always)]
-    pub fn bool_val(v: bool) -> PyObjectRef { if v { TRUE_SINGLETON.clone() } else { FALSE_SINGLETON.clone() } }
+    pub fn bool_val(v: bool) -> PyObjectRef {
+        if v {
+            TRUE_SINGLETON.clone()
+        } else {
+            FALSE_SINGLETON.clone()
+        }
+    }
     #[inline(always)]
     pub fn int(v: i64) -> PyObjectRef {
         if v >= SMALL_INT_MIN && v <= SMALL_INT_MAX {
             // SAFETY: bounds checked above
-            unsafe { SMALL_INT_CACHE.get_unchecked((v - SMALL_INT_MIN) as usize).clone() }
+            unsafe {
+                SMALL_INT_CACHE
+                    .get_unchecked((v - SMALL_INT_MIN) as usize)
+                    .clone()
+            }
         } else {
             Self::wrap_leaf(PyObjectPayload::Int(PyInt::Small(v)))
         }
@@ -563,23 +682,39 @@ impl PyObject {
     /// Unchecked small-int lookup — caller guarantees SMALL_INT_MIN <= v <= SMALL_INT_MAX.
     #[inline(always)]
     pub unsafe fn int_cached_unchecked(v: i64) -> PyObjectRef {
-        SMALL_INT_CACHE.get_unchecked((v - SMALL_INT_MIN) as usize).clone()
+        SMALL_INT_CACHE
+            .get_unchecked((v - SMALL_INT_MIN) as usize)
+            .clone()
     }
     /// Returns the small int cache bounds (min, max inclusive).
     #[inline(always)]
-    pub const fn small_int_range() -> (i64, i64) { (SMALL_INT_MIN, SMALL_INT_MAX) }
-    pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
+    pub const fn small_int_range() -> (i64, i64) {
+        (SMALL_INT_MIN, SMALL_INT_MAX)
+    }
+    pub fn big_int(v: BigInt) -> PyObjectRef {
+        Self::wrap_leaf(PyObjectPayload::Int(PyInt::Big(Box::new(v))))
+    }
     #[inline(always)]
     pub fn float(v: f64) -> PyObjectRef {
-        if v == 0.0 && !v.is_sign_negative() { return FLOAT_ZERO.clone(); }
-        if v == 1.0 { return FLOAT_ONE.clone(); }
-        if v == -1.0 { return FLOAT_NEG_ONE.clone(); }
+        if v == 0.0 && !v.is_sign_negative() {
+            return FLOAT_ZERO.clone();
+        }
+        if v == 1.0 {
+            return FLOAT_ONE.clone();
+        }
+        if v == -1.0 {
+            return FLOAT_NEG_ONE.clone();
+        }
         Self::wrap_leaf(PyObjectPayload::Float(v))
     }
-    pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Complex { real, imag }) }
+    pub fn complex(real: f64, imag: f64) -> PyObjectRef {
+        Self::wrap_leaf(PyObjectPayload::Complex { real, imag })
+    }
     #[inline]
     pub fn str_val(v: CompactString) -> PyObjectRef {
-        if v.is_empty() { return EMPTY_STR.clone(); }
+        if v.is_empty() {
+            return EMPTY_STR.clone();
+        }
         // Single-char ASCII cache (like CPython's unicode_latin1)
         if v.len() == 1 {
             let b = v.as_bytes()[0];
@@ -587,13 +722,18 @@ impl PyObject {
                 return CHAR_CACHE[b as usize].clone();
             }
         }
-        Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_compact(v)))
+        Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_compact(
+            v,
+        )))
     }
     /// Return cached single-char string for ASCII byte, or create new.
     #[inline(always)]
     pub fn str_char(b: u8) -> PyObjectRef {
-        if b < 128 { CHAR_CACHE[b as usize].clone() }
-        else { Self::str_val(CompactString::from(std::str::from_utf8(&[b]).unwrap())) }
+        if b < 128 {
+            CHAR_CACHE[b as usize].clone()
+        } else {
+            Self::str_val(CompactString::from(std::str::from_utf8(&[b]).unwrap()))
+        }
     }
     /// Create a string PyObject from a byte slice (must be valid UTF-8).
     /// Uses char cache for single-byte ASCII slices, avoids intermediate CompactString.
@@ -604,15 +744,21 @@ impl PyObject {
             1 if bytes[0] < 128 => CHAR_CACHE[bytes[0] as usize].clone(),
             _ => {
                 // Use StrRepr::from_bytes to inline short strings (≤15 bytes)
-                Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_bytes(bytes)))
+                Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_bytes(
+                    bytes,
+                )))
             }
         }
     }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef {
-        if v.is_empty() { return EMPTY_BYTES.clone(); }
+        if v.is_empty() {
+            return EMPTY_BYTES.clone();
+        }
         Self::wrap_leaf(PyObjectPayload::Bytes(Box::new(v)))
     }
-    pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(Box::new(v))) }
+    pub fn bytearray(v: Vec<u8>) -> PyObjectRef {
+        Self::wrap_leaf(PyObjectPayload::ByteArray(Box::new(v)))
+    }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::List(alloc_list_box(items)));
         track_object(&obj);
@@ -625,17 +771,23 @@ impl PyObject {
         Self::wrap_leaf(PyObjectPayload::List(alloc_list_box(items)))
     }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef {
-        if items.is_empty() { return EMPTY_TUPLE.clone(); }
+        if items.is_empty() {
+            return EMPTY_TUPLE.clone();
+        }
         Self::wrap_leaf(PyObjectPayload::Tuple(alloc_tuple_box(items)))
     }
-    pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+    pub fn set<S: std::hash::BuildHasher>(
+        items: IndexMap<HashableKey, PyObjectRef, S>,
+    ) -> PyObjectRef {
         let fx: FxHashKeyFlatMap = items.into_iter().collect();
         Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
     }
     pub fn set_from_flatmap(map: FxHashKeyFlatMap) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(map))))
     }
-    pub fn dict<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+    pub fn dict<S: std::hash::BuildHasher>(
+        items: IndexMap<HashableKey, PyObjectRef, S>,
+    ) -> PyObjectRef {
         let inner = if items.is_empty() {
             alloc_map_inner()
         } else {
@@ -654,7 +806,9 @@ impl PyObject {
         } else {
             MAP_FREELIST.with(|f| {
                 if let Some(rc) = f.borrow_mut().pop() {
-                    unsafe { *rc.data_ptr() = items; }
+                    unsafe {
+                        *rc.data_ptr() = items;
+                    }
                     rc
                 } else {
                     Rc::new(PyCell::new(items))
@@ -665,40 +819,74 @@ impl PyObject {
         track_object(&obj);
         obj
     }
-    pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(Box::new(func))) }
-    pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(Box::new(name))) }
-    pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(Box::new(name))) }
-    pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))) }
-    pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+    pub fn function(func: PyFunction) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Function(Box::new(func)))
+    }
+    pub fn builtin_function(name: CompactString) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::BuiltinFunction(Box::new(name)))
+    }
+    pub fn builtin_type(name: CompactString) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::BuiltinType(Box::new(name)))
+    }
+    pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Code(std::rc::Rc::new(code)))
+    }
+    pub fn class(
+        name: CompactString,
+        bases: Vec<PyObjectRef>,
+        namespace: IndexMap<CompactString, PyObjectRef>,
+    ) -> PyObjectRef {
         let fx_ns: FxAttrMap = namespace.into_iter().collect();
-        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(name, bases, fx_ns, Vec::new(), None))))
+        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+            name,
+            bases,
+            fx_ns,
+            Vec::new(),
+            None,
+        ))))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         // Use cached flags from ClassData to avoid hierarchy traversal
-        let (dict_storage, expected_attrs, class_flags) = if let PyObjectPayload::Class(cd) = &class.payload {
-            let ds = if cd.is_dict_subclass {
-                Some(alloc_map_inner())
-            } else { None };
-            (ds, cd.expected_attrs, cd.instance_flags)
-        } else {
-            (Self::detect_dict_subclass(&class), 0, 0xFF)
-        };
+        let (dict_storage, expected_attrs, class_flags) =
+            if let PyObjectPayload::Class(cd) = &class.payload {
+                let ds = if cd.is_dict_subclass {
+                    Some(alloc_map_inner())
+                } else {
+                    None
+                };
+                (ds, cd.expected_attrs, cd.instance_flags)
+            } else {
+                (Self::detect_dict_subclass(&class), 0, 0xFF)
+            };
         let data = alloc_instance_box(class, class_flags, dict_storage, expected_attrs);
         let obj = Self::wrap(PyObjectPayload::Instance(ManuallyDrop::new(data)));
         track_object(&obj);
         obj
     }
-    pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+    pub fn instance_with_attrs(
+        class: PyObjectRef,
+        attrs: IndexMap<CompactString, PyObjectRef>,
+    ) -> PyObjectRef {
         let dict_storage = if let PyObjectPayload::Class(cd) = &class.payload {
             if cd.is_dict_subclass {
                 Some(alloc_map_inner())
-            } else { None }
+            } else {
+                None
+            }
         } else {
             Self::detect_dict_subclass(&class)
         };
         let fx_attrs: FxAttrMap = attrs.into_iter().collect();
         let class_flags = InstanceData::compute_flags(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(ManuallyDrop::new(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false, class_flags }))));
+        let obj = Self::wrap(PyObjectPayload::Instance(ManuallyDrop::new(Box::new(
+            InstanceData {
+                class,
+                attrs: Rc::new(PyCell::new(fx_attrs)),
+                dict_storage,
+                is_special: false,
+                class_flags,
+            },
+        ))));
         track_object(&obj);
         obj
     }
@@ -726,16 +914,28 @@ impl PyObject {
     }
     pub fn module(name: CompactString) -> PyObjectRef {
         let mut attrs = FxAttrMap::default();
-        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+        attrs.insert(
+            CompactString::from("__name__"),
+            PyObject::str_val(name.clone()),
+        );
         attrs.insert(CompactString::from("__loader__"), PyObject::none());
         attrs.insert(CompactString::from("__spec__"), PyObject::none());
         attrs.insert(CompactString::from("__package__"), PyObject::none());
-        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: Rc::new(PyCell::new(attrs)) })))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData {
+            name,
+            attrs: Rc::new(PyCell::new(attrs)),
+        })))
     }
-    pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+    pub fn module_with_attrs(
+        name: CompactString,
+        attrs: IndexMap<CompactString, PyObjectRef>,
+    ) -> PyObjectRef {
         let mut fx_attrs: FxAttrMap = attrs.into_iter().collect();
         if !fx_attrs.contains_key("__name__") {
-            fx_attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+            fx_attrs.insert(
+                CompactString::from("__name__"),
+                PyObject::str_val(name.clone()),
+            );
         }
         if !fx_attrs.contains_key("__loader__") {
             fx_attrs.insert(CompactString::from("__loader__"), PyObject::none());
@@ -746,14 +946,23 @@ impl PyObject {
         if !fx_attrs.contains_key("__package__") {
             fx_attrs.insert(CompactString::from("__package__"), PyObject::none());
         }
-        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: Rc::new(PyCell::new(fx_attrs)) })))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData {
+            name,
+            attrs: Rc::new(PyCell::new(fx_attrs)),
+        })))
     }
     /// Create a module that shares an existing globals Arc (for circular import support).
-    pub fn module_with_shared_globals(name: CompactString, globals: Rc<PyCell<FxAttrMap>>) -> PyObjectRef {
+    pub fn module_with_shared_globals(
+        name: CompactString,
+        globals: Rc<PyCell<FxAttrMap>>,
+    ) -> PyObjectRef {
         {
             let mut g = globals.write();
             if !g.contains_key("__name__") {
-                g.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+                g.insert(
+                    CompactString::from("__name__"),
+                    PyObject::str_val(name.clone()),
+                );
             }
             if !g.contains_key("__loader__") {
                 g.insert(CompactString::from("__loader__"), PyObject::none());
@@ -765,13 +974,32 @@ impl PyObject {
                 g.insert(CompactString::from("__package__"), PyObject::none());
             }
         }
-        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: globals })))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData {
+            name,
+            attrs: globals,
+        })))
     }
-    pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData { name: CompactString::from(name), func })))
+    pub fn native_function(
+        name: &str,
+        func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
+    ) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from(name),
+                func,
+            },
+        )))
     }
-    pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: std::rc::Rc::new(func) })))
+    pub fn native_closure(
+        name: &str,
+        func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static,
+    ) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeClosure(Box::new(
+            NativeClosureData {
+                name: CompactString::from(name),
+                func: std::rc::Rc::new(func),
+            },
+        )))
     }
     pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
         let mut map = new_fx_hashkey_map();
@@ -784,15 +1012,29 @@ impl PyObject {
         track_object(&obj);
         obj
     }
-    pub fn slice(start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Slice(Box::new(SliceData { start, stop, step })))
+    pub fn slice(
+        start: Option<PyObjectRef>,
+        stop: Option<PyObjectRef>,
+        step: Option<PyObjectRef>,
+    ) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Slice(Box::new(SliceData {
+            start,
+            stop,
+            step,
+        })))
     }
-    pub fn frozenset<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+    pub fn frozenset<S: std::hash::BuildHasher>(
+        items: IndexMap<HashableKey, PyObjectRef, S>,
+    ) -> PyObjectRef {
         let fx: FxHashKeyMap = items.into_iter().collect();
         Self::wrap(PyObjectPayload::FrozenSet(Box::new(fx)))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Range(Box::new(RangeData { start, stop, step })))
+        Self::wrap(PyObjectPayload::Range(Box::new(RangeData {
+            start,
+            stop,
+            step,
+        })))
     }
     pub fn cell(cell: Rc<PyCell<Option<PyObjectRef>>>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Cell(cell))
@@ -800,43 +1042,60 @@ impl PyObject {
     pub fn exception_type(kind: ExceptionKind) -> PyObjectRef {
         Self::wrap(PyObjectPayload::ExceptionType(kind))
     }
-    pub fn exception_instance(kind: ExceptionKind, message: impl Into<CompactString>) -> PyObjectRef {
+    pub fn exception_instance(
+        kind: ExceptionKind,
+        message: impl Into<CompactString>,
+    ) -> PyObjectRef {
         let msg: CompactString = message.into();
-        let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(msg.clone())] };
+        let args = if msg.is_empty() {
+            vec![]
+        } else {
+            vec![PyObject::str_val(msg.clone())]
+        };
         Self::wrap(PyObjectPayload::ExceptionInstance(ManuallyDrop::new(
             alloc_exception_box(kind, msg, args),
         )))
     }
-    pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<CompactString>, args: Vec<PyObjectRef>) -> PyObjectRef {
+    pub fn exception_instance_with_args(
+        kind: ExceptionKind,
+        message: impl Into<CompactString>,
+        args: Vec<PyObjectRef>,
+    ) -> PyObjectRef {
         Self::wrap(PyObjectPayload::ExceptionInstance(ManuallyDrop::new(
             alloc_exception_box(kind, message.into(), args),
         )))
     }
     pub fn generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(GeneratorState {
-            name,
-            frame_ptr,
-            started: false,
-            finished: false,
-        }))))
+        Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(
+            GeneratorState {
+                name,
+                frame_ptr,
+                started: false,
+                finished: false,
+            },
+        ))))
     }
 
     pub fn coroutine(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Coroutine(Rc::new(PyCell::new(GeneratorState {
-            name,
-            frame_ptr,
-            started: false,
-            finished: false,
-        }))))
+        Self::wrap(PyObjectPayload::Coroutine(Rc::new(PyCell::new(
+            GeneratorState {
+                name,
+                frame_ptr,
+                started: false,
+                finished: false,
+            },
+        ))))
     }
 
     pub fn async_generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::AsyncGenerator(Rc::new(PyCell::new(GeneratorState {
-            name,
-            frame_ptr,
-            started: false,
-            finished: false,
-        }))))
+        Self::wrap(PyObjectPayload::AsyncGenerator(Rc::new(PyCell::new(
+            GeneratorState {
+                name,
+                frame_ptr,
+                started: false,
+                finished: false,
+            },
+        ))))
     }
 
     /// Create a builtin awaitable that immediately resolves to the given value when awaited.
@@ -850,4 +1109,3 @@ impl PyObject {
         Self::wrap(PyObjectPayload::DeferredSleep { secs, result })
     }
 }
-

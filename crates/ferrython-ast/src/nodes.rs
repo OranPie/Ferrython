@@ -57,13 +57,9 @@ pub enum StatementKind {
         decorator_list: Vec<Expression>,
     },
     /// `return [value]`
-    Return {
-        value: Option<Box<Expression>>,
-    },
+    Return { value: Option<Box<Expression>> },
     /// `del targets`
-    Delete {
-        targets: Vec<Expression>,
-    },
+    Delete { targets: Vec<Expression> },
     /// `targets = value`
     Assign {
         targets: Vec<Expression>,
@@ -129,9 +125,7 @@ pub enum StatementKind {
         msg: Option<Box<Expression>>,
     },
     /// `import names`
-    Import {
-        names: Vec<Alias>,
-    },
+    Import { names: Vec<Alias> },
     /// `from module import names`
     ImportFrom {
         module: Option<CompactString>,
@@ -139,17 +133,11 @@ pub enum StatementKind {
         level: u32,
     },
     /// `global names`
-    Global {
-        names: Vec<CompactString>,
-    },
+    Global { names: Vec<CompactString> },
     /// `nonlocal names`
-    Nonlocal {
-        names: Vec<CompactString>,
-    },
+    Nonlocal { names: Vec<CompactString> },
     /// Expression as statement.
-    Expr {
-        value: Box<Expression>,
-    },
+    Expr { value: Box<Expression> },
     /// `pass`
     Pass,
     /// `break`
@@ -259,9 +247,7 @@ pub enum ExpressionKind {
         values: Vec<Expression>,
     },
     /// `{elts}`
-    Set {
-        elts: Vec<Expression>,
-    },
+    Set { elts: Vec<Expression> },
     /// `[elt for generators]`
     ListComp {
         elt: Box<Expression>,
@@ -284,17 +270,11 @@ pub enum ExpressionKind {
         generators: Vec<Comprehension>,
     },
     /// `await expr`
-    Await {
-        value: Box<Expression>,
-    },
+    Await { value: Box<Expression> },
     /// `yield [value]`
-    Yield {
-        value: Option<Box<Expression>>,
-    },
+    Yield { value: Option<Box<Expression>> },
     /// `yield from value`
-    YieldFrom {
-        value: Box<Expression>,
-    },
+    YieldFrom { value: Box<Expression> },
     /// `left comparators` (e.g., `a < b < c`)
     Compare {
         left: Box<Expression>,
@@ -314,13 +294,9 @@ pub enum ExpressionKind {
         format_spec: Option<Box<Expression>>,
     },
     /// f-string: `f"...{expr}..."`
-    JoinedStr {
-        values: Vec<Expression>,
-    },
+    JoinedStr { values: Vec<Expression> },
     /// A constant value (int, float, str, bytes, bool, None, Ellipsis).
-    Constant {
-        value: Constant,
-    },
+    Constant { value: Constant },
     /// `value.attr`
     Attribute {
         value: Box<Expression>,
@@ -339,10 +315,7 @@ pub enum ExpressionKind {
         ctx: ExprContext,
     },
     /// A variable name.
-    Name {
-        id: CompactString,
-        ctx: ExprContext,
-    },
+    Name { id: CompactString, ctx: ExprContext },
     /// `[elts]`
     List {
         elts: Vec<Expression>,

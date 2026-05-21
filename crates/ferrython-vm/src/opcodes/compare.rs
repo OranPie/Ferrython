@@ -12,12 +12,18 @@ use ferrython_core::types::PyInt;
 impl VirtualMachine {
     /// Derive a missing comparison from total_ordering root method
     fn derive_total_ordering(
-        &mut self, a: &PyObjectRef, b: &PyObjectRef, dunder: &str, root: &str
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+        dunder: &str,
+        root: &str,
     ) -> Result<Option<PyObjectRef>, PyException> {
         // Helper: call a's dunder method via the VM
-        let call_dunder = |vm: &mut Self, obj: &PyObjectRef, other: &PyObjectRef, method: &str|
-            -> Result<Option<bool>, PyException>
-        {
+        let call_dunder = |vm: &mut Self,
+                           obj: &PyObjectRef,
+                           other: &PyObjectRef,
+                           method: &str|
+         -> Result<Option<bool>, PyException> {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 if let Some(m) = lookup_in_class_mro(&inst.class, method) {
                     let bound = vm.bind_method(obj, m);
@@ -31,13 +37,17 @@ impl VirtualMachine {
         };
 
         // Don't derive if we have the exact root (that should have been found already)
-        if dunder == root { return Ok(None); }
+        if dunder == root {
+            return Ok(None);
+        }
 
         match (root, dunder) {
             ("__lt__", "__le__") => {
                 // a <= b  =  a < b or a == b
                 if let Some(lt) = call_dunder(self, a, b, "__lt__")? {
-                    if lt { return Ok(Some(PyObject::bool_val(true))); }
+                    if lt {
+                        return Ok(Some(PyObject::bool_val(true)));
+                    }
                     if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
                         return Ok(Some(PyObject::bool_val(eq)));
                     }
@@ -47,7 +57,9 @@ impl VirtualMachine {
             ("__lt__", "__gt__") => {
                 // a > b  =  not (a < b) and not (a == b)
                 if let Some(lt) = call_dunder(self, a, b, "__lt__")? {
-                    if lt { return Ok(Some(PyObject::bool_val(false))); }
+                    if lt {
+                        return Ok(Some(PyObject::bool_val(false)));
+                    }
                     if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
                         return Ok(Some(PyObject::bool_val(!eq)));
                     }
@@ -62,7 +74,9 @@ impl VirtualMachine {
             }
             ("__gt__", "__ge__") => {
                 if let Some(gt) = call_dunder(self, a, b, "__gt__")? {
-                    if gt { return Ok(Some(PyObject::bool_val(true))); }
+                    if gt {
+                        return Ok(Some(PyObject::bool_val(true)));
+                    }
                     if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
                         return Ok(Some(PyObject::bool_val(eq)));
                     }
@@ -71,7 +85,9 @@ impl VirtualMachine {
             }
             ("__gt__", "__lt__") => {
                 if let Some(gt) = call_dunder(self, a, b, "__gt__")? {
-                    if gt { return Ok(Some(PyObject::bool_val(false))); }
+                    if gt {
+                        return Ok(Some(PyObject::bool_val(false)));
+                    }
                     if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
                         return Ok(Some(PyObject::bool_val(!eq)));
                     }
@@ -88,7 +104,10 @@ impl VirtualMachine {
         Ok(None)
     }
 
-    pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_compare_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         if instr.op == Opcode::LoadFastCompareConstJump {
             // Fallback path: decompose to LoadFast + LoadConst + CompareOp + PopJumpIfFalse
             let cmp_op = instr.arg >> 28;
@@ -99,7 +118,12 @@ impl VirtualMachine {
             let local = frame.locals[local_idx].clone().ok_or_else(|| {
                 PyException::name_error(format!(
                     "local variable '{}' referenced before assignment",
-                    frame.code.varnames.get(local_idx).map(|s| s.as_str()).unwrap_or("?")
+                    frame
+                        .code
+                        .varnames
+                        .get(local_idx)
+                        .map(|s| s.as_str())
+                        .unwrap_or("?")
                 ))
             })?;
             let c = frame.constant_cache[const_idx].clone();
@@ -138,22 +162,35 @@ impl VirtualMachine {
         self.exec_compare_op(instr.arg, a, b)
     }
 
-    fn exec_compare_op(&mut self, op: u32, a: PyObjectRef, b: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+    fn exec_compare_op(
+        &mut self,
+        op: u32,
+        a: PyObjectRef,
+        b: PyObjectRef,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         if let cmp @ 0..=5 = op {
             // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup
             match (&a.payload, &b.payload) {
                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                     let result = match cmp {
-                        0 => x < y, 1 => x <= y, 2 => x == y,
-                        3 => x != y, 4 => x > y, _ => x >= y,
+                        0 => x < y,
+                        1 => x <= y,
+                        2 => x == y,
+                        3 => x != y,
+                        4 => x > y,
+                        _ => x >= y,
                     };
                     self.vm_push(PyObject::bool_val(result));
                     return Ok(None);
                 }
                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                     let result = match cmp {
-                        0 => x < y, 1 => x <= y, 2 => x == y,
-                        3 => x != y, 4 => x > y, _ => x >= y,
+                        0 => x < y,
+                        1 => x <= y,
+                        2 => x == y,
+                        3 => x != y,
+                        4 => x > y,
+                        _ => x >= y,
                     };
                     self.vm_push(PyObject::bool_val(result));
                     return Ok(None);
@@ -172,7 +209,7 @@ impl VirtualMachine {
                 3 => ("__ne__", "__ne__"),
                 4 => ("__gt__", "__lt__"),
                 5 => ("__ge__", "__le__"),
-                _ => unreachable!()
+                _ => unreachable!(),
             };
             // Try a's dunder via MRO walk
             if let PyObjectPayload::Instance(inst) = &a.payload {
@@ -185,7 +222,9 @@ impl VirtualMachine {
                     }
                 }
                 // total_ordering fallback: derive missing comparisons from root
-                if let Some(root_marker) = lookup_in_class_mro(&inst.class, "__total_ordering_root__") {
+                if let Some(root_marker) =
+                    lookup_in_class_mro(&inst.class, "__total_ordering_root__")
+                {
                     let root = root_marker.py_to_string();
                     if let Some(result) = self.derive_total_ordering(&a, &b, dunder, &root)? {
                         self.vm_push(result);
@@ -206,11 +245,14 @@ impl VirtualMachine {
             }
             // Dataclass auto-equality fallback
             if cmp == 2 || cmp == 3 {
-                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
+                    (&a.payload, &b.payload)
+                {
                     let cls_a = &inst_a.class;
                     if cls_a.get_attr("__dataclass__").is_some() {
                         if let Some(fields) = cls_a.get_attr("__dataclass_fields__") {
-                            let field_names = crate::vm_dataclass_utils::extract_field_names(&fields);
+                            let field_names =
+                                crate::vm_dataclass_utils::extract_field_names(&fields);
                             if !field_names.is_empty() {
                                 let attrs_a = inst_a.attrs.read();
                                 let attrs_b = inst_b.attrs.read();
@@ -221,10 +263,19 @@ impl VirtualMachine {
                                     match (va, vb) {
                                         (Some(x), Some(y)) => {
                                             if let Ok(r) = x.compare(y, CompareOp::Eq) {
-                                                if !r.is_truthy() { eq = false; break; }
-                                            } else { eq = false; break; }
+                                                if !r.is_truthy() {
+                                                    eq = false;
+                                                    break;
+                                                }
+                                            } else {
+                                                eq = false;
+                                                break;
+                                            }
                                         }
-                                        _ => { eq = false; break; }
+                                        _ => {
+                                            eq = false;
+                                            break;
+                                        }
                                     }
                                 }
                                 let result = if cmp == 2 { eq } else { !eq };
@@ -237,13 +288,21 @@ impl VirtualMachine {
             }
             // namedtuple equality: compare underlying _tuple
             if cmp == 2 || cmp == 3 {
-                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
-                    if inst_a.class.get_attr("__namedtuple__").is_some() && inst_b.class.get_attr("__namedtuple__").is_some() {
+                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
+                    (&a.payload, &b.payload)
+                {
+                    if inst_a.class.get_attr("__namedtuple__").is_some()
+                        && inst_b.class.get_attr("__namedtuple__").is_some()
+                    {
                         let ta = inst_a.attrs.read().get("_tuple").cloned();
                         let tb = inst_b.attrs.read().get("_tuple").cloned();
                         if let (Some(tup_a), Some(tup_b)) = (ta, tb) {
                             let result = tup_a.compare(&tup_b, CompareOp::Eq)?;
-                            let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
+                            let val = if cmp == 2 {
+                                result.is_truthy()
+                            } else {
+                                !result.is_truthy()
+                            };
                             self.vm_push(PyObject::bool_val(val));
                             return Ok(None);
                         }
@@ -255,7 +314,11 @@ impl VirtualMachine {
                         if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                             if matches!(b.payload, PyObjectPayload::Tuple(_)) {
                                 let result = tup.compare(&b, CompareOp::Eq)?;
-                                let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                let val = if cmp == 2 {
+                                    result.is_truthy()
+                                } else {
+                                    !result.is_truthy()
+                                };
                                 self.vm_push(PyObject::bool_val(val));
                                 return Ok(None);
                             }
@@ -267,7 +330,11 @@ impl VirtualMachine {
                         if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                             if matches!(a.payload, PyObjectPayload::Tuple(_)) {
                                 let result = a.compare(&tup, CompareOp::Eq)?;
-                                let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                let val = if cmp == 2 {
+                                    result.is_truthy()
+                                } else {
+                                    !result.is_truthy()
+                                };
                                 self.vm_push(PyObject::bool_val(val));
                                 return Ok(None);
                             }
@@ -276,13 +343,19 @@ impl VirtualMachine {
                 }
             }
             // IntEnum/enum value-based comparison fallback
-            if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+            if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
+                (&a.payload, &b.payload)
+            {
                 let va = inst_a.attrs.read().get("value").cloned();
                 let vb = inst_b.attrs.read().get("value").cloned();
                 if let (Some(av), Some(bv)) = (va, vb) {
-                    if matches!(av.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
-                        && matches!(bv.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
-                    {
+                    if matches!(
+                        av.payload,
+                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                    ) && matches!(
+                        bv.payload,
+                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                    ) {
                         let cmp_op = match cmp {
                             0 => CompareOp::Lt,
                             1 => CompareOp::Le,
@@ -290,7 +363,7 @@ impl VirtualMachine {
                             3 => CompareOp::Ne,
                             4 => CompareOp::Gt,
                             5 => CompareOp::Ge,
-                            _ => unreachable!()
+                            _ => unreachable!(),
                         };
                         let result = av.compare(&bv, cmp_op)?;
                         self.vm_push(result);
@@ -308,9 +381,13 @@ impl VirtualMachine {
                     (None, None)
                 };
                 if let (Some(ev), Some(ov)) = (enum_val, other) {
-                    if matches!(ev.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
-                        && matches!(ov.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
-                    {
+                    if matches!(
+                        ev.payload,
+                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                    ) && matches!(
+                        ov.payload,
+                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                    ) {
                         let (left, right) = if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                             (ev, ov.clone())
                         } else {
@@ -323,7 +400,7 @@ impl VirtualMachine {
                             3 => CompareOp::Ne,
                             4 => CompareOp::Gt,
                             5 => CompareOp::Ge,
-                            _ => unreachable!()
+                            _ => unreachable!(),
                         };
                         let result = left.compare(&right, cmp_op)?;
                         self.vm_push(result);
@@ -355,31 +432,68 @@ impl VirtualMachine {
                 };
                 if let Some(method) = contains_fn {
                     let r = self.call_object(method, vec![b.clone(), a.clone()])?;
-                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 {
+                        r.is_truthy()
+                    } else {
+                        !r.is_truthy()
+                    };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
             }
             if let PyObjectPayload::Instance(inst) = &b.payload {
+                if inst.attrs.read().contains_key("__chainmap__") {
+                    if let Some(maps_obj) = b.get_attr("maps") {
+                        let maps = maps_obj.to_list()?;
+                        let mut found = false;
+                        for mapping in maps {
+                            match mapping.get_item(&a) {
+                                Ok(_) => {
+                                    found = true;
+                                    break;
+                                }
+                                Err(e) if e.kind == ExceptionKind::KeyError => continue,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        let val = if op == 6 { found } else { !found };
+                        self.vm_push(PyObject::bool_val(val));
+                        return Ok(None);
+                    }
+                }
                 // Check for user-defined __contains__ in the class (including dict subclasses)
                 let custom_contains = if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     cd.namespace.read().get("__contains__").cloned()
-                } else { None };
+                } else {
+                    None
+                };
                 if let Some(method) = custom_contains {
                     let r = self.call_object(method, vec![b.clone(), a.clone()])?;
-                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 {
+                        r.is_truthy()
+                    } else {
+                        !r.is_truthy()
+                    };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
                 // Dict subclass: use native contains() directly
-                if inst.dict_storage.is_some() {
-                    let val = if op == 6 { b.contains(&a)? } else { !b.contains(&a)? };
+                if inst.dict_storage.is_some() && !inst.attrs.read().contains_key("__chainmap__") {
+                    let val = if op == 6 {
+                        b.contains(&a)?
+                    } else {
+                        !b.contains(&a)?
+                    };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
                 if let Some(method) = b.get_attr("__contains__") {
                     let r = self.call_object(method, vec![a])?;
-                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 {
+                        r.is_truthy()
+                    } else {
+                        !r.is_truthy()
+                    };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
@@ -416,7 +530,11 @@ impl VirtualMachine {
                                 }
                                 idx += 1;
                             }
-                            Err(e) if e.kind == ferrython_core::error::ExceptionKind::IndexError => break,
+                            Err(e)
+                                if e.kind == ferrython_core::error::ExceptionKind::IndexError =>
+                            {
+                                break
+                            }
                             Err(e) => return Err(e),
                         }
                     }
@@ -430,7 +548,11 @@ impl VirtualMachine {
                 let contains_fn = md.attrs.read().get("__contains__").cloned();
                 if let Some(method) = contains_fn {
                     let r = self.call_object(method, vec![b.clone(), a.clone()])?;
-                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 {
+                        r.is_truthy()
+                    } else {
+                        !r.is_truthy()
+                    };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
@@ -453,15 +575,21 @@ impl VirtualMachine {
                     if let PyObjectPayload::Class(cls_a) = &a_item.payload {
                         if let PyObjectPayload::Class(cls_b) = &b_item.payload {
                             // Check name match or MRO/bases membership
-                            if cls_a.name == cls_b.name { return true; }
+                            if cls_a.name == cls_b.name {
+                                return true;
+                            }
                             for base in &cls_a.mro {
                                 if let PyObjectPayload::Class(bc) = &base.payload {
-                                    if bc.name == cls_b.name { return true; }
+                                    if bc.name == cls_b.name {
+                                        return true;
+                                    }
                                 }
                             }
                             for base in &cls_a.bases {
                                 if let PyObjectPayload::Class(bc) = &base.payload {
-                                    if bc.name == cls_b.name { return true; }
+                                    if bc.name == cls_b.name {
+                                        return true;
+                                    }
                                 }
                             }
                             return false;
@@ -518,4 +646,3 @@ impl VirtualMachine {
         Ok(None)
     }
 }
-

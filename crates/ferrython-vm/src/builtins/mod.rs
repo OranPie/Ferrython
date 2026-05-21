@@ -1,30 +1,34 @@
 //! Built-in functions available in Python's builtins module.
 
 pub(crate) mod core_fns;
-pub mod string_methods;
-mod type_methods;
 mod file_io;
 mod instance_methods;
+pub mod string_methods;
+mod type_methods;
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, is_hidden_dict_key};
+use ferrython_core::object::{
+    is_hidden_dict_key, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 use indexmap::IndexMap;
 
 use core_fns::*;
-use type_methods::*;
 use file_io::*;
 use instance_methods::*;
+use type_methods::*;
 
-pub(crate) use core_fns::{builtin_abs, builtin_dir};
 pub(crate) use core_fns::take_import_request;
 pub(crate) use core_fns::unwrap_abstract_fget;
-pub(crate) use type_methods::partial_cmp_for_sort;
+pub(crate) use core_fns::{builtin_abs, builtin_dir};
 pub use instance_methods::resolve_type_class_method;
+pub(crate) use type_methods::partial_cmp_for_sort;
 
 // Direct type-method dispatchers — bypasses call_method's __sizeof__ check + type re-match
 pub(crate) use string_methods::call_str_method;
-pub(crate) use type_methods::{call_list_method, call_dict_method, call_set_method, call_tuple_method};
+pub(crate) use type_methods::{
+    call_dict_method, call_list_method, call_set_method, call_tuple_method,
+};
 
 // ── Builtin registry ──
 
@@ -34,14 +38,52 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     let mut m = IndexMap::new();
     // Regular builtin functions
     let func_names = [
-        "print", "len", "repr", "id",
-        "abs", "min", "max", "sum", "round", "pow", "divmod", "hash",
-        "isinstance", "issubclass", "callable", "input", "ord", "chr",
-        "hex", "oct", "bin", "sorted", "reversed", "enumerate", "zip",
-        "all", "any", "iter", "next", "hasattr", "getattr", "setattr",
-        "delattr", "dir", "vars", "globals", "locals", "format",
-        "ascii", "exec", "eval", "compile", "help", "breakpoint",
-        "open", "__import__",
+        "print",
+        "len",
+        "repr",
+        "id",
+        "abs",
+        "min",
+        "max",
+        "sum",
+        "round",
+        "pow",
+        "divmod",
+        "hash",
+        "isinstance",
+        "issubclass",
+        "callable",
+        "input",
+        "ord",
+        "chr",
+        "hex",
+        "oct",
+        "bin",
+        "sorted",
+        "reversed",
+        "enumerate",
+        "zip",
+        "all",
+        "any",
+        "iter",
+        "next",
+        "hasattr",
+        "getattr",
+        "setattr",
+        "delattr",
+        "dir",
+        "vars",
+        "globals",
+        "locals",
+        "format",
+        "ascii",
+        "exec",
+        "eval",
+        "compile",
+        "help",
+        "breakpoint",
+        "open",
+        "__import__",
     ];
     for name in func_names {
         m.insert(
@@ -51,11 +93,29 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     }
     // Builtin types (constructors that also serve as type objects)
     let type_names = [
-        "str", "int", "float", "bool", "type", "object",
-        "list", "tuple", "dict", "set", "frozenset", "range",
-        "bytes", "bytearray", "complex", "slice", "memoryview",
-        "super", "classmethod", "staticmethod", "property",
-        "map", "filter",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "type",
+        "object",
+        "list",
+        "tuple",
+        "dict",
+        "set",
+        "frozenset",
+        "range",
+        "bytes",
+        "bytearray",
+        "complex",
+        "slice",
+        "memoryview",
+        "super",
+        "classmethod",
+        "staticmethod",
+        "property",
+        "map",
+        "filter",
     ];
     for name in type_names {
         m.insert(
@@ -67,7 +127,10 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     m.insert(CompactString::from("True"), PyObject::bool_val(true));
     m.insert(CompactString::from("False"), PyObject::bool_val(false));
     m.insert(CompactString::from("Ellipsis"), PyObject::ellipsis());
-    m.insert(CompactString::from("NotImplemented"), PyObject::not_implemented());
+    m.insert(
+        CompactString::from("NotImplemented"),
+        PyObject::not_implemented(),
+    );
     m.insert(CompactString::from("__debug__"), PyObject::bool_val(true));
 
     // Exception types
@@ -93,8 +156,8 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("NameError", ExceptionKind::NameError),
         ("NotImplementedError", ExceptionKind::NotImplementedError),
         ("OSError", ExceptionKind::OSError),
-        ("IOError", ExceptionKind::OSError),           // alias
-        ("EnvironmentError", ExceptionKind::OSError),   // alias
+        ("IOError", ExceptionKind::OSError),          // alias
+        ("EnvironmentError", ExceptionKind::OSError), // alias
         ("OverflowError", ExceptionKind::OverflowError),
         ("PermissionError", ExceptionKind::PermissionError),
         ("RecursionError", ExceptionKind::RecursionError),
@@ -122,8 +185,14 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("ProcessLookupError", ExceptionKind::ProcessLookupError),
         ("ConnectionError", ExceptionKind::ConnectionError),
         ("ConnectionResetError", ExceptionKind::ConnectionResetError),
-        ("ConnectionAbortedError", ExceptionKind::ConnectionAbortedError),
-        ("ConnectionRefusedError", ExceptionKind::ConnectionRefusedError),
+        (
+            "ConnectionAbortedError",
+            ExceptionKind::ConnectionAbortedError,
+        ),
+        (
+            "ConnectionRefusedError",
+            ExceptionKind::ConnectionRefusedError,
+        ),
         ("InterruptedError", ExceptionKind::InterruptedError),
         ("ChildProcessError", ExceptionKind::ChildProcessError),
         ("BlockingIOError", ExceptionKind::BlockingIOError),
@@ -137,7 +206,10 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("UnicodeWarning", ExceptionKind::UnicodeWarning),
         ("BytesWarning", ExceptionKind::BytesWarning),
         ("ResourceWarning", ExceptionKind::ResourceWarning),
-        ("PendingDeprecationWarning", ExceptionKind::PendingDeprecationWarning),
+        (
+            "PendingDeprecationWarning",
+            ExceptionKind::PendingDeprecationWarning,
+        ),
         // Indentation
         ("IndentationError", ExceptionKind::IndentationError),
         ("TabError", ExceptionKind::TabError),
@@ -227,7 +299,10 @@ pub fn dispatch(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(f) = get_builtin_fn(name) {
         f(args)
     } else {
-        Err(PyException::runtime_error(format!("unknown builtin '{}'", name)))
+        Err(PyException::runtime_error(format!(
+            "unknown builtin '{}'",
+            name
+        )))
     }
 }
 
@@ -245,18 +320,32 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         let v = items[*index].clone();
                         *index += 1;
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 IteratorData::Tuple { items, index } => {
                     if *index < items.len() {
                         let v = items[*index].clone();
                         *index += 1;
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                IteratorData::Range { current, stop, step } => {
-                    let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
-                    if done { Ok(None) } else {
+                IteratorData::Range {
+                    current,
+                    stop,
+                    step,
+                } => {
+                    let done = if *step > 0 {
+                        *current >= *stop
+                    } else {
+                        *current <= *stop
+                    };
+                    if done {
+                        Ok(None)
+                    } else {
                         let v = PyObject::int(*current);
                         *current += *step;
                         Ok(Some((iter_obj.clone(), v)))
@@ -267,13 +356,21 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
                         *index += 1;
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                IteratorData::DictEntries { source, index, cached_tuple } => {
+                IteratorData::DictEntries {
+                    source,
+                    index,
+                    cached_tuple,
+                } => {
                     let map = unsafe { &*source.data_ptr() };
                     while *index < map.len() {
                         let (hk, _) = map.get_index(*index).unwrap();
-                        if !is_hidden_dict_key(hk) { break; }
+                        if !is_hidden_dict_key(hk) {
+                            break;
+                        }
                         *index += 1;
                     }
                     if *index < map.len() {
@@ -285,7 +382,9 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                             if PyObjectRef::strong_count(ct) == 1 {
                                 unsafe {
                                     let obj_ptr = PyObjectRef::as_ptr(ct) as *mut PyObject;
-                                    if let PyObjectPayload::Tuple(ref mut items) = (*obj_ptr).payload {
+                                    if let PyObjectPayload::Tuple(ref mut items) =
+                                        (*obj_ptr).payload
+                                    {
                                         items[0] = k;
                                         items[1] = v;
                                     }
@@ -302,14 +401,18 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                             t
                         };
                         Ok(Some((iter_obj.clone(), tuple)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 IteratorData::DictKeys { keys, index } => {
                     if *index < keys.len() {
                         let obj = keys[*index].clone();
                         *index += 1;
                         Ok(Some((iter_obj.clone(), obj)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 IteratorData::Count { current, step } => {
                     let v = PyObject::int(*current);
@@ -318,8 +421,9 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
                 IteratorData::Repeat { item, remaining } => {
                     if let Some(ref mut rem) = remaining {
-                        if *rem == 0 { Ok(None) }
-                        else {
+                        if *rem == 0 {
+                            Ok(None)
+                        } else {
                             *rem -= 1;
                             Ok(Some((iter_obj.clone(), item.clone())))
                         }
@@ -328,8 +432,9 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     }
                 }
                 IteratorData::Cycle { items, index } => {
-                    if items.is_empty() { Ok(None) }
-                    else {
+                    if items.is_empty() {
+                        Ok(None)
+                    } else {
                         let v = items[*index].clone();
                         *index = (*index + 1) % items.len();
                         Ok(Some((iter_obj.clone(), v)))
@@ -340,20 +445,28 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Zip { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
+                | IteratorData::FilterFalse { .. }
                 | IteratorData::Sentinel { .. }
                 | IteratorData::TakeWhile { .. }
                 | IteratorData::DropWhile { .. }
                 | IteratorData::Chain { .. }
                 | IteratorData::SeqIter { .. }
-                | IteratorData::Starmap { .. } => {
-                    Err(PyException::type_error("lazy iterator requires VM-level iteration"))
-                }
+                | IteratorData::Starmap { .. }
+                | IteratorData::Tee { .. } => Err(PyException::type_error(
+                    "lazy iterator requires VM-level iteration",
+                )),
             }
         }
         PyObjectPayload::RangeIter(ri) => {
             let cur = ri.current.get();
-            let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
-            if done { Ok(None) } else {
+            let done = if ri.step > 0 {
+                cur >= ri.stop
+            } else {
+                cur <= ri.stop
+            };
+            if done {
+                Ok(None)
+            } else {
                 let v = PyObject::int(cur);
                 ri.current.set(cur + ri.step);
                 Ok(Some((iter_obj.clone(), v)))
@@ -364,9 +477,15 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             if idx < data.items.len() {
                 let v = data.items[idx].clone();
                 let new_idx = idx + 1;
-                data.index.set(if new_idx >= data.items.len() { usize::MAX } else { new_idx });
+                data.index.set(if new_idx >= data.items.len() {
+                    usize::MAX
+                } else {
+                    new_idx
+                });
                 Ok(Some((iter_obj.clone(), v)))
-            } else { Ok(None) }
+            } else {
+                Ok(None)
+            }
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
@@ -376,25 +495,41 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     if idx < items.len() {
                         let v = items[idx].clone();
                         let new_idx = idx + 1;
-                        index.set(if new_idx >= items.len() { usize::MAX } else { new_idx });
+                        index.set(if new_idx >= items.len() {
+                            usize::MAX
+                        } else {
+                            new_idx
+                        });
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 PyObjectPayload::Tuple(items) => {
                     if idx < items.len() {
                         let v = items[idx].clone();
                         let new_idx = idx + 1;
-                        index.set(if new_idx >= items.len() { usize::MAX } else { new_idx });
+                        index.set(if new_idx >= items.len() {
+                            usize::MAX
+                        } else {
+                            new_idx
+                        });
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                PyObjectPayload::Dict(cell)
+                | PyObjectPayload::MappingProxy(cell)
+                | PyObjectPayload::DictKeys(cell) => {
                     let map = unsafe { &*cell.data_ptr() };
                     if idx < map.len() {
                         let v = map.get_index(idx).unwrap().0.to_object();
                         index.set(idx + 1);
                         Ok(Some((iter_obj.clone(), v)))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 _ => Ok(None),
             }
@@ -403,25 +538,24 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             // File-like objects and other "module-backed" iterators with __next__.
             if let Some(next_fn) = iter_obj.get_attr("__next__") {
                 match &next_fn.payload {
-                    PyObjectPayload::NativeFunction(nf) => {
-                        match (nf.func)(&[iter_obj.clone()]) {
-                            Ok(v) => Ok(Some((iter_obj.clone(), v))),
-                            Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    PyObjectPayload::NativeClosure(nc) => {
-                        match (nc.func)(&[iter_obj.clone()]) {
-                            Ok(v) => Ok(Some((iter_obj.clone(), v))),
-                            Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    _ => Err(PyException::type_error("module __next__ is not callable from iter_advance")),
+                    PyObjectPayload::NativeFunction(nf) => match (nf.func)(&[iter_obj.clone()]) {
+                        Ok(v) => Ok(Some((iter_obj.clone(), v))),
+                        Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                        Err(e) => Err(e),
+                    },
+                    PyObjectPayload::NativeClosure(nc) => match (nc.func)(&[iter_obj.clone()]) {
+                        Ok(v) => Ok(Some((iter_obj.clone(), v))),
+                        Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                        Err(e) => Err(e),
+                    },
+                    _ => Err(PyException::type_error(
+                        "module __next__ is not callable from iter_advance",
+                    )),
                 }
             } else {
                 Err(PyException::type_error(format!(
-                    "'{}' object is not an iterator", iter_obj.type_name()
+                    "'{}' object is not an iterator",
+                    iter_obj.type_name()
                 )))
             }
         }
@@ -442,18 +576,32 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         let v = items[*index].clone();
                         *index += 1;
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 IteratorData::Tuple { items, index } => {
                     if *index < items.len() {
                         let v = items[*index].clone();
                         *index += 1;
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                IteratorData::Range { current, stop, step } => {
-                    let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
-                    if done { Ok(None) } else {
+                IteratorData::Range {
+                    current,
+                    stop,
+                    step,
+                } => {
+                    let done = if *step > 0 {
+                        *current >= *stop
+                    } else {
+                        *current <= *stop
+                    };
+                    if done {
+                        Ok(None)
+                    } else {
                         let v = PyObject::int(*current);
                         *current += *step;
                         Ok(Some(v))
@@ -464,13 +612,21 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
                         *index += 1;
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                IteratorData::DictEntries { source, index, cached_tuple } => {
+                IteratorData::DictEntries {
+                    source,
+                    index,
+                    cached_tuple,
+                } => {
                     let map = unsafe { &*source.data_ptr() };
                     while *index < map.len() {
                         let (hk, _) = map.get_index(*index).unwrap();
-                        if !is_hidden_dict_key(hk) { break; }
+                        if !is_hidden_dict_key(hk) {
+                            break;
+                        }
                         *index += 1;
                     }
                     if *index < map.len() {
@@ -482,7 +638,9 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                             if PyObjectRef::strong_count(ct) == 1 {
                                 unsafe {
                                     let obj_ptr = PyObjectRef::as_ptr(ct) as *mut PyObject;
-                                    if let PyObjectPayload::Tuple(ref mut items) = (*obj_ptr).payload {
+                                    if let PyObjectPayload::Tuple(ref mut items) =
+                                        (*obj_ptr).payload
+                                    {
                                         items[0] = k;
                                         items[1] = v;
                                     }
@@ -499,22 +657,34 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                             t
                         };
                         Ok(Some(tuple))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 IteratorData::DictKeys { keys, index } => {
                     if *index < keys.len() {
                         let obj = keys[*index].clone();
                         *index += 1;
                         Ok(Some(obj))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
+                _ => Err(PyException::type_error(
+                    "lazy iterator requires VM-level iteration",
+                )),
             }
         }
         PyObjectPayload::RangeIter(ri) => {
             let cur = ri.current.get();
-            let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
-            if done { Ok(None) } else {
+            let done = if ri.step > 0 {
+                cur >= ri.stop
+            } else {
+                cur <= ri.stop
+            };
+            if done {
+                Ok(None)
+            } else {
                 let v = PyObject::int(cur);
                 ri.current.set(cur + ri.step);
                 Ok(Some(v))
@@ -526,7 +696,9 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 let v = data.items[idx].clone();
                 data.index.set(idx + 1);
                 Ok(Some(v))
-            } else { Ok(None) }
+            } else {
+                Ok(None)
+            }
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
@@ -537,22 +709,30 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         let v = items[idx].clone();
                         index.set(idx + 1);
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 PyObjectPayload::Tuple(items) => {
                     if idx < items.len() {
                         let v = items[idx].clone();
                         index.set(idx + 1);
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
-                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                PyObjectPayload::Dict(cell)
+                | PyObjectPayload::MappingProxy(cell)
+                | PyObjectPayload::DictKeys(cell) => {
                     let map = unsafe { &*cell.data_ptr() };
                     if idx < map.len() {
                         let v = map.get_index(idx).unwrap().0.to_object();
                         index.set(idx + 1);
                         Ok(Some(v))
-                    } else { Ok(None) }
+                    } else {
+                        Ok(None)
+                    }
                 }
                 _ => Ok(None),
             }
@@ -572,19 +752,43 @@ pub(crate) fn apply_format_spec_str(s: &str, spec: &str) -> String {
 }
 
 pub(crate) fn apply_format_spec_int(n: i64, spec: &str) -> String {
-    if spec.is_empty() { return n.to_string(); }
+    if spec.is_empty() {
+        return n.to_string();
+    }
     // Parse format spec: [[fill]align][sign][#][0][width][,][.precision][type]
     let chars: Vec<char> = spec.chars().collect();
     let len = chars.len();
     let type_char = chars[len - 1];
     match type_char {
         'd' => format_int_with_spec(n, &n.to_string(), spec),
-        'b' => { let s = format!("{:b}", n.unsigned_abs()); let prefix = if n < 0 { "-0b" } else { "0b" }; format!("{}{}", prefix, s) }
-        'o' => { let s = format!("{:o}", n.unsigned_abs()); let prefix = if n < 0 { "-0o" } else { "0o" }; format!("{}{}", prefix, s) }
-        'x' => { let s = format!("{:x}", n.unsigned_abs()); let prefix = if n < 0 { "-0x" } else { "0x" }; format!("{}{}", prefix, s) }
-        'X' => { let s = format!("{:X}", n.unsigned_abs()); let prefix = if n < 0 { "-0X" } else { "0X" }; format!("{}{}", prefix, s) }
+        'b' => {
+            let s = format!("{:b}", n.unsigned_abs());
+            let prefix = if n < 0 { "-0b" } else { "0b" };
+            format!("{}{}", prefix, s)
+        }
+        'o' => {
+            let s = format!("{:o}", n.unsigned_abs());
+            let prefix = if n < 0 { "-0o" } else { "0o" };
+            format!("{}{}", prefix, s)
+        }
+        'x' => {
+            let s = format!("{:x}", n.unsigned_abs());
+            let prefix = if n < 0 { "-0x" } else { "0x" };
+            format!("{}{}", prefix, s)
+        }
+        'X' => {
+            let s = format!("{:X}", n.unsigned_abs());
+            let prefix = if n < 0 { "-0X" } else { "0X" };
+            format!("{}{}", prefix, s)
+        }
         'n' => format_int_with_spec(n, &n.to_string(), spec),
-        'c' => { if n >= 0 && n <= 0x10FFFF { char::from_u32(n as u32).map_or_else(|| n.to_string(), |c| c.to_string()) } else { n.to_string() } }
+        'c' => {
+            if n >= 0 && n <= 0x10FFFF {
+                char::from_u32(n as u32).map_or_else(|| n.to_string(), |c| c.to_string())
+            } else {
+                n.to_string()
+            }
+        }
         'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%' => {
             // Delegate to float formatting
             apply_format_spec_float(n as f64, spec)
@@ -607,28 +811,41 @@ fn format_int_with_spec(n: i64, formatted: &str, spec: &str) -> String {
         let abs_str = n.unsigned_abs().to_string();
         let mut result = String::new();
         for (i, c) in abs_str.chars().rev().enumerate() {
-            if i > 0 && i % 3 == 0 { result.push(sep); }
+            if i > 0 && i % 3 == 0 {
+                result.push(sep);
+            }
             result.push(c);
         }
         let s: String = result.chars().rev().collect();
         let s = if n < 0 { format!("-{}", s) } else { s };
         // Apply width
-        let width = spec.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<usize>().unwrap_or(0);
-        if width > 0 { format!("{:>width$}", s, width = width) } else { s }
+        let width = spec
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<usize>()
+            .unwrap_or(0);
+        if width > 0 {
+            format!("{:>width$}", s, width = width)
+        } else {
+            s
+        }
     } else {
         formatted.to_string()
     }
 }
 
 pub(crate) fn apply_format_spec_float(f: f64, spec: &str) -> String {
-    if spec.is_empty() { return format_float_repr(f); }
+    if spec.is_empty() {
+        return format_float_repr(f);
+    }
     let chars: Vec<char> = spec.chars().collect();
     let len = chars.len();
     let type_char = chars[len - 1];
     // Extract precision from .N before type char
     let dot_pos = spec.find('.');
     let precision: usize = if let Some(dp) = dot_pos {
-        spec[dp+1..len-1].parse().unwrap_or(6)
+        spec[dp + 1..len - 1].parse().unwrap_or(6)
     } else {
         6
     };
@@ -657,8 +874,12 @@ pub(crate) fn apply_format_spec_float(f: f64, spec: &str) -> String {
 }
 
 pub(crate) fn format_float_repr(f: f64) -> String {
-    if f.is_infinite() { return if f > 0.0 { "inf".into() } else { "-inf".into() }; }
-    if f.is_nan() { return "nan".into(); }
+    if f.is_infinite() {
+        return if f > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if f.is_nan() {
+        return "nan".into();
+    }
     let s = format!("{}", f);
     // Python always shows decimal point for float repr
     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -668,15 +889,18 @@ pub(crate) fn format_float_repr(f: f64) -> String {
     }
 }
 
-
 // ── Argument checking helpers (re-exported from core) ──
 
 #[allow(unused_imports)]
-pub(crate) use ferrython_core::object::{check_args, check_args_min, make_module, make_builtin};
+pub(crate) use ferrython_core::object::{check_args, check_args_min, make_builtin, make_module};
 
 // ── Built-in type method dispatch ──
 
-pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub fn call_method(
+    receiver: &PyObjectRef,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     // Universal methods available on all types
     if method == "__sizeof__" {
         let base = std::mem::size_of::<PyObject>() as i64;
@@ -684,11 +908,17 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
             PyObjectPayload::Str(s) => s.len() as i64,
             PyObjectPayload::Bytes(b) => b.len() as i64,
             PyObjectPayload::ByteArray(b) => b.len() as i64,
-            PyObjectPayload::List(items) => (items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64,
-            PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => (map.read().len() * 64) as i64,
+            PyObjectPayload::List(items) => {
+                (items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64
+            }
+            PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+                (map.read().len() * 64) as i64
+            }
             PyObjectPayload::Set(set) => (set.read().len() * 32) as i64,
             PyObjectPayload::FrozenSet(set) => (set.len() * 32) as i64,
-            PyObjectPayload::Tuple(items) => (items.len() * std::mem::size_of::<PyObjectRef>()) as i64,
+            PyObjectPayload::Tuple(items) => {
+                (items.len() * std::mem::size_of::<PyObjectRef>()) as i64
+            }
             _ => 0,
         };
         return Ok(PyObject::int(base + extra));
@@ -696,7 +926,9 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
     match &receiver.payload {
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
         PyObjectPayload::List(items) => call_list_method(items, method, args),
-        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => call_dict_method(map, method, args),
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+            call_dict_method(map, method, args)
+        }
         PyObjectPayload::InstanceDict(attrs) => call_instance_dict_method(attrs, method, args),
         PyObjectPayload::Int(_) => call_int_method(receiver, method, args),
         PyObjectPayload::Float(f) => call_float_method(*f, method, args),
@@ -710,12 +942,18 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
         }
         PyObjectPayload::Instance(inst) => call_instance_method(inst, method, args),
         _ => Err(PyException::attribute_error(format!(
-            "'{}' object has no attribute '{}'", receiver.type_name(), method
+            "'{}' object has no attribute '{}'",
+            receiver.type_name(),
+            method
         ))),
     }
 }
 
-fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_instance_method(
+    inst: &ferrython_core::object::InstanceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     // Dict subclass: delegate dict methods to dict_storage
     if let Some(ref ds) = inst.dict_storage {
         return call_dict_method(ds, method, args);
@@ -761,8 +999,15 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
         return call_csv_dictwriter_method(inst, method, args);
     }
     // Hashlib hash object methods
-    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
-    if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
+    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+        cd.name.to_string()
+    } else {
+        String::new()
+    };
+    if matches!(
+        class_name.as_str(),
+        "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512"
+    ) {
         return call_hashlib_method(inst, method, args);
     }
     // Builtin type subclass: delegate to the underlying value's method dispatch
@@ -770,8 +1015,12 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
         return call_method(&val, method, args);
     }
     Err(PyException::attribute_error(format!(
-        "'{}' object has no attribute '{}'", 
-        if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "instance" },
+        "'{}' object has no attribute '{}'",
+        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+            cd.name.as_str()
+        } else {
+            "instance"
+        },
         method
     )))
 }
@@ -787,7 +1036,13 @@ fn to_complex_parts(x: &PyObjectRef) -> Option<(f64, f64)> {
     }
 }
 
-fn call_complex_method(receiver: &PyObjectRef, real: f64, imag: f64, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_complex_method(
+    receiver: &PyObjectRef,
+    real: f64,
+    imag: f64,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     use ferrython_core::error::ExceptionKind;
     match method {
         "conjugate" => Ok(PyObject::complex(real, -imag)),
@@ -802,65 +1057,109 @@ fn call_complex_method(receiver: &PyObjectRef, real: f64, imag: f64, method: &st
             let ih = imag.to_bits() as i64;
             Ok(PyObject::int(rh ^ ih.wrapping_mul(1_000_003)))
         }
-        "__repr__" | "__str__" => Ok(PyObject::str_val(CompactString::from(format_complex_repr(real, imag)))),
+        "__repr__" | "__str__" => Ok(PyObject::str_val(CompactString::from(format_complex_repr(
+            real, imag,
+        )))),
         "__format__" => {
-            let spec = args.first().and_then(|a| a.as_str().map(|s| s.to_string())).unwrap_or_default();
+            let spec = args
+                .first()
+                .and_then(|a| a.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
             if spec.is_empty() {
-                Ok(PyObject::str_val(CompactString::from(format_complex_repr(real, imag))))
+                Ok(PyObject::str_val(CompactString::from(format_complex_repr(
+                    real, imag,
+                ))))
             } else {
-                let s = ferrython_core::object::methods_format::format_complex_with_spec_pub(real, imag, &spec)?;
+                let s = ferrython_core::object::methods_format::format_complex_with_spec_pub(
+                    real, imag, &spec,
+                )?;
                 Ok(PyObject::str_val(CompactString::from(s)))
             }
         }
-        "__getnewargs__" => Ok(PyObject::tuple(vec![PyObject::float(real), PyObject::float(imag)])),
+        "__getnewargs__" => Ok(PyObject::tuple(vec![
+            PyObject::float(real),
+            PyObject::float(imag),
+        ])),
         "__eq__" | "__ne__" => {
-            let Some(other) = args.first() else { return Ok(PyObject::not_implemented()); };
+            let Some(other) = args.first() else {
+                return Ok(PyObject::not_implemented());
+            };
             let eq = match &other.payload {
                 PyObjectPayload::Complex { real: r2, imag: i2 } => real == *r2 && imag == *i2,
-                PyObjectPayload::Int(n) => imag == 0.0 && real == n.to_f64() && n.to_i64().map(|i| (real as i64) == i).unwrap_or(false),
+                PyObjectPayload::Int(n) => {
+                    imag == 0.0
+                        && real == n.to_f64()
+                        && n.to_i64().map(|i| (real as i64) == i).unwrap_or(false)
+                }
                 PyObjectPayload::Float(f) => imag == 0.0 && real == *f,
-                PyObjectPayload::Bool(b) => imag == 0.0 && real == (if *b {1.0} else {0.0}),
+                PyObjectPayload::Bool(b) => imag == 0.0 && real == (if *b { 1.0 } else { 0.0 }),
                 _ => return Ok(PyObject::not_implemented()),
             };
-            Ok(PyObject::bool_val(if method == "__eq__" { eq } else { !eq }))
+            Ok(PyObject::bool_val(if method == "__eq__" {
+                eq
+            } else {
+                !eq
+            }))
         }
         "__lt__" | "__le__" | "__gt__" | "__ge__" => Ok(PyObject::not_implemented()),
         "__add__" | "__radd__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             Ok(PyObject::complex(real + r2, imag + i2))
         }
         "__sub__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             Ok(PyObject::complex(real - r2, imag - i2))
         }
         "__rsub__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             Ok(PyObject::complex(r2 - real, i2 - imag))
         }
         "__mul__" | "__rmul__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
-            Ok(PyObject::complex(real * r2 - imag * i2, real * i2 + imag * r2))
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
+            Ok(PyObject::complex(
+                real * r2 - imag * i2,
+                real * i2 + imag * r2,
+            ))
         }
         "__truediv__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             complex_truediv(real, imag, r2, i2)
         }
         "__rtruediv__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             complex_truediv(r2, i2, real, imag)
         }
-        "__floordiv__" | "__rfloordiv__" | "__mod__" | "__rmod__" | "__divmod__" => {
-            Err(PyException::type_error(format!("can't take floor or mod of complex number.")))
-        }
+        "__floordiv__" | "__rfloordiv__" | "__mod__" | "__rmod__" | "__divmod__" => Err(
+            PyException::type_error(format!("can't take floor or mod of complex number.")),
+        ),
         "__pow__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             complex_pow(real, imag, r2, i2)
         }
         "__rpow__" => {
-            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else { return Ok(PyObject::not_implemented()); };
+            let Some((r2, i2)) = args.first().and_then(to_complex_parts) else {
+                return Ok(PyObject::not_implemented());
+            };
             complex_pow(r2, i2, real, imag)
         }
-        _ => Err(PyException::attribute_error(format!("'complex' object has no attribute '{}'", method))),
+        _ => Err(PyException::attribute_error(format!(
+            "'complex' object has no attribute '{}'",
+            method
+        ))),
     }
     .map_err(|e| {
         let _ = ExceptionKind::SyntaxError; // keep import used
@@ -875,16 +1174,32 @@ fn format_complex_repr(real: f64, imag: f64) -> String {
         format!("{}j", fmt_float(imag))
     } else {
         let imag_str = fmt_float(imag);
-        let sep = if imag_str.starts_with('-') || imag_str.starts_with('+') { "" } else { "+" };
+        let sep = if imag_str.starts_with('-') || imag_str.starts_with('+') {
+            ""
+        } else {
+            "+"
+        };
         format!("({}{}{}j)", fmt_float(real), sep, imag_str)
     }
 }
 
 fn fmt_float(f: f64) -> String {
-    if f.is_nan() { return "nan".to_string(); }
-    if f.is_infinite() { return if f > 0.0 { "inf".to_string() } else { "-inf".to_string() }; }
+    if f.is_nan() {
+        return "nan".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        };
+    }
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0".to_string() } else { "0".to_string() };
+        return if f.is_sign_negative() {
+            "-0".to_string()
+        } else {
+            "0".to_string()
+        };
     }
     if f == f.trunc() && f.abs() < 1e16 {
         return format!("{}", f as i64);
@@ -905,11 +1220,17 @@ fn complex_truediv(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> 
     if bi.abs() <= br.abs() {
         let ratio = bi / br;
         let denom = br + bi * ratio;
-        Ok(PyObject::complex((ar + ai * ratio) / denom, (ai - ar * ratio) / denom))
+        Ok(PyObject::complex(
+            (ar + ai * ratio) / denom,
+            (ai - ar * ratio) / denom,
+        ))
     } else {
         let ratio = br / bi;
         let denom = br * ratio + bi;
-        Ok(PyObject::complex((ar * ratio + ai) / denom, (ai * ratio - ar) / denom))
+        Ok(PyObject::complex(
+            (ar * ratio + ai) / denom,
+            (ai * ratio - ar) / denom,
+        ))
     }
 }
 
@@ -921,7 +1242,9 @@ fn complex_pow(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> {
                 "0.0 to a negative or complex power".to_string(),
             ));
         }
-        if br == 0.0 { return Ok(PyObject::complex(1.0, 0.0)); }
+        if br == 0.0 {
+            return Ok(PyObject::complex(1.0, 0.0));
+        }
         return Ok(PyObject::complex(0.0, 0.0));
     }
     // a = r * e^(i*theta); a^b = r^br * e^(-bi*theta) * e^(i*(bi*ln(r) + br*theta))
@@ -935,6 +1258,8 @@ fn complex_pow(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRef> {
             "complex exponentiation".to_string(),
         ));
     }
-    Ok(PyObject::complex(new_r * new_theta.cos(), new_r * new_theta.sin()))
+    Ok(PyObject::complex(
+        new_r * new_theta.cos(),
+        new_r * new_theta.sin(),
+    ))
 }
-

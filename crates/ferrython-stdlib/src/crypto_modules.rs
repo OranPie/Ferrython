@@ -2,10 +2,9 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    make_module, make_builtin, check_args,
-    to_shared_fx,
+use ferrython_core::object::{
+    check_args, make_builtin, make_module, to_shared_fx, InstanceData, PyCell, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 use std::rc::Rc;
@@ -16,51 +15,143 @@ use super::serial_modules::extract_bytes;
 
 pub fn create_hashlib_module() -> PyObjectRef {
     let algos = vec![
-        "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
-        "sha3_224", "sha3_256", "sha3_384", "sha3_512",
-        "blake2b", "blake2s",
+        "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256", "sha3_384",
+        "sha3_512", "blake2b", "blake2s",
     ];
-    let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos.iter()
-        .map(|&a| (ferrython_core::types::HashableKey::str_key(CompactString::from(a)), PyObject::none()))
+    let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos
+        .iter()
+        .map(|&a| {
+            (
+                ferrython_core::types::HashableKey::str_key(CompactString::from(a)),
+                PyObject::none(),
+            )
+        })
         .collect();
-    make_module("hashlib", vec![
-        ("md5", make_builtin(hashlib_md5)),
-        ("sha1", make_builtin(hashlib_sha1)),
-        ("sha256", make_builtin(hashlib_sha256)),
-        ("sha512", make_builtin(hashlib_sha512)),
-        ("sha224", make_builtin(hashlib_sha224)),
-        ("sha384", make_builtin(hashlib_sha384)),
-        ("sha3_224", make_builtin(|args| make_hash_obj("sha3_224", args))),
-        ("sha3_256", make_builtin(|args| make_hash_obj("sha3_256", args))),
-        ("sha3_384", make_builtin(|args| make_hash_obj("sha3_384", args))),
-        ("sha3_512", make_builtin(|args| make_hash_obj("sha3_512", args))),
-        ("blake2b", make_builtin(|args| make_hash_obj("blake2b", args))),
-        ("blake2s", make_builtin(|args| make_hash_obj("blake2s", args))),
-        ("new", make_builtin(hashlib_new)),
-        ("pbkdf2_hmac", make_builtin(hashlib_pbkdf2_hmac)),
-        ("scrypt", make_builtin(hashlib_scrypt)),
-        ("algorithms_guaranteed", PyObject::frozenset(algo_set.clone())),
-        ("algorithms_available", PyObject::frozenset(algo_set)),
-    ])
+    make_module(
+        "hashlib",
+        vec![
+            ("md5", make_builtin(hashlib_md5)),
+            ("sha1", make_builtin(hashlib_sha1)),
+            ("sha256", make_builtin(hashlib_sha256)),
+            ("sha512", make_builtin(hashlib_sha512)),
+            ("sha224", make_builtin(hashlib_sha224)),
+            ("sha384", make_builtin(hashlib_sha384)),
+            (
+                "sha3_224",
+                make_builtin(|args| make_hash_obj("sha3_224", args)),
+            ),
+            (
+                "sha3_256",
+                make_builtin(|args| make_hash_obj("sha3_256", args)),
+            ),
+            (
+                "sha3_384",
+                make_builtin(|args| make_hash_obj("sha3_384", args)),
+            ),
+            (
+                "sha3_512",
+                make_builtin(|args| make_hash_obj("sha3_512", args)),
+            ),
+            (
+                "blake2b",
+                make_builtin(|args| make_hash_obj("blake2b", args)),
+            ),
+            (
+                "blake2s",
+                make_builtin(|args| make_hash_obj("blake2s", args)),
+            ),
+            ("new", make_builtin(hashlib_new)),
+            ("pbkdf2_hmac", make_builtin(hashlib_pbkdf2_hmac)),
+            ("scrypt", make_builtin(hashlib_scrypt)),
+            (
+                "algorithms_guaranteed",
+                PyObject::frozenset(algo_set.clone()),
+            ),
+            ("algorithms_available", PyObject::frozenset(algo_set)),
+        ],
+    )
 }
 
 /// Compute digest for an algorithm name + data buffer.
 fn compute_digest(name: &str, data: &[u8]) -> PyResult<(String, Vec<u8>)> {
     use digest::Digest;
     match name {
-        "md5"      => { let mut h = md5::Md5::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha1"     => { let mut h = sha1::Sha1::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha224"   => { let mut h = sha2::Sha224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha256"   => { let mut h = sha2::Sha256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha384"   => { let mut h = sha2::Sha384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha512"   => { let mut h = sha2::Sha512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha3_224" | "sha3-224" => { let mut h = sha3::Sha3_224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha3_256" | "sha3-256" => { let mut h = sha3::Sha3_256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha3_384" | "sha3-384" => { let mut h = sha3::Sha3_384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha3_512" | "sha3-512" => { let mut h = sha3::Sha3_512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "blake2b"  => { let mut h = blake2::Blake2b512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "blake2s"  => { let mut h = blake2::Blake2s256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
+        "md5" => {
+            let mut h = md5::Md5::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha1" => {
+            let mut h = sha1::Sha1::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha224" => {
+            let mut h = sha2::Sha224::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha256" => {
+            let mut h = sha2::Sha256::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha384" => {
+            let mut h = sha2::Sha384::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha512" => {
+            let mut h = sha2::Sha512::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha3_224" | "sha3-224" => {
+            let mut h = sha3::Sha3_224::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha3_256" | "sha3-256" => {
+            let mut h = sha3::Sha3_256::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha3_384" | "sha3-384" => {
+            let mut h = sha3::Sha3_384::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "sha3_512" | "sha3-512" => {
+            let mut h = sha3::Sha3_512::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "blake2b" => {
+            let mut h = blake2::Blake2b512::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        "blake2s" => {
+            let mut h = blake2::Blake2s256::new();
+            h.update(data);
+            let r = h.finalize();
+            Ok((hex_encode(&r), r.to_vec()))
+        }
+        _ => Err(PyException::value_error(format!(
+            "unsupported hash type {}",
+            name
+        ))),
     }
 }
 
@@ -78,137 +169,219 @@ fn hash_block_size(name: &str) -> i64 {
 
 fn hash_digest_size(name: &str) -> i64 {
     match name {
-        "md5" => 16, "sha1" => 20, "sha224" => 28, "sha256" => 32,
-        "sha384" => 48, "sha512" => 64,
-        "sha3_224" | "sha3-224" => 28, "sha3_256" | "sha3-256" => 32,
-        "sha3_384" | "sha3-384" => 48, "sha3_512" | "sha3-512" => 64,
-        "blake2b" => 64, "blake2s" => 32,
+        "md5" => 16,
+        "sha1" => 20,
+        "sha224" => 28,
+        "sha256" => 32,
+        "sha384" => 48,
+        "sha512" => 64,
+        "sha3_224" | "sha3-224" => 28,
+        "sha3_256" | "sha3-256" => 32,
+        "sha3_384" | "sha3-384" => 48,
+        "sha3_512" | "sha3-512" => 64,
+        "blake2b" => 64,
+        "blake2s" => 32,
         _ => 0,
     }
 }
 
 /// Build a hash object with incremental update/digest/hexdigest/copy support.
 /// The accumulated data buffer is stored in a shared Rc<PyCell<Vec<u8>>>.
-fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_bytes: Vec<u8>, _block_size: i64, _digest_size: i64) -> PyObjectRef {
+fn make_hash_object(
+    name: &str,
+    data: Vec<u8>,
+    _digest_hex: String,
+    _digest_bytes: Vec<u8>,
+    _block_size: i64,
+    _digest_size: i64,
+) -> PyObjectRef {
     let algo = CompactString::from(name);
     let buf = Rc::new(PyCell::new(data));
-    let class = PyObject::class(CompactString::from("_hashlib.HASH"), vec![], IndexMap::new());
+    let class = PyObject::class(
+        CompactString::from("_hashlib.HASH"),
+        vec![],
+        IndexMap::new(),
+    );
     let mut attrs = IndexMap::new();
 
     attrs.insert(CompactString::from("name"), PyObject::str_val(algo.clone()));
-    attrs.insert(CompactString::from("block_size"), PyObject::int(hash_block_size(name)));
-    attrs.insert(CompactString::from("digest_size"), PyObject::int(hash_digest_size(name)));
+    attrs.insert(
+        CompactString::from("block_size"),
+        PyObject::int(hash_block_size(name)),
+    );
+    attrs.insert(
+        CompactString::from("digest_size"),
+        PyObject::int(hash_digest_size(name)),
+    );
 
     // update(data) — append to internal buffer
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("update"), PyObject::native_closure("update", move |args| {
-        if args.is_empty() { return Err(PyException::type_error("update() takes exactly 1 argument")); }
-        let new_data = extract_bytes(&args[0])?;
-        buf_c.write().extend_from_slice(&new_data);
-        Ok(PyObject::none())
-    }));
+    attrs.insert(
+        CompactString::from("update"),
+        PyObject::native_closure("update", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("update() takes exactly 1 argument"));
+            }
+            let new_data = extract_bytes(&args[0])?;
+            buf_c.write().extend_from_slice(&new_data);
+            Ok(PyObject::none())
+        }),
+    );
 
     // digest() — compute and return bytes
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("digest"), PyObject::native_closure("digest", move |_args| {
-        let data = buf_c.read().clone();
-        let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
-        Ok(PyObject::bytes(digest_bytes))
-    }));
+    attrs.insert(
+        CompactString::from("digest"),
+        PyObject::native_closure("digest", move |_args| {
+            let data = buf_c.read().clone();
+            let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
+            Ok(PyObject::bytes(digest_bytes))
+        }),
+    );
 
     // hexdigest() — compute and return hex string
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("hexdigest"), PyObject::native_closure("hexdigest", move |_args| {
-        let data = buf_c.read().clone();
-        let (hex, _) = compute_digest(&algo_c, &data)?;
-        Ok(PyObject::str_val(CompactString::from(hex)))
-    }));
+    attrs.insert(
+        CompactString::from("hexdigest"),
+        PyObject::native_closure("hexdigest", move |_args| {
+            let data = buf_c.read().clone();
+            let (hex, _) = compute_digest(&algo_c, &data)?;
+            Ok(PyObject::str_val(CompactString::from(hex)))
+        }),
+    );
 
     // copy() — return independent hash with same accumulated state
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("copy"), PyObject::native_closure("copy", move |_args| {
-        let data = buf_c.read().clone();
-        let (hex, digest_bytes) = compute_digest(&algo_c, &data)?;
-        Ok(make_hash_object(&algo_c, data, hex, digest_bytes, 0, 0))
-    }));
+    attrs.insert(
+        CompactString::from("copy"),
+        PyObject::native_closure("copy", move |_args| {
+            let data = buf_c.read().clone();
+            let (hex, digest_bytes) = compute_digest(&algo_c, &data)?;
+            Ok(make_hash_object(&algo_c, data, hex, digest_bytes, 0, 0))
+        }),
+    );
 
     // Legacy compatibility: _hexdigest / _digest attributes (compute on access would be ideal,
     // but for backwards compat keep them — they reflect initial data only)
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("_hexdigest"), PyObject::native_closure("_hexdigest", move |_args| {
-        let data = buf_c.read().clone();
-        let (hex, _) = compute_digest(&algo_c, &data)?;
-        Ok(PyObject::str_val(CompactString::from(hex)))
-    }));
+    attrs.insert(
+        CompactString::from("_hexdigest"),
+        PyObject::native_closure("_hexdigest", move |_args| {
+            let data = buf_c.read().clone();
+            let (hex, _) = compute_digest(&algo_c, &data)?;
+            Ok(PyObject::str_val(CompactString::from(hex)))
+        }),
+    );
     let algo_c = algo.clone();
     let buf_c = buf.clone();
-    attrs.insert(CompactString::from("_digest"), PyObject::native_closure("_digest", move |_args| {
-        let data = buf_c.read().clone();
-        let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
-        Ok(PyObject::bytes(digest_bytes))
-    }));
+    attrs.insert(
+        CompactString::from("_digest"),
+        PyObject::native_closure("_digest", move |_args| {
+            let data = buf_c.read().clone();
+            let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
+            Ok(PyObject::bytes(digest_bytes))
+        }),
+    );
 
     let class_flags = InstanceData::compute_flags(&class);
-    let inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
-        class,
-        attrs: to_shared_fx(attrs),
-        is_special: true, dict_storage: None,
-        class_flags,
-    }))));
+    let inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(
+        Box::new(InstanceData {
+            class,
+            attrs: to_shared_fx(attrs),
+            is_special: true,
+            dict_storage: None,
+            class_flags,
+        }),
+    )));
     inst
 }
 
 fn make_hash_obj(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let data = if args.is_empty() {
+        vec![]
+    } else {
+        extract_bytes(&args[0])?
+    };
     let bs = hash_block_size(name);
     let ds = hash_digest_size(name);
     let (hex, bytes) = compute_digest(name, &data)?;
     Ok(make_hash_object(name, data, hex, bytes, bs, ds))
 }
 
-fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("md5", args) }
-fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha1", args) }
-fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha256", args) }
-fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha224", args) }
-fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha384", args) }
-fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha512", args) }
+fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("md5", args)
+}
+fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("sha1", args)
+}
+fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("sha256", args)
+}
+fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("sha224", args)
+}
+fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("sha384", args)
+}
+fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    make_hash_obj("sha512", args)
+}
 
 fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("hashlib.new() requires algorithm name")); }
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "hashlib.new() requires algorithm name",
+        ));
+    }
     let name = match &args[0].payload {
         PyObjectPayload::Str(s) => s.to_string(),
         _ => return Err(PyException::type_error("algorithm name must be a string")),
     };
-    let data_args = if args.len() > 1 { &args[1..] } else { &[] as &[PyObjectRef] };
+    let data_args = if args.len() > 1 {
+        &args[1..]
+    } else {
+        &[] as &[PyObjectRef]
+    };
     make_hash_obj(&name, data_args)
 }
 
 /// HMAC helper used by pbkdf2_hmac (same logic as hmac module's compute_hmac)
 fn hmac_digest(key: &[u8], msg: &[u8], algo: &str) -> Vec<u8> {
-    let block_size: usize = match algo { "sha384" | "sha512" => 128, _ => 64 };
+    let block_size: usize = match algo {
+        "sha384" | "sha512" => 128,
+        _ => 64,
+    };
     let mut k = key.to_vec();
     if k.len() > block_size {
         k = compute_digest(algo, &k).map(|(_, b)| b).unwrap_or_default();
     }
-    while k.len() < block_size { k.push(0); }
+    while k.len() < block_size {
+        k.push(0);
+    }
     let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
     let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
     let mut inner = ipad;
     inner.extend_from_slice(msg);
-    let inner_hash = compute_digest(algo, &inner).map(|(_, b)| b).unwrap_or_default();
+    let inner_hash = compute_digest(algo, &inner)
+        .map(|(_, b)| b)
+        .unwrap_or_default();
     let mut outer = opad;
     outer.extend_from_slice(&inner_hash);
-    compute_digest(algo, &outer).map(|(_, b)| b).unwrap_or_default()
+    compute_digest(algo, &outer)
+        .map(|(_, b)| b)
+        .unwrap_or_default()
 }
 
 /// hashlib.pbkdf2_hmac(hash_name, password, salt, iterations, dklen=None)
 fn hashlib_pbkdf2_hmac(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 4 {
-        return Err(PyException::type_error("pbkdf2_hmac requires at least 4 arguments"));
+        return Err(PyException::type_error(
+            "pbkdf2_hmac requires at least 4 arguments",
+        ));
     }
     let algo = match &args[0].payload {
         PyObjectPayload::Str(s) => s.to_string(),
@@ -304,14 +477,17 @@ fn hashlib_scrypt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── secrets module ──────────────────────────────────────────────────
 
 pub fn create_secrets_module() -> PyObjectRef {
-    make_module("secrets", vec![
-        ("token_bytes", make_builtin(secrets_token_bytes)),
-        ("token_hex", make_builtin(secrets_token_hex)),
-        ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
-        ("randbelow", make_builtin(secrets_randbelow)),
-        ("choice", make_builtin(secrets_choice)),
-        ("compare_digest", make_builtin(secrets_compare_digest)),
-    ])
+    make_module(
+        "secrets",
+        vec![
+            ("token_bytes", make_builtin(secrets_token_bytes)),
+            ("token_hex", make_builtin(secrets_token_hex)),
+            ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
+            ("randbelow", make_builtin(secrets_randbelow)),
+            ("choice", make_builtin(secrets_choice)),
+            ("compare_digest", make_builtin(secrets_compare_digest)),
+        ],
+    )
 }
 
 fn secrets_random_bytes(n: usize) -> Vec<u8> {
@@ -347,27 +523,47 @@ fn secrets_random_f64() -> f64 {
 }
 
 fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() {
+        32
+    } else {
+        args[0].to_int()? as usize
+    };
     Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
 }
 
 fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() {
+        32
+    } else {
+        args[0].to_int()? as usize
+    };
     let bytes = secrets_random_bytes(nbytes);
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     Ok(PyObject::str_val(CompactString::from(hex)))
 }
 
 fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let nbytes = if args.is_empty() {
+        32
+    } else {
+        args[0].to_int()? as usize
+    };
     let bytes = secrets_random_bytes(nbytes);
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
     let mut i = 0;
     while i < bytes.len() {
         let b0 = bytes[i] as u32;
-        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < bytes.len() {
+            bytes[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < bytes.len() {
+            bytes[i + 2] as u32
+        } else {
+            0
+        };
         let triple = (b0 << 16) | (b1 << 8) | b2;
         result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
         result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
@@ -396,7 +592,9 @@ fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("secrets.choice", args, 1)?;
     let items = args[0].to_list()?;
     if items.is_empty() {
-        return Err(PyException::index_error("cannot choose from an empty sequence"));
+        return Err(PyException::index_error(
+            "cannot choose from an empty sequence",
+        ));
     }
     let idx = (secrets_random_f64() * items.len() as f64) as usize;
     Ok(items[idx.min(items.len() - 1)].clone())
@@ -416,10 +614,8 @@ fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bool_val(result == 0))
 }
 
-
 // ── hmac module ──────────────────────────────────────────────────────
 pub fn create_hmac_module() -> PyObjectRef {
-
     /// Compute HMAC from key, message, and digestmod strings
     fn compute_hmac(key: &[u8], msg: &[u8], digestmod: &str) -> Vec<u8> {
         let block_size = 64usize;
@@ -427,7 +623,9 @@ pub fn create_hmac_module() -> PyObjectRef {
         if k.len() > block_size {
             k = simple_hash(&k, digestmod);
         }
-        while k.len() < block_size { k.push(0); }
+        while k.len() < block_size {
+            k.push(0);
+        }
         let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
         let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
         let mut inner = ipad;
@@ -449,20 +647,34 @@ pub fn create_hmac_module() -> PyObjectRef {
             Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
             _ => vec![],
         };
-        let digestmod = attrs.get("_digestmod").map(|d| d.py_to_string()).unwrap_or_else(|| "sha256".to_string());
+        let digestmod = attrs
+            .get("_digestmod")
+            .map(|d| d.py_to_string())
+            .unwrap_or_else(|| "sha256".to_string());
         drop(attrs);
 
         let result = compute_hmac(&key, &msg, &digestmod);
         let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
 
         let mut attrs = inst.attrs.write();
-        attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
-        attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
-        attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(
+            CompactString::from("digest_size"),
+            PyObject::int(result.len() as i64),
+        );
+        attrs.insert(
+            CompactString::from("_digest_bytes"),
+            PyObject::bytes(result),
+        );
+        attrs.insert(
+            CompactString::from("_hex_str"),
+            PyObject::str_val(CompactString::from(&hex_str)),
+        );
     }
 
     fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.is_empty() { return Err(PyException::type_error("hmac.new() requires key argument")); }
+        if args.is_empty() {
+            return Err(PyException::type_error("hmac.new() requires key argument"));
+        }
         let key = match &args[0].payload {
             PyObjectPayload::Bytes(b) => (**b).clone(),
             PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
@@ -476,11 +688,15 @@ pub fn create_hmac_module() -> PyObjectRef {
                 PyObjectPayload::None => vec![],
                 _ => vec![],
             }
-        } else { vec![] };
+        } else {
+            vec![]
+        };
         // digestmod: 3rd positional OR keyword "digestmod"
         let digestmod = if args.len() > 2 {
             args[2].py_to_string()
-        } else { "sha256".to_string() };
+        } else {
+            "sha256".to_string()
+        };
 
         let result = compute_hmac(&key, &msg, &digestmod);
         let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
@@ -488,106 +704,172 @@ pub fn create_hmac_module() -> PyObjectRef {
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("_key"), PyObject::bytes(key));
         attrs.insert(CompactString::from("_msg"), PyObject::bytes(msg));
-        attrs.insert(CompactString::from("_digestmod"), PyObject::str_val(CompactString::from(&digestmod)));
-        attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
+        attrs.insert(
+            CompactString::from("_digestmod"),
+            PyObject::str_val(CompactString::from(&digestmod)),
+        );
+        attrs.insert(
+            CompactString::from("digest_size"),
+            PyObject::int(result.len() as i64),
+        );
         attrs.insert(CompactString::from("block_size"), PyObject::int(64));
-        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))));
-        attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
-        attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(
+            CompactString::from("name"),
+            PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))),
+        );
+        attrs.insert(
+            CompactString::from("_digest_bytes"),
+            PyObject::bytes(result),
+        );
+        attrs.insert(
+            CompactString::from("_hex_str"),
+            PyObject::str_val(CompactString::from(&hex_str)),
+        );
 
         let mut ns = IndexMap::new();
-        ns.insert(CompactString::from("update"), make_builtin(|args| {
-            let (inst_ref, data_arg) = if args.len() >= 2 {
-                (&args[0], &args[1])
-            } else {
-                return Err(PyException::type_error("update() takes exactly 1 argument"));
-            };
-            if let PyObjectPayload::Instance(inst) = &inst_ref.payload {
-                let new_data = match &data_arg.payload {
-                    PyObjectPayload::Bytes(b) => (**b).clone(),
-                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                    _ => return Err(PyException::type_error("update() argument must be bytes")),
+        ns.insert(
+            CompactString::from("update"),
+            make_builtin(|args| {
+                let (inst_ref, data_arg) = if args.len() >= 2 {
+                    (&args[0], &args[1])
+                } else {
+                    return Err(PyException::type_error("update() takes exactly 1 argument"));
                 };
-                {
-                    let mut attrs = inst.attrs.write();
-                    let cur_msg = match attrs.get("_msg").map(|m| &m.payload) {
-                        Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
-                        _ => vec![],
+                if let PyObjectPayload::Instance(inst) = &inst_ref.payload {
+                    let new_data = match &data_arg.payload {
+                        PyObjectPayload::Bytes(b) => (**b).clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        _ => {
+                            return Err(PyException::type_error("update() argument must be bytes"))
+                        }
                     };
-                    let mut combined = cur_msg;
-                    combined.extend_from_slice(&new_data);
-                    attrs.insert(CompactString::from("_msg"), PyObject::bytes(combined));
+                    {
+                        let mut attrs = inst.attrs.write();
+                        let cur_msg = match attrs.get("_msg").map(|m| &m.payload) {
+                            Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
+                            _ => vec![],
+                        };
+                        let mut combined = cur_msg;
+                        combined.extend_from_slice(&new_data);
+                        attrs.insert(CompactString::from("_msg"), PyObject::bytes(combined));
+                    }
+                    recompute_digest(inst);
                 }
-                recompute_digest(inst);
-            }
-            Ok(PyObject::none())
-        }));
-        ns.insert(CompactString::from("digest"), make_builtin(|args| {
-            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                if let Some(v) = inst.attrs.read().get("_digest_bytes") { return Ok(v.clone()); }
-            }
-            Ok(PyObject::bytes(vec![]))
-        }));
-        ns.insert(CompactString::from("hexdigest"), make_builtin(|args| {
-            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                if let Some(v) = inst.attrs.read().get("_hex_str") { return Ok(v.clone()); }
-            }
-            Ok(PyObject::str_val(CompactString::from("")))
-        }));
-        ns.insert(CompactString::from("copy"), make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("copy() requires self")); }
-            if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                let attrs_copy = inst.attrs.read().clone();
-                let new_inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
-                    class: inst.class.clone(),
-                    attrs: Rc::new(PyCell::new(attrs_copy)),
-                    is_special: true, dict_storage: None,
-                    class_flags: InstanceData::compute_flags(&inst.class),
-                }))));
-                return Ok(new_inst);
-            }
-            Err(PyException::type_error("copy() requires HMAC instance"))
-        }));
+                Ok(PyObject::none())
+            }),
+        );
+        ns.insert(
+            CompactString::from("digest"),
+            make_builtin(|args| {
+                if args.is_empty() {
+                    return Ok(PyObject::bytes(vec![]));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    if let Some(v) = inst.attrs.read().get("_digest_bytes") {
+                        return Ok(v.clone());
+                    }
+                }
+                Ok(PyObject::bytes(vec![]))
+            }),
+        );
+        ns.insert(
+            CompactString::from("hexdigest"),
+            make_builtin(|args| {
+                if args.is_empty() {
+                    return Ok(PyObject::str_val(CompactString::from("")));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    if let Some(v) = inst.attrs.read().get("_hex_str") {
+                        return Ok(v.clone());
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from("")))
+            }),
+        );
+        ns.insert(
+            CompactString::from("copy"),
+            make_builtin(|args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("copy() requires self"));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    let attrs_copy = inst.attrs.read().clone();
+                    let new_inst = PyObject::wrap(PyObjectPayload::Instance(
+                        std::mem::ManuallyDrop::new(Box::new(InstanceData {
+                            class: inst.class.clone(),
+                            attrs: Rc::new(PyCell::new(attrs_copy)),
+                            is_special: true,
+                            dict_storage: None,
+                            class_flags: InstanceData::compute_flags(&inst.class),
+                        })),
+                    ));
+                    return Ok(new_inst);
+                }
+                Err(PyException::type_error("copy() requires HMAC instance"))
+            }),
+        );
 
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
         let class_flags = InstanceData::compute_flags(&class);
-        let inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
-            class,
-            attrs: to_shared_fx(attrs),
-            is_special: true, dict_storage: None,
-            class_flags,
-        }))));
+        let inst = PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(
+            Box::new(InstanceData {
+                class,
+                attrs: to_shared_fx(attrs),
+                is_special: true,
+                dict_storage: None,
+                class_flags,
+            }),
+        )));
         Ok(inst)
     }
 
     fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
-        compute_digest(algo, data).map(|(_, bytes)| bytes).unwrap_or_else(|_| {
-            compute_digest("sha256", data).map(|(_, b)| b).unwrap_or_default()
-        })
+        compute_digest(algo, data)
+            .map(|(_, bytes)| bytes)
+            .unwrap_or_else(|_| {
+                compute_digest("sha256", data)
+                    .map(|(_, b)| b)
+                    .unwrap_or_default()
+            })
     }
 
     fn hmac_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.len() < 2 { return Err(PyException::type_error("compare_digest requires 2 arguments")); }
+        if args.len() < 2 {
+            return Err(PyException::type_error(
+                "compare_digest requires 2 arguments",
+            ));
+        }
         let a = args[0].py_to_string();
         let b = args[1].py_to_string();
         let a_bytes = a.as_bytes();
         let b_bytes = b.as_bytes();
-        if a_bytes.len() != b_bytes.len() { return Ok(PyObject::bool_val(false)); }
+        if a_bytes.len() != b_bytes.len() {
+            return Ok(PyObject::bool_val(false));
+        }
         let mut result = 0u8;
-        for i in 0..a_bytes.len() { result |= a_bytes[i] ^ b_bytes[i]; }
+        for i in 0..a_bytes.len() {
+            result |= a_bytes[i] ^ b_bytes[i];
+        }
         Ok(PyObject::bool_val(result == 0))
     }
 
-    make_module("hmac", vec![
-        ("new", make_builtin(hmac_new)),
-        ("compare_digest", make_builtin(hmac_compare_digest)),
-        ("digest", make_builtin(|args| hmac_new(args).and_then(|h| {
-            h.get_attr("_digest_bytes").ok_or_else(|| PyException::runtime_error("no digest"))
-        }))),
-        ("HMAC", make_builtin(hmac_new)),
-    ])
+    make_module(
+        "hmac",
+        vec![
+            ("new", make_builtin(hmac_new)),
+            ("compare_digest", make_builtin(hmac_compare_digest)),
+            (
+                "digest",
+                make_builtin(|args| {
+                    hmac_new(args).and_then(|h| {
+                        h.get_attr("_digest_bytes")
+                            .ok_or_else(|| PyException::runtime_error("no digest"))
+                    })
+                }),
+            ),
+            ("HMAC", make_builtin(hmac_new)),
+        ],
+    )
 }
 
 // ── uuid module ────────────────────────────────────────────────────
@@ -597,27 +879,48 @@ pub fn create_uuid_module() -> PyObjectRef {
     let ns_url = make_uuid_from_hex("6ba7b811-9dad-11d1-80b4-00c04fd430c8");
     let ns_oid = make_uuid_from_hex("6ba7b812-9dad-11d1-80b4-00c04fd430c8");
     let ns_x500 = make_uuid_from_hex("6ba7b814-9dad-11d1-80b4-00c04fd430c8");
-    make_module("uuid", vec![
-        ("uuid1", make_builtin(uuid_uuid1)),
-        ("uuid3", make_builtin(uuid_uuid3)),
-        ("uuid4", make_builtin(uuid_uuid4)),
-        ("uuid5", make_builtin(uuid_uuid5)),
-        ("UUID", make_builtin(uuid_UUID)),
-        ("NAMESPACE_DNS", ns_dns),
-        ("NAMESPACE_URL", ns_url),
-        ("NAMESPACE_OID", ns_oid),
-        ("NAMESPACE_X500", ns_x500),
-        ("RESERVED_NCS", PyObject::str_val(CompactString::from("reserved for NCS compatibility"))),
-        ("RFC_4122", PyObject::str_val(CompactString::from("specified in RFC 4122"))),
-        ("RESERVED_MICROSOFT", PyObject::str_val(CompactString::from("reserved for Microsoft compatibility"))),
-        ("RESERVED_FUTURE", PyObject::str_val(CompactString::from("reserved for future definition"))),
-        ("getnode", make_builtin(|_| Ok(PyObject::int(0x001122334455_i64)))),
-    ])
+    make_module(
+        "uuid",
+        vec![
+            ("uuid1", make_builtin(uuid_uuid1)),
+            ("uuid3", make_builtin(uuid_uuid3)),
+            ("uuid4", make_builtin(uuid_uuid4)),
+            ("uuid5", make_builtin(uuid_uuid5)),
+            ("UUID", make_builtin(uuid_UUID)),
+            ("NAMESPACE_DNS", ns_dns),
+            ("NAMESPACE_URL", ns_url),
+            ("NAMESPACE_OID", ns_oid),
+            ("NAMESPACE_X500", ns_x500),
+            (
+                "RESERVED_NCS",
+                PyObject::str_val(CompactString::from("reserved for NCS compatibility")),
+            ),
+            (
+                "RFC_4122",
+                PyObject::str_val(CompactString::from("specified in RFC 4122")),
+            ),
+            (
+                "RESERVED_MICROSOFT",
+                PyObject::str_val(CompactString::from("reserved for Microsoft compatibility")),
+            ),
+            (
+                "RESERVED_FUTURE",
+                PyObject::str_val(CompactString::from("reserved for future definition")),
+            ),
+            (
+                "getnode",
+                make_builtin(|_| Ok(PyObject::int(0x001122334455_i64))),
+            ),
+        ],
+    )
 }
 
 fn random_uuid_bytes() -> [u8; 16] {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
     let mut state = seed ^ 0x517cc1b727220a95;
     let mut bytes = [0u8; 16];
     for chunk in bytes.chunks_mut(8) {
@@ -645,7 +948,7 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 fn hex_to_bytes(hex: &str) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     for i in 0..16 {
-        bytes[i] = u8::from_str_radix(&hex[i*2..i*2+2], 16).unwrap_or(0);
+        bytes[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0);
     }
     bytes
 }
@@ -656,10 +959,15 @@ fn build_uuid_object(bytes: [u8; 16]) -> PyObjectRef {
     let hex_flat = hex_str.replace('-', "");
     let version = (bytes[6] >> 4) & 0x0F;
     let variant_byte = bytes[8];
-    let variant = if variant_byte & 0x80 == 0 { "reserved for NCS compatibility" }
-        else if variant_byte & 0xC0 == 0x80 { "specified in RFC 4122" }
-        else if variant_byte & 0xE0 == 0xC0 { "reserved for Microsoft compatibility" }
-        else { "reserved for future definition" };
+    let variant = if variant_byte & 0x80 == 0 {
+        "reserved for NCS compatibility"
+    } else if variant_byte & 0xC0 == 0x80 {
+        "specified in RFC 4122"
+    } else if variant_byte & 0xE0 == 0xC0 {
+        "reserved for Microsoft compatibility"
+    } else {
+        "reserved for future definition"
+    };
 
     // int value from bytes
     let int_val = bytes.iter().fold(0u128, |acc, &b| (acc << 8) | b as u128);
@@ -670,66 +978,120 @@ fn build_uuid_object(bytes: [u8; 16]) -> PyObjectRef {
     let time_hi_ver = u16::from_be_bytes([bytes[6], bytes[7]]);
     let clock_hi = bytes[8];
     let clock_low = bytes[9];
-    let node = bytes[10..16].iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
+    let node = bytes[10..16]
+        .iter()
+        .fold(0u64, |acc, &b| (acc << 8) | b as u64);
 
     let cls = PyObject::class(CompactString::from("UUID"), vec![], IndexMap::new());
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(&hex_flat)));
-    attrs.insert(CompactString::from("version"), PyObject::int(version as i64));
-    attrs.insert(CompactString::from("variant"), PyObject::str_val(CompactString::from(variant)));
+    attrs.insert(
+        CompactString::from("hex"),
+        PyObject::str_val(CompactString::from(&hex_flat)),
+    );
+    attrs.insert(
+        CompactString::from("version"),
+        PyObject::int(version as i64),
+    );
+    attrs.insert(
+        CompactString::from("variant"),
+        PyObject::str_val(CompactString::from(variant)),
+    );
     attrs.insert(CompactString::from("int"), PyObject::int(int_val as i64));
-    attrs.insert(CompactString::from("bytes"), PyObject::bytes(bytes.to_vec()));
-    attrs.insert(CompactString::from("bytes_le"), PyObject::bytes(vec![
-        bytes[3], bytes[2], bytes[1], bytes[0],
-        bytes[5], bytes[4], bytes[7], bytes[6],
-        bytes[8], bytes[9], bytes[10], bytes[11],
-        bytes[12], bytes[13], bytes[14], bytes[15],
-    ]));
-    attrs.insert(CompactString::from("urn"), PyObject::str_val(CompactString::from(format!("urn:uuid:{}", hex_str))));
-    attrs.insert(CompactString::from("time_low"), PyObject::int(time_low as i64));
-    attrs.insert(CompactString::from("time_mid"), PyObject::int(time_mid as i64));
-    attrs.insert(CompactString::from("time_hi_version"), PyObject::int(time_hi_ver as i64));
-    attrs.insert(CompactString::from("clock_seq_hi_variant"), PyObject::int(clock_hi as i64));
-    attrs.insert(CompactString::from("clock_seq_low"), PyObject::int(clock_low as i64));
+    attrs.insert(
+        CompactString::from("bytes"),
+        PyObject::bytes(bytes.to_vec()),
+    );
+    attrs.insert(
+        CompactString::from("bytes_le"),
+        PyObject::bytes(vec![
+            bytes[3], bytes[2], bytes[1], bytes[0], bytes[5], bytes[4], bytes[7], bytes[6],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ]),
+    );
+    attrs.insert(
+        CompactString::from("urn"),
+        PyObject::str_val(CompactString::from(format!("urn:uuid:{}", hex_str))),
+    );
+    attrs.insert(
+        CompactString::from("time_low"),
+        PyObject::int(time_low as i64),
+    );
+    attrs.insert(
+        CompactString::from("time_mid"),
+        PyObject::int(time_mid as i64),
+    );
+    attrs.insert(
+        CompactString::from("time_hi_version"),
+        PyObject::int(time_hi_ver as i64),
+    );
+    attrs.insert(
+        CompactString::from("clock_seq_hi_variant"),
+        PyObject::int(clock_hi as i64),
+    );
+    attrs.insert(
+        CompactString::from("clock_seq_low"),
+        PyObject::int(clock_low as i64),
+    );
     attrs.insert(CompactString::from("node"), PyObject::int(node as i64));
-    attrs.insert(CompactString::from("fields"), PyObject::tuple(vec![
-        PyObject::int(time_low as i64), PyObject::int(time_mid as i64),
-        PyObject::int(time_hi_ver as i64), PyObject::int(clock_hi as i64),
-        PyObject::int(clock_low as i64), PyObject::int(node as i64),
-    ]));
+    attrs.insert(
+        CompactString::from("fields"),
+        PyObject::tuple(vec![
+            PyObject::int(time_low as i64),
+            PyObject::int(time_mid as i64),
+            PyObject::int(time_hi_ver as i64),
+            PyObject::int(clock_hi as i64),
+            PyObject::int(clock_low as i64),
+            PyObject::int(node as i64),
+        ]),
+    );
     attrs.insert(CompactString::from("is_safe"), PyObject::int(0));
-    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&hex_str)));
+    attrs.insert(
+        CompactString::from("__str_val__"),
+        PyObject::str_val(CompactString::from(&hex_str)),
+    );
     attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
     {
         let str_val = hex_str.clone();
-        attrs.insert(CompactString::from("__str__"), PyObject::native_closure("UUID.__str__", move |_| {
-            Ok(PyObject::str_val(CompactString::from(&str_val)))
-        }));
+        attrs.insert(
+            CompactString::from("__str__"),
+            PyObject::native_closure("UUID.__str__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(&str_val)))
+            }),
+        );
     }
     {
         let repr_str = format!("UUID('{}')", hex_str);
-        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure("UUID.__repr__", move |_| {
-            Ok(PyObject::str_val(CompactString::from(&repr_str)))
-        }));
+        attrs.insert(
+            CompactString::from("__repr__"),
+            PyObject::native_closure("UUID.__repr__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(&repr_str)))
+            }),
+        );
     }
     {
         let eq_hex = hex_flat.clone();
-        attrs.insert(CompactString::from("__eq__"), PyObject::native_closure("UUID.__eq__", move |args| {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-            // Compare by hex
-            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                if let Some(h) = inst.attrs.read().get("hex") {
-                    return Ok(PyObject::bool_val(h.py_to_string() == eq_hex));
+        attrs.insert(
+            CompactString::from("__eq__"),
+            PyObject::native_closure("UUID.__eq__", move |args| {
+                if args.is_empty() {
+                    return Ok(PyObject::bool_val(false));
                 }
-            }
-            Ok(PyObject::bool_val(false))
-        }));
+                // Compare by hex
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    if let Some(h) = inst.attrs.read().get("hex") {
+                        return Ok(PyObject::bool_val(h.py_to_string() == eq_hex));
+                    }
+                }
+                Ok(PyObject::bool_val(false))
+            }),
+        );
     }
     {
         let hash_int = (int_val % (i64::MAX as u128)) as i64;
-        attrs.insert(CompactString::from("__hash__"), PyObject::native_closure("UUID.__hash__", move |_| {
-            Ok(PyObject::int(hash_int))
-        }));
+        attrs.insert(
+            CompactString::from("__hash__"),
+            PyObject::native_closure("UUID.__hash__", move |_| Ok(PyObject::int(hash_int))),
+        );
     }
     PyObject::instance_with_attrs(cls, attrs)
 }
@@ -751,7 +1113,9 @@ fn uuid_uuid4(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn uuid_uuid1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // uuid1 is time-based; approximate with timestamp + random
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let ticks = ts.as_nanos() as u64 / 100 + 0x01b21dd213814000; // offset to UUID epoch
     let mut bytes = [0u8; 16];
     // time_low (bytes 0-3)
@@ -771,14 +1135,20 @@ fn uuid_uuid1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let node = if !args.is_empty() {
         let _ = args;
         &rand[10..16]
-    } else { &rand[10..16] };
+    } else {
+        &rand[10..16]
+    };
     bytes[10..16].copy_from_slice(node);
     Ok(build_uuid_object(bytes))
 }
 
 fn uuid_uuid3(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // uuid3(namespace, name) — MD5 hash-based
-    if args.len() < 2 { return Err(PyException::type_error("uuid3() requires namespace and name")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "uuid3() requires namespace and name",
+        ));
+    }
     let ns_bytes = get_uuid_bytes(&args[0])?;
     let name = args[1].py_to_string();
     let mut data = ns_bytes.to_vec();
@@ -793,7 +1163,11 @@ fn uuid_uuid3(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn uuid_uuid5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // uuid5(namespace, name) — SHA-1 hash-based
-    if args.len() < 2 { return Err(PyException::type_error("uuid5() requires namespace and name")); }
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "uuid5() requires namespace and name",
+        ));
+    }
     let ns_bytes = get_uuid_bytes(&args[0])?;
     let name = args[1].py_to_string();
     let mut data = ns_bytes.to_vec();
@@ -837,7 +1211,10 @@ fn uuid_UUID(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     let hex_str = s.replace('-', "");
     if hex_str.len() != 32 || !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(PyException::value_error(format!("badly formed hexadecimal UUID string: '{}'", s)));
+        return Err(PyException::value_error(format!(
+            "badly formed hexadecimal UUID string: '{}'",
+            s
+        )));
     }
     let bytes = hex_to_bytes(&hex_str);
     Ok(build_uuid_object(bytes))

@@ -3,13 +3,12 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, TcpListener, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,7 +33,9 @@ struct SocketInner {
 
 impl SocketInner {
     fn new(family: i64, sock_type: i64, proto: i64) -> Self {
-        let timeout = DEFAULT_TIMEOUT.lock().ok()
+        let timeout = DEFAULT_TIMEOUT
+            .lock()
+            .ok()
             .and_then(|g| *g)
             .map(Duration::from_secs_f64);
         Self {
@@ -75,10 +76,7 @@ fn extract_host_port(addr: &PyObjectRef) -> PyResult<(String, u16)> {
     }
 }
 
-
-fn lock_inner(
-    st: &Arc<Mutex<SocketInner>>,
-) -> PyResult<std::sync::MutexGuard<'_, SocketInner>> {
+fn lock_inner(st: &Arc<Mutex<SocketInner>>) -> PyResult<std::sync::MutexGuard<'_, SocketInner>> {
     st.lock()
         .map_err(|e| PyException::runtime_error(format!("socket lock poisoned: {}", e)))
 }
@@ -183,7 +181,10 @@ pub fn create_socket_module() -> PyObjectRef {
             ("SHUT_RDWR", PyObject::int(2)),
             // Exception types
             ("error", PyObject::exception_type(ExceptionKind::OSError)),
-            ("timeout", PyObject::exception_type(ExceptionKind::TimeoutError)),
+            (
+                "timeout",
+                PyObject::exception_type(ExceptionKind::TimeoutError),
+            ),
             // Module-level functions
             ("socket", make_builtin(socket_constructor)),
             ("gethostname", make_builtin(socket_gethostname)),
@@ -191,95 +192,154 @@ pub fn create_socket_module() -> PyObjectRef {
             ("getaddrinfo", make_builtin(socket_getaddrinfo)),
             ("getfqdn", make_builtin(socket_getfqdn)),
             ("create_connection", make_builtin(socket_create_connection)),
-            ("socketpair", make_builtin(|_args: &[PyObjectRef]| {
-                // Stub: socketpair is Unix-specific and rarely needed in pure Python
-                Err(PyException::os_error("socketpair not available in Ferrython"))
-            })),
-            ("inet_aton", make_builtin(|args: &[PyObjectRef]| {
-                let addr = args.first().map(|a| a.py_to_string()).unwrap_or_default();
-                let parts: Vec<&str> = addr.split('.').collect();
-                if parts.len() != 4 { return Err(PyException::os_error("illegal IP address string")); }
-                let mut bytes = Vec::with_capacity(4);
-                for p in parts {
-                    let b: u8 = p.parse().map_err(|_| PyException::os_error("illegal IP address string"))?;
-                    bytes.push(b);
-                }
-                Ok(PyObject::bytes(bytes))
-            })),
-            ("inet_ntoa", make_builtin(|args: &[PyObjectRef]| {
-                let data = args.first().and_then(|a| match &a.payload { PyObjectPayload::Bytes(b) => Some((**b).clone()), _ => None })
-                    .unwrap_or_default();
-                if data.len() != 4 { return Err(PyException::os_error("packed IP wrong length")); }
-                Ok(PyObject::str_val(CompactString::from(format!("{}.{}.{}.{}", data[0], data[1], data[2], data[3]))))
-            })),
-            ("htons", make_builtin(|args: &[PyObjectRef]| {
-                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
-                Ok(PyObject::int(v.to_be() as i64))
-            })),
-            ("htonl", make_builtin(|args: &[PyObjectRef]| {
-                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
-                Ok(PyObject::int(v.to_be() as i64))
-            })),
-            ("ntohs", make_builtin(|args: &[PyObjectRef]| {
-                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
-                Ok(PyObject::int(u16::from_be(v) as i64))
-            })),
-            ("ntohl", make_builtin(|args: &[PyObjectRef]| {
-                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
-                Ok(PyObject::int(u32::from_be(v) as i64))
-            })),
-            ("getdefaulttimeout", make_builtin(|_| {
-                let guard = DEFAULT_TIMEOUT.lock().unwrap();
-                match *guard {
-                    Some(t) => Ok(PyObject::float(t)),
-                    None => Ok(PyObject::none()),
-                }
-            })),
-            ("setdefaulttimeout", make_builtin(|args| {
-                let val = args.first().ok_or_else(|| PyException::type_error("setdefaulttimeout requires 1 argument"))?;
-                let mut guard = DEFAULT_TIMEOUT.lock().unwrap();
-                match &val.payload {
-                    PyObjectPayload::None => { *guard = None; }
-                    PyObjectPayload::Float(f) => {
-                        if *f < 0.0 {
-                            return Err(PyException::value_error("Timeout value out of range"));
-                        }
-                        *guard = Some(*f);
+            (
+                "socketpair",
+                make_builtin(|_args: &[PyObjectRef]| {
+                    // Stub: socketpair is Unix-specific and rarely needed in pure Python
+                    Err(PyException::os_error(
+                        "socketpair not available in Ferrython",
+                    ))
+                }),
+            ),
+            (
+                "inet_aton",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let addr = args.first().map(|a| a.py_to_string()).unwrap_or_default();
+                    let parts: Vec<&str> = addr.split('.').collect();
+                    if parts.len() != 4 {
+                        return Err(PyException::os_error("illegal IP address string"));
                     }
-                    _ => {
-                        if let Some(i) = val.as_int() {
-                            if i < 0 {
+                    let mut bytes = Vec::with_capacity(4);
+                    for p in parts {
+                        let b: u8 = p
+                            .parse()
+                            .map_err(|_| PyException::os_error("illegal IP address string"))?;
+                        bytes.push(b);
+                    }
+                    Ok(PyObject::bytes(bytes))
+                }),
+            ),
+            (
+                "inet_ntoa",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let data = args
+                        .first()
+                        .and_then(|a| match &a.payload {
+                            PyObjectPayload::Bytes(b) => Some((**b).clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if data.len() != 4 {
+                        return Err(PyException::os_error("packed IP wrong length"));
+                    }
+                    Ok(PyObject::str_val(CompactString::from(format!(
+                        "{}.{}.{}.{}",
+                        data[0], data[1], data[2], data[3]
+                    ))))
+                }),
+            ),
+            (
+                "htons",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
+                    Ok(PyObject::int(v.to_be() as i64))
+                }),
+            ),
+            (
+                "htonl",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
+                    Ok(PyObject::int(v.to_be() as i64))
+                }),
+            ),
+            (
+                "ntohs",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
+                    Ok(PyObject::int(u16::from_be(v) as i64))
+                }),
+            ),
+            (
+                "ntohl",
+                make_builtin(|args: &[PyObjectRef]| {
+                    let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
+                    Ok(PyObject::int(u32::from_be(v) as i64))
+                }),
+            ),
+            (
+                "getdefaulttimeout",
+                make_builtin(|_| {
+                    let guard = DEFAULT_TIMEOUT.lock().unwrap();
+                    match *guard {
+                        Some(t) => Ok(PyObject::float(t)),
+                        None => Ok(PyObject::none()),
+                    }
+                }),
+            ),
+            (
+                "setdefaulttimeout",
+                make_builtin(|args| {
+                    let val = args.first().ok_or_else(|| {
+                        PyException::type_error("setdefaulttimeout requires 1 argument")
+                    })?;
+                    let mut guard = DEFAULT_TIMEOUT.lock().unwrap();
+                    match &val.payload {
+                        PyObjectPayload::None => {
+                            *guard = None;
+                        }
+                        PyObjectPayload::Float(f) => {
+                            if *f < 0.0 {
                                 return Err(PyException::value_error("Timeout value out of range"));
                             }
-                            *guard = Some(i as f64);
-                        } else {
-                            return Err(PyException::type_error("a float is required"));
+                            *guard = Some(*f);
+                        }
+                        _ => {
+                            if let Some(i) = val.as_int() {
+                                if i < 0 {
+                                    return Err(PyException::value_error(
+                                        "Timeout value out of range",
+                                    ));
+                                }
+                                *guard = Some(i as f64);
+                            } else {
+                                return Err(PyException::type_error("a float is required"));
+                            }
                         }
                     }
-                }
-                Ok(PyObject::none())
-            })),
+                    Ok(PyObject::none())
+                }),
+            ),
             ("has_ipv6", PyObject::bool_val(true)),
-            ("has_dualstack_ipv6", make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::bool_val(false))
-            })),
-            ("getnameinfo", make_builtin(|args: &[PyObjectRef]| {
-                // getnameinfo((host, port), flags) -> (hostname, servname)
-                let sockaddr = args.first().ok_or_else(|| PyException::type_error("getnameinfo() argument 1 must be a tuple"))?;
-                let items = sockaddr.to_list().unwrap_or_default();
-                let host = items.first().map(|h| h.py_to_string()).unwrap_or_default();
-                let port = items.get(1).and_then(|p| p.as_int()).unwrap_or(0);
-                Ok(PyObject::tuple(vec![
-                    PyObject::str_val(CompactString::from(host.as_str())),
-                    PyObject::str_val(CompactString::from(port.to_string().as_str())),
-                ]))
-            })),
+            (
+                "has_dualstack_ipv6",
+                make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(false))),
+            ),
+            (
+                "getnameinfo",
+                make_builtin(|args: &[PyObjectRef]| {
+                    // getnameinfo((host, port), flags) -> (hostname, servname)
+                    let sockaddr = args.first().ok_or_else(|| {
+                        PyException::type_error("getnameinfo() argument 1 must be a tuple")
+                    })?;
+                    let items = sockaddr.to_list().unwrap_or_default();
+                    let host = items.first().map(|h| h.py_to_string()).unwrap_or_default();
+                    let port = items.get(1).and_then(|p| p.as_int()).unwrap_or(0);
+                    Ok(PyObject::tuple(vec![
+                        PyObject::str_val(CompactString::from(host.as_str())),
+                        PyObject::str_val(CompactString::from(port.to_string().as_str())),
+                    ]))
+                }),
+            ),
             ("INADDR_ANY", PyObject::int(0)),
             ("INADDR_BROADCAST", PyObject::int(0xFFFFFFFFu32 as i64)),
             ("INADDR_LOOPBACK", PyObject::int(0x7F000001)),
             // AddressFamily and SocketKind IntEnum classes
             ("AddressFamily", {
-                let cls = PyObject::class(CompactString::from("AddressFamily"), vec![], IndexMap::new());
+                let cls = PyObject::class(
+                    CompactString::from("AddressFamily"),
+                    vec![],
+                    IndexMap::new(),
+                );
                 if let PyObjectPayload::Class(ref cd) = cls.payload {
                     let mut ns = cd.namespace.write();
                     ns.insert(CompactString::from("AF_UNSPEC"), PyObject::int(0));
@@ -290,7 +350,8 @@ pub fn create_socket_module() -> PyObjectRef {
                 cls
             }),
             ("SocketKind", {
-                let cls = PyObject::class(CompactString::from("SocketKind"), vec![], IndexMap::new());
+                let cls =
+                    PyObject::class(CompactString::from("SocketKind"), vec![], IndexMap::new());
                 if let PyObjectPayload::Class(ref cd) = cls.payload {
                     let mut ns = cd.namespace.write();
                     ns.insert(CompactString::from("SOCK_STREAM"), PyObject::int(1));
@@ -319,12 +380,7 @@ fn socket_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         0
     };
-    Ok(build_socket_object(
-        family,
-        sock_type,
-        proto,
-        None,
-    ))
+    Ok(build_socket_object(family, sock_type, proto, None))
 }
 
 /// Build a socket-like module object.  If `existing` is provided, the inner
@@ -340,10 +396,7 @@ fn build_socket_object(
     ));
 
     let mut attrs = IndexMap::new();
-    attrs.insert(
-        CompactString::from("__socket__"),
-        PyObject::bool_val(true),
-    );
+    attrs.insert(CompactString::from("__socket__"), PyObject::bool_val(true));
     attrs.insert(CompactString::from("family"), PyObject::int(family));
     attrs.insert(CompactString::from("type"), PyObject::int(sock_type));
     attrs.insert(CompactString::from("proto"), PyObject::int(proto));
@@ -378,14 +431,20 @@ fn build_socket_object(
                 let mut result = None;
                 for addr in &addrs {
                     match TcpStream::connect_timeout(addr, t) {
-                        Ok(s) => { result = Some(s); break; }
+                        Ok(s) => {
+                            result = Some(s);
+                            break;
+                        }
                         Err(e) => last_err = Some(e),
                     }
                 }
                 match result {
                     Some(s) => Ok(s),
                     None => Err(last_err.unwrap_or_else(|| {
-                        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to connect to")
+                        std::io::Error::new(
+                            std::io::ErrorKind::AddrNotAvailable,
+                            "no addresses to connect to",
+                        )
                     })),
                 }
             } else {
@@ -513,7 +572,9 @@ fn build_socket_object(
                         };
                         unsafe {
                             libc::setsockopt(
-                                fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+                                fd,
+                                libc::SOL_SOCKET,
+                                libc::SO_RCVTIMEO,
                                 &tv as *const libc::timeval as *const libc::c_void,
                                 std::mem::size_of::<libc::timeval>() as libc::socklen_t,
                             );
@@ -523,7 +584,9 @@ fn build_socket_object(
                         let val = value as libc::c_int;
                         unsafe {
                             libc::setsockopt(
-                                fd, level as libc::c_int, optname as libc::c_int,
+                                fd,
+                                level as libc::c_int,
+                                optname as libc::c_int,
                                 &val as *const libc::c_int as *const libc::c_void,
                                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                             );
@@ -552,7 +615,9 @@ fn build_socket_object(
                             };
                             unsafe {
                                 libc::setsockopt(
-                                    fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+                                    fd,
+                                    libc::SOL_SOCKET,
+                                    libc::SO_RCVTIMEO,
                                     &tv as *const libc::timeval as *const libc::c_void,
                                     std::mem::size_of::<libc::timeval>() as libc::socklen_t,
                                 );
@@ -568,7 +633,9 @@ fn build_socket_object(
                             let val = value as libc::c_int;
                             unsafe {
                                 libc::setsockopt(
-                                    fd, level as libc::c_int, optname as libc::c_int,
+                                    fd,
+                                    level as libc::c_int,
+                                    optname as libc::c_int,
                                     &val as *const libc::c_int as *const libc::c_void,
                                     std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                                 );
@@ -603,9 +670,16 @@ fn build_socket_object(
                 let listener = guard.tcp_listener.as_ref().ok_or_else(|| {
                     PyException::os_error("[Errno 22] Invalid argument: not listening")
                 })?;
-                let lc = listener.try_clone()
+                let lc = listener
+                    .try_clone()
                     .map_err(|e| PyException::os_error(format!("accept clone: {}", e)))?;
-                (lc, guard.timeout, guard.family, guard.sock_type, guard.proto)
+                (
+                    lc,
+                    guard.timeout,
+                    guard.family,
+                    guard.sock_type,
+                    guard.proto,
+                )
             };
             // Accept outside the lock so other threads can proceed
             if let Some(t) = timeout {
@@ -629,7 +703,8 @@ fn build_socket_object(
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             if start.elapsed() >= t {
                                 return Err(PyException::new(
-                                    ExceptionKind::TimeoutError, "timed out",
+                                    ExceptionKind::TimeoutError,
+                                    "timed out",
                                 ));
                             }
                             std::thread::sleep(Duration::from_millis(5));
@@ -710,11 +785,7 @@ fn build_socket_object(
             let data = match &args[0].payload {
                 PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                _ => {
-                    return Err(PyException::type_error(
-                        "a bytes-like object is required",
-                    ))
-                }
+                _ => return Err(PyException::type_error("a bytes-like object is required")),
             };
             let mut guard = lock_inner(&st)?;
             if guard.closed {
@@ -751,13 +822,19 @@ fn build_socket_object(
                     return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
                 }
                 if let Some(ref stream) = guard.tcp_stream {
-                    Some(stream.try_clone().map_err(|e|
-                        PyException::os_error(format!("recv clone: {}", e)))?)
+                    Some(
+                        stream
+                            .try_clone()
+                            .map_err(|e| PyException::os_error(format!("recv clone: {}", e)))?,
+                    )
                 } else if let Some(ref sock) = guard.udp_socket {
                     // For UDP, read directly under lock (typically non-blocking)
                     let mut buf = vec![0u8; bufsize as usize];
                     return match sock.recv(&mut buf) {
-                        Ok(n) => { buf.truncate(n); Ok(PyObject::bytes(buf)) }
+                        Ok(n) => {
+                            buf.truncate(n);
+                            Ok(PyObject::bytes(buf))
+                        }
                         Err(e) => Err(PyException::os_error(format!("recv: {}", e))),
                     };
                 } else {
@@ -886,7 +963,11 @@ fn build_socket_object(
         PyObject::native_closure("setblocking", {
             let st2 = st.clone();
             move |args| {
-                let blocking = if !args.is_empty() { args[0].is_truthy() } else { true };
+                let blocking = if !args.is_empty() {
+                    args[0].is_truthy()
+                } else {
+                    true
+                };
                 let mut guard = lock_inner(&st2)?;
                 if blocking {
                     guard.timeout = None;
@@ -951,14 +1032,19 @@ fn build_socket_object(
             #[cfg(unix)]
             {
                 use std::os::unix::io::AsRawFd;
-                let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                let fd = guard
+                    .tcp_stream
+                    .as_ref()
+                    .map(|s| s.as_raw_fd())
                     .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
                     .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
                 if let Some(fd) = fd {
                     let val = value as libc::c_int;
                     unsafe {
                         libc::setsockopt(
-                            fd, level as libc::c_int, optname as libc::c_int,
+                            fd,
+                            level as libc::c_int,
+                            optname as libc::c_int,
                             &val as *const libc::c_int as *const libc::c_void,
                             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                         );
@@ -974,21 +1060,38 @@ fn build_socket_object(
     attrs.insert(
         CompactString::from("getsockopt"),
         PyObject::native_closure("getsockopt", move |args| {
-            let level = if !args.is_empty() { args[0].as_int().unwrap_or(0) } else { 0 };
-            let optname = if args.len() > 1 { args[1].as_int().unwrap_or(0) } else { 0 };
+            let level = if !args.is_empty() {
+                args[0].as_int().unwrap_or(0)
+            } else {
+                0
+            };
+            let optname = if args.len() > 1 {
+                args[1].as_int().unwrap_or(0)
+            } else {
+                0
+            };
             let guard = lock_inner(&st)?;
             #[cfg(unix)]
             {
                 use std::os::unix::io::AsRawFd;
-                let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                let fd = guard
+                    .tcp_stream
+                    .as_ref()
+                    .map(|s| s.as_raw_fd())
                     .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
                     .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
                 if let Some(fd) = fd {
                     let mut val: libc::c_int = 0;
-                    let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                    let mut len: libc::socklen_t =
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t;
                     let rc = unsafe {
-                        libc::getsockopt(fd, level as libc::c_int, optname as libc::c_int,
-                            &mut val as *mut libc::c_int as *mut libc::c_void, &mut len)
+                        libc::getsockopt(
+                            fd,
+                            level as libc::c_int,
+                            optname as libc::c_int,
+                            &mut val as *mut libc::c_int as *mut libc::c_void,
+                            &mut len,
+                        )
                     };
                     if rc == 0 {
                         return Ok(PyObject::int(val as i64));
@@ -997,7 +1100,9 @@ fn build_socket_object(
             }
             // Fallback: check stored options
             for &(l, o, v) in &guard.options {
-                if l == level && o == optname { return Ok(PyObject::int(v)); }
+                if l == level && o == optname {
+                    return Ok(PyObject::int(v));
+                }
             }
             Ok(PyObject::int(0))
         }),
@@ -1083,11 +1188,7 @@ fn build_socket_object(
             let data = match &args[0].payload {
                 PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                _ => {
-                    return Err(PyException::type_error(
-                        "a bytes-like object is required",
-                    ))
-                }
+                _ => return Err(PyException::type_error("a bytes-like object is required")),
             };
             let (host, port) = extract_host_port(&args[1])?;
             let dest = format!("{}:{}", host, port);
@@ -1113,7 +1214,9 @@ fn build_socket_object(
                     Err(e) => Err(PyException::os_error(format!("sendto: {}", e))),
                 }
             } else {
-                Err(PyException::os_error("sendto() on non-UDP socket without connection"))
+                Err(PyException::os_error(
+                    "sendto() on non-UDP socket without connection",
+                ))
             }
         }),
     );
@@ -1146,15 +1249,18 @@ fn build_socket_object(
                         ]);
                         Ok(PyObject::tuple(vec![PyObject::bytes(buf), addr_tuple]))
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                        || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
                     {
                         Err(PyException::new(ExceptionKind::TimeoutError, "timed out"))
                     }
                     Err(e) => Err(PyException::os_error(format!("recvfrom: {}", e))),
                 }
             } else {
-                Err(PyException::os_error("recvfrom() requires a bound UDP socket"))
+                Err(PyException::os_error(
+                    "recvfrom() requires a bound UDP socket",
+                ))
             }
         }),
     );
@@ -1174,7 +1280,8 @@ fn build_socket_object(
                 return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
             }
             if let Some(ref stream) = guard.tcp_stream {
-                let cloned = stream.try_clone()
+                let cloned = stream
+                    .try_clone()
                     .map_err(|e| PyException::os_error(format!("makefile: {}", e)))?;
                 let inner_stream = Arc::new(Mutex::new(cloned));
                 let mut file_attrs = IndexMap::new();
@@ -1186,15 +1293,25 @@ fn build_socket_object(
                 file_attrs.insert(
                     CompactString::from("read"),
                     PyObject::native_closure("read", move |args| {
-                        let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
-                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        let size = if !args.is_empty() {
+                            args[0].as_int().unwrap_or(-1)
+                        } else {
+                            -1
+                        };
+                        let mut stream = is
+                            .lock()
+                            .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
                         if size < 0 {
                             let mut buf = Vec::new();
-                            stream.read_to_end(&mut buf).map_err(|e| PyException::os_error(format!("read: {}", e)))?;
+                            stream
+                                .read_to_end(&mut buf)
+                                .map_err(|e| PyException::os_error(format!("read: {}", e)))?;
                             Ok(PyObject::bytes(buf))
                         } else {
                             let mut buf = vec![0u8; size as usize];
-                            let n = stream.read(&mut buf).map_err(|e| PyException::os_error(format!("read: {}", e)))?;
+                            let n = stream
+                                .read(&mut buf)
+                                .map_err(|e| PyException::os_error(format!("read: {}", e)))?;
                             buf.truncate(n);
                             Ok(PyObject::bytes(buf))
                         }
@@ -1206,7 +1323,9 @@ fn build_socket_object(
                     PyObject::native_closure("readline", {
                         let mode = mode.clone();
                         move |_args| {
-                            let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                            let mut stream = is
+                                .lock()
+                                .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
                             let mut line = Vec::new();
                             let mut byte = [0u8; 1];
                             loop {
@@ -1214,17 +1333,30 @@ fn build_socket_object(
                                     Ok(0) => break,
                                     Ok(_) => {
                                         line.push(byte[0]);
-                                        if byte[0] == b'\n' { break; }
+                                        if byte[0] == b'\n' {
+                                            break;
+                                        }
                                     }
-                                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                                        || e.kind() == std::io::ErrorKind::WouldBlock => break,
-                                    Err(e) => return Err(PyException::os_error(format!("readline: {}", e))),
+                                    Err(e)
+                                        if e.kind() == std::io::ErrorKind::TimedOut
+                                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                                    {
+                                        break
+                                    }
+                                    Err(e) => {
+                                        return Err(PyException::os_error(format!(
+                                            "readline: {}",
+                                            e
+                                        )))
+                                    }
                                 }
                             }
                             if mode.contains('b') {
                                 Ok(PyObject::bytes(line))
                             } else {
-                                Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(&line).as_ref())))
+                                Ok(PyObject::str_val(CompactString::from(
+                                    String::from_utf8_lossy(&line).as_ref(),
+                                )))
                             }
                         }
                     }),
@@ -1233,14 +1365,24 @@ fn build_socket_object(
                 file_attrs.insert(
                     CompactString::from("write"),
                     PyObject::native_closure("write", move |args| {
-                        if args.is_empty() { return Err(PyException::type_error("write() requires data")); }
+                        if args.is_empty() {
+                            return Err(PyException::type_error("write() requires data"));
+                        }
                         let data = match &args[0].payload {
                             PyObjectPayload::Bytes(b) => (**b).clone(),
                             PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                            _ => return Err(PyException::type_error("a bytes-like object is required")),
+                            _ => {
+                                return Err(PyException::type_error(
+                                    "a bytes-like object is required",
+                                ))
+                            }
                         };
-                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
-                        let n = stream.write(&data).map_err(|e| PyException::os_error(format!("write: {}", e)))?;
+                        let mut stream = is
+                            .lock()
+                            .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        let n = stream
+                            .write(&data)
+                            .map_err(|e| PyException::os_error(format!("write: {}", e)))?;
                         Ok(PyObject::int(n as i64))
                     }),
                 );
@@ -1248,8 +1390,12 @@ fn build_socket_object(
                 file_attrs.insert(
                     CompactString::from("flush"),
                     PyObject::native_closure("flush", move |_args| {
-                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
-                        stream.flush().map_err(|e| PyException::os_error(format!("flush: {}", e)))?;
+                        let mut stream = is
+                            .lock()
+                            .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        stream
+                            .flush()
+                            .map_err(|e| PyException::os_error(format!("flush: {}", e)))?;
                         Ok(PyObject::none())
                     }),
                 );
@@ -1257,10 +1403,18 @@ fn build_socket_object(
                     CompactString::from("close"),
                     PyObject::native_closure("close", move |_args| Ok(PyObject::none())),
                 );
-                file_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
-                Ok(PyObject::module_with_attrs(CompactString::from("socket.makefile"), file_attrs))
+                file_attrs.insert(
+                    CompactString::from("_bind_methods"),
+                    PyObject::bool_val(true),
+                );
+                Ok(PyObject::module_with_attrs(
+                    CompactString::from("socket.makefile"),
+                    file_attrs,
+                ))
             } else {
-                Err(PyException::os_error("makefile() requires a connected TCP socket"))
+                Err(PyException::os_error(
+                    "makefile() requires a connected TCP socket",
+                ))
             }
         }),
     );
@@ -1277,7 +1431,10 @@ fn build_socket_object(
                 #[cfg(unix)]
                 {
                     use std::os::unix::io::AsRawFd;
-                    let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                    let fd = guard
+                        .tcp_stream
+                        .as_ref()
+                        .map(|s| s.as_raw_fd())
                         .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
                         .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
                     match fd {
@@ -1286,7 +1443,9 @@ fn build_socket_object(
                     }
                 }
                 #[cfg(not(unix))]
-                { "fd=-1".to_string() }
+                {
+                    "fd=-1".to_string()
+                }
             };
             Ok(PyObject::str_val(CompactString::from(format!(
                 "<socket.socket {}, family={}, type={}, proto={}>",
@@ -1480,9 +1639,7 @@ fn socket_create_connection(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let (host, port) = extract_host_port(&args[0])?;
     let timeout = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
-        Some(Duration::from_secs_f64(
-            args[1].to_float().unwrap_or(30.0),
-        ))
+        Some(Duration::from_secs_f64(args[1].to_float().unwrap_or(30.0)))
     } else {
         None
     };

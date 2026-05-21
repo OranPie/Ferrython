@@ -84,7 +84,10 @@ impl InstallLayout {
     /// Get a sysconfig-style path by name.
     pub fn get_path(&self, name: &str) -> Option<PathBuf> {
         match name {
-            "stdlib" => self.stdlib_dir.clone().or_else(|| Some(self.lib_dir.clone())),
+            "stdlib" => self
+                .stdlib_dir
+                .clone()
+                .or_else(|| Some(self.lib_dir.clone())),
             "purelib" | "platlib" => Some(self.site_packages.clone()),
             "scripts" => Some(self.bin_dir.clone()),
             "include" => Some(self.include_dir.clone()),
@@ -97,7 +100,9 @@ impl InstallLayout {
     pub fn get_config_var(&self, name: &str) -> Option<String> {
         match name {
             "prefix" | "exec_prefix" => Some(self.prefix.to_string_lossy().to_string()),
-            "base_prefix" | "base_exec_prefix" => Some(self.base_prefix.to_string_lossy().to_string()),
+            "base_prefix" | "base_exec_prefix" => {
+                Some(self.base_prefix.to_string_lossy().to_string())
+            }
             "BINDIR" => Some(self.bin_dir.to_string_lossy().to_string()),
             "installed_base" => Some(self.prefix.to_string_lossy().to_string()),
             "py_version_short" => Some("3.11".to_string()),

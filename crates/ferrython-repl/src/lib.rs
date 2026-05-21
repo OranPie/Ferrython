@@ -26,24 +26,82 @@ use ferrython_core::types::SharedGlobals;
 
 /// Python keyword and builtin lists for completion.
 const PYTHON_KEYWORDS: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await",
-    "break", "class", "continue", "def", "del", "elif", "else", "except",
-    "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-    "while", "with", "yield",
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
 ];
 
 const PYTHON_BUILTINS: &[&str] = &[
-    "abs", "all", "any", "ascii", "bin", "bool", "breakpoint", "bytearray",
-    "bytes", "callable", "chr", "classmethod", "compile", "complex",
-    "delattr", "dict", "dir", "divmod", "enumerate", "eval", "exec",
-    "filter", "float", "format", "frozenset", "getattr", "globals",
-    "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance",
-    "issubclass", "iter", "len", "list", "locals", "map", "max",
-    "memoryview", "min", "next", "object", "oct", "open", "ord", "pow",
-    "print", "property", "range", "repr", "reversed", "round", "set",
-    "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super",
-    "tuple", "type", "vars", "zip", "__import__",
+    "abs",
+    "all",
+    "any",
+    "ascii",
+    "bin",
+    "bool",
+    "breakpoint",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "classmethod",
+    "compile",
+    "complex",
+    "delattr",
+    "dict",
+    "dir",
+    "divmod",
+    "enumerate",
+    "eval",
+    "exec",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "getattr",
+    "globals",
+    "hasattr",
+    "hash",
+    "help",
+    "hex",
+    "id",
+    "input",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "locals",
+    "map",
+    "max",
+    "memoryview",
+    "min",
+    "next",
+    "object",
+    "oct",
+    "open",
+    "ord",
+    "pow",
+    "print",
+    "property",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "setattr",
+    "slice",
+    "sorted",
+    "staticmethod",
+    "str",
+    "sum",
+    "super",
+    "tuple",
+    "type",
+    "vars",
+    "zip",
+    "__import__",
 ];
 
 /// REPL helper providing completion, validation, and highlighting.
@@ -181,7 +239,11 @@ impl Validator for FerryHelper {
                 continue;
             }
             if !in_string {
-                if (c == '"' || c == '\'') && i + 2 < chars.len() && chars[i+1] == c && chars[i+2] == c {
+                if (c == '"' || c == '\'')
+                    && i + 2 < chars.len()
+                    && chars[i + 1] == c
+                    && chars[i + 2] == c
+                {
                     in_string = true;
                     string_char = c;
                     in_triple = true;
@@ -197,7 +259,9 @@ impl Validator for FerryHelper {
                 }
                 if c == '#' {
                     // Skip to end of line
-                    while i < chars.len() && chars[i] != '\n' { i += 1; }
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
                     continue;
                 }
                 match c {
@@ -211,7 +275,11 @@ impl Validator for FerryHelper {
                 }
             } else {
                 if in_triple {
-                    if c == string_char && i + 2 < chars.len() && chars[i+1] == string_char && chars[i+2] == string_char {
+                    if c == string_char
+                        && i + 2 < chars.len()
+                        && chars[i + 1] == string_char
+                        && chars[i + 2] == string_char
+                    {
                         in_string = false;
                         i += 3;
                         continue;
@@ -265,10 +333,20 @@ fn get_object_dir(obj: &PyObjectRef) -> Option<Vec<String>> {
     match &obj.payload {
         PyObjectPayload::Module(md) => {
             let attrs = md.attrs.read();
-            Some(attrs.keys().map(|k: &CompactString| k.to_string()).collect())
+            Some(
+                attrs
+                    .keys()
+                    .map(|k: &CompactString| k.to_string())
+                    .collect(),
+            )
         }
         PyObjectPayload::Instance(inst) => {
-            let mut names: Vec<String> = inst.attrs.read().keys().map(|k: &CompactString| k.to_string()).collect();
+            let mut names: Vec<String> = inst
+                .attrs
+                .read()
+                .keys()
+                .map(|k: &CompactString| k.to_string())
+                .collect();
             // Add class methods
             if let PyObjectPayload::Class(cd) = &inst.class.payload {
                 for key in cd.namespace.read().keys() {
@@ -280,9 +358,13 @@ fn get_object_dir(obj: &PyObjectRef) -> Option<Vec<String>> {
             }
             Some(names)
         }
-        PyObjectPayload::Class(cd) => {
-            Some(cd.namespace.read().keys().map(|k: &CompactString| k.to_string()).collect())
-        }
+        PyObjectPayload::Class(cd) => Some(
+            cd.namespace
+                .read()
+                .keys()
+                .map(|k: &CompactString| k.to_string())
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -297,10 +379,9 @@ pub fn run_repl() {
     let globals = ferrython_vm::VirtualMachine::new_globals();
 
     // Initialize _ = None in globals
-    globals.write().insert(
-        CompactString::from("_"),
-        PyObject::none(),
-    );
+    globals
+        .write()
+        .insert(CompactString::from("_"), PyObject::none());
 
     // Configure rustyline
     let config = Config::builder()
@@ -314,8 +395,8 @@ pub fn run_repl() {
         globals: globals.clone(),
     };
 
-    let mut rl: Editor<FerryHelper, DefaultHistory> = Editor::with_config(config)
-        .expect("Failed to create line editor");
+    let mut rl: Editor<FerryHelper, DefaultHistory> =
+        Editor::with_config(config).expect("Failed to create line editor");
     rl.set_helper(Some(helper));
 
     // Load history
@@ -364,27 +445,21 @@ pub fn run_repl() {
 }
 
 /// Execute a source string in the VM.
-fn execute_source(
-    vm: &mut ferrython_vm::VirtualMachine,
-    globals: &SharedGlobals,
-    source: &str,
-) {
+fn execute_source(vm: &mut ferrython_vm::VirtualMachine, globals: &SharedGlobals, source: &str) {
     match ferrython_parser::parse(source, "<stdin>") {
-        Ok(module) => {
-            match ferrython_compiler::compile_interactive(&module, "<stdin>") {
-                Ok(code) => {
-                    match vm.execute_with_globals(Rc::new(code), globals.clone()) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            let tb = ferrython_debug::format_traceback(&e);
-                            eprintln!("\x1b[31m{}\x1b[0m", tb);
-                        }
+        Ok(module) => match ferrython_compiler::compile_interactive(&module, "<stdin>") {
+            Ok(code) => {
+                match vm.execute_with_globals(Rc::new(code), globals.clone()) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let tb = ferrython_debug::format_traceback(&e);
+                        eprintln!("\x1b[31m{}\x1b[0m", tb);
                     }
-                    ferrython_core::error::clear_thread_exc_info();
                 }
-                Err(e) => eprintln!("\x1b[31mCompileError: {}\x1b[0m", e),
+                ferrython_core::error::clear_thread_exc_info();
             }
-        }
+            Err(e) => eprintln!("\x1b[31mCompileError: {}\x1b[0m", e),
+        },
         Err(e) => eprintln!("\x1b[31mSyntaxError: {}\x1b[0m", e),
     }
 }

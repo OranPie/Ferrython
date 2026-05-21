@@ -1,14 +1,14 @@
 //! Core Python object types — PyObject, PyObjectPayload, and supporting data types.
 
-use crate::error::{PyResult, ExceptionKind};
+use crate::error::{ExceptionKind, PyResult};
 use crate::object::methods::PyObjectMethods;
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::{Cell, UnsafeCell};
-use std::hash::BuildHasherDefault;
 use std::fmt;
+use std::hash::BuildHasherDefault;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -28,7 +28,9 @@ unsafe impl<T> Sync for PyCell<T> {}
 
 impl<T> PyCell<T> {
     #[inline(always)]
-    pub fn new(val: T) -> Self { Self(UnsafeCell::new(val)) }
+    pub fn new(val: T) -> Self {
+        Self(UnsafeCell::new(val))
+    }
 
     #[inline(always)]
     pub fn read(&self) -> PyCellRef<'_, T> {
@@ -41,7 +43,9 @@ impl<T> PyCell<T> {
     }
 
     #[inline(always)]
-    pub fn data_ptr(&self) -> *mut T { self.0.get() }
+    pub fn data_ptr(&self) -> *mut T {
+        self.0.get()
+    }
 }
 
 impl<T: Clone> Clone for PyCell<T> {
@@ -62,7 +66,9 @@ pub struct PyCellRef<'a, T>(&'a T);
 impl<'a, T> std::ops::Deref for PyCellRef<'a, T> {
     type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &T { self.0 }
+    fn deref(&self) -> &T {
+        self.0
+    }
 }
 
 /// Write guard for PyCell — DerefMut to &mut T (zero-cost wrapper).
@@ -71,12 +77,16 @@ pub struct PyCellMut<'a, T>(&'a mut T);
 impl<'a, T> std::ops::Deref for PyCellMut<'a, T> {
     type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &T { self.0 }
+    fn deref(&self) -> &T {
+        self.0
+    }
 }
 
 impl<'a, T> std::ops::DerefMut for PyCellMut<'a, T> {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut T { self.0 }
+    fn deref_mut(&mut self) -> &mut T {
+        self.0
+    }
 }
 
 /// FxHash build hasher — ~3-4x faster than SipHash for short strings.
@@ -193,9 +203,9 @@ impl StrRepr {
                 rest: u64::from_ne_bytes(rest_bytes),
             }
         } else {
-            Self::from_compact(CompactString::from(
-                unsafe { std::str::from_utf8_unchecked(bytes) }
-            ))
+            Self::from_compact(CompactString::from(unsafe {
+                std::str::from_utf8_unchecked(bytes)
+            }))
         }
     }
 
@@ -306,7 +316,11 @@ impl StrRepr {
                 // Fast path: still fits inline
                 unsafe {
                     let base = &self.tag as *const u8 as *mut u8;
-                    std::ptr::copy_nonoverlapping(suffix.as_ptr(), base.add(1 + cur_len), suffix.len());
+                    std::ptr::copy_nonoverlapping(
+                        suffix.as_ptr(),
+                        base.add(1 + cur_len),
+                        suffix.len(),
+                    );
                 }
                 self.tag = new_len as u8;
             } else {
@@ -392,7 +406,9 @@ impl Ord for StrRepr {
 impl std::ops::Deref for StrRepr {
     type Target = str;
     #[inline(always)]
-    fn deref(&self) -> &str { self.as_str() }
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
 }
 
 impl fmt::Display for StrRepr {
@@ -489,7 +505,9 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
     });
 
     // Initialize block[0] weak count (returned directly, not through freelist)
-    unsafe { (*base).weak = Cell::new(0); }
+    unsafe {
+        (*base).weak = Cell::new(0);
+    }
     unsafe { NonNull::new_unchecked(base) }
 }
 
@@ -546,7 +564,9 @@ unsafe impl Sync for PyObjectRef {}
 
 impl PyObjectRef {
     #[inline(always)]
-    pub fn new(obj: PyObject) -> Self { Self(pool_alloc(obj)) }
+    pub fn new(obj: PyObject) -> Self {
+        Self(pool_alloc(obj))
+    }
 
     /// Create an immortal object that is never freed.
     /// Used for singletons (True, False, None) and small int cache.
@@ -565,7 +585,9 @@ impl PyObjectRef {
     }
 
     #[inline(always)]
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.0 == b.0 }
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        a.0 == b.0
+    }
 
     #[inline(always)]
     pub fn as_ptr(this: &Self) -> *const PyObject {
@@ -588,7 +610,9 @@ impl PyObjectRef {
     /// Used for constants in code objects — they live as long as the program.
     #[inline(always)]
     pub fn make_immortal(this: &Self) {
-        unsafe { (*this.0.as_ptr()).strong.set(IMMORTAL_REFCOUNT); }
+        unsafe {
+            (*this.0.as_ptr()).strong.set(IMMORTAL_REFCOUNT);
+        }
     }
 
     #[inline(always)]
@@ -640,7 +664,9 @@ impl Drop for PyObjectRef {
             let p = self.0.as_ptr();
             let strong = (*p).strong.get();
             // Immortal objects are never freed
-            if strong == IMMORTAL_REFCOUNT { return; }
+            if strong == IMMORTAL_REFCOUNT {
+                return;
+            }
             let new_strong = strong - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
@@ -756,16 +782,24 @@ pub struct SyncI64(pub Cell<i64>);
 
 impl SyncI64 {
     #[inline(always)]
-    pub fn new(v: i64) -> Self { Self(Cell::new(v)) }
+    pub fn new(v: i64) -> Self {
+        Self(Cell::new(v))
+    }
     #[inline(always)]
-    pub fn get(&self) -> i64 { self.0.get() }
+    pub fn get(&self) -> i64 {
+        self.0.get()
+    }
     #[inline(always)]
-    pub fn set(&self, v: i64) { self.0.set(v) }
+    pub fn set(&self, v: i64) {
+        self.0.set(v)
+    }
 }
 
 impl Clone for SyncI64 {
     #[inline(always)]
-    fn clone(&self) -> Self { Self::new(self.get()) }
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
 }
 
 impl fmt::Debug for SyncI64 {
@@ -785,16 +819,24 @@ pub struct SyncUsize(pub Cell<usize>);
 
 impl SyncUsize {
     #[inline(always)]
-    pub fn new(v: usize) -> Self { Self(Cell::new(v)) }
+    pub fn new(v: usize) -> Self {
+        Self(Cell::new(v))
+    }
     #[inline(always)]
-    pub fn get(&self) -> usize { self.0.get() }
+    pub fn get(&self) -> usize {
+        self.0.get()
+    }
     #[inline(always)]
-    pub fn set(&self, v: usize) { self.0.set(v) }
+    pub fn set(&self, v: usize) {
+        self.0.set(v)
+    }
 }
 
 impl Clone for SyncUsize {
     #[inline(always)]
-    fn clone(&self) -> Self { Self::new(self.get()) }
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
 }
 
 impl fmt::Debug for SyncUsize {
@@ -833,7 +875,12 @@ pub struct ExceptionInstanceData {
 
 impl Clone for ExceptionInstanceData {
     fn clone(&self) -> Self {
-        Self::new_attrs(self.kind, self.message.clone(), self.args.clone(), self.get_attrs().cloned())
+        Self::new_attrs(
+            self.kind,
+            self.message.clone(),
+            self.args.clone(),
+            self.get_attrs().cloned(),
+        )
     }
 }
 
@@ -850,8 +897,18 @@ impl std::fmt::Debug for ExceptionInstanceData {
 impl ExceptionInstanceData {
     /// Build with an initial attrs value (None for most exceptions).
     #[inline]
-    pub fn new_attrs(kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef>, attrs: Option<SharedFxAttrMap>) -> Self {
-        Self { kind, message, args, attrs: UnsafeCell::new(attrs) }
+    pub fn new_attrs(
+        kind: ExceptionKind,
+        message: CompactString,
+        args: Vec<PyObjectRef>,
+        attrs: Option<SharedFxAttrMap>,
+    ) -> Self {
+        Self {
+            kind,
+            message,
+            args,
+            attrs: UnsafeCell::new(attrs),
+        }
     }
 
     /// Get attrs for reading. Returns None if no attrs have been set.
@@ -867,9 +924,7 @@ impl ExceptionInstanceData {
         // SAFETY: Single-threaded under GIL. UnsafeCell provides the interior-mutability
         // contract that &self here does not promise immutability.
         let ptr = self.attrs.get();
-        unsafe {
-            (*ptr).get_or_insert_with(|| Rc::new(PyCell::new(FxAttrMap::default())))
-        }
+        unsafe { (*ptr).get_or_insert_with(|| Rc::new(PyCell::new(FxAttrMap::default()))) }
     }
 }
 
@@ -956,7 +1011,10 @@ pub enum PyObjectPayload {
     Bool(bool),
     Int(PyInt),
     Float(f64),
-    Complex { real: f64, imag: f64 },
+    Complex {
+        real: f64,
+        imag: f64,
+    },
     /// Short strings (≤15 bytes) stored inline; longer strings use Box<CompactString>.
     /// Eliminates 1 freelist alloc + 1 dealloc per short string (covers most identifiers/split parts).
     Str(StrRepr),
@@ -978,7 +1036,10 @@ pub enum PyObjectPayload {
     /// Built-in type object (int, str, float, etc.) — callable as constructor.
     /// Boxed to keep PyObjectPayload at 24 bytes.
     BuiltinType(Box<CompactString>),
-    BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
+    BoundMethod {
+        receiver: PyObjectRef,
+        method: PyObjectRef,
+    },
     BuiltinBoundMethod(Box<BuiltinBoundMethodData>),
     Code(std::rc::Rc<ferrython_bytecode::CodeObject>),
     Class(Box<ClassData>),
@@ -996,7 +1057,10 @@ pub enum PyObjectPayload {
     /// Lazy reference iterator — holds a reference to the source container (list/tuple)
     /// and iterates by index without cloning elements upfront. Saves n Rc::clone at
     /// creation + n Rc::drop at destruction. CPython-style: just a pointer + position.
-    RefIter { source: PyObjectRef, index: SyncUsize },
+    RefIter {
+        source: PyObjectRef,
+        index: SyncUsize,
+    },
     Slice(Box<SliceData>),
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
@@ -1031,7 +1095,10 @@ pub enum PyObjectPayload {
     /// Class method wrapper  
     ClassMethod(PyObjectRef),
     /// super() proxy — wraps (class, instance) for parent method dispatch
-    Super { cls: PyObjectRef, instance: PyObjectRef },
+    Super {
+        cls: PyObjectRef,
+        instance: PyObjectRef,
+    },
     /// Range object — preserves start/stop/step, creates fresh iterators.
     /// Boxed to keep PyObjectPayload at 24 bytes.
     Range(Box<RangeData>),
@@ -1042,7 +1109,10 @@ pub enum PyObjectPayload {
     /// Deferred sleep awaitable — carries sleep duration (secs) and result value.
     /// The actual thread::sleep happens when the VM drives this in YIELD_FROM,
     /// allowing asyncio.wait_for to enforce timeouts via a deadline.
-    DeferredSleep { secs: f64, result: PyObjectRef },
+    DeferredSleep {
+        secs: f64,
+        result: PyObjectRef,
+    },
     /// Dict view objects — live views backed by the underlying dict's Arc
     DictKeys(Rc<PyCell<FxHashKeyMap>>),
     DictValues(Rc<PyCell<FxHashKeyMap>>),
@@ -1072,7 +1142,8 @@ impl Drop for PyObjectPayload {
             // std::mem::replace swaps variant to None so compiler's drop-glue is no-op.
             // ptr::read extracts the inner Box; forget prevents old's Drop from running.
             // Note: Str uses StrRepr with its own Drop (recycles heap Box, no-op for inline).
-            PyObjectPayload::Tuple(_) | PyObjectPayload::List(_)
+            PyObjectPayload::Tuple(_)
+            | PyObjectPayload::List(_)
             | PyObjectPayload::BuiltinBoundMethod(_) => {
                 let old = std::mem::replace(self, PyObjectPayload::None);
                 unsafe {
@@ -1124,13 +1195,21 @@ impl fmt::Debug for PyObjectPayload {
             Self::Instance(id) => write!(f, "Instance(class={:?})", id.class.payload),
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
-            Self::RangeIter(ri) => write!(f, "RangeIter({}, {}, {})", ri.current.get(), ri.stop, ri.step),
+            Self::RangeIter(ri) => write!(
+                f,
+                "RangeIter({}, {}, {})",
+                ri.current.get(),
+                ri.stop,
+                ri.step
+            ),
             Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
-            Self::ExceptionInstance(ei) => write!(f, "ExceptionInstance({:?}, {:?})", ei.kind, ei.message),
+            Self::ExceptionInstance(ei) => {
+                write!(f, "ExceptionInstance({:?}, {:?})", ei.kind, ei.message)
+            }
             Self::Generator(_) => write!(f, "Generator(...)"),
             Self::Coroutine(_) => write!(f, "Coroutine(...)"),
             Self::AsyncGenerator(_) => write!(f, "AsyncGenerator(...)"),
@@ -1169,7 +1248,9 @@ pub struct GeneratorState {
 impl GeneratorState {
     /// Returns true if a suspended frame is available.
     #[inline(always)]
-    pub fn has_frame(&self) -> bool { !self.frame_ptr.is_null() }
+    pub fn has_frame(&self) -> bool {
+        !self.frame_ptr.is_null()
+    }
     /// Takes the frame pointer out, leaving null.
     #[inline(always)]
     pub fn take_frame_ptr(&mut self) -> *mut u8 {
@@ -1179,10 +1260,14 @@ impl GeneratorState {
     }
     /// Stores a frame pointer.
     #[inline(always)]
-    pub fn set_frame_ptr(&mut self, p: *mut u8) { self.frame_ptr = p; }
+    pub fn set_frame_ptr(&mut self, p: *mut u8) {
+        self.frame_ptr = p;
+    }
     /// Clears the frame pointer (e.g., on generator finish).
     #[inline(always)]
-    pub fn clear_frame(&mut self) { self.frame_ptr = std::ptr::null_mut(); }
+    pub fn clear_frame(&mut self) {
+        self.frame_ptr = std::ptr::null_mut();
+    }
 }
 
 /// Global callback registered by the VM crate to drop generator frames.
@@ -1192,7 +1277,9 @@ static mut GEN_FRAME_DROP_FN: Option<fn(*mut u8)> = None;
 
 /// Register the generator frame drop function (called once by VM init).
 pub fn register_gen_frame_drop(f: fn(*mut u8)) {
-    unsafe { GEN_FRAME_DROP_FN = Some(f); }
+    unsafe {
+        GEN_FRAME_DROP_FN = Some(f);
+    }
 }
 
 impl Drop for GeneratorState {
@@ -1219,7 +1306,12 @@ impl fmt::Debug for GeneratorState {
 impl Clone for GeneratorState {
     fn clone(&self) -> Self {
         // Generators are not truly clonable; this is a placeholder for the derive requirement
-        Self { name: self.name.clone(), frame_ptr: std::ptr::null_mut(), started: self.started, finished: self.finished }
+        Self {
+            name: self.name.clone(),
+            frame_ptr: std::ptr::null_mut(),
+            started: self.started,
+            finished: self.finished,
+        }
     }
 }
 
@@ -1320,11 +1412,19 @@ impl ClassData {
             match &s.payload {
                 PyObjectPayload::List(items) => {
                     let items = items.read();
-                    Some(items.iter().map(|item: &PyObjectRef| CompactString::from(item.py_to_string())).collect::<Vec<_>>())
+                    Some(
+                        items
+                            .iter()
+                            .map(|item: &PyObjectRef| CompactString::from(item.py_to_string()))
+                            .collect::<Vec<_>>(),
+                    )
                 }
-                PyObjectPayload::Tuple(items) => {
-                    Some(items.iter().map(|item: &PyObjectRef| CompactString::from(item.py_to_string())).collect::<Vec<_>>())
-                }
+                PyObjectPayload::Tuple(items) => Some(
+                    items
+                        .iter()
+                        .map(|item: &PyObjectRef| CompactString::from(item.py_to_string()))
+                        .collect::<Vec<_>>(),
+                ),
                 PyObjectPayload::Str(s) => {
                     // Single string slot: __slots__ = "x"
                     Some(vec![s.to_compact_string()])
@@ -1333,41 +1433,50 @@ impl ClassData {
             }
         });
         // Detect __getattribute__ override in namespace or any base class
-        let has_getattribute = namespace.contains_key("__getattribute__") || mro.iter().any(|base| {
-            if let PyObjectPayload::Class(bcd) = &base.payload {
-                bcd.namespace.read().contains_key("__getattribute__")
-            } else {
-                false
-            }
-        });
+        let has_getattribute = namespace.contains_key("__getattribute__")
+            || mro.iter().any(|base| {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    bcd.namespace.read().contains_key("__getattribute__")
+                } else {
+                    false
+                }
+            });
         // Detect __getattr__ fallback in namespace or any base class
-        let has_getattr = namespace.contains_key("__getattr__") || mro.iter().any(|base| {
-            if let PyObjectPayload::Class(bcd) = &base.payload {
-                bcd.namespace.read().contains_key("__getattr__")
-            } else {
-                false
-            }
-        });
+        let has_getattr = namespace.contains_key("__getattr__")
+            || mro.iter().any(|base| {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    bcd.namespace.read().contains_key("__getattr__")
+                } else {
+                    false
+                }
+            });
         // Detect __setattr__ override in namespace or any base class
-        let has_setattr = namespace.contains_key("__setattr__") || mro.iter().any(|base| {
-            if let PyObjectPayload::Class(bcd) = &base.payload {
-                bcd.namespace.read().contains_key("__setattr__")
-            } else {
-                false
-            }
-        });
+        let has_setattr = namespace.contains_key("__setattr__")
+            || mro.iter().any(|base| {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    bcd.namespace.read().contains_key("__setattr__")
+                } else {
+                    false
+                }
+            });
         // Detect data descriptors (Property, __set__, __delete__) in this class or bases
         let has_descriptors = Self::detect_descriptors(&namespace, &mro);
         // If MRO is empty but we have bases, build a simple linearization
         let mro = if mro.is_empty() && !bases.is_empty() {
             let mut result = Vec::new();
             for base in &bases {
-                if !result.iter().any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, base)) {
+                if !result
+                    .iter()
+                    .any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, base))
+                {
                     result.push(base.clone());
                 }
                 if let PyObjectPayload::Class(cd) = &base.payload {
                     for m in &cd.mro {
-                        if !result.iter().any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, m)) {
+                        if !result
+                            .iter()
+                            .any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, m))
+                        {
                             result.push(m.clone());
                         }
                     }
@@ -1440,6 +1549,15 @@ impl ClassData {
                 false
             }
         };
+        let has_abstractmethods_marker = |val: &PyObjectRef| -> bool {
+            match &val.payload {
+                PyObjectPayload::Set(set) => !set.read().is_empty(),
+                PyObjectPayload::FrozenSet(set) => !set.is_empty(),
+                PyObjectPayload::Tuple(items) => !items.is_empty(),
+                PyObjectPayload::List(items) => !items.read().is_empty(),
+                _ => false,
+            }
+        };
         let has_own_abstract = namespace.values().any(|val| is_abstract_marker(val));
         // Simpler: check if any MRO base has unoverridden abstract methods
         let has_abstract = has_own_abstract || {
@@ -1447,13 +1565,21 @@ impl ClassData {
             for base in &mro {
                 if let PyObjectPayload::Class(bcd) = &base.payload {
                     let bns = bcd.namespace.read();
+                    if let Some(abs_methods) = bns.get("__abstractmethods__") {
+                        if has_abstractmethods_marker(abs_methods) {
+                            found = true;
+                            break;
+                        }
+                    }
                     for (name, val) in bns.iter() {
                         if is_abstract_marker(val) && !namespace.contains_key(name.as_str()) {
                             found = true;
                             break;
                         }
                     }
-                    if found { break; }
+                    if found {
+                        break;
+                    }
                 }
             }
             found
@@ -1468,24 +1594,38 @@ impl ClassData {
         // Pre-compute exception subclass flag (avoids recursive base walk per instantiation)
         let is_exception_subclass = bases.iter().any(|base| {
             fn check_exc(obj: &PyObjectRef) -> bool {
-                if matches!(&obj.payload, PyObjectPayload::ExceptionType(_)) { return true; }
+                if matches!(&obj.payload, PyObjectPayload::ExceptionType(_)) {
+                    return true;
+                }
                 if let PyObjectPayload::Class(cd) = &obj.payload {
                     cd.is_exception_subclass
-                } else { false }
+                } else {
+                    false
+                }
             }
             check_exc(base)
         });
 
         // Pre-compute instance flags
         let mut instance_flags = 0u8;
-        if has_getattribute { instance_flags |= CLASS_FLAG_HAS_GETATTRIBUTE; }
-        if has_descriptors { instance_flags |= CLASS_FLAG_HAS_DESCRIPTORS; }
-        if has_setattr { instance_flags |= CLASS_FLAG_HAS_SETATTR; }
-        if slots.is_some() { instance_flags |= CLASS_FLAG_HAS_SLOTS; }
-        if has_getattr { instance_flags |= CLASS_FLAG_HAS_GETATTR; }
+        if has_getattribute {
+            instance_flags |= CLASS_FLAG_HAS_GETATTRIBUTE;
+        }
+        if has_descriptors {
+            instance_flags |= CLASS_FLAG_HAS_DESCRIPTORS;
+        }
+        if has_setattr {
+            instance_flags |= CLASS_FLAG_HAS_SETATTR;
+        }
+        if slots.is_some() {
+            instance_flags |= CLASS_FLAG_HAS_SLOTS;
+        }
+        if has_getattr {
+            instance_flags |= CLASS_FLAG_HAS_GETATTR;
+        }
 
         let has_custom_new = namespace.contains_key("__new__");
-        
+
         Self {
             name,
             bases,
@@ -1532,7 +1672,8 @@ impl ClassData {
         // Invalidate cached __init__ and __new__ flags
         *self.cached_init.write() = None;
         *self.cached_init_inline.write() = None;
-        self.has_custom_new.set(self.namespace.read().contains_key("__new__"));
+        self.has_custom_new
+            .set(self.namespace.read().contains_key("__new__"));
     }
 
     /// Collect all allowed slot names from this class and its MRO.
@@ -1579,7 +1720,11 @@ impl ClassData {
         if !all_have_slots {
             return None;
         }
-        if found_any { Some(all_slots) } else { None }
+        if found_any {
+            Some(all_slots)
+        } else {
+            None
+        }
     }
 
     /// Whether `__dict__` is allowed on instances of this class.
@@ -1616,7 +1761,8 @@ impl ClassData {
                     // Check class for __set__/__delete__
                     if let PyObjectPayload::Class(icd) = &inst.class.payload {
                         if icd.namespace.read().contains_key("__set__")
-                            || icd.namespace.read().contains_key("__delete__") {
+                            || icd.namespace.read().contains_key("__delete__")
+                        {
                             return true;
                         }
                     }
@@ -1643,7 +1789,9 @@ impl ClassData {
                 PyObjectPayload::Class(bcd) => bcd.name.as_str() == "dict" || bcd.is_dict_subclass,
                 _ => false,
             };
-            if is_dict { return true; }
+            if is_dict {
+                return true;
+            }
         }
         false
     }
@@ -1676,11 +1824,21 @@ impl InstanceData {
     pub fn compute_flags(class: &PyObjectRef) -> u8 {
         if let PyObjectPayload::Class(cd) = &class.payload {
             let mut f = 0u8;
-            if cd.has_getattribute { f |= CLASS_FLAG_HAS_GETATTRIBUTE; }
-            if cd.has_descriptors { f |= CLASS_FLAG_HAS_DESCRIPTORS; }
-            if cd.has_setattr { f |= CLASS_FLAG_HAS_SETATTR; }
-            if cd.slots.is_some() { f |= CLASS_FLAG_HAS_SLOTS; }
-            if cd.has_getattr { f |= CLASS_FLAG_HAS_GETATTR; }
+            if cd.has_getattribute {
+                f |= CLASS_FLAG_HAS_GETATTRIBUTE;
+            }
+            if cd.has_descriptors {
+                f |= CLASS_FLAG_HAS_DESCRIPTORS;
+            }
+            if cd.has_setattr {
+                f |= CLASS_FLAG_HAS_SETATTR;
+            }
+            if cd.slots.is_some() {
+                f |= CLASS_FLAG_HAS_SLOTS;
+            }
+            if cd.has_getattr {
+                f |= CLASS_FLAG_HAS_GETATTR;
+            }
             f
         } else {
             // Not a class — set all flags to force slow path
@@ -1697,33 +1855,113 @@ pub struct ModuleData {
 
 #[derive(Debug, Clone)]
 pub enum IteratorData {
-    List { items: Vec<PyObjectRef>, index: usize },
-    Tuple { items: Vec<PyObjectRef>, index: usize },
-    Range { current: i64, stop: i64, step: i64 },
-    Str { chars: Vec<char>, index: usize },
-    Enumerate { source: PyObjectRef, index: i64, cached_tuple: Option<PyObjectRef> },
-    Zip { sources: Vec<PyObjectRef>, strict: bool, cached_tuple: Option<PyObjectRef>, items_buf: Vec<PyObjectRef> },
-    Map { func: PyObjectRef, source: PyObjectRef },
-    Filter { func: PyObjectRef, source: PyObjectRef },
-    Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },
-    TakeWhile { func: PyObjectRef, source: PyObjectRef, done: bool },
-    DropWhile { func: PyObjectRef, source: PyObjectRef, dropping: bool },
+    List {
+        items: Vec<PyObjectRef>,
+        index: usize,
+    },
+    Tuple {
+        items: Vec<PyObjectRef>,
+        index: usize,
+    },
+    Range {
+        current: i64,
+        stop: i64,
+        step: i64,
+    },
+    Str {
+        chars: Vec<char>,
+        index: usize,
+    },
+    Enumerate {
+        source: PyObjectRef,
+        index: i64,
+        cached_tuple: Option<PyObjectRef>,
+    },
+    Zip {
+        sources: Vec<PyObjectRef>,
+        strict: bool,
+        cached_tuple: Option<PyObjectRef>,
+        items_buf: Vec<PyObjectRef>,
+    },
+    Map {
+        func: PyObjectRef,
+        /// One or more source iterators (multi-arg map is lazy, not eagerly zipped).
+        sources: Vec<PyObjectRef>,
+    },
+    Filter {
+        func: PyObjectRef,
+        source: PyObjectRef,
+    },
+    FilterFalse {
+        func: PyObjectRef,
+        source: PyObjectRef,
+    },
+    Sentinel {
+        callable: PyObjectRef,
+        sentinel: PyObjectRef,
+    },
+    TakeWhile {
+        func: PyObjectRef,
+        source: PyObjectRef,
+        done: bool,
+    },
+    DropWhile {
+        func: PyObjectRef,
+        source: PyObjectRef,
+        dropping: bool,
+    },
     /// Lazy sequence-protocol iterator (old-style __getitem__(0),__getitem__(1),... iter)
-    SeqIter { obj: PyObjectRef, index: i64, exhausted: bool },
+    SeqIter {
+        obj: PyObjectRef,
+        index: i64,
+        exhausted: bool,
+    },
     /// Infinite counter: count(start, step)
-    Count { current: i64, step: i64 },
+    Count {
+        current: i64,
+        step: i64,
+    },
     /// Infinite cycle over cached items
-    Cycle { items: Vec<PyObjectRef>, index: usize },
+    Cycle {
+        items: Vec<PyObjectRef>,
+        index: usize,
+    },
     /// Repeat item n times (None = infinite)
-    Repeat { item: PyObjectRef, remaining: Option<usize> },
+    Repeat {
+        item: PyObjectRef,
+        remaining: Option<usize>,
+    },
     /// Chain multiple iterators sequentially
-    Chain { sources: Vec<PyObjectRef>, current: usize },
+    Chain {
+        sources: Vec<PyObjectRef>,
+        current: usize,
+    },
     /// Starmap: apply func to each tuple of args
-    Starmap { func: PyObjectRef, source: PyObjectRef },
+    Starmap {
+        func: PyObjectRef,
+        source: PyObjectRef,
+    },
+    /// Tee: one leg of a tee() split.
+    /// All legs share the same source iterator and buffer; each leg has its own index.
+    Tee {
+        /// Shared underlying source iterator.
+        source: Rc<PyCell<PyObjectRef>>,
+        /// Shared buffer of items already pulled from the source.
+        buffer: Rc<PyCell<Vec<PyObjectRef>>>,
+        /// This leg's current position in the buffer.
+        index: usize,
+    },
     /// Lazy dict entries iteration: stores reference to dict, iterates by index.
     /// Uses cached_tuple reuse (CPython-style) for (key, value) pairs.
-    DictEntries { source: Rc<PyCell<FxHashKeyMap>>, index: usize, cached_tuple: Option<PyObjectRef> },
+    DictEntries {
+        source: Rc<PyCell<FxHashKeyMap>>,
+        index: usize,
+        cached_tuple: Option<PyObjectRef>,
+    },
     /// Snapshot dict keys iteration — converts keys eagerly at iterator creation.
     /// Trades upfront Vec<PyObjectRef> for cache-friendly, branch-free iteration.
-    DictKeys { keys: Vec<PyObjectRef>, index: usize },
+    DictKeys {
+        keys: Vec<PyObjectRef>,
+        index: usize,
+    },
 }

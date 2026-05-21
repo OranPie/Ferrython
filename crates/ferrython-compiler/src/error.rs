@@ -45,10 +45,16 @@ pub enum CompileError {
     CannotDeleteExpression { location: SourceLocation },
 
     #[error("name '{name}' is parameter and global at {location}")]
-    ParameterAndGlobal { name: String, location: SourceLocation },
+    ParameterAndGlobal {
+        name: String,
+        location: SourceLocation,
+    },
 
     #[error("name '{name}' is parameter and nonlocal at {location}")]
-    ParameterAndNonlocal { name: String, location: SourceLocation },
+    ParameterAndNonlocal {
+        name: String,
+        location: SourceLocation,
+    },
 
     #[error("internal compiler error: {0}")]
     Internal(String),

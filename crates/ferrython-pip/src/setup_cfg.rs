@@ -89,10 +89,7 @@ pub fn parse_setup_cfg_str(content: &str) -> Result<SetupCfg, String> {
             current_key = Some(section_key.clone());
 
             if !val.is_empty() {
-                multiline_values
-                    .entry(section_key)
-                    .or_default()
-                    .push(val);
+                multiline_values.entry(section_key).or_default().push(val);
             }
         }
     }

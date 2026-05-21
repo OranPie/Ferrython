@@ -7,16 +7,19 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
-use ferrython_core::object::{ PyCell, 
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    has_descriptor_get, lookup_in_class_mro, FxAttrMap, FxHashKeyMap,
+use ferrython_core::object::{
+    has_descriptor_get, lookup_in_class_mro, FxAttrMap, FxHashKeyMap, IteratorData, PyCell,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
 impl VirtualMachine {
-    pub(crate) fn exec_jump_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_jump_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::JumpForward | Opcode::JumpAbsolute => {
                 self.vm_frame().ip = instr.arg as usize;
@@ -78,7 +81,10 @@ impl VirtualMachine {
                 }
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
                     // If __iter__ returned a list/tuple, convert to proper iterator
-                    if matches!(&r.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                    if matches!(
+                        &r.payload,
+                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)
+                    ) {
                         self.vm_push(r.get_iter()?);
                     } else {
                         self.vm_push(r);
@@ -99,17 +105,23 @@ impl VirtualMachine {
                                 let mut items = Vec::new();
                                 let mut idx: i64 = 0;
                                 loop {
-                                    match self.call_object(getitem.clone(), vec![PyObject::int(idx)]) {
-                                        Ok(val) => { items.push(val); idx += 1; }
+                                    match self
+                                        .call_object(getitem.clone(), vec![PyObject::int(idx)])
+                                    {
+                                        Ok(val) => {
+                                            items.push(val);
+                                            idx += 1;
+                                        }
                                         Err(e) if e.kind == ExceptionKind::IndexError => break,
                                         Err(e) => return Err(e),
                                     }
                                 }
                                 self.vm_push(PyObject::list(items).get_iter()?);
                             } else {
-                                return Err(PyException::type_error(
-                                    format!("'{}' object is not iterable", obj.type_name())
-                                ));
+                                return Err(PyException::type_error(format!(
+                                    "'{}' object is not iterable",
+                                    obj.type_name()
+                                )));
                             }
                         }
                     }
@@ -118,9 +130,12 @@ impl VirtualMachine {
             Opcode::GetYieldFromIter => {
                 // Like GetIter but for yield from — if it's already a generator/coroutine, leave it.
                 let obj = self.vm_frame().peek().clone();
-                if matches!(&obj.payload,
-                    PyObjectPayload::Generator(_) | PyObjectPayload::Coroutine(_)
-                    | PyObjectPayload::AsyncGenerator(_) | PyObjectPayload::AsyncGenAwaitable { .. }
+                if matches!(
+                    &obj.payload,
+                    PyObjectPayload::Generator(_)
+                        | PyObjectPayload::Coroutine(_)
+                        | PyObjectPayload::AsyncGenerator(_)
+                        | PyObjectPayload::AsyncGenAwaitable { .. }
                 ) {
                     // Already a generator/coroutine, leave on stack
                 } else {
@@ -146,7 +161,10 @@ impl VirtualMachine {
                         }
                         Err(e) => return Err(e),
                     }
-                } else if matches!(&iter.payload, PyObjectPayload::Instance(_) | PyObjectPayload::Module { .. }) {
+                } else if matches!(
+                    &iter.payload,
+                    PyObjectPayload::Instance(_) | PyObjectPayload::Module { .. }
+                ) {
                     if let Some(next_method) = iter.get_attr("__next__") {
                         let call_args = if matches!(&iter.payload, PyObjectPayload::Module { .. }) {
                             vec![iter.clone()]
@@ -154,7 +172,9 @@ impl VirtualMachine {
                             vec![]
                         };
                         match self.call_object(next_method, call_args) {
-                            Ok(value) => { self.vm_push(value); }
+                            Ok(value) => {
+                                self.vm_push(value);
+                            }
                             Err(e) if e.kind == ExceptionKind::StopIteration => {
                                 let f = self.vm_frame();
                                 f.pop();
@@ -170,19 +190,24 @@ impl VirtualMachine {
                     // Check for VM-level lazy iterators
                     let needs_vm = {
                         let data = iter_data_arc.read();
-                        matches!(&*data, IteratorData::Enumerate { .. }
-                            | IteratorData::Zip { .. }
-                            | IteratorData::Map { .. }
-                            | IteratorData::Filter { .. }
-                            | IteratorData::Sentinel { .. }
-                            | IteratorData::TakeWhile { .. }
-                            | IteratorData::DropWhile { .. }
-                            | IteratorData::Count { .. }
-                            | IteratorData::Cycle { .. }
-                            | IteratorData::Repeat { .. }
-                            | IteratorData::Chain { .. }
-                            | IteratorData::SeqIter { .. }
-                            | IteratorData::Starmap { .. })
+                        matches!(
+                            &*data,
+                            IteratorData::Enumerate { .. }
+                                | IteratorData::Zip { .. }
+                                | IteratorData::Map { .. }
+                                | IteratorData::Filter { .. }
+                                | IteratorData::FilterFalse { .. }
+                                | IteratorData::Sentinel { .. }
+                                | IteratorData::TakeWhile { .. }
+                                | IteratorData::DropWhile { .. }
+                                | IteratorData::Count { .. }
+                                | IteratorData::Cycle { .. }
+                                | IteratorData::Repeat { .. }
+                                | IteratorData::Chain { .. }
+                                | IteratorData::SeqIter { .. }
+                                | IteratorData::Starmap { .. }
+                                | IteratorData::Tee { .. }
+                        )
                     };
                     if needs_vm {
                         match self.advance_lazy_iterator(&iter) {
@@ -231,7 +256,11 @@ impl VirtualMachine {
                     if !gen.finished && gen.has_frame() {
                         drop(gen);
                         let gen_arc = gen_arc.clone();
-                        match self.gen_throw(&gen_arc, ExceptionKind::GeneratorExit, CompactString::new("")) {
+                        match self.gen_throw(
+                            &gen_arc,
+                            ExceptionKind::GeneratorExit,
+                            CompactString::new(""),
+                        ) {
                             Ok(_) | Err(_) => {}
                         }
                         let mut gen = gen_arc.write();
@@ -260,7 +289,10 @@ impl VirtualMachine {
 
 // ── Group 9: Container building ──────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_build_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_build_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
         match instr.op {
             Opcode::BuildTuple => {
@@ -286,7 +318,9 @@ impl VirtualMachine {
             Opcode::BuildSet => {
                 let count = instr.arg as usize;
                 let mut stack_items = Vec::new();
-                for _ in 0..count { stack_items.push(frame.pop()); }
+                for _ in 0..count {
+                    stack_items.push(frame.pop());
+                }
                 stack_items.reverse();
                 // Drop frame borrow before calling vm_to_hashable_key
                 let _ = frame;
@@ -361,7 +395,9 @@ impl VirtualMachine {
                         frame.push(PyObject::str_val(CompactString::from(result)));
                     } else {
                         let mut parts = Vec::new();
-                        for _ in 0..count { parts.push(frame.pop()); }
+                        for _ in 0..count {
+                            parts.push(frame.pop());
+                        }
                         parts.reverse();
                         let s: String = parts.iter().map(|p| p.py_to_string()).collect();
                         frame.push(PyObject::str_val(CompactString::from(s)));
@@ -496,19 +532,47 @@ impl VirtualMachine {
                 // Drop frame borrow so we can call __index__ via self
                 let _ = frame;
                 // Resolve __index__ for non-int, non-None slice components
-                let start = if !matches!(start.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) {
-                    self.try_call_dunder(&start, "__index__", vec![])?.unwrap_or(start)
-                } else { start };
-                let stop = if !matches!(stop.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) {
-                    self.try_call_dunder(&stop, "__index__", vec![])?.unwrap_or(stop)
-                } else { stop };
+                let start = if !matches!(
+                    start.payload,
+                    PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+                ) {
+                    self.try_call_dunder(&start, "__index__", vec![])?
+                        .unwrap_or(start)
+                } else {
+                    start
+                };
+                let stop = if !matches!(
+                    stop.payload,
+                    PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+                ) {
+                    self.try_call_dunder(&stop, "__index__", vec![])?
+                        .unwrap_or(stop)
+                } else {
+                    stop
+                };
                 let step = match step {
-                    Some(s) if !matches!(s.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) =>
-                        Some(self.try_call_dunder(&s, "__index__", vec![])?.unwrap_or(s)),
+                    Some(s)
+                        if !matches!(
+                            s.payload,
+                            PyObjectPayload::None
+                                | PyObjectPayload::Int(_)
+                                | PyObjectPayload::Bool(_)
+                        ) =>
+                    {
+                        Some(self.try_call_dunder(&s, "__index__", vec![])?.unwrap_or(s))
+                    }
                     other => other,
                 };
-                let s_start = if matches!(start.payload, PyObjectPayload::None) { None } else { Some(start) };
-                let s_stop = if matches!(stop.payload, PyObjectPayload::None) { None } else { Some(stop) };
+                let s_start = if matches!(start.payload, PyObjectPayload::None) {
+                    None
+                } else {
+                    Some(start)
+                };
+                let s_stop = if matches!(stop.payload, PyObjectPayload::None) {
+                    None
+                } else {
+                    Some(stop)
+                };
                 // Re-borrow frame to push result
                 let frame = self.vm_frame();
                 frame.push(PyObject::slice(s_start, s_stop, step));
@@ -520,7 +584,8 @@ impl VirtualMachine {
                 if items.len() != count {
                     return Err(PyException::value_error(format!(
                         "not enough values to unpack (expected {}, got {})",
-                        count, items.len()
+                        count,
+                        items.len()
                     )));
                 }
                 let frame = self.vm_frame();
@@ -537,7 +602,8 @@ impl VirtualMachine {
                 if items.len() < total_fixed {
                     return Err(PyException::value_error(format!(
                         "not enough values to unpack (expected at least {}, got {})",
-                        total_fixed, items.len()
+                        total_fixed,
+                        items.len()
                     )));
                 }
                 let star_count = items.len() - total_fixed;
@@ -560,7 +626,10 @@ impl VirtualMachine {
 
 // ── Group 10: Function calls ─────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_call_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_call_ops(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::CallFunction => {
                 let frame = self.vm_frame();
@@ -597,14 +666,13 @@ impl VirtualMachine {
                 let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                 let func = frame.pop();
                 let kw_names: Vec<CompactString> = match &kw_names_obj.payload {
-                    PyObjectPayload::Tuple(items) => {
-                        items.iter().map(|item| {
-                            match &item.payload {
-                                PyObjectPayload::Str(s) => s.to_compact_string(),
-                                _ => CompactString::from(item.py_to_string()),
-                            }
-                        }).collect()
-                    }
+                    PyObjectPayload::Tuple(items) => items
+                        .iter()
+                        .map(|item| match &item.payload {
+                            PyObjectPayload::Str(s) => s.to_compact_string(),
+                            _ => CompactString::from(item.py_to_string()),
+                        })
+                        .collect(),
                     _ => Vec::new(),
                 };
                 let n_kw = kw_names.len();
@@ -633,7 +701,11 @@ impl VirtualMachine {
                         // Unbound method path: slot_0 = method
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
                             if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
-                                Some((Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache)))
+                                Some((
+                                    Rc::clone(&pf.code),
+                                    pf.globals.clone(),
+                                    Rc::clone(&pf.constant_cache),
+                                ))
                             } else {
                                 None
                             }
@@ -647,7 +719,11 @@ impl VirtualMachine {
                 let result = if let Some((code, globals, cc)) = fast_data {
                     // Super-fast: direct frame creation, move args from stack
                     let mut new_frame = crate::frame::Frame::new_from_pool(
-                        code, globals, self.builtins.clone(), cc, &mut self.frame_pool,
+                        code,
+                        globals,
+                        self.builtins.clone(),
+                        cc,
+                        &mut self.frame_pool,
                     );
                     {
                         let frame = self.call_stack.last_mut().unwrap();
@@ -661,11 +737,17 @@ impl VirtualMachine {
                     new_frame.scope_kind = crate::frame::ScopeKind::Function;
                     self.call_stack.push(new_frame);
                     if self.call_stack.len() > self.recursion_limit {
-                        if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
-                        return Err(PyException::recursion_error("maximum recursion depth exceeded"));
+                        if let Some(f) = self.call_stack.pop() {
+                            f.recycle(&mut self.frame_pool);
+                        }
+                        return Err(PyException::recursion_error(
+                            "maximum recursion depth exceeded",
+                        ));
                     }
                     let r = self.run_frame();
-                    if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                    if let Some(f) = self.call_stack.pop() {
+                        f.recycle(&mut self.frame_pool);
+                    }
                     r?
                 } else {
                     // General path: pop all items from two-item protocol
@@ -679,7 +761,11 @@ impl VirtualMachine {
 
                     if matches!(&slot_0.payload, PyObjectPayload::None) {
                         // Slow path: slot_1 is the callable
-                        if let PyObjectPayload::BoundMethod { ref receiver, ref method } = slot_1.payload {
+                        if let PyObjectPayload::BoundMethod {
+                            ref receiver,
+                            ref method,
+                        } = slot_1.payload
+                        {
                             let mut bound_args = vec![receiver.clone()];
                             bound_args.extend(args);
                             self.call_object(method.clone(), bound_args)?
@@ -768,7 +854,8 @@ impl VirtualMachine {
 
                         // Class namespace function → two-item: method + receiver
                         if let PyObjectPayload::Class(cd) = &effective_class.payload {
-                            if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                            if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned()
+                            {
                                 if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
                                     frame.push(class_val);
                                     frame.push(obj);
@@ -827,10 +914,13 @@ impl VirtualMachine {
                                         return Ok(None);
                                     }
                                     return Err(PyException::attribute_error(format!(
-                                        "unreadable attribute '{}'", name
+                                        "unreadable attribute '{}'",
+                                        name
                                     )));
                                 }
-                                PyObjectPayload::Instance(ref ci) if ci.attrs.read().contains_key("__wrapped__") => {
+                                PyObjectPayload::Instance(ref ci)
+                                    if ci.attrs.read().contains_key("__wrapped__") =>
+                                {
                                     frame.push(method);
                                     frame.push(obj);
                                     return Ok(None);
@@ -838,17 +928,21 @@ impl VirtualMachine {
                                 _ if has_descriptor_get(&method) => {
                                     let get_fn = method.get_attr("__get__").unwrap();
                                     let owner = effective_class.clone();
-                                    let get_bound = if matches!(&get_fn.payload, PyObjectPayload::BoundMethod { .. }) {
+                                    let get_bound = if matches!(
+                                        &get_fn.payload,
+                                        PyObjectPayload::BoundMethod { .. }
+                                    ) {
                                         get_fn
                                     } else {
                                         PyObjectRef::new(PyObject {
                                             payload: PyObjectPayload::BoundMethod {
                                                 receiver: method.clone(),
                                                 method: get_fn,
-                                            }
+                                            },
                                         })
                                     };
-                                    let result = self.call_object(get_bound, vec![obj.clone(), owner])?;
+                                    let result =
+                                        self.call_object(get_bound, vec![obj.clone(), owner])?;
                                     let frame = self.vm_frame();
                                     frame.push(PyObject::none());
                                     frame.push(result);
@@ -888,7 +982,9 @@ impl VirtualMachine {
                             _ => None,
                         };
                         if let Some(tn) = type_name {
-                            if let Some(type_method) = crate::builtins::resolve_type_class_method(tn, &name) {
+                            if let Some(type_method) =
+                                crate::builtins::resolve_type_class_method(tn, &name)
+                            {
                                 self.vm_frame().push(PyObject::none());
                                 self.vm_push(type_method);
                                 return Ok(None);
@@ -896,7 +992,8 @@ impl VirtualMachine {
                         }
                         if let PyObjectPayload::Instance(_) = &obj.payload {
                             if let Some(ga) = obj.get_attr("__getattr__") {
-                                let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                                let name_arg =
+                                    PyObject::str_val(CompactString::from(name.as_str()));
                                 let result = self.call_object(ga, vec![name_arg])?;
                                 let frame = self.vm_frame();
                                 frame.push(PyObject::none());
@@ -905,7 +1002,9 @@ impl VirtualMachine {
                             }
                         }
                         return Err(PyException::attribute_error(format!(
-                            "'{}' object has no attribute '{}'", obj.type_name(), name
+                            "'{}' object has no attribute '{}'",
+                            obj.type_name(),
+                            name
                         )));
                     }
                 }
@@ -918,17 +1017,18 @@ impl VirtualMachine {
                 let closure_cells = if flags & 0x08 != 0 {
                     let closure_tuple = frame.pop();
                     match &closure_tuple.payload {
-                        PyObjectPayload::Tuple(items) => {
-                            items.iter().map(|item| {
-                                match &item.payload {
-                                    PyObjectPayload::Cell(cell) => cell.clone(),
-                                    _ => Rc::new(PyCell::new(Some(item.clone()))),
-                                }
-                            }).collect()
-                        }
+                        PyObjectPayload::Tuple(items) => items
+                            .iter()
+                            .map(|item| match &item.payload {
+                                PyObjectPayload::Cell(cell) => cell.clone(),
+                                _ => Rc::new(PyCell::new(Some(item.clone()))),
+                            })
+                            .collect(),
                         _ => Vec::new(),
                     }
-                } else { Vec::new() };
+                } else {
+                    Vec::new()
+                };
                 let mut annotations = IndexMap::new();
                 if flags & 0x04 != 0 {
                     let ann_obj = frame.pop();
@@ -953,7 +1053,9 @@ impl VirtualMachine {
                     } else {
                         IndexMap::new()
                     }
-                } else { IndexMap::new() };
+                } else {
+                    IndexMap::new()
+                };
                 let mut defaults = Vec::new();
                 if flags & 0x01 != 0 {
                     let default_tuple = frame.pop();
@@ -961,11 +1063,15 @@ impl VirtualMachine {
                 }
                 let code: Rc<CodeObject> = match &code_obj.payload {
                     PyObjectPayload::Code(c) => Rc::clone(c),
-                    _ => return Err(PyException::type_error(
-                        "expected code object for MAKE_FUNCTION",
-                    )),
+                    _ => {
+                        return Err(PyException::type_error(
+                            "expected code object for MAKE_FUNCTION",
+                        ))
+                    }
                 };
-                let qualname_str = qualname.as_str().map(CompactString::from)
+                let qualname_str = qualname
+                    .as_str()
+                    .map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
                 let constant_cache = PyFunction::get_or_build_constant_cache(&code);
                 let is_simple = PyFunction::compute_is_simple_static(&code, &closure_cells);
@@ -1010,7 +1116,10 @@ impl VirtualMachine {
 
 // ── Group 11: Return + Import ────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_return_import(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_return_import(
+        &mut self,
+        instr: Instruction,
+    ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::ReturnValue => {
                 let frame = self.vm_frame();
@@ -1037,11 +1146,23 @@ impl VirtualMachine {
             }
             Opcode::LoadFastReturnValue => {
                 let frame = self.vm_frame();
-                let val = match frame.locals.get(instr.arg as usize).and_then(|v| v.as_ref()) {
+                let val = match frame
+                    .locals
+                    .get(instr.arg as usize)
+                    .and_then(|v| v.as_ref())
+                {
                     Some(v) => v.clone(),
-                    None => return Err(PyException::name_error(
-                        format!("local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(instr.arg as usize).map(|s| s.as_str()).unwrap_or("?")))),
+                    None => {
+                        return Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame
+                                .code
+                                .varnames
+                                .get(instr.arg as usize)
+                                .map(|s| s.as_str())
+                                .unwrap_or("?")
+                        )))
+                    }
                 };
                 // Handle finally blocks
                 let mut found_finally = false;
@@ -1102,19 +1223,24 @@ impl VirtualMachine {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let module = frame.peek().clone();
                     // Prefer __name__, but fall back to __package__ for relative imports
-                    let raw_name = module.get_attr("__name__")
+                    let raw_name = module
+                        .get_attr("__name__")
                         .map(|n| n.py_to_string())
                         .unwrap_or_default();
                     let mod_name = if raw_name == "<package>" || raw_name.is_empty() {
                         // Use __package__ or derive from __file__
-                        module.get_attr("__package__")
+                        module
+                            .get_attr("__package__")
                             .map(|p| p.py_to_string())
                             .filter(|s| !s.is_empty())
                             .or_else(|| {
                                 module.get_attr("__file__").map(|f| {
                                     let fp = f.py_to_string();
                                     let path = std::path::Path::new(&fp);
-                                    let is_init = path.file_name().map(|f| f == "__init__.py").unwrap_or(false);
+                                    let is_init = path
+                                        .file_name()
+                                        .map(|f| f == "__init__.py")
+                                        .unwrap_or(false);
                                     if is_init {
                                         path.parent()
                                             .and_then(|p| p.file_name())
@@ -1133,7 +1259,8 @@ impl VirtualMachine {
                     } else {
                         raw_name
                     };
-                    let mod_file = module.get_attr("__file__")
+                    let mod_file = module
+                        .get_attr("__file__")
                         .map(|f| f.py_to_string())
                         .unwrap_or_else(|| "unknown location".to_string());
                     let filename = frame.code.filename.clone();
@@ -1147,12 +1274,18 @@ impl VirtualMachine {
                         if has_descriptor_get(&v) {
                             if let Some(get_method) = v.get_attr("__get__") {
                                 let (instance_arg, owner_arg) = match &module.payload {
-                                    PyObjectPayload::Instance(inst) => (module.clone(), inst.class.clone()),
+                                    PyObjectPayload::Instance(inst) => {
+                                        (module.clone(), inst.class.clone())
+                                    }
                                     _ => (module.clone(), PyObject::none()),
                                 };
                                 match self.call_object(get_method, vec![instance_arg, owner_arg]) {
-                                    Ok(result) => { self.vm_frame().push(result); }
-                                    Err(_) => { self.vm_frame().push(v); }
+                                    Ok(result) => {
+                                        self.vm_frame().push(result);
+                                    }
+                                    Err(_) => {
+                                        self.vm_frame().push(v);
+                                    }
                                 }
                             } else {
                                 self.vm_frame().push(v);
@@ -1165,7 +1298,8 @@ impl VirtualMachine {
                         // PEP 562: module-level __getattr__ for ImportFrom
                         if let PyObjectPayload::Module(_) = &module.payload {
                             if let Some(ga) = module.get_attr("__getattr__") {
-                                let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                                let name_arg =
+                                    PyObject::str_val(CompactString::from(name.as_str()));
                                 if let Ok(result) = self.call_object(ga, vec![name_arg]) {
                                     self.vm_frame().push(result);
                                     return Ok(None);
@@ -1183,7 +1317,9 @@ impl VirtualMachine {
                                 let p = std::path::Path::new(&mod_file);
                                 p.parent()
                                     .and_then(|pkg| pkg.parent())
-                                    .map(|root| root.join("__importer__").to_string_lossy().to_string())
+                                    .map(|root| {
+                                        root.join("__importer__").to_string_lossy().to_string()
+                                    })
                                     .unwrap_or_else(|| filename.to_string())
                             } else {
                                 filename.to_string()
@@ -1204,9 +1340,12 @@ impl VirtualMachine {
                                 Err(_e) => {
                                     // If the error itself is an ImportError for a name inside the submodule,
                                     // bubble it up rather than wrapping it.
-                                    if _e.kind == ferrython_core::error::ExceptionKind::ImportError {
+                                    if _e.kind == ferrython_core::error::ExceptionKind::ImportError
+                                    {
                                         let msg = _e.message.clone();
-                                        if msg.starts_with("cannot import name") && !msg.contains(&format!("'{}'", name)) {
+                                        if msg.starts_with("cannot import name")
+                                            && !msg.contains(&format!("'{}'", name))
+                                        {
                                             return Err(_e);
                                         }
                                     }
@@ -1218,7 +1357,8 @@ impl VirtualMachine {
                             }
                         } else {
                             return Err(PyException::import_error(format!(
-                                "cannot import name '{}' from module", name
+                                "cannot import name '{}' from module",
+                                name
                             )));
                         }
                     }
@@ -1230,13 +1370,22 @@ impl VirtualMachine {
                 if let PyObjectPayload::Module(mod_data) = &module.payload {
                     let attrs = mod_data.attrs.read();
                     let all_names: Option<Vec<String>> = attrs.get("__all__").and_then(|v| {
-                        v.to_list().ok().map(|items| items.iter().map(|x: &PyObjectRef| x.py_to_string()).collect::<Vec<String>>())
+                        v.to_list().ok().map(|items| {
+                            items
+                                .iter()
+                                .map(|x: &PyObjectRef| x.py_to_string())
+                                .collect::<Vec<String>>()
+                        })
                     });
                     let mut globals = frame.globals.write();
                     for (k, v) in attrs.iter() {
-                        if k.starts_with('_') && all_names.is_none() { continue; }
+                        if k.starts_with('_') && all_names.is_none() {
+                            continue;
+                        }
                         if let Some(ref names) = all_names {
-                            if !names.contains(&k.to_string()) { continue; }
+                            if !names.contains(&k.to_string()) {
+                                continue;
+                            }
                         }
                         globals.insert(k.clone(), v.clone());
                     }
@@ -1247,4 +1396,3 @@ impl VirtualMachine {
         Ok(None)
     }
 }
-

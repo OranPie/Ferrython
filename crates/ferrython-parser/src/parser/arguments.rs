@@ -26,7 +26,10 @@ impl Parser {
             if self.check(TokenKind::Star) {
                 self.advance();
                 seen_star = true;
-                if self.check(TokenKind::Comma) || self.check(TokenKind::RightParen) || self.check(TokenKind::Colon) {
+                if self.check(TokenKind::Comma)
+                    || self.check(TokenKind::RightParen)
+                    || self.check(TokenKind::Colon)
+                {
                     // bare * separator
                 } else {
                     let name = self.expect_name()?;
@@ -95,7 +98,10 @@ impl Parser {
             // For now, a simple heuristic: if after colon we see a name or type, parse it
             let saved = self.pos;
             self.advance();
-            if self.check(TokenKind::RightParen) || self.check(TokenKind::Equal) || self.check(TokenKind::Comma) {
+            if self.check(TokenKind::RightParen)
+                || self.check(TokenKind::Equal)
+                || self.check(TokenKind::Comma)
+            {
                 self.pos = saved;
                 return Ok(None);
             }
@@ -105,7 +111,9 @@ impl Parser {
         }
     }
 
-    pub(super) fn parse_call_args(&mut self) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
+    pub(super) fn parse_call_args(
+        &mut self,
+    ) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
         let mut args = Vec::new();
         let mut keywords = Vec::new();
         let mut has_keyword = false;
@@ -133,7 +141,8 @@ impl Parser {
                 if has_kwarg_unpacking {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidSyntax(
-                            "iterable argument unpacking follows keyword argument unpacking".into()),
+                            "iterable argument unpacking follows keyword argument unpacking".into(),
+                        ),
                         span,
                     ));
                 }
@@ -177,7 +186,8 @@ impl Parser {
                     if has_kwarg_unpacking {
                         return Err(ParseError::new(
                             ParseErrorKind::InvalidSyntax(
-                                "positional argument follows keyword argument unpacking".into()),
+                                "positional argument follows keyword argument unpacking".into(),
+                            ),
                             crate::token::Span {
                                 start_line: expr.location.line,
                                 start_col: expr.location.column,
@@ -189,7 +199,8 @@ impl Parser {
                     if has_keyword {
                         return Err(ParseError::new(
                             ParseErrorKind::InvalidSyntax(
-                                "positional argument follows keyword argument".into()),
+                                "positional argument follows keyword argument".into(),
+                            ),
                             crate::token::Span {
                                 start_line: expr.location.line,
                                 start_col: expr.location.column,
@@ -214,7 +225,9 @@ impl Parser {
         Ok((args, keywords))
     }
 
-    pub(super) fn parse_class_args(&mut self) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
+    pub(super) fn parse_class_args(
+        &mut self,
+    ) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
         self.parse_call_args()
     }
 }

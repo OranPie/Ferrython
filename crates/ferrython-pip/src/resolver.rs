@@ -1,6 +1,6 @@
 //! Dependency resolution — recursive install of package requirements with backtracking.
 
-use crate::{pypi, installer, registry, version};
+use crate::{installer, pypi, registry, version};
 use std::collections::{HashMap, HashSet};
 
 /// Maximum depth for recursive dependency resolution.
@@ -42,7 +42,8 @@ impl ResolutionState {
                 ));
             }
         }
-        self.resolved.insert(key, (version.to_string(), required_by.to_string()));
+        self.resolved
+            .insert(key, (version.to_string(), required_by.to_string()));
         Ok(())
     }
 
@@ -59,7 +60,9 @@ impl ResolutionState {
             return Err(format!(
                 "Circular dependency detected: {} → {} → {}\n\
                  Hint: Use --no-deps to skip dependency resolution.",
-                cycle.join(" → "), name, cycle.first().unwrap_or(&name)
+                cycle.join(" → "),
+                name,
+                cycle.first().unwrap_or(&name)
             ));
         }
         Ok(())
@@ -89,7 +92,17 @@ pub fn install_with_deps(
     visited: &mut HashSet<String>,
 ) -> Result<(), String> {
     let mut state = ResolutionState::new();
-    install_with_deps_inner(name, version_req, site_packages, upgrade, no_deps, quiet, visited, &mut state, "user")
+    install_with_deps_inner(
+        name,
+        version_req,
+        site_packages,
+        upgrade,
+        no_deps,
+        quiet,
+        visited,
+        &mut state,
+        "user",
+    )
 }
 
 fn install_with_deps_inner(
@@ -112,7 +125,8 @@ fn install_with_deps_inner(
              Resolution path: {}\n\
              Hint: This usually indicates a cyclic or extremely deep dependency chain. \
              Try --no-deps or pin specific versions.",
-            MAX_RESOLUTION_DEPTH, name,
+            MAX_RESOLUTION_DEPTH,
+            name,
             state.path.join(" → ")
         ));
     }
@@ -133,7 +147,10 @@ fn install_with_deps_inner(
             if let Some(spec) = version_req {
                 if version::version_matches(&installed.version, spec) {
                     if !quiet {
-                        println!("Requirement already satisfied: {} ({})", name, installed.version);
+                        println!(
+                            "Requirement already satisfied: {} ({})",
+                            name, installed.version
+                        );
                     }
                     state.record(name, &installed.version, required_by).ok();
                     state.pop_path();
@@ -142,7 +159,10 @@ fn install_with_deps_inner(
                 // Installed version doesn't match — need to upgrade
             } else {
                 if !quiet {
-                    println!("Requirement already satisfied: {} ({})", name, installed.version);
+                    println!(
+                        "Requirement already satisfied: {} ({})",
+                        name, installed.version
+                    );
                 }
                 state.record(name, &installed.version, required_by).ok();
                 state.pop_path();
@@ -159,7 +179,10 @@ fn install_with_deps_inner(
 
     // Warn about yanked versions
     if release.yanked {
-        let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+        let reason = release
+            .yanked_reason
+            .as_deref()
+            .unwrap_or("no reason given");
         eprintln!(
             "WARNING: Installing yanked version {} {}: {}",
             name, release.version, reason
@@ -191,20 +214,23 @@ fn install_with_deps_inner(
     }
 
     // Download and install the package
-    let wheel_path = pypi::download_wheel(&release)
-        .map_err(|e| {
-            state.pop_path();
-            format!("Download failed for {}: {}", name, e)
-        })?;
+    let wheel_path = pypi::download_wheel(&release).map_err(|e| {
+        state.pop_path();
+        format!("Download failed for {}: {}", name, e)
+    })?;
 
-    installer::install_wheel(&wheel_path, site_packages, &release.name, &release.version)
-        .map_err(|e| {
+    installer::install_wheel(&wheel_path, site_packages, &release.name, &release.version).map_err(
+        |e| {
             state.pop_path();
             format!("Install failed for {}: {}", name, e)
-        })?;
+        },
+    )?;
 
     if !quiet {
-        println!("  Successfully installed {}-{}", release.name, release.version);
+        println!(
+            "  Successfully installed {}-{}",
+            release.name, release.version
+        );
     }
 
     // Process dependencies (unless --no-deps)
@@ -214,11 +240,21 @@ fn install_with_deps_inner(
         let mut deps = release.requires_dist.clone();
         let installed_deps = read_installed_requires_dist(site_packages, &release.name);
         for dep in installed_deps {
-            let norm_dep = dep.split_whitespace().next().unwrap_or("").to_lowercase()
-                .replace('-', "_").replace('.', "_");
+            let norm_dep = dep
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_lowercase()
+                .replace('-', "_")
+                .replace('.', "_");
             let already = deps.iter().any(|d| {
-                let n = d.split_whitespace().next().unwrap_or("").to_lowercase()
-                    .replace('-', "_").replace('.', "_");
+                let n = d
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .replace('-', "_")
+                    .replace('.', "_");
                 n == norm_dep
             });
             if !already {
@@ -230,12 +266,27 @@ fn install_with_deps_inner(
         for dep_str in &deps {
             if let Some((dep_name, dep_spec, dep_extras)) = parse_dependency(dep_str) {
                 install_with_deps_inner(
-                    &dep_name, dep_spec.as_deref(), site_packages,
-                    false, false, quiet, visited, state, &parent_name,
+                    &dep_name,
+                    dep_spec.as_deref(),
+                    site_packages,
+                    false,
+                    false,
+                    quiet,
+                    visited,
+                    state,
+                    &parent_name,
                 )?;
                 // If the dependency itself has extras requested, install those too
                 if !dep_extras.is_empty() {
-                    install_extras_deps(&dep_name, &dep_extras, site_packages, quiet, visited, state, &parent_name)?;
+                    install_extras_deps(
+                        &dep_name,
+                        &dep_extras,
+                        site_packages,
+                        quiet,
+                        visited,
+                        state,
+                        &parent_name,
+                    )?;
                 }
             }
         }
@@ -265,8 +316,15 @@ fn install_extras_deps(
                             let dep_spec = req[..semicolon].trim();
                             if let Some((dep_name, dep_ver, _)) = parse_dependency_raw(dep_spec) {
                                 install_with_deps_inner(
-                                    &dep_name, dep_ver.as_deref(), site_packages,
-                                    false, false, quiet, visited, state, required_by,
+                                    &dep_name,
+                                    dep_ver.as_deref(),
+                                    site_packages,
+                                    false,
+                                    false,
+                                    quiet,
+                                    visited,
+                                    state,
+                                    required_by,
                                 )?;
                             }
                         }
@@ -290,15 +348,19 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
             // Exact version pin: ==X.Y.Z (no wildcard, no comma)
             if trimmed.starts_with("==") && !trimmed.contains(',') && !trimmed.contains('*') {
                 let exact = trimmed[2..].trim();
-                let release = pypi::fetch_package_info(name, Some(exact))
-                    .map_err(|e| format!(
+                let release = pypi::fetch_package_info(name, Some(exact)).map_err(|e| {
+                    format!(
                         "Could not find {}=={}:\n  {}\n  \
                          Hint: Check available versions with: ferryip search {}",
                         name, exact, e, name
-                    ))?;
+                    )
+                })?;
                 // Warn about yanked versions when explicitly pinned
                 if release.yanked {
-                    let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+                    let reason = release
+                        .yanked_reason
+                        .as_deref()
+                        .unwrap_or("no reason given");
                     eprintln!(
                         "WARNING: {} {} is yanked: {}\n  \
                          Consider using a different version.",
@@ -308,22 +370,24 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
                 Ok(release)
             } else {
                 // Range specifier — try latest first (fast path), then scan all releases
-                pypi::fetch_best_version(name, trimmed)
-                    .map_err(|e| format!(
+                pypi::fetch_best_version(name, trimmed).map_err(|e| {
+                    format!(
                         "Could not find a version of '{}' satisfying '{}':\n  {}\n  \
                          Hint: Try relaxing the version constraint or check: ferryip search {}",
                         name, trimmed, e, name
-                    ))
+                    )
+                })
             }
         }
         None => {
             // No version constraint — fetch latest
-            let release = pypi::fetch_package_info(name, None)
-                .map_err(|e| format!(
+            let release = pypi::fetch_package_info(name, None).map_err(|e| {
+                format!(
                     "Package '{}' not found:\n  {}\n  \
                      Hint: Check the package name or search: ferryip search {}",
                     name, e, name
-                ))?;
+                )
+            })?;
             // Skip yanked latest — try to find a non-yanked version
             if release.yanked {
                 eprintln!(
@@ -336,7 +400,10 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
                     }
                 }
                 // Fall through to yanked version if no alternatives
-                let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+                let reason = release
+                    .yanked_reason
+                    .as_deref()
+                    .unwrap_or("no reason given");
                 eprintln!(
                     "WARNING: Using yanked version {} {}: {}",
                     name, release.version, reason
@@ -452,7 +519,8 @@ fn extract_extras(dep: &str) -> (String, Vec<String>) {
     if let Some(bracket_start) = dep.find('[') {
         if let Some(bracket_end) = dep.find(']') {
             let extras_str = &dep[bracket_start + 1..bracket_end];
-            let extras: Vec<String> = extras_str.split(',')
+            let extras: Vec<String> = extras_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -470,7 +538,9 @@ fn extract_extras(dep: &str) -> (String, Vec<String>) {
 /// `python_version`, `python_full_version`, `implementation_name`, `extra`.
 fn evaluate_marker(marker: &str) -> bool {
     let marker = marker.trim();
-    if marker.is_empty() { return true; }
+    if marker.is_empty() {
+        return true;
+    }
 
     // Handle `or` (lowest precedence, split first)
     // Be careful not to split inside strings
@@ -486,7 +556,7 @@ fn evaluate_marker(marker: &str) -> bool {
     // Handle parentheses
     let trimmed = marker.trim();
     if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        return evaluate_marker(&trimmed[1..trimmed.len()-1]);
+        return evaluate_marker(&trimmed[1..trimmed.len() - 1]);
     }
 
     // Single comparison: variable op value
@@ -560,30 +630,49 @@ fn resolve_marker_var(s: &str) -> String {
     let s = s.trim();
     // Strip quotes
     if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        return s[1..s.len()-1].to_string();
+        return s[1..s.len() - 1].to_string();
     }
     // Resolve known environment variables
     match s {
         "sys_platform" => {
-            if cfg!(target_os = "linux") { "linux".to_string() }
-            else if cfg!(target_os = "macos") { "darwin".to_string() }
-            else if cfg!(target_os = "windows") { "win32".to_string() }
-            else { "unknown".to_string() }
+            if cfg!(target_os = "linux") {
+                "linux".to_string()
+            } else if cfg!(target_os = "macos") {
+                "darwin".to_string()
+            } else if cfg!(target_os = "windows") {
+                "win32".to_string()
+            } else {
+                "unknown".to_string()
+            }
         }
         "os_name" | "os.name" => {
-            if cfg!(windows) { "nt".to_string() } else { "posix".to_string() }
+            if cfg!(windows) {
+                "nt".to_string()
+            } else {
+                "posix".to_string()
+            }
         }
         "platform_system" => {
-            if cfg!(target_os = "linux") { "Linux".to_string() }
-            else if cfg!(target_os = "macos") { "Darwin".to_string() }
-            else if cfg!(target_os = "windows") { "Windows".to_string() }
-            else { "Unknown".to_string() }
+            if cfg!(target_os = "linux") {
+                "Linux".to_string()
+            } else if cfg!(target_os = "macos") {
+                "Darwin".to_string()
+            } else if cfg!(target_os = "windows") {
+                "Windows".to_string()
+            } else {
+                "Unknown".to_string()
+            }
         }
         "platform_machine" => {
-            if cfg!(target_arch = "x86_64") { "x86_64".to_string() }
-            else if cfg!(target_arch = "aarch64") { "aarch64".to_string() }
-            else if cfg!(target_arch = "x86") { "i686".to_string() }
-            else { "unknown".to_string() }
+            if cfg!(target_arch = "x86_64") {
+                "x86_64".to_string()
+            } else if cfg!(target_arch = "aarch64") {
+                "aarch64".to_string()
+            } else if cfg!(target_arch = "x86") {
+                "i686".to_string()
+            } else {
+                "unknown".to_string()
+            }
         }
         "platform_release" | "platform_version" => "".to_string(),
         "python_version" => "3.12".to_string(),
@@ -595,10 +684,18 @@ fn resolve_marker_var(s: &str) -> String {
     }
 }
 
-fn marker_eq(a: &str, b: &str) -> bool { a == b }
-fn marker_ne(a: &str, b: &str) -> bool { a != b }
-fn marker_in(a: &str, b: &str) -> bool { b.contains(a) }
-fn marker_not_in(a: &str, b: &str) -> bool { !b.contains(a) }
+fn marker_eq(a: &str, b: &str) -> bool {
+    a == b
+}
+fn marker_ne(a: &str, b: &str) -> bool {
+    a != b
+}
+fn marker_in(a: &str, b: &str) -> bool {
+    b.contains(a)
+}
+fn marker_not_in(a: &str, b: &str) -> bool {
+    !b.contains(a)
+}
 
 fn marker_ge(a: &str, b: &str) -> bool {
     match (version::Version::parse(a), version::Version::parse(b)) {
@@ -649,7 +746,11 @@ pub fn resolve_package_info(
 ) -> Result<(pypi::ReleaseInfo, Vec<(String, Option<String>)>), String> {
     let release = resolve_version(name, version_req)?;
     let mut transitive = Vec::new();
-    collect_transitive_deps(&release.requires_dist, &mut transitive, &mut std::collections::HashSet::new());
+    collect_transitive_deps(
+        &release.requires_dist,
+        &mut transitive,
+        &mut std::collections::HashSet::new(),
+    );
     Ok((release, transitive))
 }
 

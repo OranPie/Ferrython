@@ -72,7 +72,11 @@ impl ModuleDef {
 
     /// Add a method to the module.
     pub fn method(mut self, name: &'static str, func: NativeMethod) -> Self {
-        self.methods.push(MethodDef { name, func, doc: "" });
+        self.methods.push(MethodDef {
+            name,
+            func,
+            doc: "",
+        });
         self
     }
 
@@ -96,7 +100,8 @@ impl ModuleDef {
 
     /// Add a string constant to the module.
     pub fn constant_str(mut self, name: &'static str, value: &str) -> Self {
-        self.constants.push((name, ConstantDef::Str(CompactString::from(value))));
+        self.constants
+            .push((name, ConstantDef::Str(CompactString::from(value))));
         self
     }
 

@@ -1,5 +1,5 @@
+use crate::{metadata::PackageMetadata, pypi, registry, resolver};
 use clap::{Parser, Subcommand};
-use crate::{pypi, registry, resolver, metadata::PackageMetadata};
 
 #[derive(Parser)]
 #[command(name = "ferryip", version = env!("CARGO_PKG_VERSION"), about = "Ferrython package manager (pip-compatible)")]
@@ -139,9 +139,7 @@ enum Commands {
     },
 
     /// Search PyPI for packages
-    Search {
-        query: String,
-    },
+    Search { query: String },
 
     /// Download packages without installing
     Download {
@@ -235,9 +233,7 @@ enum CacheAction {
     /// Remove all cached packages
     Purge,
     /// Remove a specific package from cache
-    Remove {
-        pattern: String,
-    },
+    Remove { pattern: String },
 }
 
 pub fn run() {
@@ -247,11 +243,28 @@ pub fn run() {
     let verbose = cli.verbose;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, user, no_cache_dir: _, dry_run, force_reinstall, verify } => {
+        Commands::Install {
+            packages,
+            requirement,
+            upgrade,
+            editable,
+            no_deps,
+            pre,
+            only_binary: _,
+            install_target,
+            user,
+            no_cache_dir: _,
+            dry_run,
+            force_reinstall,
+            verify,
+        } => {
             let effective_site = if user {
                 user_site_packages()
             } else {
-                install_target.as_deref().unwrap_or(&site_packages).to_string()
+                install_target
+                    .as_deref()
+                    .unwrap_or(&site_packages)
+                    .to_string()
             };
             let effective_upgrade = upgrade || force_reinstall;
             if dry_run {
@@ -266,30 +279,65 @@ pub fn run() {
                     reqs.extend(parse_requirements_file(req_file));
                 }
                 reqs.extend(packages.iter().cloned());
-                let result = install_packages(&reqs, &effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                let result = install_packages(
+                    &reqs,
+                    &effective_site,
+                    effective_upgrade,
+                    no_deps,
+                    pre,
+                    quiet,
+                    verbose,
+                );
                 if verify && result.is_ok() {
                     verify_all_installed(&effective_site, &reqs, quiet);
                 }
                 result
             } else if packages.is_empty() {
-                eprintln!("Error: You must give at least one requirement to install \
-                           (see 'ferryip install --help')");
+                eprintln!(
+                    "Error: You must give at least one requirement to install \
+                           (see 'ferryip install --help')"
+                );
                 std::process::exit(1);
             } else {
-                let result = install_packages(&packages, &effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                let result = install_packages(
+                    &packages,
+                    &effective_site,
+                    effective_upgrade,
+                    no_deps,
+                    pre,
+                    quiet,
+                    verbose,
+                );
                 if verify && result.is_ok() {
                     verify_all_installed(&effective_site, &packages, quiet);
                 }
                 result
             }
         }
-        Commands::Uninstall { packages, yes, user } => {
-            let effective_site = if user { user_site_packages() } else { site_packages.clone() };
+        Commands::Uninstall {
+            packages,
+            yes,
+            user,
+        } => {
+            let effective_site = if user {
+                user_site_packages()
+            } else {
+                site_packages.clone()
+            };
             uninstall_packages(&packages, &effective_site, yes, quiet)
         }
-        Commands::List { outdated, format, not_required, exclude_editable } => {
-            list_packages(&site_packages, outdated, &format, not_required, exclude_editable)
-        }
+        Commands::List {
+            outdated,
+            format,
+            not_required,
+            exclude_editable,
+        } => list_packages(
+            &site_packages,
+            outdated,
+            &format,
+            not_required,
+            exclude_editable,
+        ),
         Commands::Show { packages, files } => {
             if packages.is_empty() {
                 eprintln!("Error: Missing required argument <PACKAGE>");
@@ -298,7 +346,9 @@ pub fn run() {
             let mut first = true;
             let mut last_err = None;
             for pkg in &packages {
-                if !first { println!("---"); }
+                if !first {
+                    println!("---");
+                }
                 if let Err(e) = show_package(pkg, &site_packages, files) {
                     last_err = Some(e);
                 }
@@ -309,43 +359,27 @@ pub fn run() {
                 None => Ok(()),
             }
         }
-        Commands::Search { query } => {
-            search_pypi(&query)
-        }
-        Commands::Download { packages, dest } => {
-            download_packages(&packages, &dest, quiet)
-        }
-        Commands::Freeze { exclude_editable, local: _ } => {
-            freeze_packages(&site_packages, exclude_editable)
-        }
-        Commands::Check => {
-            check_packages(&site_packages)
-        }
+        Commands::Search { query } => search_pypi(&query),
+        Commands::Download { packages, dest } => download_packages(&packages, &dest, quiet),
+        Commands::Freeze {
+            exclude_editable,
+            local: _,
+        } => freeze_packages(&site_packages, exclude_editable),
+        Commands::Check => check_packages(&site_packages),
         Commands::Project { path } => {
             let proj_path = path.unwrap_or_else(|| ".".to_string());
             install_project(&proj_path, &site_packages, quiet)
         }
-        Commands::Cache { action } => {
-            handle_cache(action, quiet)
-        }
-        Commands::Hash { files, algorithm } => {
-            compute_hashes(&files, &algorithm)
-        }
-        Commands::Wheel { src, wheel_dir } => {
-            build_wheel(&src, &wheel_dir, quiet)
-        }
-        Commands::Config { list } => {
-            show_config(&site_packages, list)
-        }
-        Commands::Inspect => {
-            inspect_packages(&site_packages)
-        }
-        Commands::Lock { output, requirement } => {
-            generate_lock_file(&site_packages, &output, requirement.as_deref())
-        }
-        Commands::Debug => {
-            show_debug(&site_packages)
-        }
+        Commands::Cache { action } => handle_cache(action, quiet),
+        Commands::Hash { files, algorithm } => compute_hashes(&files, &algorithm),
+        Commands::Wheel { src, wheel_dir } => build_wheel(&src, &wheel_dir, quiet),
+        Commands::Config { list } => show_config(&site_packages, list),
+        Commands::Inspect => inspect_packages(&site_packages),
+        Commands::Lock {
+            output,
+            requirement,
+        } => generate_lock_file(&site_packages, &output, requirement.as_deref()),
+        Commands::Debug => show_debug(&site_packages),
     };
 
     if let Err(e) = result {
@@ -390,7 +424,7 @@ fn show_debug(site_packages: &str) -> Result<(), String> {
     for var in &["FERRYTHON_COMPAT", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE"] {
         match std::env::var(var) {
             Ok(val) => println!("  {}={}", var, val),
-            Err(_)  => println!("  {} (unset)", var),
+            Err(_) => println!("  {} (unset)", var),
         }
     }
     Ok(())
@@ -409,7 +443,10 @@ fn parse_requirements_file(path: &str) -> Vec<String> {
     parse_requirements_file_inner(path, &mut std::collections::HashSet::new())
 }
 
-fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSet<String>) -> Vec<String> {
+fn parse_requirements_file_inner(
+    path: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<String> {
     let canonical = std::path::Path::new(path)
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(path));
@@ -426,7 +463,9 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
         }
     };
 
-    let base_dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let base_dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
 
     // Join continuation lines
     let joined = content.replace("\\\n", "");
@@ -439,7 +478,10 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
         }
 
         // Handle -r / --requirement recursive includes
-        if line.starts_with("-r ") || line.starts_with("--requirement ") || line.starts_with("--requirement=") {
+        if line.starts_with("-r ")
+            || line.starts_with("--requirement ")
+            || line.starts_with("--requirement=")
+        {
             let ref_path = if line.starts_with("--requirement=") {
                 line.strip_prefix("--requirement=").unwrap().trim()
             } else {
@@ -453,7 +495,10 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
         }
 
         // Handle -c / --constraint (parse as pinned version upper bounds)
-        if line.starts_with("-c ") || line.starts_with("--constraint ") || line.starts_with("--constraint=") {
+        if line.starts_with("-c ")
+            || line.starts_with("--constraint ")
+            || line.starts_with("--constraint=")
+        {
             let ref_path = if line.starts_with("--constraint=") {
                 line.strip_prefix("--constraint=").unwrap().trim()
             } else {
@@ -468,7 +513,10 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
         }
 
         // Handle -e / --editable installs in requirements files
-        if line.starts_with("-e ") || line.starts_with("--editable ") || line.starts_with("--editable=") {
+        if line.starts_with("-e ")
+            || line.starts_with("--editable ")
+            || line.starts_with("--editable=")
+        {
             let edit_path = if line.starts_with("--editable=") {
                 line.strip_prefix("--editable=").unwrap().trim()
             } else {
@@ -533,7 +581,15 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
     result
 }
 
-fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool, verbose: bool) -> Result<(), String> {
+fn install_packages(
+    specs: &[String],
+    site_packages: &str,
+    upgrade: bool,
+    no_deps: bool,
+    _pre: bool,
+    quiet: bool,
+    verbose: bool,
+) -> Result<(), String> {
     let start_time = std::time::Instant::now();
     let mut visited = std::collections::HashSet::new();
     let total = specs.len();
@@ -557,7 +613,8 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             if let Some(colon) = rest.find(':') {
                 let hashes_str = &rest[..colon];
                 let actual_spec = &rest[colon + 1..];
-                let hashes: Vec<String> = hashes_str.split(',')
+                let hashes: Vec<String> = hashes_str
+                    .split(',')
                     .map(|h| h.trim().to_string())
                     .filter(|h| !h.is_empty())
                     .collect();
@@ -572,7 +629,12 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
         // Handle editable entries from requirements files (editable:<path>)
         if let Some(edit_path) = trimmed.strip_prefix("editable:") {
             if !quiet {
-                println!("[{}/{}] Installing {} (editable)", idx + 1, total, edit_path);
+                println!(
+                    "[{}/{}] Installing {} (editable)",
+                    idx + 1,
+                    total,
+                    edit_path
+                );
             }
             install_editable(edit_path, site_packages, quiet)?;
             installed_count += 1;
@@ -580,9 +642,13 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
         }
 
         // Handle `ferryip install .` or `ferryip install .[dev]` or `ferryip install ./path`
-        if trimmed == "." || trimmed.starts_with(".[")
-            || trimmed.starts_with("./") || trimmed.starts_with("../")
-            || std::path::Path::new(trimmed).join("pyproject.toml").exists()
+        if trimmed == "."
+            || trimmed.starts_with(".[")
+            || trimmed.starts_with("./")
+            || trimmed.starts_with("../")
+            || std::path::Path::new(trimmed)
+                .join("pyproject.toml")
+                .exists()
             || std::path::Path::new(trimmed).join("setup.cfg").exists()
             || std::path::Path::new(trimmed).join("setup.py").exists()
         {
@@ -590,7 +656,8 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             let (proj_path, proj_extras) = if let Some(bracket_start) = trimmed.find('[') {
                 if let Some(bracket_end) = trimmed.find(']') {
                     let extras_str = &trimmed[bracket_start + 1..bracket_end];
-                    let extras: Vec<String> = extras_str.split(',')
+                    let extras: Vec<String> = extras_str
+                        .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
@@ -620,7 +687,8 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             continue;
         }
 
-        let (name, version_spec, extras) = parse_version_specifier_with_extras(&trimmed.to_string());
+        let (name, version_spec, extras) =
+            parse_version_specifier_with_extras(&trimmed.to_string());
         if !quiet && total > 1 {
             let ver_display = version_spec.as_deref().unwrap_or("");
             println!("[{}/{}] Processing {}{}", idx + 1, total, name, ver_display);
@@ -631,8 +699,15 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             } else {
                 format!("[{}]", extras.join(","))
             };
-            println!("  Resolving {}{}{}", name, extras_display,
-                     version_spec.as_deref().map(|v| format!(" ({})", v)).unwrap_or_default());
+            println!(
+                "  Resolving {}{}{}",
+                name,
+                extras_display,
+                version_spec
+                    .as_deref()
+                    .map(|v| format!(" ({})", v))
+                    .unwrap_or_default()
+            );
         }
         resolver::install_with_deps(
             &name,
@@ -653,7 +728,11 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
 
     if !quiet && installed_count > 1 {
         let elapsed = start_time.elapsed();
-        println!("\nSuccessfully processed {} package(s) in {:.1}s.", installed_count, elapsed.as_secs_f64());
+        println!(
+            "\nSuccessfully processed {} package(s) in {:.1}s.",
+            installed_count,
+            elapsed.as_secs_f64()
+        );
     }
     Ok(())
 }
@@ -663,7 +742,7 @@ fn verify_file_hashes(path: &str, expected_hashes: &[String]) -> Result<(), Stri
     let data = std::fs::read(path)
         .map_err(|e| format!("Cannot read '{}' for hash verification: {}", path, e))?;
 
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&data);
     let actual = format!("{:x}", hasher.finalize());
@@ -689,8 +768,11 @@ fn verify_all_installed(site_packages: &str, specs: &[String], quiet: bool) {
     for spec in specs {
         let trimmed = spec.trim();
         // Skip flags and special entries
-        if trimmed.starts_with("flag:") || trimmed.starts_with("editable:")
-            || trimmed.starts_with("hash:") || trimmed == "." || trimmed.starts_with("./")
+        if trimmed.starts_with("flag:")
+            || trimmed.starts_with("editable:")
+            || trimmed.starts_with("hash:")
+            || trimmed == "."
+            || trimmed.starts_with("./")
         {
             continue;
         }
@@ -701,7 +783,11 @@ fn verify_all_installed(site_packages: &str, specs: &[String], quiet: bool) {
                 println!("  ✓ {} RECORD verified", name);
             }
         } else {
-            eprintln!("  ✗ {} has {} file(s) with mismatched hashes", name, failures.len());
+            eprintln!(
+                "  ✗ {} has {} file(s) with mismatched hashes",
+                name,
+                failures.len()
+            );
             for f in failures.iter().take(3) {
                 eprintln!("      {}", f);
             }
@@ -716,9 +802,7 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
         return Err(format!("File not found: {}", path));
     }
 
-    let filename = file_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // For .whl files, prefer reading metadata from inside the wheel
     let (name, version) = if filename.ends_with(".whl") {
@@ -762,7 +846,10 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
     // Verify RECORD hashes after install
     let failures = crate::installer::verify_installed_record(site_packages, &name);
     if !failures.is_empty() {
-        eprintln!("WARNING: {} file(s) failed RECORD hash verification:", failures.len());
+        eprintln!(
+            "WARNING: {} file(s) failed RECORD hash verification:",
+            failures.len()
+        );
         for f in failures.iter().take(5) {
             eprintln!("  {}", f);
         }
@@ -801,7 +888,9 @@ fn install_extras(
                                 &dep_name,
                                 dep_ver.as_deref(),
                                 site_packages,
-                                false, false, quiet,
+                                false,
+                                false,
+                                quiet,
                                 visited,
                             )?;
                         }
@@ -838,7 +927,8 @@ fn parse_version_specifier_with_extras(spec: &str) -> (String, Option<String>, V
     let (clean, extras) = if let Some(bracket_start) = spec.find('[') {
         if let Some(bracket_end) = spec.find(']') {
             let extras_str = &spec[bracket_start + 1..bracket_end];
-            let extras: Vec<String> = extras_str.split(',')
+            let extras: Vec<String> = extras_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -862,7 +952,11 @@ fn parse_version_specifier_with_extras(spec: &str) -> (String, Option<String>, V
 }
 
 /// Dry-run mode: show what would be installed without actually installing.
-fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: bool) -> Result<(), String> {
+fn dry_run_install(
+    packages: &[String],
+    requirement_files: &[String],
+    quiet: bool,
+) -> Result<(), String> {
     let mut specs: Vec<String> = packages.to_vec();
     for req_file in requirement_files {
         specs.extend(parse_requirements_file(req_file));
@@ -884,7 +978,10 @@ fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: boo
                     format!("[{}]", extras.join(","))
                 };
                 let ver_str = version_spec.as_deref().unwrap_or("");
-                println!("  {}{} {} (latest: {})", name, extras_str, ver_str, info.version);
+                println!(
+                    "  {}{} {} (latest: {})",
+                    name, extras_str, ver_str, info.version
+                );
 
                 // Show transitive dependencies
                 if !transitive_deps.is_empty() {
@@ -892,7 +989,10 @@ fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: boo
                         let dep_ver_str = dep_ver.as_deref().unwrap_or("");
                         match pypi::fetch_package_info(&dep_name, None) {
                             Ok(dep_info) => {
-                                println!("    └─ {} {} (latest: {})", dep_name, dep_ver_str, dep_info.version);
+                                println!(
+                                    "    └─ {} {} (latest: {})",
+                                    dep_name, dep_ver_str, dep_info.version
+                                );
                             }
                             Err(_) => {
                                 println!("    └─ {} {}", dep_name, dep_ver_str);
@@ -913,7 +1013,8 @@ fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: boo
 
 /// Install a package in editable mode: writes a .pth file pointing at the source directory.
 fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), String> {
-    let proj_dir = std::path::Path::new(path).canonicalize()
+    let proj_dir = std::path::Path::new(path)
+        .canonicalize()
         .map_err(|e| format!("Cannot resolve path '{}': {}", path, e))?;
     let pyproject_path = proj_dir.join("pyproject.toml");
     let setup_cfg_path = proj_dir.join("setup.cfg");
@@ -922,7 +1023,8 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
         let meta = PackageMetadata::from_pyproject(&pyproj);
         let name = pyproj.name().unwrap_or_else(|| {
-            proj_dir.file_name()
+            proj_dir
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string()
@@ -933,7 +1035,8 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let cfg = crate::setup_cfg::parse_setup_cfg(&setup_cfg_path)?;
         let meta = PackageMetadata::from_setup_cfg(&cfg);
         let name = cfg.name.unwrap_or_else(|| {
-            proj_dir.file_name()
+            proj_dir
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string()
@@ -941,7 +1044,8 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let version = cfg.version.unwrap_or_else(|| "0.0.0".into());
         (name, version, Some(meta))
     } else {
-        let name = proj_dir.file_name()
+        let name = proj_dir
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
@@ -949,7 +1053,11 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
     };
 
     crate::installer::install_editable_with_metadata(
-        &proj_dir, site_packages, &name, &version, pkg_meta.as_ref(),
+        &proj_dir,
+        site_packages,
+        &name,
+        &version,
+        pkg_meta.as_ref(),
     )?;
 
     if !quiet {
@@ -958,7 +1066,11 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         } else {
             proj_dir.clone()
         };
-        println!("Successfully installed {} (editable, {})", name, source_root.display());
+        println!(
+            "Successfully installed {} (editable, {})",
+            name,
+            source_root.display()
+        );
     }
 
     // Also install project dependencies
@@ -978,31 +1090,61 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
             if !quiet {
                 println!("Installing {} build dependencies...", build_reqs.len());
             }
-            install_packages(&build_reqs, site_packages, false, false, false, quiet, false)?;
+            install_packages(
+                &build_reqs,
+                site_packages,
+                false,
+                false,
+                false,
+                quiet,
+                false,
+            )?;
         }
     } else if setup_cfg_path.exists() {
         let cfg = crate::setup_cfg::parse_setup_cfg(&setup_cfg_path)?;
         if !cfg.install_requires.is_empty() {
             if !quiet {
-                println!("Installing {} project dependencies...", cfg.install_requires.len());
+                println!(
+                    "Installing {} project dependencies...",
+                    cfg.install_requires.len()
+                );
             }
-            install_packages(&cfg.install_requires, site_packages, false, false, false, quiet, false)?;
+            install_packages(
+                &cfg.install_requires,
+                site_packages,
+                false,
+                false,
+                false,
+                quiet,
+                false,
+            )?;
         }
     }
 
     Ok(())
 }
 
-fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: bool) -> Result<(), String> {
+fn uninstall_packages(
+    names: &[String],
+    site_packages: &str,
+    yes: bool,
+    quiet: bool,
+) -> Result<(), String> {
     if names.is_empty() {
-        return Err("You must give at least one package to uninstall (see 'ferryip uninstall --help')".to_string());
+        return Err(
+            "You must give at least one package to uninstall (see 'ferryip uninstall --help')"
+                .to_string(),
+        );
     }
     for name in names {
         let installed = registry::get_installed(name, site_packages);
         if installed.is_none() {
             // Try to suggest similar installed packages
             let all = registry::list_installed(site_packages);
-            let suggestion = find_closest_name(name, &all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
+            let suggestion = find_closest_name(
+                name,
+                &all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            );
             let hint = if let Some(ref similar) = suggestion {
                 format!("\nDid you mean: {}?", similar)
             } else {
@@ -1015,7 +1157,10 @@ fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: b
         }
         let info = installed.unwrap();
         if !yes {
-            println!("Found existing installation: {}-{}", info.name, info.version);
+            println!(
+                "Found existing installation: {}-{}",
+                info.name, info.version
+            );
             let file_count = info.files.len();
             println!("  Would remove {} file(s):", file_count);
             // Show up to 10 files, then summarize
@@ -1030,13 +1175,13 @@ fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: b
             use std::io::Write;
             std::io::stdout().flush().ok();
             let mut input = String::new();
-            if std::io::stdin().read_line(&mut input).is_ok() && input.trim().to_lowercase() == "n" {
+            if std::io::stdin().read_line(&mut input).is_ok() && input.trim().to_lowercase() == "n"
+            {
                 println!("Skipping {}.", name);
                 continue;
             }
         }
-        registry::uninstall(name, site_packages)
-            .map_err(|e| format!("Uninstall failed: {}", e))?;
+        registry::uninstall(name, site_packages).map_err(|e| format!("Uninstall failed: {}", e))?;
         if !quiet {
             println!("Successfully uninstalled {}-{}", info.name, info.version);
         }
@@ -1044,7 +1189,13 @@ fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: b
     Ok(())
 }
 
-fn list_packages(site_packages: &str, outdated: bool, format: &str, not_required: bool, exclude_editable: bool) -> Result<(), String> {
+fn list_packages(
+    site_packages: &str,
+    outdated: bool,
+    format: &str,
+    not_required: bool,
+    exclude_editable: bool,
+) -> Result<(), String> {
     let mut packages = registry::list_installed(site_packages);
     if packages.is_empty() {
         println!("No packages installed.");
@@ -1062,12 +1213,15 @@ fn list_packages(site_packages: &str, outdated: bool, format: &str, not_required
 
     // Filter to packages not required by others
     if not_required {
-        let all_deps: std::collections::HashSet<String> = packages.iter()
+        let all_deps: std::collections::HashSet<String> = packages
+            .iter()
             .filter_map(|p| p.requires.as_ref())
             .flat_map(|reqs| reqs.iter())
             .map(|r| {
                 let name = r.split_whitespace().next().unwrap_or(r);
-                let name = name.split(&['>', '<', '=', '!', '~', ';', '(', '['][..]).next()
+                let name = name
+                    .split(&['>', '<', '=', '!', '~', ';', '(', '['][..])
+                    .next()
                     .unwrap_or(name);
                 name.to_lowercase().replace('-', "_").replace('.', "_")
             })
@@ -1088,26 +1242,58 @@ fn list_packages(site_packages: &str, outdated: bool, format: &str, not_required
             println!("[");
             for (i, pkg) in packages.iter().enumerate() {
                 let comma = if i + 1 < packages.len() { "," } else { "" };
-                println!("  {{\"name\": \"{}\", \"version\": \"{}\"}}{}", pkg.name, pkg.version, comma);
+                println!(
+                    "  {{\"name\": \"{}\", \"version\": \"{}\"}}{}",
+                    pkg.name, pkg.version, comma
+                );
             }
             println!("]");
         }
-        _ => { // "columns" (default)
+        _ => {
+            // "columns" (default)
             if outdated {
                 // Calculate dynamic column widths
-                let name_width = packages.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
-                let ver_width = packages.iter().map(|p| p.version.len()).max().unwrap_or(7).max(7);
-                println!("{:<name_w$} {:<ver_w$} {}", "Package", "Version", "Latest",
-                         name_w = name_width, ver_w = ver_width);
-                println!("{:<name_w$} {:<ver_w$} {}", "-".repeat(name_width), "-".repeat(ver_width), "------",
-                         name_w = name_width, ver_w = ver_width);
+                let name_width = packages
+                    .iter()
+                    .map(|p| p.name.len())
+                    .max()
+                    .unwrap_or(7)
+                    .max(7);
+                let ver_width = packages
+                    .iter()
+                    .map(|p| p.version.len())
+                    .max()
+                    .unwrap_or(7)
+                    .max(7);
+                println!(
+                    "{:<name_w$} {:<ver_w$} {}",
+                    "Package",
+                    "Version",
+                    "Latest",
+                    name_w = name_width,
+                    ver_w = ver_width
+                );
+                println!(
+                    "{:<name_w$} {:<ver_w$} {}",
+                    "-".repeat(name_width),
+                    "-".repeat(ver_width),
+                    "------",
+                    name_w = name_width,
+                    ver_w = ver_width
+                );
                 let mut outdated_count = 0;
                 for pkg in &packages {
                     match pypi::fetch_package_info(&pkg.name, None) {
                         Ok(latest) => {
                             if latest.version != pkg.version {
-                                println!("{:<name_w$} {:<ver_w$} {}", pkg.name, pkg.version, latest.version,
-                                         name_w = name_width, ver_w = ver_width);
+                                println!(
+                                    "{:<name_w$} {:<ver_w$} {}",
+                                    pkg.name,
+                                    pkg.version,
+                                    latest.version,
+                                    name_w = name_width,
+                                    ver_w = ver_width
+                                );
                                 outdated_count += 1;
                             }
                         }
@@ -1119,9 +1305,19 @@ fn list_packages(site_packages: &str, outdated: bool, format: &str, not_required
                 }
             } else {
                 // Calculate dynamic column widths
-                let name_width = packages.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
+                let name_width = packages
+                    .iter()
+                    .map(|p| p.name.len())
+                    .max()
+                    .unwrap_or(7)
+                    .max(7);
                 println!("{:<width$} {}", "Package", "Version", width = name_width);
-                println!("{:<width$} {}", "-".repeat(name_width), "-------", width = name_width);
+                println!(
+                    "{:<width$} {}",
+                    "-".repeat(name_width),
+                    "-------",
+                    width = name_width
+                );
                 for pkg in &packages {
                     println!("{:<width$} {}", pkg.name, pkg.version, width = name_width);
                 }
@@ -1155,9 +1351,14 @@ fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(),
         println!("Location: {}", site_packages);
         if let Some(ref requires) = info.requires {
             // Strip markers for display; show clean dependency names
-            let dep_names: Vec<String> = requires.iter()
+            let dep_names: Vec<String> = requires
+                .iter()
                 .map(|r| {
-                    let clean = if let Some(semi) = r.find(';') { &r[..semi] } else { r };
+                    let clean = if let Some(semi) = r.find(';') {
+                        &r[..semi]
+                    } else {
+                        r
+                    };
                     clean.trim().to_string()
                 })
                 .collect();
@@ -1169,13 +1370,16 @@ fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(),
         // Compute "Required-by": which installed packages depend on this one
         let normalized_name = info.name.to_lowercase().replace('-', "_").replace('.', "_");
         let all_installed = registry::list_installed(site_packages);
-        let required_by: Vec<String> = all_installed.iter()
+        let required_by: Vec<String> = all_installed
+            .iter()
             .filter(|p| {
                 p.requires.as_ref().map_or(false, |reqs| {
                     reqs.iter().any(|r| {
                         let dep = r.split_whitespace().next().unwrap_or(r);
-                        let dep = dep.split(&['>', '<', '=', '!', '~', ';', '(', '['][..])
-                            .next().unwrap_or(dep);
+                        let dep = dep
+                            .split(&['>', '<', '=', '!', '~', ';', '(', '['][..])
+                            .next()
+                            .unwrap_or(dep);
                         dep.to_lowercase().replace('-', "_").replace('.', "_") == normalized_name
                     })
                 })
@@ -1288,13 +1492,10 @@ fn download_packages(specs: &[String], dest: &str, quiet: bool) -> Result<(), St
         if !quiet {
             println!("Downloading {}-{}", release.name, release.version);
         }
-        let wheel_path = pypi::download_wheel(&release)
-            .map_err(|e| format!("Download failed: {}", e))?;
-        let dest_path = std::path::Path::new(dest).join(
-            wheel_path.file_name().unwrap_or_default()
-        );
-        std::fs::copy(&wheel_path, &dest_path)
-            .map_err(|e| format!("Copy failed: {}", e))?;
+        let wheel_path =
+            pypi::download_wheel(&release).map_err(|e| format!("Download failed: {}", e))?;
+        let dest_path = std::path::Path::new(dest).join(wheel_path.file_name().unwrap_or_default());
+        std::fs::copy(&wheel_path, &dest_path).map_err(|e| format!("Copy failed: {}", e))?;
         if !quiet {
             println!("  Saved {}", dest_path.display());
         }
@@ -1336,8 +1537,12 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
         // Verify RECORD hash integrity
         let hash_failures = crate::installer::verify_installed_record(site_packages, &pkg.name);
         if !hash_failures.is_empty() {
-            println!("{} {} has {} file(s) with mismatched RECORD hashes:",
-                     pkg.name, pkg.version, hash_failures.len());
+            println!(
+                "{} {} has {} file(s) with mismatched RECORD hashes:",
+                pkg.name,
+                pkg.version,
+                hash_failures.len()
+            );
             for f in hash_failures.iter().take(3) {
                 println!("    {}", f);
             }
@@ -1359,8 +1564,10 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
                 let (req_name, req_spec) = parse_version_specifier(req_clean);
                 match registry::get_installed(&req_name, site_packages) {
                     None => {
-                        println!("{} {} requires {}, which is not installed.",
-                                 pkg.name, pkg.version, req);
+                        println!(
+                            "{} {} requires {}, which is not installed.",
+                            pkg.name, pkg.version, req
+                        );
                         has_errors = true;
                     }
                     Some(installed) => {
@@ -1368,8 +1575,12 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
                             if !crate::version::version_matches(&installed.version, spec) {
                                 println!(
                                     "{} {} requires {} {}, but {} {} is installed.",
-                                    pkg.name, pkg.version, req_name, spec,
-                                    installed.name, installed.version
+                                    pkg.name,
+                                    pkg.version,
+                                    req_name,
+                                    spec,
+                                    installed.name,
+                                    installed.version
                                 );
                                 has_errors = true;
                             }
@@ -1382,14 +1593,22 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
     }
 
     if !has_errors {
-        println!("No broken requirements found ({} packages checked, {} dependencies verified).",
-                 packages.len(), checked);
+        println!(
+            "No broken requirements found ({} packages checked, {} dependencies verified).",
+            packages.len(),
+            checked
+        );
     }
     Ok(())
 }
 
 /// Install dependencies from a project's pyproject.toml or setup.cfg, including optional extras.
-fn install_project_with_extras(path: &str, requested_extras: &[String], site_packages: &str, quiet: bool) -> Result<(), String> {
+fn install_project_with_extras(
+    path: &str,
+    requested_extras: &[String],
+    site_packages: &str,
+    quiet: bool,
+) -> Result<(), String> {
     let proj_dir = std::path::Path::new(path);
     let pyproject_path = proj_dir.join("pyproject.toml");
 
@@ -1398,8 +1617,12 @@ fn install_project_with_extras(path: &str, requested_extras: &[String], site_pac
         if !quiet {
             if let Some(name) = pyproj.name() {
                 let version = pyproj.version().unwrap_or("0.0.0");
-                println!("Installing project: {} ({}) with extras: [{}]",
-                         name, version, requested_extras.join(", "));
+                println!(
+                    "Installing project: {} ({}) with extras: [{}]",
+                    name,
+                    version,
+                    requested_extras.join(", ")
+                );
             }
         }
 
@@ -1415,17 +1638,32 @@ fn install_project_with_extras(path: &str, requested_extras: &[String], site_pac
                 if available.is_empty() {
                     eprintln!("WARNING: No optional dependencies defined in pyproject.toml");
                 } else {
-                    eprintln!("WARNING: Extra '{}' not found. Available extras: {}",
-                             extra, available.join(", "));
+                    eprintln!(
+                        "WARNING: Extra '{}' not found. Available extras: {}",
+                        extra,
+                        available.join(", ")
+                    );
                 }
                 continue;
             }
             if !quiet {
-                println!("Installing extra '{}' ({} dependencies)...", extra, extra_deps.len());
+                println!(
+                    "Installing extra '{}' ({} dependencies)...",
+                    extra,
+                    extra_deps.len()
+                );
             }
             for dep in &extra_deps {
                 let (name, spec) = parse_version_specifier(dep);
-                resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
+                resolver::install_with_deps(
+                    &name,
+                    spec.as_deref(),
+                    site_packages,
+                    false,
+                    false,
+                    quiet,
+                    &mut visited,
+                )?;
             }
         }
         return Ok(());
@@ -1463,7 +1701,15 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
         let mut visited = std::collections::HashSet::new();
         for req in &build_reqs {
             let (name, spec) = parse_version_specifier(req);
-            resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
+            resolver::install_with_deps(
+                &name,
+                spec.as_deref(),
+                site_packages,
+                false,
+                false,
+                quiet,
+                &mut visited,
+            )?;
         }
 
         // Install project dependencies
@@ -1474,7 +1720,15 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
             }
             for dep in &deps {
                 let (name, spec) = parse_version_specifier(dep);
-                resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
+                resolver::install_with_deps(
+                    &name,
+                    spec.as_deref(),
+                    site_packages,
+                    false,
+                    false,
+                    quiet,
+                    &mut visited,
+                )?;
             }
         }
 
@@ -1490,9 +1744,8 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
                 if !quiet {
                     if let Some(packages) = setuptools.get("packages") {
                         if let Some(pkgs) = packages.as_array() {
-                            let pkg_names: Vec<&str> = pkgs.iter()
-                                .filter_map(|v| v.as_str())
-                                .collect();
+                            let pkg_names: Vec<&str> =
+                                pkgs.iter().filter_map(|v| v.as_str()).collect();
                             if !pkg_names.is_empty() {
                                 println!("  Setuptools packages: {}", pkg_names.join(", "));
                             }
@@ -1502,7 +1755,11 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
                         if let Some(table) = pkg_dir.as_table() {
                             for (key, val) in table {
                                 if let Some(dir) = val.as_str() {
-                                    let label = if key.is_empty() { "(root)" } else { key.as_str() };
+                                    let label = if key.is_empty() {
+                                        "(root)"
+                                    } else {
+                                        key.as_str()
+                                    };
                                     println!("  Package dir: {} → {}", label, dir);
                                 }
                             }
@@ -1554,7 +1811,11 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
 }
 
 /// Install dependencies from a setup.cfg file using the structured parser.
-fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bool) -> Result<(), String> {
+fn install_from_setup_cfg(
+    path: &std::path::Path,
+    site_packages: &str,
+    quiet: bool,
+) -> Result<(), String> {
     let cfg = crate::setup_cfg::parse_setup_cfg(path)?;
 
     if !quiet {
@@ -1585,21 +1846,43 @@ fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bo
     }
 
     if !quiet {
-        println!("Installing {} dependencies from setup.cfg...", cfg.install_requires.len());
+        println!(
+            "Installing {} dependencies from setup.cfg...",
+            cfg.install_requires.len()
+        );
         if !cfg.extras_require.is_empty() {
             let extras: Vec<&String> = cfg.extras_require.keys().collect();
-            println!("  Available extras: {}", extras.iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", "));
+            println!(
+                "  Available extras: {}",
+                extras
+                    .iter()
+                    .map(|e| e.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
 
-    install_packages(&cfg.install_requires, site_packages, false, false, false, quiet, false)
+    install_packages(
+        &cfg.install_requires,
+        site_packages,
+        false,
+        false,
+        false,
+        quiet,
+        false,
+    )
 }
 
 /// Extract dependencies from a setup.py file using regex-based heuristic parsing.
 ///
 /// This avoids executing the setup.py (which could have side effects) and instead
 /// looks for `install_requires=[...]` patterns in the source code.
-fn install_from_setup_py(path: &std::path::Path, site_packages: &str, quiet: bool) -> Result<(), String> {
+fn install_from_setup_py(
+    path: &std::path::Path,
+    site_packages: &str,
+    quiet: bool,
+) -> Result<(), String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
 
@@ -1640,7 +1923,8 @@ fn extract_setup_py_deps(content: &str) -> Vec<String> {
                 deps.extend(extract_string_list(after_eq));
             } else {
                 // Might be a variable reference; look for the variable definition
-                let var_name = after_eq.split(|c: char| !c.is_alphanumeric() && c != '_')
+                let var_name = after_eq
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .next()
                     .unwrap_or("");
                 if !var_name.is_empty() {
@@ -1756,8 +2040,8 @@ fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
                 println!("Cache is empty.");
                 return Ok(());
             }
-            let entries = std::fs::read_dir(&dir)
-                .map_err(|e| format!("Cannot read cache: {}", e))?;
+            let entries =
+                std::fs::read_dir(&dir).map_err(|e| format!("Cannot read cache: {}", e))?;
             let mut found = false;
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -1775,8 +2059,7 @@ fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
         CacheAction::Purge => {
             if dir.exists() {
                 let count = count_cached(&dir);
-                std::fs::remove_dir_all(&dir)
-                    .map_err(|e| format!("Purge failed: {}", e))?;
+                std::fs::remove_dir_all(&dir).map_err(|e| format!("Purge failed: {}", e))?;
                 println!("Removed {} cached files.", count);
             } else {
                 println!("Cache is already empty.");
@@ -1788,8 +2071,8 @@ fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
                 return Ok(());
             }
             let pattern_lower = pattern.to_lowercase();
-            let entries = std::fs::read_dir(&dir)
-                .map_err(|e| format!("Cannot read cache: {}", e))?;
+            let entries =
+                std::fs::read_dir(&dir).map_err(|e| format!("Cannot read cache: {}", e))?;
             let mut removed = 0;
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -1805,7 +2088,9 @@ fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
 }
 
 fn dir_size(path: &std::path::Path) -> u64 {
-    if !path.exists() { return 0; }
+    if !path.exists() {
+        return 0;
+    }
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -1818,7 +2103,9 @@ fn dir_size(path: &std::path::Path) -> u64 {
 }
 
 fn count_cached(path: &std::path::Path) -> usize {
-    if !path.exists() { return 0; }
+    if !path.exists() {
+        return 0;
+    }
     std::fs::read_dir(path)
         .map(|entries| entries.flatten().count())
         .unwrap_or(0)
@@ -1839,15 +2126,15 @@ fn format_size(bytes: u64) -> String {
 // ── Hash computation ─────────────────────────────────────────────────────────
 
 fn compute_hashes(files: &[String], algorithm: &str) -> Result<(), String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     if files.is_empty() {
         return Err("No files specified".to_string());
     }
 
     for file_path in files {
-        let data = std::fs::read(file_path)
-            .map_err(|e| format!("Cannot read '{}': {}", file_path, e))?;
+        let data =
+            std::fs::read(file_path).map_err(|e| format!("Cannot read '{}': {}", file_path, e))?;
 
         let hash = match algorithm {
             "sha256" => {
@@ -1875,25 +2162,23 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
     }
 
     let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
-    let name = pyproj.name()
+    let name = pyproj
+        .name()
         .ok_or("No project name in pyproject.toml")?
         .to_string();
-    let version = pyproj.version()
-        .unwrap_or("0.0.0")
-        .to_string();
+    let version = pyproj.version().unwrap_or("0.0.0").to_string();
 
     let normalized_name = name.replace('-', "_").replace('.', "_");
     let wheel_name = format!("{}-{}-py3-none-any.whl", normalized_name, version);
 
     let out_dir = std::path::Path::new(wheel_dir);
-    std::fs::create_dir_all(out_dir)
-        .map_err(|e| format!("Cannot create output dir: {}", e))?;
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("Cannot create output dir: {}", e))?;
 
     let wheel_path = out_dir.join(&wheel_name);
 
     // Build the wheel (zip archive)
-    let file = std::fs::File::create(&wheel_path)
-        .map_err(|e| format!("Cannot create wheel: {}", e))?;
+    let file =
+        std::fs::File::create(&wheel_path).map_err(|e| format!("Cannot create wheel: {}", e))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -1917,8 +2202,8 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
         // Single-file module: look for <name>.py in src dir
         let single = src_path.join(format!("{}.py", normalized_name));
         if single.exists() {
-            let content = std::fs::read_to_string(&single)
-                .map_err(|e| format!("Read error: {}", e))?;
+            let content =
+                std::fs::read_to_string(&single).map_err(|e| format!("Read error: {}", e))?;
             zip.start_file(format!("{}.py", normalized_name), options)
                 .map_err(|e| format!("Zip error: {}", e))?;
             use std::io::Write;
@@ -1926,7 +2211,10 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
                 .map_err(|e| format!("Write error: {}", e))?;
             file_count += 1;
         } else {
-            return Err(format!("No package directory '{}' or '{}.py' found", normalized_name, normalized_name));
+            return Err(format!(
+                "No package directory '{}' or '{}.py' found",
+                normalized_name, normalized_name
+            ));
         }
     }
 
@@ -1974,7 +2262,8 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
             .map_err(|e| format!("Write error: {}", e))?;
     }
 
-    zip.finish().map_err(|e| format!("Zip finalize error: {}", e))?;
+    zip.finish()
+        .map_err(|e| format!("Zip finalize error: {}", e))?;
 
     if !quiet {
         println!("Built wheel: {} ({} source files)", wheel_name, file_count);
@@ -1990,8 +2279,8 @@ fn add_dir_to_zip(
     options: &zip::write::SimpleFileOptions,
     count: &mut usize,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("Cannot read {}: {}", dir.display(), e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {}", dir.display(), e))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -2006,11 +2295,15 @@ fn add_dir_to_zip(
 
         if path.is_dir() {
             add_dir_to_zip(zip, &path, &zip_path, options, count)?;
-        } else if name.ends_with(".py") || name.ends_with(".pyi") || name.ends_with(".json")
-            || name.ends_with(".txt") || name.ends_with(".cfg") || name.ends_with(".toml")
+        } else if name.ends_with(".py")
+            || name.ends_with(".pyi")
+            || name.ends_with(".json")
+            || name.ends_with(".txt")
+            || name.ends_with(".cfg")
+            || name.ends_with(".toml")
         {
-            let content = std::fs::read(&path)
-                .map_err(|e| format!("Read {}: {}", path.display(), e))?;
+            let content =
+                std::fs::read(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
             zip.start_file(&zip_path, *options)
                 .map_err(|e| format!("Zip entry {}: {}", zip_path, e))?;
             use std::io::Write;
@@ -2033,10 +2326,18 @@ fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
     println!("Location: {}", exe.display());
     println!("Site-packages: {}", site_packages);
     println!("Cache directory: {}", cache_dir().display());
-    println!("Python platform: {}", if os == "linux" { "linux" }
-             else if os == "macos" { "darwin" }
-             else if os == "windows" { "win32" }
-             else { "unknown" });
+    println!(
+        "Python platform: {}",
+        if os == "linux" {
+            "linux"
+        } else if os == "macos" {
+            "darwin"
+        } else if os == "windows" {
+            "win32"
+        } else {
+            "unknown"
+        }
+    );
     println!("Architecture: {}", arch);
     // Show compatible wheel tags
     let mut tags = vec!["py3-none-any".to_string()];
@@ -2052,7 +2353,11 @@ fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
             tags.push(format!("cp312-abi3-macosx_10_9_{}", mac_arch));
         }
         "windows" => {
-            let plat = if arch == "x86_64" { "win_amd64" } else { "win32" };
+            let plat = if arch == "x86_64" {
+                "win_amd64"
+            } else {
+                "win32"
+            };
             tags.push(format!("cp312-cp312-{}", plat));
         }
         _ => {}
@@ -2068,7 +2373,10 @@ fn inspect_packages(site_packages: &str) -> Result<(), String> {
     let packages = registry::list_installed(site_packages);
     println!("{{");
     println!("  \"version\": \"1\",");
-    println!("  \"pip_version\": \"ferryip-{}\",", env!("CARGO_PKG_VERSION"));
+    println!(
+        "  \"pip_version\": \"ferryip-{}\",",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("  \"installed\": [");
     for (i, pkg) in packages.iter().enumerate() {
         let comma = if i + 1 < packages.len() { "," } else { "" };
@@ -2083,7 +2391,8 @@ fn inspect_packages(site_packages: &str) -> Result<(), String> {
             println!("        \"requires_python\": \"{}\",", requires_python);
         }
         if let Some(ref requires) = pkg.requires {
-            let req_json: Vec<String> = requires.iter()
+            let req_json: Vec<String> = requires
+                .iter()
                 .map(|r| format!("\"{}\"", r.replace('"', "\\\"")))
                 .collect();
             println!("        \"requires_dist\": [{}],", req_json.join(", "));
@@ -2099,7 +2408,11 @@ fn inspect_packages(site_packages: &str) -> Result<(), String> {
 }
 
 /// Generate a lock file with pinned versions and hashes.
-fn generate_lock_file(site_packages: &str, output_file: &str, requirement_file: Option<&str>) -> Result<(), String> {
+fn generate_lock_file(
+    site_packages: &str,
+    output_file: &str,
+    requirement_file: Option<&str>,
+) -> Result<(), String> {
     use std::io::Write;
 
     let mut locked_packages: Vec<(String, String, Option<String>)> = Vec::new();
@@ -2110,7 +2423,9 @@ fn generate_lock_file(site_packages: &str, output_file: &str, requirement_file: 
             .map_err(|e| format!("Cannot read {}: {}", req_file, e))?;
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let (name, _spec) = parse_version_specifier(line);
             // Fetch from PyPI to get latest compatible version
             match pypi::fetch_package_info(&name, None) {
@@ -2121,8 +2436,11 @@ fn generate_lock_file(site_packages: &str, output_file: &str, requirement_file: 
                     // Also resolve dependencies
                     for dep in &info.requires_dist {
                         let dep_name = dep.split_whitespace().next().unwrap_or(dep);
-                        let dep_name = dep_name.split(&['>', '<', '=', '!', '~', ';'][..]).next()
-                            .unwrap_or(dep_name).trim();
+                        let dep_name = dep_name
+                            .split(&['>', '<', '=', '!', '~', ';'][..])
+                            .next()
+                            .unwrap_or(dep_name)
+                            .trim();
                         if !dep_name.is_empty()
                             && !locked_packages.iter().any(|(n, _, _)| n == dep_name)
                         {
@@ -2168,12 +2486,15 @@ fn generate_lock_file(site_packages: &str, output_file: &str, requirement_file: 
             writeln!(file, "{}=={} --hash=sha256:{}", name, version, h)
                 .map_err(|e| e.to_string())?;
         } else {
-            writeln!(file, "{}=={}", name, version)
-                .map_err(|e| e.to_string())?;
+            writeln!(file, "{}=={}", name, version).map_err(|e| e.to_string())?;
         }
     }
 
-    println!("Locked {} packages to {}", locked_packages.len(), output_file);
+    println!(
+        "Locked {} packages to {}",
+        locked_packages.len(),
+        output_file
+    );
     Ok(())
 }
 
@@ -2190,7 +2511,9 @@ fn suggest_similar_package(name: &str) -> Option<String> {
     ];
 
     for variant in &variations {
-        if variant == name { continue; }
+        if variant == name {
+            continue;
+        }
         if let Ok(results) = pypi::search(variant) {
             if !results.is_empty() {
                 return Some(results[0].0.clone());
@@ -2228,10 +2551,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

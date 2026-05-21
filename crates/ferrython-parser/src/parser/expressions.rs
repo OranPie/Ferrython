@@ -112,7 +112,11 @@ impl Parser {
                 TokenKind::NotEqual => Some(CompareOperator::NotEq),
                 TokenKind::In => Some(CompareOperator::In),
                 TokenKind::Not => {
-                    if self.peek_at(1).map(|t| matches!(t.kind, TokenKind::In)).unwrap_or(false) {
+                    if self
+                        .peek_at(1)
+                        .map(|t| matches!(t.kind, TokenKind::In))
+                        .unwrap_or(false)
+                    {
                         self.advance(); // skip 'not'
                         Some(CompareOperator::NotIn)
                     } else {
@@ -120,7 +124,11 @@ impl Parser {
                     }
                 }
                 TokenKind::Is => {
-                    if self.peek_at(1).map(|t| matches!(t.kind, TokenKind::Not)).unwrap_or(false) {
+                    if self
+                        .peek_at(1)
+                        .map(|t| matches!(t.kind, TokenKind::Not))
+                        .unwrap_or(false)
+                    {
                         self.advance(); // skip 'is'
                         Some(CompareOperator::IsNot)
                     } else {
@@ -456,7 +464,10 @@ impl Parser {
             TokenKind::Complex(f) => {
                 let f = *f;
                 self.advance();
-                Ok(Expression::constant(Constant::Complex { real: 0.0, imag: f }, loc))
+                Ok(Expression::constant(
+                    Constant::Complex { real: 0.0, imag: f },
+                    loc,
+                ))
             }
             TokenKind::String(s) => {
                 let mut result = s.to_string();
@@ -471,7 +482,8 @@ impl Parser {
                     let mut values: Vec<Expression> = Vec::new();
                     if !result.is_empty() {
                         values.push(Expression::constant(
-                            Constant::Str(CompactString::from(&result)), loc,
+                            Constant::Str(CompactString::from(&result)),
+                            loc,
                         ));
                     }
                     loop {
@@ -490,7 +502,8 @@ impl Parser {
                                     self.advance();
                                 }
                                 values.push(Expression::constant(
-                                    Constant::Str(CompactString::from(&plain)), loc,
+                                    Constant::Str(CompactString::from(&plain)),
+                                    loc,
                                 ));
                             }
                             _ => break,
@@ -518,7 +531,10 @@ impl Parser {
                 self.advance();
                 let fexpr = self.parse_fstring_content(&raw, loc)?;
                 // Check for adjacent strings/fstrings — concatenate into single JoinedStr
-                if matches!(self.peek().kind, TokenKind::String(_) | TokenKind::FString(_)) {
+                if matches!(
+                    self.peek().kind,
+                    TokenKind::String(_) | TokenKind::FString(_)
+                ) {
                     let mut values: Vec<Expression> = Vec::new();
                     self.merge_into_joined_str(&mut values, fexpr);
                     loop {
@@ -537,7 +553,8 @@ impl Parser {
                                     self.advance();
                                 }
                                 values.push(Expression::constant(
-                                    Constant::Str(CompactString::from(&plain)), loc,
+                                    Constant::Str(CompactString::from(&plain)),
+                                    loc,
                                 ));
                             }
                             _ => break,
@@ -689,78 +706,72 @@ impl Parser {
                         }
                     }
                     self.expect(TokenKind::RightBrace)?;
-                    Ok(Expression::new(
-                        ExpressionKind::Dict { keys, values },
-                        loc,
-                    ))
+                    Ok(Expression::new(ExpressionKind::Dict { keys, values }, loc))
                 } else {
-                // Could be dict or set
-                let first = self.parse_test_or_star()?;
-                if self.check(TokenKind::Colon) {
-                    // Dict
-                    self.advance();
-                    let first_val = self.parse_test()?;
-                    // Dict comprehension? (including async)
-                    if self.check(TokenKind::For) || self.check(TokenKind::Async) {
-                        let generators = self.parse_comp_for()?;
-                        self.expect(TokenKind::RightBrace)?;
-                        return Ok(Expression::new(
-                            ExpressionKind::DictComp {
-                                key: Box::new(first),
-                                value: Box::new(first_val),
-                                generators,
-                            },
-                            loc,
-                        ));
-                    }
-                    let mut keys = vec![Some(first)];
-                    let mut values = vec![first_val];
-                    while self.check(TokenKind::Comma) {
+                    // Could be dict or set
+                    let first = self.parse_test_or_star()?;
+                    if self.check(TokenKind::Colon) {
+                        // Dict
                         self.advance();
-                        if self.check(TokenKind::RightBrace) {
-                            break;
+                        let first_val = self.parse_test()?;
+                        // Dict comprehension? (including async)
+                        if self.check(TokenKind::For) || self.check(TokenKind::Async) {
+                            let generators = self.parse_comp_for()?;
+                            self.expect(TokenKind::RightBrace)?;
+                            return Ok(Expression::new(
+                                ExpressionKind::DictComp {
+                                    key: Box::new(first),
+                                    value: Box::new(first_val),
+                                    generators,
+                                },
+                                loc,
+                            ));
                         }
-                        if self.check(TokenKind::DoubleStar) {
+                        let mut keys = vec![Some(first)];
+                        let mut values = vec![first_val];
+                        while self.check(TokenKind::Comma) {
                             self.advance();
-                            keys.push(None);
-                            values.push(self.parse_test()?);
-                        } else {
-                            let k = self.parse_test()?;
-                            self.expect(TokenKind::Colon)?;
-                            let v = self.parse_test()?;
-                            keys.push(Some(k));
-                            values.push(v);
+                            if self.check(TokenKind::RightBrace) {
+                                break;
+                            }
+                            if self.check(TokenKind::DoubleStar) {
+                                self.advance();
+                                keys.push(None);
+                                values.push(self.parse_test()?);
+                            } else {
+                                let k = self.parse_test()?;
+                                self.expect(TokenKind::Colon)?;
+                                let v = self.parse_test()?;
+                                keys.push(Some(k));
+                                values.push(v);
+                            }
                         }
-                    }
-                    self.expect(TokenKind::RightBrace)?;
-                    Ok(Expression::new(
-                        ExpressionKind::Dict { keys, values },
-                        loc,
-                    ))
-                } else {
-                    // Set (including async comprehension)
-                    if self.check(TokenKind::For) || self.check(TokenKind::Async) {
-                        let generators = self.parse_comp_for()?;
                         self.expect(TokenKind::RightBrace)?;
-                        return Ok(Expression::new(
-                            ExpressionKind::SetComp {
-                                elt: Box::new(first),
-                                generators,
-                            },
-                            loc,
-                        ));
-                    }
-                    let mut elts = vec![first];
-                    while self.check(TokenKind::Comma) {
-                        self.advance();
-                        if self.check(TokenKind::RightBrace) {
-                            break;
+                        Ok(Expression::new(ExpressionKind::Dict { keys, values }, loc))
+                    } else {
+                        // Set (including async comprehension)
+                        if self.check(TokenKind::For) || self.check(TokenKind::Async) {
+                            let generators = self.parse_comp_for()?;
+                            self.expect(TokenKind::RightBrace)?;
+                            return Ok(Expression::new(
+                                ExpressionKind::SetComp {
+                                    elt: Box::new(first),
+                                    generators,
+                                },
+                                loc,
+                            ));
                         }
-                        elts.push(self.parse_test_or_star()?);
+                        let mut elts = vec![first];
+                        while self.check(TokenKind::Comma) {
+                            self.advance();
+                            if self.check(TokenKind::RightBrace) {
+                                break;
+                            }
+                            elts.push(self.parse_test_or_star()?);
+                        }
+                        self.expect(TokenKind::RightBrace)?;
+                        Ok(Expression::new(ExpressionKind::Set { elts }, loc))
                     }
-                    self.expect(TokenKind::RightBrace)?;
-                    Ok(Expression::new(ExpressionKind::Set { elts }, loc))
-                }
                 } // end else for non-DoubleStar first element
             }
             _ => Err(ParseError::new(
@@ -779,7 +790,9 @@ impl Parser {
             self.advance();
             let value = self.parse_test()?;
             return Ok(Expression::new(
-                ExpressionKind::YieldFrom { value: Box::new(value) },
+                ExpressionKind::YieldFrom {
+                    value: Box::new(value),
+                },
                 loc,
             ));
         }
@@ -788,26 +801,39 @@ impl Parser {
         if self.at_expression_start() {
             let value = self.parse_test_list_star_expr()?;
             Ok(Expression::new(
-                ExpressionKind::Yield { value: Some(Box::new(value)) },
+                ExpressionKind::Yield {
+                    value: Some(Box::new(value)),
+                },
                 loc,
             ))
         } else {
-            Ok(Expression::new(
-                ExpressionKind::Yield { value: None },
-                loc,
-            ))
+            Ok(Expression::new(ExpressionKind::Yield { value: None }, loc))
         }
     }
 
     /// Check if the current token could start an expression.
     fn at_expression_start(&self) -> bool {
-        matches!(self.peek().kind,
-            TokenKind::Name(_) | TokenKind::Int(_) | TokenKind::Float(_) |
-            TokenKind::String(_) | TokenKind::Bytes(_) | TokenKind::FString(_) |
-            TokenKind::True | TokenKind::False | TokenKind::None |
-            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace |
-            TokenKind::Minus | TokenKind::Plus | TokenKind::Tilde | TokenKind::Not |
-            TokenKind::Lambda | TokenKind::Yield | TokenKind::Ellipsis
+        matches!(
+            self.peek().kind,
+            TokenKind::Name(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Bytes(_)
+                | TokenKind::FString(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::None
+                | TokenKind::LeftParen
+                | TokenKind::LeftBracket
+                | TokenKind::LeftBrace
+                | TokenKind::Minus
+                | TokenKind::Plus
+                | TokenKind::Tilde
+                | TokenKind::Not
+                | TokenKind::Lambda
+                | TokenKind::Yield
+                | TokenKind::Ellipsis
         )
     }
 
@@ -834,7 +860,8 @@ impl Parser {
                 // Flush text buffer
                 if !text_buf.is_empty() {
                     values.push(Expression::constant(
-                        Constant::Str(CompactString::from(&text_buf)), loc,
+                        Constant::Str(CompactString::from(&text_buf)),
+                        loc,
                     ));
                     text_buf.clear();
                 }
@@ -868,11 +895,18 @@ impl Parser {
                         if c == quote {
                             if in_triple {
                                 // Need three consecutive quotes to end
-                                if i + 2 < chars.len() && chars[i+1] == quote && chars[i+2] == quote {
+                                if i + 2 < chars.len()
+                                    && chars[i + 1] == quote
+                                    && chars[i + 2] == quote
+                                {
                                     if in_format_spec {
-                                        format_spec.push(c); format_spec.push(c); format_spec.push(c);
+                                        format_spec.push(c);
+                                        format_spec.push(c);
+                                        format_spec.push(c);
                                     } else {
-                                        expr_text.push(c); expr_text.push(c); expr_text.push(c);
+                                        expr_text.push(c);
+                                        expr_text.push(c);
+                                        expr_text.push(c);
                                     }
                                     in_string = None;
                                     in_triple = false;
@@ -895,10 +929,12 @@ impl Parser {
                     // Not inside a string — check for quote start
                     if (c == '\'' || c == '"') && !in_format_spec {
                         // Detect triple-quoted string
-                        if i + 2 < chars.len() && chars[i+1] == c && chars[i+2] == c {
+                        if i + 2 < chars.len() && chars[i + 1] == c && chars[i + 2] == c {
                             in_string = Some(c);
                             in_triple = true;
-                            expr_text.push(c); expr_text.push(c); expr_text.push(c);
+                            expr_text.push(c);
+                            expr_text.push(c);
+                            expr_text.push(c);
                             i += 3;
                             continue;
                         }
@@ -909,10 +945,15 @@ impl Parser {
                         continue;
                     }
 
-                    if c == '{' { depth += 1; }
+                    if c == '{' {
+                        depth += 1;
+                    }
                     if c == '}' {
                         depth -= 1;
-                        if depth == 0 { i += 1; break; }
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
                     }
                     // Track parens/brackets within expression
                     if !in_format_spec {
@@ -924,9 +965,11 @@ impl Parser {
                     }
                     if c == '!' && depth == 1 && paren_depth == 0 && !in_format_spec {
                         // Check for conversion: !s, !r, !a
-                        if i + 1 < chars.len() && (chars[i+1] == 's' || chars[i+1] == 'r' || chars[i+1] == 'a') {
-                            if i + 2 < chars.len() && (chars[i+2] == '}' || chars[i+2] == ':') {
-                                conversion = Some(chars[i+1]);
+                        if i + 1 < chars.len()
+                            && (chars[i + 1] == 's' || chars[i + 1] == 'r' || chars[i + 1] == 'a')
+                        {
+                            if i + 2 < chars.len() && (chars[i + 2] == '}' || chars[i + 2] == ':') {
+                                conversion = Some(chars[i + 1]);
                                 i += 2;
                                 continue;
                             }
@@ -948,8 +991,10 @@ impl Parser {
                 // Handle f-string debug `=` format: f"{x=}" → "x=repr(x)"
                 // The `=` may be followed by trailing whitespace, e.g. f"{x=  }"
                 let trimmed_end = expr_text.trim_end();
-                let debug_eq = trimmed_end.ends_with('=') && !trimmed_end.ends_with("==")
-                    && !trimmed_end.ends_with("!=") && !trimmed_end.ends_with("<=")
+                let debug_eq = trimmed_end.ends_with('=')
+                    && !trimmed_end.ends_with("==")
+                    && !trimmed_end.ends_with("!=")
+                    && !trimmed_end.ends_with("<=")
                     && !trimmed_end.ends_with(">=");
                 if debug_eq {
                     // The trailing whitespace (between `=` and `}`) is part of the prefix text.
@@ -959,7 +1004,8 @@ impl Parser {
                     expr_text.pop(); // remove '='
                     let prefix = format!("{}={}", expr_text, trailing_ws);
                     values.push(Expression::constant(
-                        Constant::Str(CompactString::from(&prefix)), loc,
+                        Constant::Str(CompactString::from(&prefix)),
+                        loc,
                     ));
                     if conversion.is_none() && format_spec.is_empty() {
                         conversion = Some('r');
@@ -998,13 +1044,18 @@ impl Parser {
         // Flush remaining text
         if !text_buf.is_empty() {
             values.push(Expression::constant(
-                Constant::Str(CompactString::from(&text_buf)), loc,
+                Constant::Str(CompactString::from(&text_buf)),
+                loc,
             ));
         }
 
         // If only one element and it's a constant string, just return it
         if values.len() == 1 {
-            if let ExpressionKind::Constant { value: Constant::Str(_), .. } = &values[0].node {
+            if let ExpressionKind::Constant {
+                value: Constant::Str(_),
+                ..
+            } = &values[0].node
+            {
                 return Ok(values.into_iter().next().unwrap());
             }
         }
@@ -1050,7 +1101,9 @@ impl Parser {
         let mut seen_star = false;
 
         loop {
-            if self.check(TokenKind::Colon) { break; }
+            if self.check(TokenKind::Colon) {
+                break;
+            }
 
             if self.check(TokenKind::Slash) {
                 // Positional-only separator: move all args so far to posonlyargs
@@ -1064,7 +1117,9 @@ impl Parser {
                 } else {
                     let name = self.expect_name()?;
                     args.vararg = Some(Arg {
-                        arg: name, annotation: None, type_comment: None,
+                        arg: name,
+                        annotation: None,
+                        type_comment: None,
                         location: self.current_location(),
                     });
                 }
@@ -1072,7 +1127,9 @@ impl Parser {
                 self.advance();
                 let name = self.expect_name()?;
                 args.kwarg = Some(Arg {
-                    arg: name, annotation: None, type_comment: None,
+                    arg: name,
+                    annotation: None,
+                    type_comment: None,
                     location: self.current_location(),
                 });
             } else {
@@ -1084,7 +1141,9 @@ impl Parser {
                     None
                 };
                 let arg = Arg {
-                    arg: name, annotation: None, type_comment: None,
+                    arg: name,
+                    annotation: None,
+                    type_comment: None,
                     location: self.current_location(),
                 };
                 if seen_star {
@@ -1092,11 +1151,15 @@ impl Parser {
                     args.kw_defaults.push(default);
                 } else {
                     args.args.push(arg);
-                    if let Some(d) = default { args.defaults.push(d); }
+                    if let Some(d) = default {
+                        args.defaults.push(d);
+                    }
                 }
             }
 
-            if !self.check(TokenKind::Comma) { break; }
+            if !self.check(TokenKind::Comma) {
+                break;
+            }
             self.advance();
         }
         Ok(args)
@@ -1111,11 +1174,16 @@ impl Parser {
             let mut elements = vec![first];
             while self.check(TokenKind::Comma) {
                 self.advance();
-                if self.check(TokenKind::RightBracket) { break; }
+                if self.check(TokenKind::RightBracket) {
+                    break;
+                }
                 elements.push(self.parse_subscript_element()?);
             }
             return Ok(Expression::new(
-                ExpressionKind::Tuple { elts: elements, ctx: ExprContext::Load },
+                ExpressionKind::Tuple {
+                    elts: elements,
+                    ctx: ExprContext::Load,
+                },
                 loc,
             ));
         }
@@ -1152,11 +1220,7 @@ impl Parser {
             None
         };
         Ok(Expression::new(
-            ExpressionKind::Slice {
-                lower,
-                upper,
-                step,
-            },
+            ExpressionKind::Slice { lower, upper, step },
             loc,
         ))
     }
