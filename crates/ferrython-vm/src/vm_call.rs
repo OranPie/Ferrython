@@ -4509,7 +4509,10 @@ impl VirtualMachine {
                                     | "__sub__"
                                     | "__xor__"
                             )
-                            && matches!(args[0].payload, PyObjectPayload::Generator(_)) =>
+                            && matches!(
+                                args[0].payload,
+                                PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
+                            ) =>
                     {
                         let mut resolved = Vec::with_capacity(args.len());
                         resolved.push(PyObject::list(self.collect_iterable(&args[0])?));

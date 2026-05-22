@@ -6827,7 +6827,8 @@ impl VirtualMachine {
                                                         | PyObjectPayload::FrozenSet(_)
                                                 ) {
                                                     match &a0.payload {
-                                                        PyObjectPayload::Generator(_) => self
+                                                        PyObjectPayload::Generator(_)
+                                                        | PyObjectPayload::Instance(_) => self
                                                             .collect_iterable(&a0)
                                                             .map(PyObject::list),
                                                         _ => Ok(a0),
@@ -7271,8 +7272,11 @@ impl VirtualMachine {
                                     ) && matches!(
                                         &receiver.payload,
                                         PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
-                                    ) && matches!(&a0.payload, PyObjectPayload::Generator(_))
-                                    {
+                                    ) && matches!(
+                                        &a0.payload,
+                                        PyObjectPayload::Generator(_)
+                                            | PyObjectPayload::Instance(_)
+                                    ) {
                                         self.collect_iterable(&a0).and_then(|items| {
                                             crate::builtins::call_method(
                                                 &receiver,
