@@ -5044,6 +5044,20 @@ impl VirtualMachine {
                         builtins::resolve_type_class_method(tn, bbm.method_name.as_str())
                     {
                         if let PyObjectPayload::NativeFunction(nf) = &class_method.payload {
+                            if nf.name.as_str() == "dict.fromkeys"
+                                && !args.is_empty()
+                                && matches!(
+                                    args[0].payload,
+                                    PyObjectPayload::Generator(_)
+                                        | PyObjectPayload::Instance(_)
+                                        | PyObjectPayload::Iterator(_)
+                                )
+                            {
+                                let mut resolved = Vec::with_capacity(args.len());
+                                resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                                resolved.extend_from_slice(&args[1..]);
+                                return (nf.func)(&resolved);
+                            }
                             return (nf.func)(&args);
                         }
                     }
@@ -5348,6 +5362,20 @@ impl VirtualMachine {
                 }
                 if nf_data.name.as_str() == "itertools.accumulate" && args.len() >= 2 {
                     return self.vm_itertools_accumulate(&args);
+                }
+                if nf_data.name.as_str() == "dict.fromkeys"
+                    && !args.is_empty()
+                    && matches!(
+                        args[0].payload,
+                        PyObjectPayload::Generator(_)
+                            | PyObjectPayload::Instance(_)
+                            | PyObjectPayload::Iterator(_)
+                    )
+                {
+                    let mut resolved = Vec::with_capacity(args.len());
+                    resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                    resolved.extend_from_slice(&args[1..]);
+                    return (nf_data.func)(&resolved);
                 }
                 // math.trunc / math.floor / math.ceil — dispatch to __trunc__ / __floor__ / __ceil__
                 if args.len() == 1 {
