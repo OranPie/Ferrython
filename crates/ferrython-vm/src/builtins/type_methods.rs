@@ -1210,6 +1210,7 @@ pub(crate) fn call_set_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
+        "__init__" => Ok(PyObject::none()),
         "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
@@ -1430,6 +1431,7 @@ pub(super) fn call_frozenset_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
+        "__init__" => Ok(PyObject::none()),
         "copy" => Ok(PyObject::frozenset(m.clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
@@ -1515,7 +1517,16 @@ pub(super) fn call_frozenset_method(
                 .all(|v| !self_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(none_in))
         }
+        "__contains__" => {
+            check_args_min("frozenset.__contains__", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            Ok(PyObject::bool_val(m.contains_key(&key)))
+        }
         "__len__" => Ok(PyObject::int(m.len() as i64)),
+        "__iter__" => {
+            let items: Vec<PyObjectRef> = m.keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(items))
+        }
         "__lt__" => {
             check_args_min("__lt__", args, 1)?;
             let other_items = args[0].to_list()?;

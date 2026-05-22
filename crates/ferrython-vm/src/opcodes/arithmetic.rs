@@ -115,6 +115,28 @@ impl VirtualMachine {
                     return Ok(Some(result));
                 }
             }
+            if matches!(
+                dunder,
+                "__and__"
+                    | "__or__"
+                    | "__sub__"
+                    | "__xor__"
+                    | "__rand__"
+                    | "__ror__"
+                    | "__rsub__"
+                    | "__rxor__"
+            ) {
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    let result = match dunder {
+                        "__and__" | "__rand__" => bv.bit_and(b),
+                        "__or__" | "__ror__" => bv.bit_or(b),
+                        "__sub__" | "__rsub__" => bv.sub(b),
+                        "__xor__" | "__rxor__" => bv.bit_xor(b),
+                        _ => unreachable!(),
+                    }?;
+                    return Ok(Some(result));
+                }
+            }
         }
         if let Some(rd) = rdunder {
             if let PyObjectPayload::Instance(inst) = &b.payload {
@@ -122,6 +144,28 @@ impl VirtualMachine {
                     let bound = self.bind_method(b, method);
                     let result = self.call_object(bound, vec![a.clone()])?;
                     if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
+                    }
+                }
+                if matches!(
+                    rd,
+                    "__and__"
+                        | "__or__"
+                        | "__sub__"
+                        | "__xor__"
+                        | "__rand__"
+                        | "__ror__"
+                        | "__rsub__"
+                        | "__rxor__"
+                ) {
+                    if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                        let result = match rd {
+                            "__rand__" | "__and__" => a.bit_and(&bv),
+                            "__ror__" | "__or__" => a.bit_or(&bv),
+                            "__rsub__" | "__sub__" => a.sub(&bv),
+                            "__rxor__" | "__xor__" => a.bit_xor(&bv),
+                            _ => unreachable!(),
+                        }?;
                         return Ok(Some(result));
                     }
                 }
@@ -157,6 +201,21 @@ impl VirtualMachine {
             if let Some(m) = method {
                 let bound = self.bind_method(a, m);
                 return Ok(Some(self.call_object(bound, vec![b.clone()])?));
+            }
+            if matches!(idunder, "__iand__" | "__ior__" | "__isub__" | "__ixor__") {
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    let result = match idunder {
+                        "__iand__" => bv.bit_and(b),
+                        "__ior__" => bv.bit_or(b),
+                        "__isub__" => bv.sub(b),
+                        "__ixor__" => bv.bit_xor(b),
+                        _ => unreachable!(),
+                    }?;
+                    inst.attrs
+                        .write()
+                        .insert(intern_or_new("__builtin_value__"), result);
+                    return Ok(Some(a.clone()));
+                }
             }
         }
         Ok(None)

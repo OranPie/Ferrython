@@ -6804,6 +6804,34 @@ impl VirtualMachine {
                                                         }
                                                         _ => Ok(a0),
                                                     }
+                                                } else if matches!(
+                                                    name.as_str(),
+                                                    "union"
+                                                        | "intersection"
+                                                        | "difference"
+                                                        | "symmetric_difference"
+                                                        | "update"
+                                                        | "intersection_update"
+                                                        | "difference_update"
+                                                        | "symmetric_difference_update"
+                                                        | "issubset"
+                                                        | "issuperset"
+                                                        | "isdisjoint"
+                                                        | "__or__"
+                                                        | "__and__"
+                                                        | "__sub__"
+                                                        | "__xor__"
+                                                ) && matches!(
+                                                    &receiver.payload,
+                                                    PyObjectPayload::Set(_)
+                                                        | PyObjectPayload::FrozenSet(_)
+                                                ) {
+                                                    match &a0.payload {
+                                                        PyObjectPayload::Generator(_) => self
+                                                            .collect_iterable(&a0)
+                                                            .map(PyObject::list),
+                                                        _ => Ok(a0),
+                                                    }
                                                 } else if name.as_str() == "extend"
                                                     && matches!(
                                                         &receiver.payload,
@@ -7223,8 +7251,37 @@ impl VirtualMachine {
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                     let n = name.as_str();
+                                    if matches!(
+                                        n,
+                                        "union"
+                                            | "intersection"
+                                            | "difference"
+                                            | "symmetric_difference"
+                                            | "update"
+                                            | "intersection_update"
+                                            | "difference_update"
+                                            | "symmetric_difference_update"
+                                            | "issubset"
+                                            | "issuperset"
+                                            | "isdisjoint"
+                                            | "__or__"
+                                            | "__and__"
+                                            | "__sub__"
+                                            | "__xor__"
+                                    ) && matches!(
+                                        &receiver.payload,
+                                        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                                    ) && matches!(&a0.payload, PyObjectPayload::Generator(_))
+                                    {
+                                        self.collect_iterable(&a0).and_then(|items| {
+                                            crate::builtins::call_method(
+                                                &receiver,
+                                                n,
+                                                &[PyObject::list(items)],
+                                            )
+                                        })
                                     // list.extend with generator/instance: collect via VM first
-                                    if n == "extend"
+                                    } else if n == "extend"
                                         && matches!(&receiver.payload, PyObjectPayload::List(_))
                                         && matches!(
                                             &a0.payload,
@@ -9920,6 +9977,14 @@ impl VirtualMachine {
                         | "__bool__"
                         | "__add__"
                         | "__mul__"
+                        | "__or__"
+                        | "__and__"
+                        | "__sub__"
+                        | "__xor__"
+                        | "__ior__"
+                        | "__iand__"
+                        | "__isub__"
+                        | "__ixor__"
                         | "__eq__"
                         | "__ne__"
                         | "__lt__"

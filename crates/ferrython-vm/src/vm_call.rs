@@ -9,8 +9,9 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     get_builtin_base_type_name, has_descriptor_get, is_data_descriptor, lookup_in_class_mro,
-    new_fx_hashkey_map, AsyncGenAction, CompareOp, FxHashKeyMap, IteratorData, PartialData,
-    PropertyData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    new_fx_hashkey_flatmap, new_fx_hashkey_map, AsyncGenAction, CompareOp, FxHashKeyMap,
+    IteratorData, PartialData, PropertyData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
@@ -952,7 +953,10 @@ impl VirtualMachine {
                                 match base_type.as_str() {
                                     "list" => Some(PyObject::list(vec![])),
                                     "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
-                                    "set" => Some(PyObject::set(new_fx_hashkey_map())),
+                                    "set" => {
+                                        Some(PyObject::set_from_flatmap(new_fx_hashkey_flatmap()))
+                                    }
+                                    "frozenset" => Some(PyObject::frozenset(new_fx_hashkey_map())),
                                     "tuple" => Some(PyObject::tuple(vec![])),
                                     "int" => Some(PyObject::int(0)),
                                     "float" => Some(PyObject::float(0.0)),
@@ -1087,7 +1091,28 @@ impl VirtualMachine {
                                             Some(PyObject::tuple(items))
                                         }
                                     }
-                                    "set" => Some(pos_args[0].clone()),
+                                    "set" => {
+                                        let mut map = new_fx_hashkey_flatmap();
+                                        for item in
+                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                        {
+                                            if let Ok(key) = item.to_hashable_key() {
+                                                map.insert(key, item);
+                                            }
+                                        }
+                                        Some(PyObject::set_from_flatmap(map))
+                                    }
+                                    "frozenset" => {
+                                        let mut map = new_fx_hashkey_map();
+                                        for item in
+                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                        {
+                                            if let Ok(key) = item.to_hashable_key() {
+                                                map.insert(key, item);
+                                            }
+                                        }
+                                        Some(PyObject::frozenset(map))
+                                    }
                                     "bytes" => Some(pos_args[0].clone()),
                                     "bytearray" => Some(pos_args[0].clone()),
                                     _ => None,
@@ -1134,7 +1159,8 @@ impl VirtualMachine {
                             match base_type.as_str() {
                                 "list" => Some(PyObject::list(vec![])),
                                 "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
-                                "set" => Some(PyObject::set(new_fx_hashkey_map())),
+                                "set" => Some(PyObject::set_from_flatmap(new_fx_hashkey_flatmap())),
+                                "frozenset" => Some(PyObject::frozenset(new_fx_hashkey_map())),
                                 "tuple" => Some(PyObject::tuple(vec![])),
                                 "int" => Some(PyObject::int(0)),
                                 "float" => Some(PyObject::float(0.0)),
@@ -1190,7 +1216,29 @@ impl VirtualMachine {
                                         Some(PyObject::tuple(items))
                                     }
                                 }
-                                "set" | "bytes" | "bytearray" => Some(pos_args[0].clone()),
+                                "set" => {
+                                    let mut map = new_fx_hashkey_flatmap();
+                                    for item in
+                                        self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                    {
+                                        if let Ok(key) = item.to_hashable_key() {
+                                            map.insert(key, item);
+                                        }
+                                    }
+                                    Some(PyObject::set_from_flatmap(map))
+                                }
+                                "frozenset" => {
+                                    let mut map = new_fx_hashkey_map();
+                                    for item in
+                                        self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                    {
+                                        if let Ok(key) = item.to_hashable_key() {
+                                            map.insert(key, item);
+                                        }
+                                    }
+                                    Some(PyObject::frozenset(map))
+                                }
+                                "bytes" | "bytearray" => Some(pos_args[0].clone()),
                                 "complex" => {
                                     let to_ri = |obj: &PyObjectRef| -> Option<(f64, f64)> {
                                         match &obj.payload {
@@ -4441,6 +4489,37 @@ impl VirtualMachine {
                 // Exception: list.extend with a generator/lazy iterator must go through
                 // collect_iterable first (builtins::call_method can't drive a generator).
                 match &bbm.receiver.payload {
+                    PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                        if !args.is_empty()
+                            && matches!(
+                                bbm.method_name.as_str(),
+                                "union"
+                                    | "intersection"
+                                    | "difference"
+                                    | "symmetric_difference"
+                                    | "update"
+                                    | "intersection_update"
+                                    | "difference_update"
+                                    | "symmetric_difference_update"
+                                    | "issubset"
+                                    | "issuperset"
+                                    | "isdisjoint"
+                                    | "__or__"
+                                    | "__and__"
+                                    | "__sub__"
+                                    | "__xor__"
+                            )
+                            && matches!(args[0].payload, PyObjectPayload::Generator(_)) =>
+                    {
+                        let mut resolved = Vec::with_capacity(args.len());
+                        resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                        resolved.extend_from_slice(&args[1..]);
+                        return builtins::call_method(
+                            &bbm.receiver,
+                            bbm.method_name.as_str(),
+                            &resolved,
+                        );
+                    }
                     PyObjectPayload::List(_)
                         if bbm.method_name.as_str() == "extend"
                             && !args.is_empty()
