@@ -456,15 +456,17 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     return Ok(storage.read().contains_key(&hk));
                 }
             }
-            if let Ok(iter_obj) = py_get_iter(obj) {
-                for next in iter_obj.to_list()? {
-                    if element_matches(&next, item)? {
-                        return Ok(true);
+            match py_get_iter(obj) {
+                Ok(iter_obj) => {
+                    for next in iter_obj.to_list()? {
+                        if element_matches(&next, item)? {
+                            return Ok(true);
+                        }
                     }
+                    return Ok(false);
                 }
-                return Ok(false);
+                Err(err) => return Err(err),
             }
-            Ok(false)
         }
         PyObjectPayload::InstanceDict(attrs) => {
             let key_str = item.py_to_string();

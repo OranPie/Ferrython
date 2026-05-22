@@ -69,7 +69,14 @@ pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let s = args[0].as_str().ok_or_else(|| {
             PyException::type_error("int() can't convert non-string with explicit base")
         })?;
-        let mut base = args[1].to_int()? as u32;
+        let base_int = args[1].to_int()?;
+        if base_int != 0 && !(2..=36).contains(&base_int) {
+            return Err(PyException::value_error(format!(
+                "int() base must be >= 2 and <= 36, or 0, got {}",
+                base_int
+            )));
+        }
+        let mut base = base_int as u32;
         let s = s.trim();
         // Handle base 0: auto-detect from prefix
         let s = if base == 0 {
@@ -526,7 +533,10 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Float(f) => {
             if let Some(n) = ndigits {
                 if n >= 0 {
-                    // Use string formatting to match CPython's rounding behavior
+                    if n > 308 {
+                        return Ok(PyObject::float(*f));
+                    }
+                    // Use string formatting to match CPython's rounding behavior.
                     let formatted = format!("{:.prec$}", f, prec = n as usize);
                     let rounded: f64 = formatted.parse().unwrap_or(*f);
                     Ok(PyObject::float(rounded))

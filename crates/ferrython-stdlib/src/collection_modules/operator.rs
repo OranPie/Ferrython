@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
@@ -14,30 +14,14 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "add",
                 make_builtin(|args| {
-                    check_args_min("add", args, 2)?;
-                    let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
-                        || matches!(&args[1].payload, PyObjectPayload::Float(_));
-                    if !either_float {
-                        if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
-                            return Ok(PyObject::int(a + b));
-                        }
-                    }
-                    if let (Ok(a), Ok(b)) = (args[0].to_float(), args[1].to_float()) {
-                        Ok(PyObject::float(a + b))
-                    } else {
-                        let a = args[0].py_to_string();
-                        let b = args[1].py_to_string();
-                        Ok(PyObject::str_val(CompactString::from(format!(
-                            "{}{}",
-                            a, b
-                        ))))
-                    }
+                    check_args("add", args, 2)?;
+                    args[0].add(&args[1])
                 }),
             ),
             (
                 "sub",
                 make_builtin(|args| {
-                    check_args_min("sub", args, 2)?;
+                    check_args("sub", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -53,7 +37,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "mul",
                 make_builtin(|args| {
-                    check_args_min("mul", args, 2)?;
+                    check_args("mul", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -69,7 +53,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "truediv",
                 make_builtin(|args| {
-                    check_args_min("truediv", args, 2)?;
+                    check_args("truediv", args, 2)?;
                     let a = args[0].to_float()?;
                     let b = args[1].to_float()?;
                     if b == 0.0 {
@@ -81,7 +65,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "floordiv",
                 make_builtin(|args| {
-                    check_args_min("floordiv", args, 2)?;
+                    check_args("floordiv", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -107,7 +91,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "mod_",
                 make_builtin(|args| {
-                    check_args_min("mod_", args, 2)?;
+                    check_args("mod_", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -129,7 +113,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "mod",
                 make_builtin(|args| {
-                    check_args_min("mod", args, 2)?;
+                    check_args("mod", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -150,7 +134,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "neg",
                 make_builtin(|args| {
-                    check_args_min("neg", args, 1)?;
+                    check_args("neg", args, 1)?;
                     if matches!(&args[0].payload, PyObjectPayload::Float(_)) {
                         Ok(PyObject::float(-args[0].to_float()?))
                     } else if let Ok(n) = args[0].to_int() {
@@ -163,7 +147,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "pow",
                 make_builtin(|args| {
-                    check_args_min("pow", args, 2)?;
+                    check_args("pow", args, 2)?;
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {
@@ -180,58 +164,75 @@ pub fn create_operator_module() -> PyObjectRef {
                 }),
             ),
             (
+                "matmul",
+                make_builtin(|args| {
+                    check_args("matmul", args, 2)?;
+                    Err(PyException::type_error("unsupported operand type(s) for @"))
+                }),
+            ),
+            (
                 "pos",
                 make_builtin(|args| {
-                    check_args_min("pos", args, 1)?;
-                    Ok(args[0].clone())
+                    check_args("pos", args, 1)?;
+                    match &args[0].payload {
+                        PyObjectPayload::Bool(_) | PyObjectPayload::Int(_) => {
+                            Ok(PyObject::int(args[0].to_int()?))
+                        }
+                        PyObjectPayload::Float(_) => Ok(PyObject::float(args[0].to_float()?)),
+                        PyObjectPayload::Complex { .. } => Ok(args[0].clone()),
+                        _ => Err(PyException::type_error(format!(
+                            "bad operand type for unary +: '{}'",
+                            args[0].type_name()
+                        ))),
+                    }
                 }),
             ),
             (
                 "not_",
                 make_builtin(|args| {
-                    check_args_min("not_", args, 1)?;
+                    check_args("not_", args, 1)?;
                     Ok(PyObject::bool_val(!args[0].is_truthy()))
                 }),
             ),
             (
                 "eq",
                 make_builtin(|args| {
-                    check_args_min("eq", args, 2)?;
+                    check_args("eq", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Eq)
                 }),
             ),
             (
                 "ne",
                 make_builtin(|args| {
-                    check_args_min("ne", args, 2)?;
+                    check_args("ne", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Ne)
                 }),
             ),
             (
                 "lt",
                 make_builtin(|args| {
-                    check_args_min("lt", args, 2)?;
+                    check_args("lt", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Lt)
                 }),
             ),
             (
                 "le",
                 make_builtin(|args| {
-                    check_args_min("le", args, 2)?;
+                    check_args("le", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Le)
                 }),
             ),
             (
                 "gt",
                 make_builtin(|args| {
-                    check_args_min("gt", args, 2)?;
+                    check_args("gt", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Gt)
                 }),
             ),
             (
                 "ge",
                 make_builtin(|args| {
-                    check_args_min("ge", args, 2)?;
+                    check_args("ge", args, 2)?;
                     args[0].compare(&args[1], CompareOp::Ge)
                 }),
             ),
@@ -246,14 +247,14 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "contains",
                 make_builtin(|args| {
-                    check_args_min("contains", args, 2)?;
+                    check_args("contains", args, 2)?;
                     Ok(PyObject::bool_val(args[0].contains(&args[1])?))
                 }),
             ),
             (
                 "getitem",
                 make_builtin(|args| {
-                    check_args_min("getitem", args, 2)?;
+                    check_args("getitem", args, 2)?;
                     match &args[0].payload {
                         PyObjectPayload::List(items) => {
                             let idx = args[1].to_int()? as usize;
@@ -289,18 +290,24 @@ pub fn create_operator_module() -> PyObjectRef {
                     Ok(PyObject::native_closure(
                         "operator.itemgetter",
                         move |call_args| {
-                            if call_args.is_empty() {
-                                return Err(PyException::type_error(
-                                    "itemgetter expected 1 argument, got 0",
-                                ));
-                            }
+                            check_args("itemgetter", call_args, 1)?;
                             let obj = &call_args[0];
                             if keys.len() == 1 {
-                                obj.get_item(&keys[0])
+                                match obj.get_item(&keys[0]) {
+                                    Err(err) if err.kind == ExceptionKind::ValueError => {
+                                        Err(PyException::type_error(err.message))
+                                    }
+                                    result => result,
+                                }
                             } else {
                                 let items: Vec<PyObjectRef> = keys
                                     .iter()
-                                    .map(|k| obj.get_item(k))
+                                    .map(|k| match obj.get_item(k) {
+                                        Err(err) if err.kind == ExceptionKind::ValueError => {
+                                            Err(PyException::type_error(err.message))
+                                        }
+                                        result => result,
+                                    })
                                     .collect::<PyResult<Vec<_>>>()?;
                                 Ok(PyObject::tuple(items))
                             }
@@ -312,15 +319,17 @@ pub fn create_operator_module() -> PyObjectRef {
                 "attrgetter",
                 make_builtin(|args| {
                     check_args_min("attrgetter", args, 1)?;
-                    let attr_names: Vec<String> = args.iter().map(|a| a.py_to_string()).collect();
+                    let mut attr_names = Vec::with_capacity(args.len());
+                    for arg in args {
+                        let name = arg.as_str().ok_or_else(|| {
+                            PyException::type_error("attribute name must be a string")
+                        })?;
+                        attr_names.push(name.to_string());
+                    }
                     Ok(PyObject::native_closure(
                         "operator.attrgetter",
                         move |call_args| {
-                            if call_args.is_empty() {
-                                return Err(PyException::type_error(
-                                    "attrgetter expected 1 argument, got 0",
-                                ));
-                            }
+                            check_args("attrgetter", call_args, 1)?;
                             let obj = &call_args[0];
                             // Helper: resolve dotted attribute path (e.g. "a.b.c")
                             let resolve =
@@ -354,7 +363,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "and_",
                 make_builtin(|args| {
-                    check_args_min("and_", args, 2)?;
+                    check_args("and_", args, 2)?;
                     let a = args[0].to_int()?;
                     let b = args[1].to_int()?;
                     Ok(PyObject::int(a & b))
@@ -363,7 +372,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "or_",
                 make_builtin(|args| {
-                    check_args_min("or_", args, 2)?;
+                    check_args("or_", args, 2)?;
                     let a = args[0].to_int()?;
                     let b = args[1].to_int()?;
                     Ok(PyObject::int(a | b))
@@ -372,7 +381,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "xor",
                 make_builtin(|args| {
-                    check_args_min("xor", args, 2)?;
+                    check_args("xor", args, 2)?;
                     let a = args[0].to_int()?;
                     let b = args[1].to_int()?;
                     Ok(PyObject::int(a ^ b))
@@ -381,25 +390,46 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "lshift",
                 make_builtin(|args| {
-                    check_args_min("lshift", args, 2)?;
+                    check_args("lshift", args, 2)?;
                     let a = args[0].to_int()?;
                     let b = args[1].to_int()?;
-                    Ok(PyObject::int(a << b))
+                    if b < 0 {
+                        return Err(PyException::value_error("negative shift count"));
+                    }
+                    let shift = u32::try_from(b)
+                        .map_err(|_| PyException::overflow_error("too many digits in integer"))?;
+                    match a.checked_shl(shift) {
+                        Some(value) => Ok(PyObject::int(value)),
+                        None => Err(PyException::overflow_error("too many digits in integer")),
+                    }
                 }),
             ),
             (
                 "rshift",
                 make_builtin(|args| {
-                    check_args_min("rshift", args, 2)?;
+                    check_args("rshift", args, 2)?;
                     let a = args[0].to_int()?;
                     let b = args[1].to_int()?;
-                    Ok(PyObject::int(a >> b))
+                    if b < 0 {
+                        return Err(PyException::value_error("negative shift count"));
+                    }
+                    let shift = u32::try_from(b)
+                        .map_err(|_| PyException::overflow_error("too many digits in integer"))?;
+                    Ok(PyObject::int(if shift >= i64::BITS {
+                        if a < 0 {
+                            -1
+                        } else {
+                            0
+                        }
+                    } else {
+                        a >> shift
+                    }))
                 }),
             ),
             (
                 "invert",
                 make_builtin(|args| {
-                    check_args_min("invert", args, 1)?;
+                    check_args("invert", args, 1)?;
                     let a = args[0].to_int()?;
                     Ok(PyObject::int(!a))
                 }),
@@ -407,7 +437,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "inv",
                 make_builtin(|args| {
-                    check_args_min("inv", args, 1)?;
+                    check_args("inv", args, 1)?;
                     let a = args[0].to_int()?;
                     Ok(PyObject::int(!a))
                 }),
@@ -415,35 +445,35 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "truth",
                 make_builtin(|args| {
-                    check_args_min("truth", args, 1)?;
+                    check_args("truth", args, 1)?;
                     Ok(PyObject::bool_val(args[0].is_truthy()))
                 }),
             ),
             (
                 "is_",
                 make_builtin(|args| {
-                    check_args_min("is_", args, 2)?;
+                    check_args("is_", args, 2)?;
                     Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
                 }),
             ),
             (
                 "is_not",
                 make_builtin(|args| {
-                    check_args_min("is_not", args, 2)?;
+                    check_args("is_not", args, 2)?;
                     Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
                 }),
             ),
             (
                 "index",
                 make_builtin(|args| {
-                    check_args_min("index", args, 1)?;
+                    check_args("index", args, 1)?;
                     args[0].to_int().map(PyObject::int)
                 }),
             ),
             (
                 "setitem",
                 make_builtin(|args| {
-                    check_args_min("setitem", args, 3)?;
+                    check_args("setitem", args, 3)?;
                     match &args[0].payload {
                         PyObjectPayload::List(items) => {
                             let idx = args[1].to_int()? as usize;
@@ -471,7 +501,7 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "delitem",
                 make_builtin(|args| {
-                    check_args_min("delitem", args, 2)?;
+                    check_args("delitem", args, 2)?;
                     match &args[0].payload {
                         PyObjectPayload::Dict(map) => {
                             let key = args[1].to_hashable_key()?;
@@ -487,98 +517,107 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "concat",
                 make_builtin(|args| {
-                    check_args_min("concat", args, 2)?;
+                    check_args("concat", args, 2)?;
                     args[0].add(&args[1])
                 }),
             ),
             (
                 "iadd",
                 make_builtin(|args| {
-                    check_args_min("iadd", args, 2)?;
+                    check_args("iadd", args, 2)?;
                     args[0].add(&args[1])
                 }),
             ),
             (
                 "isub",
                 make_builtin(|args| {
-                    check_args_min("isub", args, 2)?;
+                    check_args("isub", args, 2)?;
                     args[0].sub(&args[1])
                 }),
             ),
             (
                 "imul",
                 make_builtin(|args| {
-                    check_args_min("imul", args, 2)?;
+                    check_args("imul", args, 2)?;
                     args[0].mul(&args[1])
                 }),
             ),
             (
                 "itruediv",
                 make_builtin(|args| {
-                    check_args_min("itruediv", args, 2)?;
+                    check_args("itruediv", args, 2)?;
                     args[0].true_div(&args[1])
                 }),
             ),
             (
                 "ifloordiv",
                 make_builtin(|args| {
-                    check_args_min("ifloordiv", args, 2)?;
+                    check_args("ifloordiv", args, 2)?;
                     args[0].floor_div(&args[1])
                 }),
             ),
             (
                 "imod",
                 make_builtin(|args| {
-                    check_args_min("imod", args, 2)?;
+                    check_args("imod", args, 2)?;
                     args[0].modulo(&args[1])
                 }),
             ),
             (
                 "ipow",
                 make_builtin(|args| {
-                    check_args_min("ipow", args, 2)?;
+                    check_args("ipow", args, 2)?;
                     args[0].power(&args[1])
+                }),
+            ),
+            (
+                "imatmul",
+                make_builtin(|args| {
+                    check_args("imatmul", args, 2)?;
+                    Err(PyException::type_error(
+                        "unsupported operand type(s) for @=",
+                    ))
                 }),
             ),
             (
                 "iand",
                 make_builtin(|args| {
-                    check_args_min("iand", args, 2)?;
+                    check_args("iand", args, 2)?;
                     args[0].bit_and(&args[1])
                 }),
             ),
             (
                 "ior",
                 make_builtin(|args| {
-                    check_args_min("ior", args, 2)?;
+                    check_args("ior", args, 2)?;
                     args[0].bit_or(&args[1])
                 }),
             ),
             (
                 "ixor",
                 make_builtin(|args| {
-                    check_args_min("ixor", args, 2)?;
+                    check_args("ixor", args, 2)?;
                     args[0].bit_xor(&args[1])
                 }),
             ),
             (
                 "ilshift",
                 make_builtin(|args| {
-                    check_args_min("ilshift", args, 2)?;
+                    check_args("ilshift", args, 2)?;
                     args[0].lshift(&args[1])
                 }),
             ),
             (
                 "irshift",
                 make_builtin(|args| {
-                    check_args_min("irshift", args, 2)?;
+                    check_args("irshift", args, 2)?;
                     args[0].rshift(&args[1])
                 }),
             ),
             (
                 "iconcat",
                 make_builtin(|args| {
-                    check_args_min("iconcat", args, 2)?;
+                    check_args("iconcat", args, 2)?;
                     args[0].add(&args[1])
                 }),
             ),
@@ -586,7 +625,10 @@ pub fn create_operator_module() -> PyObjectRef {
                 "methodcaller",
                 make_builtin(|args| {
                     check_args_min("methodcaller", args, 1)?;
-                    let method_name = args[0].py_to_string();
+                    let method_name = args[0]
+                        .as_str()
+                        .ok_or_else(|| PyException::type_error("method name must be a string"))?
+                        .to_string();
                     let extra_args: Vec<PyObjectRef> = if args.len() > 1 {
                         args[1..].to_vec()
                     } else {
@@ -595,11 +637,7 @@ pub fn create_operator_module() -> PyObjectRef {
                     Ok(PyObject::native_closure(
                         "operator.methodcaller",
                         move |call_args| {
-                            if call_args.is_empty() {
-                                return Err(PyException::type_error(
-                                    "methodcaller expected 1 argument, got 0",
-                                ));
-                            }
+                            check_args("methodcaller", call_args, 1)?;
                             let obj = &call_args[0];
                             let method = obj.get_attr(&method_name).ok_or_else(|| {
                                 PyException::attribute_error(format!(
@@ -953,75 +991,42 @@ pub fn create_operator_module() -> PyObjectRef {
             (
                 "indexOf",
                 make_builtin(|args| {
-                    check_args_min("indexOf", args, 2)?;
+                    check_args("indexOf", args, 2)?;
                     let target = &args[1];
-                    match &args[0].payload {
+                    let items = match &args[0].payload {
                         PyObjectPayload::List(items) => {
-                            for (i, item) in items.read().iter().enumerate() {
-                                if item
-                                    .compare(target, CompareOp::Eq)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false)
-                                {
-                                    return Ok(PyObject::int(i as i64));
-                                }
-                            }
-                            Err(PyException::value_error(
-                                "sequence.index(x): x not in sequence",
-                            ))
+                            items.read().iter().cloned().collect::<Vec<PyObjectRef>>()
                         }
-                        PyObjectPayload::Tuple(items) => {
-                            for (i, item) in items.iter().enumerate() {
-                                if item
-                                    .compare(target, CompareOp::Eq)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false)
-                                {
-                                    return Ok(PyObject::int(i as i64));
-                                }
-                            }
-                            Err(PyException::value_error(
-                                "sequence.index(x): x not in sequence",
-                            ))
+                        PyObjectPayload::Tuple(items) => items.iter().cloned().collect(),
+                        _ => args[0].to_list()?,
+                    };
+                    for (i, item) in items.iter().enumerate() {
+                        if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                            return Ok(PyObject::int(i as i64));
                         }
-                        _ => Err(PyException::type_error("indexOf requires a sequence")),
                     }
+                    Err(PyException::value_error(
+                        "sequence.index(x): x not in sequence",
+                    ))
                 }),
             ),
             (
                 "countOf",
                 make_builtin(|args| {
-                    check_args_min("countOf", args, 2)?;
+                    check_args("countOf", args, 2)?;
                     let target = &args[1];
                     let mut count = 0i64;
-                    match &args[0].payload {
+                    let items = match &args[0].payload {
                         PyObjectPayload::List(items) => {
-                            for item in items.read().iter() {
-                                if item
-                                    .compare(target, CompareOp::Eq)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false)
-                                {
-                                    count += 1;
-                                }
-                            }
+                            items.read().iter().cloned().collect::<Vec<PyObjectRef>>()
                         }
-                        PyObjectPayload::Tuple(items) => {
-                            for item in items.iter() {
-                                if item
-                                    .compare(target, CompareOp::Eq)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false)
-                                {
-                                    count += 1;
-                                }
-                            }
+                        PyObjectPayload::Tuple(items) => items.iter().cloned().collect(),
+                        _ => args[0].to_list()?,
+                    };
+                    for item in items.iter() {
+                        if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                            count += 1;
                         }
-                        PyObjectPayload::Str(s) => {
-                            let t = target.py_to_string();
-                            count = s.matches(&*t).count() as i64;
-                        }
-                        _ => {}
                     }
                     Ok(PyObject::int(count))
                 }),

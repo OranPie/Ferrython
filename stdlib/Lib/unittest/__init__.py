@@ -623,6 +623,8 @@ class TestLoader:
     """Load tests from TestCase classes."""
 
     def loadTestsFromTestCase(self, testCaseClass):
+        if not hasattr(testCaseClass, 'run'):
+            return TestSuite()
         test_names = self.getTestCaseNames(testCaseClass)
         suite = TestSuite()
         for name in test_names:
@@ -633,7 +635,8 @@ class TestLoader:
         suite = TestSuite()
         for name in dir(module):
             obj = getattr(module, name)
-            if isinstance(obj, type) and issubclass(obj, TestCase) and obj is not TestCase:
+            if (isinstance(obj, type) and issubclass(obj, TestCase) and
+                    obj is not TestCase and hasattr(obj, 'run')):
                 suite.addTest(self.loadTestsFromTestCase(obj))
         return suite
 
