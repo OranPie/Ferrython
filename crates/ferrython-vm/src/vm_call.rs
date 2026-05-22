@@ -4674,6 +4674,10 @@ impl VirtualMachine {
                         "__iter__" => {
                             return Ok(bbm.receiver.clone());
                         }
+                        "__length_hint__" => {
+                            let len = bbm.receiver.py_len().unwrap_or(0);
+                            return Ok(PyObject::int(len as i64));
+                        }
                         _ => {}
                     }
                 }

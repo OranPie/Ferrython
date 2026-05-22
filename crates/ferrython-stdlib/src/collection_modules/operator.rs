@@ -337,13 +337,20 @@ pub fn create_operator_module() -> PyObjectRef {
                                     let parts: Vec<&str> = name.split('.').collect();
                                     let mut cur = obj.clone();
                                     for part in &parts {
-                                        cur = cur.get_attr(part).ok_or_else(|| {
-                                            PyException::attribute_error(format!(
+                                        if let Some(attr) = cur.get_attr(part) {
+                                            cur = attr;
+                                        } else if let Some(getattr) = cur.get_attr("__getattr__") {
+                                            cur = ferrython_core::object::call_callable(
+                                                &getattr,
+                                                &[PyObject::str_val(CompactString::from(*part))],
+                                            )?;
+                                        } else {
+                                            return Err(PyException::attribute_error(format!(
                                                 "'{}' object has no attribute '{}'",
                                                 cur.type_name(),
                                                 part
-                                            ))
-                                        })?;
+                                            )));
+                                        }
                                     }
                                     Ok(cur)
                                 };
@@ -446,6 +453,16 @@ pub fn create_operator_module() -> PyObjectRef {
                 "truth",
                 make_builtin(|args| {
                     check_args("truth", args, 1)?;
+                    if let Some(method) = args[0].get_attr("__bool__") {
+                        return Ok(PyObject::bool_val(
+                            ferrython_core::object::call_callable(&method, &[])?.is_truthy(),
+                        ));
+                    }
+                    if let Some(method) = args[0].get_attr("__len__") {
+                        return Ok(PyObject::bool_val(
+                            ferrython_core::object::call_callable(&method, &[])?.is_truthy(),
+                        ));
+                    }
                     Ok(PyObject::bool_val(args[0].is_truthy()))
                 }),
             ),
@@ -634,6 +651,28 @@ pub fn create_operator_module() -> PyObjectRef {
                     } else {
                         vec![]
                     };
+                    let (extra_args, kw_args) =
+                        if let Some((last, positional)) = extra_args.split_last() {
+                            if let PyObjectPayload::Dict(map) = &last.payload {
+                                let kw_args = map
+                                    .read()
+                                    .iter()
+                                    .map(|(k, v)| match k {
+                                        ferrython_core::types::HashableKey::Str(name) => {
+                                            Ok((name.as_ref().clone(), v.clone()))
+                                        }
+                                        _ => Err(PyException::type_error(
+                                            "methodcaller keywords must be strings",
+                                        )),
+                                    })
+                                    .collect::<PyResult<Vec<_>>>()?;
+                                (positional.to_vec(), kw_args)
+                            } else {
+                                (extra_args, Vec::new())
+                            }
+                        } else {
+                            (extra_args, Vec::new())
+                        };
                     Ok(PyObject::native_closure(
                         "operator.methodcaller",
                         move |call_args| {
@@ -886,39 +925,35 @@ pub fn create_operator_module() -> PyObjectRef {
                                     receiver,
                                     method: meth,
                                     ..
-                                } => {
-                                    match &meth.payload {
-                                        PyObjectPayload::NativeFunction(nf) => {
-                                            let mut bound_args = vec![receiver.clone()];
-                                            bound_args.extend(extra_args.iter().cloned());
-                                            (nf.func)(&bound_args)
-                                        }
-                                        PyObjectPayload::NativeClosure(nc) => {
-                                            let mut bound_args = vec![receiver.clone()];
-                                            bound_args.extend(extra_args.iter().cloned());
-                                            (nc.func)(&bound_args)
-                                        }
-                                        _ => {
-                                            // Python function — use deferred call
-                                            let mut bound_args = vec![receiver.clone()];
-                                            bound_args.extend(extra_args.iter().cloned());
-                                            crate::concurrency_modules::push_deferred_call(
-                                                meth.clone(),
-                                                bound_args,
-                                            );
-                                            Ok(PyObject::none())
-                                        }
+                                } => match &meth.payload {
+                                    PyObjectPayload::NativeFunction(nf) => {
+                                        let mut bound_args = vec![receiver.clone()];
+                                        bound_args.extend(extra_args.iter().cloned());
+                                        (nf.func)(&bound_args)
                                     }
-                                }
+                                    PyObjectPayload::NativeClosure(nc) => {
+                                        let mut bound_args = vec![receiver.clone()];
+                                        bound_args.extend(extra_args.iter().cloned());
+                                        (nc.func)(&bound_args)
+                                    }
+                                    _ => {
+                                        let mut bound_args = vec![receiver.clone()];
+                                        bound_args.extend(extra_args.iter().cloned());
+                                        ferrython_core::object::call_callable_kw(
+                                            meth,
+                                            &bound_args,
+                                            kw_args.clone(),
+                                        )
+                                    }
+                                },
                                 PyObjectPayload::Function(_) => {
-                                    // Direct Python function call via deferred mechanism
                                     let mut call_args_full = vec![obj.clone()];
                                     call_args_full.extend(extra_args.iter().cloned());
-                                    crate::concurrency_modules::push_deferred_call(
-                                        method.clone(),
-                                        call_args_full,
-                                    );
-                                    Ok(PyObject::none())
+                                    ferrython_core::object::call_callable_kw(
+                                        &method,
+                                        &call_args_full,
+                                        kw_args.clone(),
+                                    )
                                 }
                                 _ => Ok(method),
                             }
@@ -935,49 +970,34 @@ pub fn create_operator_module() -> PyObjectRef {
                     } else {
                         0
                     };
-                    // Try to call a method natively; fall back to VM callback for Python funcs.
-                    let try_dunder = |method: &PyObjectRef| -> Option<Result<i64, ()>> {
-                        match &method.payload {
-                            PyObjectPayload::NativeFunction(nf) => {
-                                (nf.func)(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok)
-                            }
-                            PyObjectPayload::NativeClosure(nc) => {
-                                (nc.func)(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok)
-                            }
-                            PyObjectPayload::BoundMethod {
-                                receiver,
-                                method: m,
-                            } => {
-                                match &m.payload {
-                                    PyObjectPayload::NativeFunction(nf) => {
-                                        (nf.func)(&[receiver.clone()])
-                                            .ok()
-                                            .and_then(|r| r.to_int().ok())
-                                            .map(Ok)
-                                    }
-                                    PyObjectPayload::NativeClosure(nc) => {
-                                        (nc.func)(&[receiver.clone()])
-                                            .ok()
-                                            .and_then(|r| r.to_int().ok())
-                                            .map(Ok)
-                                    }
-                                    _ => Some(Err(())), // needs VM
-                                }
-                            }
-                            _ => Some(Err(())), // needs VM
+                    let validate_hint = |value: PyObjectRef| -> PyResult<Option<i64>> {
+                        if matches!(&value.payload, PyObjectPayload::NotImplemented) {
+                            return Ok(None);
                         }
+                        let n = value.as_int().ok_or_else(|| {
+                            PyException::type_error("__length_hint__ must be an integer")
+                        })?;
+                        if n < 0 {
+                            return Err(PyException::value_error(
+                                "__length_hint__() should return >= 0",
+                            ));
+                        }
+                        Ok(Some(n))
                     };
                     // Try __length_hint__ first, then __len__
                     for dunder in &["__length_hint__", "__len__"] {
                         if let Some(method) = args[0].get_attr(dunder) {
-                            match try_dunder(&method) {
-                                Some(Ok(n)) => return Ok(PyObject::int(n)),
-                                Some(Err(())) => {
-                                    // Python function — request VM to call it
-                                    ferrython_core::error::request_vm_call(method, vec![]);
-                                    return Ok(PyObject::none());
+                            match ferrython_core::object::call_callable(&method, &[]) {
+                                Ok(value) => {
+                                    if let Some(n) = validate_hint(value)? {
+                                        return Ok(PyObject::int(n));
+                                    }
+                                    return Ok(PyObject::int(default));
                                 }
-                                None => {} // call failed, try next
+                                Err(err) if err.kind == ExceptionKind::TypeError => {
+                                    return Ok(PyObject::int(default));
+                                }
+                                Err(err) => return Err(err),
                             }
                         }
                     }
@@ -1072,6 +1092,10 @@ pub fn create_operator_module() -> PyObjectRef {
         ("__iconcat__", "iconcat"),
     ];
     if let PyObjectPayload::Module(ref md) = m.payload {
+        let mod_func = md.attrs.read().get(&CompactString::from("mod")).cloned();
+        if let Some(v) = mod_func {
+            md.attrs.write().insert(CompactString::from("mod_"), v);
+        }
         for (dunder, orig) in &dunder_aliases {
             let val = md.attrs.read().get(&CompactString::from(*orig)).cloned();
             if let Some(v) = val {

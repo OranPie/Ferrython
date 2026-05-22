@@ -45,6 +45,8 @@ pub fn check_intercept_pending() -> bool {
 thread_local! {
     static VM_CALL_DISPATCH: std::cell::RefCell<Option<Box<dyn FnMut(PyObjectRef, Vec<PyObjectRef>) -> PyResult<PyObjectRef>>>>
         = std::cell::RefCell::new(None);
+    static VM_CALL_KW_DISPATCH: std::cell::RefCell<Option<Box<dyn FnMut(PyObjectRef, Vec<PyObjectRef>, Vec<(CompactString, PyObjectRef)>) -> PyResult<PyObjectRef>>>>
+        = std::cell::RefCell::new(None);
 }
 
 /// Register the VM's call dispatch function. Called once by the VM at startup.
@@ -53,6 +55,21 @@ where
     F: FnMut(PyObjectRef, Vec<PyObjectRef>) -> PyResult<PyObjectRef> + 'static,
 {
     VM_CALL_DISPATCH.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(f));
+    });
+}
+
+/// Register the VM's keyword-aware call dispatch function.
+pub fn register_vm_call_kw_dispatch<F>(f: F)
+where
+    F: FnMut(
+            PyObjectRef,
+            Vec<PyObjectRef>,
+            Vec<(CompactString, PyObjectRef)>,
+        ) -> PyResult<PyObjectRef>
+        + 'static,
+{
+    VM_CALL_KW_DISPATCH.with(|cell| {
         *cell.borrow_mut() = Some(Box::new(f));
     });
 }
@@ -95,6 +112,29 @@ pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObj
     } else {
         Err(PyException::type_error(
             "not a callable (no VM dispatch registered)",
+        ))
+    }
+}
+
+/// Call any Python callable with keyword arguments through the VM dispatch.
+pub fn call_callable_kw(
+    func: &PyObjectRef,
+    args: &[PyObjectRef],
+    kwargs: Vec<(CompactString, PyObjectRef)>,
+) -> PyResult<PyObjectRef> {
+    if kwargs.is_empty() {
+        return call_callable(func, args);
+    }
+    let dispatch_fn = VM_CALL_KW_DISPATCH.with(|cell| cell.borrow_mut().take());
+    if let Some(mut dispatch) = dispatch_fn {
+        let result = dispatch(func.clone(), args.to_vec(), kwargs);
+        VM_CALL_KW_DISPATCH.with(|cell| {
+            *cell.borrow_mut() = Some(dispatch);
+        });
+        result
+    } else {
+        Err(PyException::type_error(
+            "not a callable (no VM keyword dispatch registered)",
         ))
     }
 }

@@ -93,6 +93,15 @@ impl VirtualMachine {
                 vm.call_object(func, args)
             },
         );
+        let vm_ptr4 = self as *mut VirtualMachine;
+        ferrython_core::object::register_vm_call_kw_dispatch(
+            move |func: PyObjectRef,
+                  args: Vec<PyObjectRef>,
+                  kwargs: Vec<(CompactString, PyObjectRef)>| {
+                let vm = unsafe { &mut *vm_ptr4 };
+                vm.call_object_kw(func, args, kwargs)
+            },
+        );
     }
 
     pub(crate) fn is_exception_class(cls: &PyObjectRef) -> bool {
