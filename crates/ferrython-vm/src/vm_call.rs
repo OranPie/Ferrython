@@ -4511,7 +4511,9 @@ impl VirtualMachine {
                             )
                             && matches!(
                                 args[0].payload,
-                                PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
+                                PyObjectPayload::Generator(_)
+                                    | PyObjectPayload::Instance(_)
+                                    | PyObjectPayload::Iterator(_)
                             ) =>
                     {
                         let mut resolved = Vec::with_capacity(args.len());

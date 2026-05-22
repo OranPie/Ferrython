@@ -1114,14 +1114,7 @@ impl VirtualMachine {
                             | PyObjectPayload::VecIter(_)
                             | PyObjectPayload::RefIter { .. }
                     ) {
-                        let mut items = Vec::new();
-                        loop {
-                            match builtins::iter_advance(&iter_obj)? {
-                                Some((_new_iter, value)) => items.push(value),
-                                None => break,
-                            }
-                        }
-                        return Ok(items);
+                        return self.collect_iterable(&iter_obj);
                     }
                     // If it returned a generator, collect from it
                     if let PyObjectPayload::Generator(gen_arc) = &iter_obj.payload {
