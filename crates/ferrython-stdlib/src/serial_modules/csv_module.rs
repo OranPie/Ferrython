@@ -582,6 +582,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             NativeClosureData {
                 name: CompactString::from("__len__"),
                 func: std::rc::Rc::new(move |_args| Ok(PyObject::int(rows_ref.len() as i64))),
+                pickle_args: None,
             },
         ))),
     );
@@ -593,6 +594,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__getitem__"),
+                pickle_args: None,
                 func: std::rc::Rc::new(move |args| {
                     let idx = if args.is_empty() {
                         return Err(PyException::type_error("__getitem__ requires an index"));
@@ -633,6 +635,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             NativeClosureData {
                 name: CompactString::from("__iter__"),
                 func: std::rc::Rc::new(move |_args| Ok(it.clone())),
+                pickle_args: None,
             },
         )))
     });
@@ -645,6 +648,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__next__"),
+                pickle_args: None,
                 func: std::rc::Rc::new(move |_args| {
                     let mut idx = idx_ref.lock().unwrap();
                     if *idx < rows_ref.len() {

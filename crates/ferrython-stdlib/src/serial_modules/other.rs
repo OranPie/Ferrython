@@ -9,7 +9,9 @@ use indexmap::IndexMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::collection_modules::{namedtuple_rebuild_field, namedtuple_rebuild_instance};
+use crate::collection_modules::{
+    create_operator_module, namedtuple_rebuild_field, namedtuple_rebuild_instance,
+};
 
 pub fn create_base64_module() -> PyObjectRef {
     make_module(
@@ -1208,6 +1210,45 @@ fn format_float_repr(f: f64) -> String {
     }
 }
 
+fn operator_reduce_target(name: &str) -> Option<&'static str> {
+    match name {
+        "operator.attrgetter" => Some("attrgetter"),
+        "operator.itemgetter" => Some("itemgetter"),
+        "operator.methodcaller" => Some("methodcaller"),
+        _ => None,
+    }
+}
+
+fn pickle_serialize_operator_reduce_p0(
+    func_name: &str,
+    args: &[PyObjectRef],
+    buf: &mut Vec<u8>,
+    memo: &mut u32,
+) -> PyResult<()> {
+    buf.extend_from_slice(b"coperator\n");
+    buf.extend_from_slice(func_name.as_bytes());
+    buf.extend_from_slice(b"\n(");
+    for arg in args {
+        pickle_serialize_p0(arg, buf, memo)?;
+    }
+    buf.extend_from_slice(b"tR");
+    Ok(())
+}
+
+fn pickle_serialize_operator_reduce_p2(
+    func_name: &str,
+    args: &[PyObjectRef],
+    buf: &mut Vec<u8>,
+    memo: &mut u32,
+) -> PyResult<()> {
+    buf.extend_from_slice(b"coperator\n");
+    buf.extend_from_slice(func_name.as_bytes());
+    buf.extend_from_slice(b"\n");
+    pickle_serialize_p2(&PyObject::tuple(args.to_vec()), buf, memo)?;
+    buf.push(b'R');
+    Ok(())
+}
+
 // ── Protocol 0 (text) serialization ──
 
 fn p0_escape_unicode(s: &str) -> Vec<u8> {
@@ -1457,6 +1498,19 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 }
             }
             buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::NativeClosure(nc) => {
+            if let (Some(func_name), Some(args)) = (
+                operator_reduce_target(nc.name.as_str()),
+                nc.pickle_args.as_ref(),
+            ) {
+                pickle_serialize_operator_reduce_p0(func_name, args, buf, memo)?;
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
         }
         _ => {
             return Err(PyException::runtime_error(format!(
@@ -1793,6 +1847,19 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::NativeClosure(nc) => {
+            if let (Some(func_name), Some(args)) = (
+                operator_reduce_target(nc.name.as_str()),
+                nc.pickle_args.as_ref(),
+            ) {
+                pickle_serialize_operator_reduce_p2(func_name, args, buf, memo)?;
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
+        }
         _ => {
             return Err(PyException::runtime_error(format!(
                 "PicklingError: can't pickle object of type {}",
@@ -2040,6 +2107,16 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         index: SyncUsize::new(0),
                     },
                 ))))
+            }
+            ("operator", "attrgetter" | "itemgetter" | "methodcaller") => {
+                let module = create_operator_module();
+                let constructor = module.get_attr(name.as_str()).ok_or_else(|| {
+                    PyException::runtime_error(format!(
+                        "UnpicklingError: unsupported operator constructor {}",
+                        name
+                    ))
+                })?;
+                ferrython_core::object::call_callable(&constructor, &arg_list)
             }
             (_, "namedtuple_field") => {
                 if let Some(first) = arg_list.first() {

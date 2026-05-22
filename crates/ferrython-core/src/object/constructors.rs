@@ -998,6 +998,20 @@ impl PyObject {
             NativeClosureData {
                 name: CompactString::from(name),
                 func: std::rc::Rc::new(func),
+                pickle_args: None,
+            },
+        )))
+    }
+    pub fn native_closure_with_pickle_args(
+        name: &str,
+        pickle_args: Vec<PyObjectRef>,
+        func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static,
+    ) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeClosure(Box::new(
+            NativeClosureData {
+                name: CompactString::from(name),
+                func: std::rc::Rc::new(func),
+                pickle_args: Some(pickle_args),
             },
         )))
     }

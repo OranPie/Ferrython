@@ -941,6 +941,7 @@ pub struct PartialData {
 pub struct NativeClosureData {
     pub name: CompactString,
     pub func: Rc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef>>,
+    pub pickle_args: Option<Vec<PyObjectRef>>,
 }
 
 // SAFETY: Single-threaded interpreter — Rc-based closures never cross threads.

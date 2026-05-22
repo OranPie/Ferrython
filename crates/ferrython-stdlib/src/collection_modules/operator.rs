@@ -7,6 +7,35 @@ use ferrython_core::object::{
 
 // ── operator module ──
 
+fn call_dunder(
+    obj: &PyObjectRef,
+    name: &str,
+    args: &[PyObjectRef],
+) -> PyResult<Option<PyObjectRef>> {
+    if let Some(method) = obj.get_attr(name) {
+        let result = ferrython_core::object::call_callable(&method, args)?;
+        if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+            Ok(None)
+        } else {
+            Ok(Some(result))
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+fn call_inplace_dunder(
+    obj: &PyObjectRef,
+    arg: &PyObjectRef,
+    inplace_name: &str,
+    fallback_name: &str,
+) -> PyResult<Option<PyObjectRef>> {
+    if let Some(result) = call_dunder(obj, inplace_name, &[arg.clone()])? {
+        return Ok(Some(result));
+    }
+    call_dunder(obj, fallback_name, &[arg.clone()])
+}
+
 pub fn create_operator_module() -> PyObjectRef {
     let m = make_module(
         "operator",
@@ -255,31 +284,7 @@ pub fn create_operator_module() -> PyObjectRef {
                 "getitem",
                 make_builtin(|args| {
                     check_args("getitem", args, 2)?;
-                    match &args[0].payload {
-                        PyObjectPayload::List(items) => {
-                            let idx = args[1].to_int()? as usize;
-                            items
-                                .read()
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| PyException::index_error("list index out of range"))
-                        }
-                        PyObjectPayload::Dict(map) => {
-                            let key = args[1].to_hashable_key()?;
-                            map.read()
-                                .get(&key)
-                                .cloned()
-                                .ok_or_else(|| PyException::key_error(args[1].repr()))
-                        }
-                        PyObjectPayload::Tuple(items) => {
-                            let idx = args[1].to_int()? as usize;
-                            items
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| PyException::index_error("tuple index out of range"))
-                        }
-                        _ => Err(PyException::type_error("object is not subscriptable")),
-                    }
+                    args[0].get_item(&args[1])
                 }),
             ),
             (
@@ -287,8 +292,9 @@ pub fn create_operator_module() -> PyObjectRef {
                 make_builtin(|args| {
                     check_args_min("itemgetter", args, 1)?;
                     let keys: Vec<PyObjectRef> = args.to_vec();
-                    Ok(PyObject::native_closure(
+                    Ok(PyObject::native_closure_with_pickle_args(
                         "operator.itemgetter",
+                        keys.clone(),
                         move |call_args| {
                             check_args("itemgetter", call_args, 1)?;
                             let obj = &call_args[0];
@@ -326,8 +332,13 @@ pub fn create_operator_module() -> PyObjectRef {
                         })?;
                         attr_names.push(name.to_string());
                     }
-                    Ok(PyObject::native_closure(
+                    let pickle_args = attr_names
+                        .iter()
+                        .map(|name| PyObject::str_val(CompactString::from(name.as_str())))
+                        .collect();
+                    Ok(PyObject::native_closure_with_pickle_args(
                         "operator.attrgetter",
+                        pickle_args,
                         move |call_args| {
                             check_args("attrgetter", call_args, 1)?;
                             let obj = &call_args[0];
@@ -520,14 +531,37 @@ pub fn create_operator_module() -> PyObjectRef {
                 make_builtin(|args| {
                     check_args("delitem", args, 2)?;
                     match &args[0].payload {
-                        PyObjectPayload::Dict(map) => {
-                            let key = args[1].to_hashable_key()?;
-                            map.write().shift_remove(&key);
+                        PyObjectPayload::List(items) => {
+                            let idx = args[1].to_int()?;
+                            let mut items = items.write();
+                            let len = items.len() as i64;
+                            let actual = if idx < 0 { len + idx } else { idx };
+                            if actual < 0 || actual >= len {
+                                return Err(PyException::index_error(
+                                    "list assignment index out of range",
+                                ));
+                            }
+                            items.remove(actual as usize);
                             Ok(PyObject::none())
                         }
-                        _ => Err(PyException::type_error(
-                            "object does not support item deletion",
-                        )),
+                        PyObjectPayload::Dict(map) => {
+                            let key = args[1].to_hashable_key()?;
+                            if map.write().shift_remove(&key).is_none() {
+                                return Err(PyException::key_error(args[1].repr()));
+                            }
+                            Ok(PyObject::none())
+                        }
+                        _ => {
+                            if let Some(result) =
+                                call_dunder(&args[0], "__delitem__", &[args[1].clone()])?
+                            {
+                                Ok(result)
+                            } else {
+                                Err(PyException::type_error(
+                                    "object does not support item deletion",
+                                ))
+                            }
+                        }
                     }
                 }),
             ),
@@ -535,107 +569,213 @@ pub fn create_operator_module() -> PyObjectRef {
                 "concat",
                 make_builtin(|args| {
                     check_args("concat", args, 2)?;
-                    args[0].add(&args[1])
+                    match (&args[0].payload, &args[1].payload) {
+                        (PyObjectPayload::Str(_), PyObjectPayload::Str(_))
+                        | (PyObjectPayload::List(_), PyObjectPayload::List(_))
+                        | (PyObjectPayload::Tuple(_), PyObjectPayload::Tuple(_)) => {
+                            args[0].add(&args[1])
+                        }
+                        (PyObjectPayload::Instance(_), _) => {
+                            if let Some(result) =
+                                call_dunder(&args[0], "__add__", &[args[1].clone()])?
+                            {
+                                Ok(result)
+                            } else {
+                                Err(PyException::type_error(format!(
+                                    "'{}' object can't be concatenated",
+                                    args[0].type_name()
+                                )))
+                            }
+                        }
+                        _ => Err(PyException::type_error(format!(
+                            "'{}' object can't be concatenated",
+                            args[0].type_name()
+                        ))),
+                    }
                 }),
             ),
             (
                 "iadd",
                 make_builtin(|args| {
                     check_args("iadd", args, 2)?;
-                    args[0].add(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__iadd__", "__add__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].add(&args[1])
+                    }
                 }),
             ),
             (
                 "isub",
                 make_builtin(|args| {
                     check_args("isub", args, 2)?;
-                    args[0].sub(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__isub__", "__sub__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].sub(&args[1])
+                    }
                 }),
             ),
             (
                 "imul",
                 make_builtin(|args| {
                     check_args("imul", args, 2)?;
-                    args[0].mul(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__imul__", "__mul__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].mul(&args[1])
+                    }
                 }),
             ),
             (
                 "itruediv",
                 make_builtin(|args| {
                     check_args("itruediv", args, 2)?;
-                    args[0].true_div(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__itruediv__", "__truediv__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].true_div(&args[1])
+                    }
                 }),
             ),
             (
                 "ifloordiv",
                 make_builtin(|args| {
                     check_args("ifloordiv", args, 2)?;
-                    args[0].floor_div(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__ifloordiv__", "__floordiv__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].floor_div(&args[1])
+                    }
                 }),
             ),
             (
                 "imod",
                 make_builtin(|args| {
                     check_args("imod", args, 2)?;
-                    args[0].modulo(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__imod__", "__mod__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].modulo(&args[1])
+                    }
                 }),
             ),
             (
                 "ipow",
                 make_builtin(|args| {
                     check_args("ipow", args, 2)?;
-                    args[0].power(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__ipow__", "__pow__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].power(&args[1])
+                    }
                 }),
             ),
             (
                 "imatmul",
                 make_builtin(|args| {
                     check_args("imatmul", args, 2)?;
-                    Err(PyException::type_error(
-                        "unsupported operand type(s) for @=",
-                    ))
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__imatmul__", "__matmul__")?
+                    {
+                        Ok(result)
+                    } else {
+                        Err(PyException::type_error(
+                            "unsupported operand type(s) for @=",
+                        ))
+                    }
                 }),
             ),
             (
                 "iand",
                 make_builtin(|args| {
                     check_args("iand", args, 2)?;
-                    args[0].bit_and(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__iand__", "__and__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].bit_and(&args[1])
+                    }
                 }),
             ),
             (
                 "ior",
                 make_builtin(|args| {
                     check_args("ior", args, 2)?;
-                    args[0].bit_or(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__ior__", "__or__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].bit_or(&args[1])
+                    }
                 }),
             ),
             (
                 "ixor",
                 make_builtin(|args| {
                     check_args("ixor", args, 2)?;
-                    args[0].bit_xor(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__ixor__", "__xor__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].bit_xor(&args[1])
+                    }
                 }),
             ),
             (
                 "ilshift",
                 make_builtin(|args| {
                     check_args("ilshift", args, 2)?;
-                    args[0].lshift(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__ilshift__", "__lshift__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].lshift(&args[1])
+                    }
                 }),
             ),
             (
                 "irshift",
                 make_builtin(|args| {
                     check_args("irshift", args, 2)?;
-                    args[0].rshift(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__irshift__", "__rshift__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].rshift(&args[1])
+                    }
                 }),
             ),
             (
                 "iconcat",
                 make_builtin(|args| {
                     check_args("iconcat", args, 2)?;
-                    args[0].add(&args[1])
+                    if let Some(result) =
+                        call_inplace_dunder(&args[0], &args[1], "__iadd__", "__add__")?
+                    {
+                        Ok(result)
+                    } else {
+                        args[0].add(&args[1])
+                    }
                 }),
             ),
             (
@@ -673,8 +813,22 @@ pub fn create_operator_module() -> PyObjectRef {
                         } else {
                             (extra_args, Vec::new())
                         };
-                    Ok(PyObject::native_closure(
+                    let mut pickle_args =
+                        vec![PyObject::str_val(CompactString::from(method_name.as_str()))];
+                    pickle_args.extend(extra_args.iter().cloned());
+                    if !kw_args.is_empty() {
+                        let mut kw_map = ferrython_core::object::new_fx_hashkey_map();
+                        for (key, value) in &kw_args {
+                            kw_map.insert(
+                                ferrython_core::types::HashableKey::str_key(key.clone()),
+                                value.clone(),
+                            );
+                        }
+                        pickle_args.push(PyObject::dict(kw_map));
+                    }
+                    Ok(PyObject::native_closure_with_pickle_args(
                         "operator.methodcaller",
+                        pickle_args,
                         move |call_args| {
                             check_args("methodcaller", call_args, 1)?;
                             let obj = &call_args[0];

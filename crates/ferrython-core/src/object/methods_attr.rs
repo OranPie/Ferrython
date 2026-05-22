@@ -1396,6 +1396,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     Some(PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
                         NativeClosureData {
                             name: CompactString::from("fromhex"),
+                            pickle_args: None,
                             func: std::rc::Rc::new(move |args| {
                                 if args.is_empty() {
                                     return Err(PyException::type_error(
@@ -2944,6 +2945,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 return Some(PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
                         name: CompactString::from("super.__getattribute__"),
+                        pickle_args: None,
                         func: std::rc::Rc::new(move |args: &[PyObjectRef]| {
                             if args.is_empty() {
                                 return Err(PyException::type_error(

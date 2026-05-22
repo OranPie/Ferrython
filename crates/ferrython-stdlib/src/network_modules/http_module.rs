@@ -2111,6 +2111,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__eq__"),
+                pickle_args: None,
                 func: std::rc::Rc::new(move |args: &[PyObjectRef]| {
                     let other = if args.len() > 1 { &args[1] } else { &args[0] };
                     if let Some(v) = other.as_int() {
@@ -2130,6 +2131,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
             NativeClosureData {
                 name: CompactString::from("__int__"),
                 func: std::rc::Rc::new(move |_args: &[PyObjectRef]| Ok(PyObject::int(int_code))),
+                pickle_args: None,
             },
         ))),
     );
@@ -2141,6 +2143,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
             NativeClosureData {
                 name: CompactString::from("__hash__"),
                 func: std::rc::Rc::new(move |_args: &[PyObjectRef]| Ok(PyObject::int(hash_code))),
+                pickle_args: None,
             },
         ))),
     );
@@ -2152,6 +2155,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__repr__"),
+                pickle_args: None,
                 func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                     Ok(PyObject::str_val(repr_s.clone()))
                 }),
@@ -2163,6 +2167,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__str__"),
+                pickle_args: None,
                 func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                     Ok(PyObject::str_val(str_s.clone()))
                 }),
