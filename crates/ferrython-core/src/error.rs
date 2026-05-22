@@ -390,6 +390,11 @@ impl PyException {
     pub fn key_error(msg: impl Into<CompactString>) -> Self {
         Self::new(ExceptionKind::KeyError, msg)
     }
+    pub fn key_error_value(value: crate::object::PyObjectRef) -> Self {
+        let mut exc = Self::new(ExceptionKind::KeyError, "");
+        exc.value = Some(value);
+        exc
+    }
     pub fn zero_division_error(msg: impl Into<CompactString>) -> Self {
         Self::new(ExceptionKind::ZeroDivisionError, msg)
     }

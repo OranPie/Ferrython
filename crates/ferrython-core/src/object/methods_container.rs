@@ -35,6 +35,36 @@ fn element_matches(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
     Ok(a.compare(b, CompareOp::Eq)?.is_truthy())
 }
 
+fn set_membership_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
+    match &obj.payload {
+        PyObjectPayload::Set(items) => {
+            let read = items.read();
+            let mut keys: Vec<HashableKey> = read.keys().cloned().collect();
+            keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
+            Ok(HashableKey::FrozenSet(Box::new(keys)))
+        }
+        PyObjectPayload::Instance(inst) => {
+            let has_user_hash = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.namespace.read().contains_key("__hash__")
+            } else {
+                false
+            };
+            if has_user_hash {
+                if let Ok(key) = obj.to_hashable_key() {
+                    return Ok(key);
+                }
+            }
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                if matches!(&value.payload, PyObjectPayload::Set(_)) {
+                    return set_membership_key(&value);
+                }
+            }
+            obj.to_hashable_key()
+        }
+        _ => obj.to_hashable_key(),
+    }
+}
+
 fn chainmap_builtin_value(inst: &InstanceData) -> PyResult<Option<PyObjectRef>> {
     if !inst.attrs.read().contains_key("__chainmap__") {
         return Ok(None);
@@ -423,11 +453,11 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
         }
         PyObjectPayload::Set(m) => {
-            let hk = item.to_hashable_key()?;
+            let hk = set_membership_key(item)?;
             Ok(m.read().contains_key(&hk))
         }
         PyObjectPayload::FrozenSet(m) => {
-            let hk = item.to_hashable_key()?;
+            let hk = set_membership_key(item)?;
             Ok(m.contains_key(&hk))
         }
         PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {

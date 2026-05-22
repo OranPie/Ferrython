@@ -1209,6 +1209,36 @@ pub(crate) fn call_set_method(
     method: &str,
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
+    fn set_lookup_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
+        match &obj.payload {
+            PyObjectPayload::Set(items) => {
+                let read = items.read();
+                let mut keys: Vec<HashableKey> = read.keys().cloned().collect();
+                keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
+                Ok(HashableKey::FrozenSet(Box::new(keys)))
+            }
+            PyObjectPayload::Instance(inst) => {
+                let has_user_hash = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    cd.namespace.read().contains_key("__hash__")
+                } else {
+                    false
+                };
+                if has_user_hash {
+                    if let Ok(key) = obj.to_hashable_key() {
+                        return Ok(key);
+                    }
+                }
+                if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    if matches!(&value.payload, PyObjectPayload::Set(_)) {
+                        return set_lookup_key(&value);
+                    }
+                }
+                obj.to_hashable_key()
+            }
+            _ => obj.to_hashable_key(),
+        }
+    }
+
     match method {
         "__init__" => Ok(PyObject::none()),
         "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
@@ -1313,15 +1343,15 @@ pub(crate) fn call_set_method(
         }
         "remove" => {
             check_args_min("remove", args, 1)?;
-            let hk = args[0].to_hashable_key()?;
+            let hk = set_lookup_key(&args[0])?;
             if m.write().remove(&hk).is_none() {
-                return Err(PyException::key_error(args[0].repr()));
+                return Err(PyException::key_error_value(args[0].clone()));
             }
             Ok(PyObject::none())
         }
         "discard" => {
             check_args_min("discard", args, 1)?;
-            let hk = args[0].to_hashable_key()?;
+            let hk = set_lookup_key(&args[0])?;
             m.write().remove(&hk);
             Ok(PyObject::none())
         }
@@ -1404,12 +1434,7 @@ pub(crate) fn call_set_method(
         }
         "__contains__" => {
             check_args_min("set.__contains__", args, 1)?;
-            let key =
-                args[0]
-                    .to_hashable_key()
-                    .unwrap_or(HashableKey::str_key(CompactString::from(
-                        args[0].py_to_string(),
-                    )));
+            let key = set_lookup_key(&args[0])?;
             Ok(PyObject::bool_val(m.read().contains_key(&key)))
         }
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
