@@ -168,6 +168,23 @@ impl VirtualMachine {
         a: PyObjectRef,
         b: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        let call_instance_dunder = |vm: &mut Self,
+                                    obj: &PyObjectRef,
+                                    other: &PyObjectRef,
+                                    method_name: &str|
+         -> Result<Option<PyObjectRef>, PyException> {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(method) = lookup_in_class_mro(&inst.class, method_name) {
+                    let bound = vm.bind_method(obj, method);
+                    let result = vm.call_object(bound, vec![other.clone()])?;
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
+                    }
+                }
+            }
+            Ok(None)
+        };
+
         if let cmp @ 0..=5 = op {
             // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup
             match (&a.payload, &b.payload) {
@@ -202,6 +219,24 @@ impl VirtualMachine {
                 }
                 _ => {}
             }
+            if cmp == 3 {
+                if let Some(result) = call_instance_dunder(self, &a, &b, "__ne__")? {
+                    self.vm_push(result);
+                    return Ok(None);
+                }
+                if let Some(result) = call_instance_dunder(self, &b, &a, "__ne__")? {
+                    self.vm_push(result);
+                    return Ok(None);
+                }
+                if let Some(result) = call_instance_dunder(self, &a, &b, "__eq__")? {
+                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                    return Ok(None);
+                }
+                if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
+                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                    return Ok(None);
+                }
+            }
             let (dunder, rdunder) = match cmp {
                 0 => ("__lt__", "__gt__"),
                 1 => ("__le__", "__ge__"),
@@ -211,36 +246,28 @@ impl VirtualMachine {
                 5 => ("__ge__", "__le__"),
                 _ => unreachable!(),
             };
-            // Try a's dunder via MRO walk
-            if let PyObjectPayload::Instance(inst) = &a.payload {
-                if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
-                    let bound = self.bind_method(&a, method);
-                    let r = self.call_object(bound, vec![b.clone()])?;
-                    if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                        self.vm_push(r);
-                        return Ok(None);
+            if cmp != 3 {
+                // Try a's dunder via MRO walk
+                if let Some(result) = call_instance_dunder(self, &a, &b, dunder)? {
+                    self.vm_push(result);
+                    return Ok(None);
+                }
+                if let PyObjectPayload::Instance(inst) = &a.payload {
+                    // total_ordering fallback: derive missing comparisons from root
+                    if let Some(root_marker) =
+                        lookup_in_class_mro(&inst.class, "__total_ordering_root__")
+                    {
+                        let root = root_marker.py_to_string();
+                        if let Some(result) = self.derive_total_ordering(&a, &b, dunder, &root)? {
+                            self.vm_push(result);
+                            return Ok(None);
+                        }
                     }
                 }
-                // total_ordering fallback: derive missing comparisons from root
-                if let Some(root_marker) =
-                    lookup_in_class_mro(&inst.class, "__total_ordering_root__")
-                {
-                    let root = root_marker.py_to_string();
-                    if let Some(result) = self.derive_total_ordering(&a, &b, dunder, &root)? {
-                        self.vm_push(result);
-                        return Ok(None);
-                    }
-                }
-            }
-            // Try b's reflected dunder via MRO walk
-            if let PyObjectPayload::Instance(inst) = &b.payload {
-                if let Some(method) = lookup_in_class_mro(&inst.class, rdunder) {
-                    let bound = self.bind_method(&b, method);
-                    let r = self.call_object(bound, vec![a.clone()])?;
-                    if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
-                        self.vm_push(r);
-                        return Ok(None);
-                    }
+                // Try b's reflected dunder via MRO walk
+                if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
+                    self.vm_push(result);
+                    return Ok(None);
                 }
             }
             // Dataclass auto-equality fallback

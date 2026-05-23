@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::{FxAttrMap, PyCell, PyObjectRef};
+use ferrython_core::object::{FxAttrMap, PyCell, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -642,7 +642,28 @@ impl Frame {
             .as_ref()
             .and_then(|m| m.get(name).cloned())
             .or_else(|| self.globals.read().get(name).cloned())
-            .or_else(|| self.builtins.get(name).cloned())
+            .or_else(|| self.lookup_builtin(name))
+    }
+
+    pub fn lookup_builtin(&self, name: &str) -> Option<PyObjectRef> {
+        if let Some(builtins_obj) = self.globals.read().get("__builtins__").cloned() {
+            match &builtins_obj.payload {
+                PyObjectPayload::Module(md) => {
+                    if let Some(v) = md.attrs.read().get(name).cloned() {
+                        return Some(v);
+                    }
+                }
+                PyObjectPayload::Dict(d) => {
+                    let key =
+                        ferrython_core::types::HashableKey::str_key(CompactString::from(name));
+                    if let Some(v) = d.read().get(&key).cloned() {
+                        return Some(v);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.builtins.get(name).cloned()
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
         self.local_names

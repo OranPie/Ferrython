@@ -460,6 +460,9 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             let attrs = m.attrs.read();
             if let Some(repr_fn) = attrs.get("__repr__") {
                 if let PyObjectPayload::NativeClosure(nc) = &repr_fn.payload {
+                    if let Ok(result) = (nc.func)(&[obj.clone()]) {
+                        return result.py_to_string();
+                    }
                     if let Ok(result) = (nc.func)(&[]) {
                         return result.py_to_string();
                     }
@@ -921,7 +924,10 @@ pub(super) fn py_to_int(obj: &PyObjectRef) -> PyResult<i64> {
             .trim()
             .parse::<i64>()
             .map_err(|_| PyException::value_error(format!("invalid literal for int(): '{}'", s))),
-        PyObjectPayload::Instance(_) => {
+        PyObjectPayload::Instance(inst) => {
+            if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return bv.to_int();
+            }
             // Check for __int__ or __index__ on the instance
             if let Some(int_val) = obj.get_attr("__int__") {
                 if let Some(v) = int_val.as_int() {
@@ -975,6 +981,11 @@ pub(super) fn py_as_int(obj: &PyObjectRef) -> Option<i64> {
     match &obj.payload {
         PyObjectPayload::Int(n) => n.to_i64(),
         PyObjectPayload::Bool(b) => Some(if *b { 1 } else { 0 }),
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .and_then(|v| v.as_int()),
         _ => None,
     }
 }

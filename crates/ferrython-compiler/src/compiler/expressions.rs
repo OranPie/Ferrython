@@ -1331,10 +1331,20 @@ impl Compiler {
                 a.checked_pow(b as u32)?
             }
             Operator::LShift => {
-                if b < 0 || b > 63 {
+                if b < 0 {
                     return None;
                 }
-                a.checked_shl(b as u32)?
+                if b <= 62 {
+                    a.checked_mul(1_i64 << (b as u32))?
+                } else if b == 63 {
+                    match a {
+                        0 => 0,
+                        -1 => i64::MIN,
+                        _ => return None,
+                    }
+                } else {
+                    return None;
+                }
             }
             Operator::RShift => {
                 if b < 0 || b > 63 {

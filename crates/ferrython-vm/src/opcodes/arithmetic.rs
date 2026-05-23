@@ -321,11 +321,9 @@ impl VirtualMachine {
                     PyObjectPayload::Int(PyInt::Small(y)),
                 ) = (&a.payload, &b.payload)
                 {
-                    if *y >= 0 && *y < 64 {
-                        if let Some(r) = x.checked_shl(*y as u32) {
-                            self.vm_push(PyObject::int(r));
-                            return Ok(None);
-                        }
+                    if let Some(r) = PyInt::checked_small_lshift(*x, *y) {
+                        self.vm_push(PyObject::int(r));
+                        return Ok(None);
                     }
                 }
             }
@@ -1054,28 +1052,11 @@ impl VirtualMachine {
                                     e_val.min(len)
                                 }) as usize;
                                 let e = e.max(s);
-                                // Build new bytearray and replace contents
-                                let mut result = bytes[..s].to_vec();
-                                result.extend_from_slice(&new_bytes);
-                                result.extend_from_slice(&bytes[e..]);
-                                // Overwrite using pointer manipulation (matching existing pattern)
-                                let ptr = bytes.as_ptr() as *mut u8;
                                 unsafe {
-                                    // Resize the backing buffer if needed
-                                    if result.len() == bytes.len() {
-                                        std::ptr::copy_nonoverlapping(
-                                            result.as_ptr(),
-                                            ptr,
-                                            result.len(),
-                                        );
-                                    } else {
-                                        // For now, just copy what fits (bytearray slice assign with same-length replacement)
-                                        let copy_len = result.len().min(bytes.len());
-                                        std::ptr::copy_nonoverlapping(
-                                            result.as_ptr(),
-                                            ptr,
-                                            copy_len,
-                                        );
+                                    let vec_ptr = &obj.payload as *const PyObjectPayload;
+                                    if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                                        let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
+                                        (*vp).splice(s..e, new_bytes);
                                     }
                                 }
                             } else {
@@ -1395,6 +1376,8 @@ impl VirtualMachine {
             PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
         };
+        let using_tuple_args = matches!(&args.payload, PyObjectPayload::Tuple(_));
+        let mut used_mapping_key = false;
 
         let mut result = String::with_capacity(fmt.len() + 32);
         let mut chars = fmt.chars().peekable();
@@ -1471,6 +1454,7 @@ impl VirtualMachine {
                     let spec = chars.next().unwrap_or('s');
 
                     let arg = if let Some(ref key) = dict_key {
+                        used_mapping_key = true;
                         let key_obj = PyObject::str_val(CompactString::from(key.as_str()));
                         args.get_item(&key_obj)?
                     } else {
@@ -1487,16 +1471,20 @@ impl VirtualMachine {
                     let formatted = match spec {
                         's' => self.vm_str(&arg)?,
                         'r' => self.vm_repr(&arg)?,
-                        'd' | 'i' => {
-                            let n = arg.as_int().ok_or_else(|| {
-                                PyException::type_error(&format!(
-                                    "%{} format: a number is required, not {}",
-                                    spec,
-                                    arg.type_name()
-                                ))
-                            })?;
-                            format!("{}", n)
-                        }
+                        'd' | 'i' => match &arg.payload {
+                            PyObjectPayload::Int(n) => n.to_string(),
+                            PyObjectPayload::Bool(b) => i64::from(*b).to_string(),
+                            _ => {
+                                let n = arg.as_int().ok_or_else(|| {
+                                    PyException::type_error(&format!(
+                                        "%{} format: a number is required, not {}",
+                                        spec,
+                                        arg.type_name()
+                                    ))
+                                })?;
+                                format!("{}", n)
+                            }
+                        },
                         'f' | 'F' => {
                             let v = arg.to_float().unwrap_or(0.0);
                             let p = precision.unwrap_or(6);
@@ -1600,6 +1588,11 @@ impl VirtualMachine {
                     result.push('%');
                 }
             }
+        }
+        if using_tuple_args && !used_mapping_key && arg_idx < arg_list.len() {
+            return Err(PyException::type_error(
+                "not all arguments converted during string formatting",
+            ));
         }
         Ok(PyObject::str_val(CompactString::from(result)))
     }

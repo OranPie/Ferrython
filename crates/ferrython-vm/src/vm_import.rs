@@ -364,6 +364,9 @@ impl VirtualMachine {
                 PyObject::str_val(CompactString::from(pkg)),
             );
             g.insert(CompactString::from("__doc__"), PyObject::none());
+            if let Some(builtins_mod) = self.builtins_module() {
+                g.insert(CompactString::from("__builtins__"), builtins_mod);
+            }
 
             // __path__: for packages (__init__.py), set to a list containing the
             // package directory. This is essential for submodule resolution.

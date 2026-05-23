@@ -270,8 +270,8 @@ impl VirtualMachine {
                     let from_globals = frame.globals.read().get(name.as_str()).cloned();
                     let resolved = if let Some(v) = from_globals {
                         v
-                    } else if let Some(v) = frame.builtins.get(name.as_str()) {
-                        v.clone()
+                    } else if let Some(v) = frame.lookup_builtin(name.as_str()) {
+                        v
                     } else {
                         return Err(PyException::name_error(format!(
                             "name '{}' is not defined",

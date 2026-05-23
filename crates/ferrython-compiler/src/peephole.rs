@@ -591,8 +591,19 @@ fn fold_pow(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
 
 fn fold_lshift(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
     match (a, b) {
-        (ConstantValue::Integer(x), ConstantValue::Integer(y)) if *y >= 0 && *y < 64 => {
-            Some(ConstantValue::Integer(x << y))
+        (ConstantValue::Integer(x), ConstantValue::Integer(y)) if *y >= 0 => {
+            let result = if *y <= 62 {
+                x.checked_mul(1_i64 << (*y as u32))?
+            } else if *y == 63 {
+                match *x {
+                    0 => 0,
+                    -1 => i64::MIN,
+                    _ => return None,
+                }
+            } else {
+                return None;
+            };
+            Some(ConstantValue::Integer(result))
         }
         _ => None,
     }

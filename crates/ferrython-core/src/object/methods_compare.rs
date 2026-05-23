@@ -1,10 +1,103 @@
 //! Comparison methods.
 
-use crate::error::PyResult;
+use crate::error::{PyException, PyResult};
 
 use super::helpers::{call_callable, partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::{CompareOp, PyObjectMethods};
 use super::payload::*;
+
+fn compare_len_order(a_len: usize, b_len: usize, op: CompareOp) -> bool {
+    match op {
+        CompareOp::Eq => a_len == b_len,
+        CompareOp::Ne => a_len != b_len,
+        CompareOp::Lt => a_len < b_len,
+        CompareOp::Le => a_len <= b_len,
+        CompareOp::Gt => a_len > b_len,
+        CompareOp::Ge => a_len >= b_len,
+    }
+}
+
+fn compare_ordering(ordering: std::cmp::Ordering, op: CompareOp) -> bool {
+    match op {
+        CompareOp::Eq => ordering == std::cmp::Ordering::Equal,
+        CompareOp::Ne => ordering != std::cmp::Ordering::Equal,
+        CompareOp::Lt => ordering == std::cmp::Ordering::Less,
+        CompareOp::Le => matches!(
+            ordering,
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+        ),
+        CompareOp::Gt => ordering == std::cmp::Ordering::Greater,
+        CompareOp::Ge => matches!(
+            ordering,
+            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+        ),
+    }
+}
+
+fn compare_op_symbol(op: CompareOp) -> &'static str {
+    match op {
+        CompareOp::Lt => "<",
+        CompareOp::Le => "<=",
+        CompareOp::Eq => "==",
+        CompareOp::Ne => "!=",
+        CompareOp::Gt => ">",
+        CompareOp::Ge => ">=",
+    }
+}
+
+fn set_order_type_error(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyException {
+    PyException::type_error(format!(
+        "'{}' not supported between instances of '{}' and '{}'",
+        compare_op_symbol(op),
+        a.type_name(),
+        b.type_name()
+    ))
+}
+
+fn is_set_like(obj: &PyObjectRef) -> bool {
+    matches!(
+        obj.payload,
+        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+    )
+}
+
+fn compare_sequence_items(
+    a_items: &[PyObjectRef],
+    b_items: &[PyObjectRef],
+    op: CompareOp,
+) -> PyResult<PyObjectRef> {
+    if matches!(op, CompareOp::Eq | CompareOp::Ne) && a_items.len() != b_items.len() {
+        return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
+    }
+
+    for (left, right) in a_items.iter().zip(b_items.iter()) {
+        if PyObjectRef::ptr_eq(left, right) {
+            continue;
+        }
+
+        if let Some(ordering) = partial_cmp_objects(left, right) {
+            if ordering == std::cmp::Ordering::Equal {
+                continue;
+            }
+            return Ok(PyObject::bool_val(compare_ordering(ordering, op)));
+        }
+
+        let eq = left.compare(right, CompareOp::Eq)?.is_truthy();
+        if eq {
+            continue;
+        }
+        if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
+        }
+        return left.compare(right, op);
+    }
+
+    Ok(PyObject::bool_val(compare_len_order(
+        a_items.len(),
+        b_items.len(),
+        op,
+    )))
+}
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
     // Unwrap builtin subclass instances for comparison
@@ -13,8 +106,26 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
     if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
         return py_compare(&ua, &ub, op);
     }
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Tuple(a_items), PyObjectPayload::Tuple(b_items)) => {
+            return compare_sequence_items(a_items, b_items, op);
+        }
+        (PyObjectPayload::List(a_items), PyObjectPayload::List(b_items)) => {
+            let a_snapshot = a_items.read().clone();
+            let b_snapshot = b_items.read().clone();
+            return compare_sequence_items(&a_snapshot, &b_snapshot, op);
+        }
+        _ => {}
+    }
     // Set comparisons: subset/superset semantics
     match (&a.payload, &b.payload) {
+        (PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_), _)
+        | (_, PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_))
+            if !matches!(op, CompareOp::Eq | CompareOp::Ne)
+                && (!is_set_like(a) || !is_set_like(b)) =>
+        {
+            return Err(set_order_type_error(a, b, op));
+        }
         (PyObjectPayload::DictKeys(a_map), PyObjectPayload::DictKeys(b_map)) => {
             let a_keys: Vec<_> = a_map
                 .read()
@@ -141,17 +252,58 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         }
         _ => {}
     }
-    // Check for dunder comparison methods on instances (__eq__, __lt__, __le__, __gt__, __ge__, __ne__)
+    let call_instance_dunder =
+        |obj: &PyObjectRef, other: &PyObjectRef, name: &str| -> PyResult<Option<PyObjectRef>> {
+            if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                if let Some(method) = obj.get_attr(name) {
+                    if !matches!(&method.payload, PyObjectPayload::None) {
+                        let result = call_callable(&method, &[other.clone()])?;
+                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                            return Ok(Some(result));
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        };
+
+    if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        if matches!(op, CompareOp::Ne) {
+            if let Some(result) = call_instance_dunder(a, b, "__ne__")? {
+                return Ok(result);
+            }
+            if let Some(result) = call_instance_dunder(b, a, "__ne__")? {
+                return Ok(result);
+            }
+        }
+        if let Some(result) = call_instance_dunder(a, b, "__eq__")? {
+            let eq = result.is_truthy();
+            return Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
+                eq
+            } else {
+                !eq
+            }));
+        }
+        if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
+            let eq = result.is_truthy();
+            return Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
+                eq
+            } else {
+                !eq
+            }));
+        }
+    }
+
+    // Check for ordering dunder methods on instances (__lt__, __le__, __gt__, __ge__)
     {
         let dunder = match op {
-            CompareOp::Eq => "__eq__",
-            CompareOp::Ne => "__ne__",
             CompareOp::Lt => "__lt__",
             CompareOp::Le => "__le__",
             CompareOp::Gt => "__gt__",
             CompareOp::Ge => "__ge__",
+            CompareOp::Eq | CompareOp::Ne => "",
         };
-        if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+        if !dunder.is_empty() && matches!(&a.payload, PyObjectPayload::Instance(_)) {
             if let Some(method) = a.get_attr(dunder) {
                 if !matches!(&method.payload, PyObjectPayload::None) {
                     let result = call_callable(&method, &[b.clone()])?;

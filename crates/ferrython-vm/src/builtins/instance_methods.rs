@@ -1313,29 +1313,55 @@ pub(super) fn builtin_float_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         (1.0, hex_str.as_str())
     };
     let rest = rest.strip_prefix("0x").unwrap_or(rest);
-    if let Some(p_idx) = rest.find('p') {
-        let mantissa_str = &rest[..p_idx];
-        let exp: i32 = rest[p_idx + 1..]
-            .parse()
-            .map_err(|_| PyException::value_error("invalid hexadecimal floating-point string"))?;
-        let (int_part, frac_part) = if let Some(dot) = mantissa_str.find('.') {
-            (&mantissa_str[..dot], &mantissa_str[dot + 1..])
-        } else {
-            (mantissa_str, "")
-        };
-        let int_val = i64::from_str_radix(int_part, 16).unwrap_or(0);
-        let frac_val: f64 = if frac_part.is_empty() {
-            0.0
-        } else {
-            let frac_int = i64::from_str_radix(frac_part, 16).unwrap_or(0);
-            frac_int as f64 / (16.0f64).powi(frac_part.len() as i32)
-        };
-        let value = sign * (int_val as f64 + frac_val) * (2.0f64).powi(exp);
-        Ok(PyObject::float(value))
+    let (mantissa_str, exp_str) = if let Some(p_idx) = rest.find('p') {
+        (&rest[..p_idx], Some(&rest[p_idx + 1..]))
     } else {
+        (rest, None)
+    };
+    if mantissa_str.is_empty() {
+        return Err(PyException::value_error(
+            "invalid hexadecimal floating-point string",
+        ));
+    }
+    let exp: i32 = match exp_str {
+        Some(s) => s
+            .parse()
+            .map_err(|_| PyException::value_error("invalid hexadecimal floating-point string"))?,
+        None => 0,
+    };
+    let (int_part, frac_part) = if let Some(dot) = mantissa_str.find('.') {
+        (&mantissa_str[..dot], &mantissa_str[dot + 1..])
+    } else {
+        (mantissa_str, "")
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
         Err(PyException::value_error(
             "invalid hexadecimal floating-point string",
         ))
+    } else if !int_part.chars().all(|c| c.is_ascii_hexdigit())
+        || !frac_part.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        Err(PyException::value_error(
+            "invalid hexadecimal floating-point string",
+        ))
+    } else {
+        let int_val = if int_part.is_empty() {
+            0.0
+        } else {
+            i64::from_str_radix(int_part, 16).map_err(|_| {
+                PyException::value_error("invalid hexadecimal floating-point string")
+            })? as f64
+        };
+        let frac_val: f64 = if frac_part.is_empty() {
+            0.0
+        } else {
+            let frac_int = i64::from_str_radix(frac_part, 16).map_err(|_| {
+                PyException::value_error("invalid hexadecimal floating-point string")
+            })?;
+            frac_int as f64 / (16.0f64).powi(frac_part.len() as i32)
+        };
+        let value = sign * (int_val + frac_val) * (2.0f64).powi(exp);
+        Ok(PyObject::float(value))
     }
 }
 pub(super) fn builtin_object_getattribute(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

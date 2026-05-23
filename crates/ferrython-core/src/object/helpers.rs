@@ -7,7 +7,7 @@ use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use super::methods::CompareOp;
 use super::methods::PyObjectMethods;
@@ -49,6 +49,9 @@ thread_local! {
         = std::cell::RefCell::new(None);
 }
 
+static mut GLOBAL_LOOKUP_INVALIDATE: Option<fn()> = None;
+static BYTEARRAY_EXPORTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+
 /// Register the VM's call dispatch function. Called once by the VM at startup.
 pub fn register_vm_call_dispatch<F>(f: F)
 where
@@ -72,6 +75,42 @@ where
     VM_CALL_KW_DISPATCH.with(|cell| {
         *cell.borrow_mut() = Some(Box::new(f));
     });
+}
+
+pub fn register_global_lookup_invalidate(f: fn()) {
+    unsafe {
+        GLOBAL_LOOKUP_INVALIDATE = Some(f);
+    }
+}
+
+pub fn invalidate_global_lookups() {
+    if let Some(f) = unsafe { GLOBAL_LOOKUP_INVALIDATE } {
+        f();
+    }
+}
+
+fn bytearray_export_set() -> &'static Mutex<HashSet<usize>> {
+    BYTEARRAY_EXPORTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn register_bytearray_export(obj: &PyObjectRef) {
+    if matches!(obj.payload, PyObjectPayload::ByteArray(_)) {
+        let key = PyObjectRef::as_ptr(obj) as usize;
+        if let Ok(mut exports) = bytearray_export_set().lock() {
+            exports.insert(key);
+        }
+    }
+}
+
+pub fn consume_bytearray_export(obj: &PyObjectRef) -> bool {
+    if !matches!(obj.payload, PyObjectPayload::ByteArray(_)) {
+        return false;
+    }
+    let key = PyObjectRef::as_ptr(obj) as usize;
+    bytearray_export_set()
+        .lock()
+        .map(|mut exports| exports.remove(&key))
+        .unwrap_or(false)
 }
 
 /// Call any Python callable (NativeFunction, NativeClosure, Function, BoundMethod, etc.)
@@ -324,6 +363,41 @@ pub(super) fn int_bitop(
     Ok(PyObject::int(op(ai, bi)))
 }
 
+fn dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> bool {
+    let od_key = crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
+    let a_is_od = a.contains_key(&od_key);
+    let b_is_od = b.contains_key(&od_key);
+    if a_is_od && b_is_od {
+        let a_items: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+        let b_items: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+        if a_items.len() != b_items.len() {
+            return false;
+        }
+        for ((ak, av), (bk, bv)) in a_items.iter().zip(b_items.iter()) {
+            if ak != bk {
+                return false;
+            }
+            if partial_cmp_objects(av, bv) != Some(std::cmp::Ordering::Equal) {
+                return false;
+            }
+        }
+        true
+    } else {
+        let a_effective: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+        let b_effective: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+        if a_effective.len() != b_effective.len() {
+            return false;
+        }
+        for (k, v1) in &a_effective {
+            match b.get(*k) {
+                Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
 #[inline]
 pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
     match (&a.payload, &b.payload) {
@@ -527,44 +601,21 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
             let a = a.read();
             let b = b.read();
-            // OrderedDict-vs-OrderedDict: compare key order too
-            let od_key =
-                crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
-            let a_is_od = a.contains_key(&od_key);
-            let b_is_od = b.contains_key(&od_key);
-            if a_is_od && b_is_od {
-                // Both OrderedDicts: filter hidden keys, then compare in order
-                let a_items: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
-                let b_items: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
-                if a_items.len() != b_items.len() {
-                    return None;
-                }
-                for ((ak, av), (bk, bv)) in a_items.iter().zip(b_items.iter()) {
-                    if ak != bk {
-                        return None;
-                    }
-                    if partial_cmp_objects(av, bv) != Some(std::cmp::Ordering::Equal) {
-                        return None;
-                    }
-                }
+            if dict_maps_equal(&a, &b) {
                 Some(std::cmp::Ordering::Equal)
             } else {
-                // Regular dict equality (order-insensitive); skip hidden markers
-                let a_effective: Vec<_> =
-                    a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
-                let b_effective: Vec<_> =
-                    b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
-                if a_effective.len() != b_effective.len() {
-                    return None;
-                }
-                for (k, v1) in &a_effective {
-                    match b.get(*k) {
-                        Some(v2)
-                            if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
-                        _ => return None,
-                    }
-                }
+                None
+            }
+        }
+        (PyObjectPayload::Dict(a), PyObjectPayload::MappingProxy(b))
+        | (PyObjectPayload::MappingProxy(a), PyObjectPayload::Dict(b))
+        | (PyObjectPayload::MappingProxy(a), PyObjectPayload::MappingProxy(b)) => {
+            let a = a.read();
+            let b = b.read();
+            if dict_maps_equal(&a, &b) {
                 Some(std::cmp::Ordering::Equal)
+            } else {
+                None
             }
         }
         // Class identity comparison (same Arc pointer = same class)

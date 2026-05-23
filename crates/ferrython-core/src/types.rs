@@ -128,10 +128,63 @@ impl PyInt {
             PyInt::Big(n) => PyObject::big_int(n.as_ref().clone()),
         }
     }
-    fn to_bigint(&self) -> BigInt {
+    pub(crate) fn to_bigint(&self) -> BigInt {
         match self {
             PyInt::Small(n) => BigInt::from(*n),
             PyInt::Big(n) => n.as_ref().clone(),
+        }
+    }
+
+    #[inline]
+    pub fn checked_small_lshift(value: i64, shift: i64) -> Option<i64> {
+        if shift < 0 {
+            return None;
+        }
+        if shift <= 62 {
+            return value.checked_mul(1_i64 << (shift as u32));
+        }
+        if shift == 63 {
+            return match value {
+                0 => Some(0),
+                -1 => Some(i64::MIN),
+                _ => None,
+            };
+        }
+        if value == 0 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    pub fn lshift_op(a: &PyInt, shift: usize) -> PyInt {
+        if let PyInt::Small(n) = a {
+            if let Some(result) = Self::checked_small_lshift(*n, shift as i64) {
+                return PyInt::Small(result);
+            }
+        }
+        PyInt::Big(Box::new(a.to_bigint() << shift))
+    }
+
+    pub fn rshift_op(a: &PyInt, shift: usize) -> PyInt {
+        match a {
+            PyInt::Small(n) => {
+                if shift < 63 {
+                    PyInt::Small(*n >> (shift as u32))
+                } else if *n < 0 {
+                    PyInt::Small(-1)
+                } else {
+                    PyInt::Small(0)
+                }
+            }
+            PyInt::Big(n) => {
+                let result = n.as_ref() >> shift;
+                if let Some(small) = result.to_i64() {
+                    PyInt::Small(small)
+                } else {
+                    PyInt::Big(Box::new(result))
+                }
+            }
         }
     }
 

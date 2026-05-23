@@ -128,6 +128,30 @@ fn has_method_in_class(class: &PyObjectRef, name: &str) -> bool {
     lookup_in_class_mro(class, name).is_some()
 }
 
+fn native_function_binds_to_class(class: &PyObjectRef, attr_name: &str, native_name: &str) -> bool {
+    fn matches_class_name(class_name: &CompactString, attr_name: &str, native_name: &str) -> bool {
+        let expected_len = class_name.len() + attr_name.len() + 1;
+        native_name.len() == expected_len
+            && native_name.starts_with(class_name.as_str())
+            && native_name.as_bytes().get(class_name.len()) == Some(&b'.')
+            && &native_name[class_name.len() + 1..] == attr_name
+    }
+
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        if matches_class_name(&cd.name, attr_name, native_name) {
+            return true;
+        }
+        for base in cd.mro.iter().chain(cd.bases.iter()) {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if matches_class_name(&bcd.name, attr_name, native_name) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Wrap a class-level attribute for instance access: bind functions as BoundMethod,
 /// unwrap StaticMethod/ClassMethod, handle cached_property/lru_cache wrappers.
 /// Extracted to avoid duplicating this logic in fast-path and descriptor-protocol paths.
@@ -135,6 +159,7 @@ fn has_method_in_class(class: &PyObjectRef, name: &str) -> bool {
 fn wrap_class_attr_for_instance(
     obj: &PyObjectRef,
     inst: &InstanceData,
+    attr_name: &str,
     v: PyObjectRef,
 ) -> PyObjectRef {
     match &v.payload {
@@ -151,10 +176,10 @@ fn wrap_class_attr_for_instance(
                 method: v,
             },
         }),
-        PyObjectPayload::NativeFunction(_) => {
-            // NativeFunctions stored in a class namespace act as instance methods:
-            // they expect args[0] = self. Bind them as BoundMethod so that both
-            // `obj.method()` and `m = obj.method; m()` receive the receiver.
+        PyObjectPayload::NativeFunction(nf)
+            if (nf.name.is_empty() && inst.is_special)
+                || native_function_binds_to_class(&inst.class, attr_name, &nf.name) =>
+        {
             PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: obj.clone(),
@@ -658,7 +683,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 // 2. Class + MRO via vtable/cache (methods & class attrs)
                 if let Some(v) = lookup_in_class_mro(&inst.class, name) {
-                    return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
                 // 2b. Builtin base type methods (list.append, tuple.__len__, etc.)
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -853,7 +878,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     return Some(v.clone());
                 }
                 if let Some(v) = lookup_in_class_mro(&effective_class, name) {
-                    return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
             } else {
                 // ── FULL DESCRIPTOR PROTOCOL ──
@@ -877,7 +902,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 // 3. Non-data descriptors and other class attrs
                 if let Some(v) = class_attr {
-                    return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
             }
 
@@ -894,6 +919,41 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             // Synthesized class-level attrs
             if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
                 return py_get_attr(&effective_class, name);
+            }
+            if name == "__eq__" {
+                let inst_obj = obj.clone();
+                return Some(PyObject::native_closure(
+                    "__eq__",
+                    move |args: &[PyObjectRef]| {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__eq__ requires an argument"));
+                        }
+                        if PyObjectRef::ptr_eq(&inst_obj, &args[0]) {
+                            Ok(PyObject::bool_val(true))
+                        } else {
+                            Ok(PyObject::not_implemented())
+                        }
+                    },
+                ));
+            }
+            if name == "__ne__" {
+                let inst_obj = obj.clone();
+                return Some(PyObject::native_closure(
+                    "__ne__",
+                    move |args: &[PyObjectRef]| {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__ne__ requires an argument"));
+                        }
+                        if let Some(eq_method) = inst_obj.get_attr("__eq__") {
+                            let result = call_callable(&eq_method, &[args[0].clone()])?;
+                            if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                return Ok(PyObject::not_implemented());
+                            }
+                            return Ok(PyObject::bool_val(!result.is_truthy()));
+                        }
+                        Ok(PyObject::not_implemented())
+                    },
+                ));
             }
             // __getattr__ fallback: if the class defines __getattr__, invoke it
             if name != "__getattr__" {
@@ -1120,7 +1180,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     if args.len() < 2 {
                         return Ok(PyObject::not_implemented());
                     }
-                    Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
+                    if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                        Ok(PyObject::bool_val(true))
+                    } else {
+                        Ok(PyObject::not_implemented())
+                    }
                 }));
             }
             if name == "__ne__" {
@@ -1128,7 +1192,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     if args.len() < 2 {
                         return Ok(PyObject::not_implemented());
                     }
-                    Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
+                    if PyObjectRef::ptr_eq(&args[0], &args[1]) {
+                        Ok(PyObject::bool_val(false))
+                    } else {
+                        Ok(PyObject::not_implemented())
+                    }
                 }));
             }
             None
@@ -1138,13 +1206,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 return Some(PyObject::builtin_type(CompactString::from("module")));
             }
             if name == "__dict__" {
-                // Return module attrs as a dict
-                let attrs = m.attrs.read();
-                let mut map = new_fx_hashkey_map();
-                for (k, v) in attrs.iter() {
-                    map.insert(HashableKey::str_key(k.clone()), v.clone());
-                }
-                Some(PyObject::dict(map))
+                Some(PyObject::wrap(PyObjectPayload::InstanceDict(
+                    m.attrs.clone(),
+                )))
             } else {
                 m.attrs.read().get(name).cloned()
             }
@@ -1942,9 +2006,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         | ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
                         ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
                         ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
-                        ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
-                            Some(ExceptionKind::RuntimeError)
-                        }
+                        ExceptionKind::NotImplementedError
+                        | ExceptionKind::RecursionError
+                        | ExceptionKind::ReError => Some(ExceptionKind::RuntimeError),
                         ExceptionKind::UnboundLocalError => Some(ExceptionKind::NameError),
                         ExceptionKind::IndentationError => Some(ExceptionKind::SyntaxError),
                         ExceptionKind::TabError => Some(ExceptionKind::IndentationError),
@@ -2030,9 +2094,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             | ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
                             ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
                             ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
-                            ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
-                                ExceptionKind::RuntimeError
-                            }
+                            ExceptionKind::NotImplementedError
+                            | ExceptionKind::RecursionError
+                            | ExceptionKind::ReError => ExceptionKind::RuntimeError,
                             ExceptionKind::UnboundLocalError => ExceptionKind::NameError,
                             ExceptionKind::IndentationError => ExceptionKind::SyntaxError,
                             ExceptionKind::TabError => ExceptionKind::IndentationError,

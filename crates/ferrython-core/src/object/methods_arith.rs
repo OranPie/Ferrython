@@ -826,12 +826,33 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                             }
                         }
                         'd' | 'i' => {
-                            let n = arg.to_int()?;
-                            if spec_chars.is_empty() {
-                                result.push_str(&n.to_string());
-                            } else {
-                                result.push_str(&format_int_spec(n, &spec_chars));
-                            }
+                            let formatted = match &arg.payload {
+                                PyObjectPayload::Int(n) => {
+                                    if spec_chars.is_empty() {
+                                        n.to_string()
+                                    } else if let Some(value) = n.to_i64() {
+                                        format_int_spec(value, &spec_chars)
+                                    } else {
+                                        format_str_spec(&n.to_string(), &spec_chars)
+                                    }
+                                }
+                                PyObjectPayload::Bool(b) => {
+                                    let value = i64::from(*b);
+                                    if spec_chars.is_empty() {
+                                        value.to_string()
+                                    } else {
+                                        format_int_spec(value, &spec_chars)
+                                    }
+                                }
+                                _ => {
+                                    return Err(PyException::type_error(format!(
+                                        "%{} format: a number is required, not {}",
+                                        conv,
+                                        arg.type_name()
+                                    )));
+                                }
+                            };
+                            result.push_str(&formatted);
                         }
                         'f' | 'F' => {
                             let f = arg.to_float()?;
@@ -996,12 +1017,53 @@ fn complex_pow_inline(ar: f64, ai: f64, br: f64, bi: f64) -> PyResult<PyObjectRe
     ))
 }
 
+fn int_shift_operands(a: &PyObjectRef, b: &PyObjectRef, op_name: &str) -> PyResult<(PyInt, i64)> {
+    let ua = unwrap_builtin_subclass(a);
+    let ub = unwrap_builtin_subclass(b);
+    let lhs = match &ua.payload {
+        PyObjectPayload::Int(n) => n.clone(),
+        PyObjectPayload::Bool(flag) => PyInt::Small(*flag as i64),
+        _ => {
+            return Err(PyException::type_error(format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                op_name,
+                a.type_name(),
+                b.type_name()
+            )))
+        }
+    };
+    let rhs = match &ub.payload {
+        PyObjectPayload::Int(n) => n
+            .to_i64()
+            .ok_or_else(|| PyException::overflow_error("shift count too large"))?,
+        PyObjectPayload::Bool(flag) => *flag as i64,
+        _ => {
+            return Err(PyException::type_error(format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                op_name,
+                a.type_name(),
+                b.type_name()
+            )))
+        }
+    };
+    if rhs < 0 {
+        return Err(PyException::value_error("negative shift count"));
+    }
+    Ok((lhs, rhs))
+}
+
 pub(super) fn py_lshift(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
-    int_bitop(a, b, "<<", |a, b| a << b)
+    let (lhs, shift) = int_shift_operands(a, b, "<<")?;
+    let shift = shift as usize;
+    if !lhs.is_zero() {
+        guard_eager_allocation(shift / 8 + 1, "int left shift")?;
+    }
+    Ok(PyInt::lshift_op(&lhs, shift).to_object())
 }
 
 pub(super) fn py_rshift(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
-    int_bitop(a, b, ">>", |a, b| a >> b)
+    let (lhs, shift) = int_shift_operands(a, b, ">>")?;
+    Ok(PyInt::rshift_op(&lhs, shift as usize).to_object())
 }
 
 pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {

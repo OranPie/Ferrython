@@ -1133,7 +1133,42 @@ fn abc_hashable_blocked_type(name: &str) -> bool {
     matches!(name, "bytearray" | "dict" | "list" | "set")
 }
 
+fn is_known_structural_abc(name: &str) -> bool {
+    matches!(
+        name,
+        "Hashable"
+            | "Iterable"
+            | "Iterator"
+            | "Reversible"
+            | "Generator"
+            | "Sized"
+            | "Container"
+            | "Callable"
+            | "Collection"
+            | "Sequence"
+            | "MutableSequence"
+            | "Set"
+            | "MutableSet"
+            | "Mapping"
+            | "MutableMapping"
+            | "ByteString"
+            | "Awaitable"
+            | "Coroutine"
+            | "AsyncIterable"
+            | "AsyncIterator"
+            | "AsyncGenerator"
+            | "Number"
+            | "Complex"
+            | "Real"
+            | "Rational"
+            | "Integral"
+    )
+}
+
 fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
+    if !is_known_structural_abc(abc_name) {
+        return false;
+    }
     if let PyObjectPayload::Class(cd) = &cls.payload {
         if abc_builtin_type_names(abc_name)
             .iter()
@@ -1174,6 +1209,9 @@ fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
 }
 
 fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
+    if !is_known_structural_abc(abc_name) {
+        return false;
+    }
     if abc_builtin_type_names(abc_name)
         .iter()
         .any(|builtin| *builtin == obj.type_name())
@@ -2119,35 +2157,12 @@ pub(super) fn builtin_vars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::dict_from_pairs(vec![]));
     }
-    match &args[0].payload {
-        PyObjectPayload::Instance(inst) => {
-            let attrs = inst.attrs.read();
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = attrs
-                .iter()
-                .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
-                .collect();
-            Ok(PyObject::dict_from_pairs(pairs))
-        }
-        PyObjectPayload::Class(cd) => {
-            let ns = cd.namespace.read();
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = ns
-                .iter()
-                .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
-                .collect();
-            Ok(PyObject::dict_from_pairs(pairs))
-        }
-        PyObjectPayload::Module(md) => {
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md
-                .attrs
-                .read()
-                .iter()
-                .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
-                .collect();
-            Ok(PyObject::dict_from_pairs(pairs))
-        }
-        _ => Err(PyException::type_error(
+    if let Some(dict) = args[0].get_attr("__dict__") {
+        Ok(dict)
+    } else {
+        Err(PyException::type_error(
             "vars() argument must have __dict__ attribute",
-        )),
+        ))
     }
 }
 

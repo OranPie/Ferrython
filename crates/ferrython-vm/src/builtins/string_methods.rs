@@ -1233,10 +1233,21 @@ pub(crate) fn call_str_method(
                             let resolved = if let Some(getitem) = mapping.get_attr("__getitem__") {
                                 match &getitem.payload {
                                     PyObjectPayload::NativeFunction(nf) => {
-                                        Some((nf.func)(&[key_obj])?)
+                                        Some((nf.func)(&[mapping.clone(), key_obj])?)
                                     }
                                     PyObjectPayload::NativeClosure(nc) => {
-                                        Some((nc.func)(&[key_obj])?)
+                                        Some((nc.func)(&[mapping.clone(), key_obj])?)
+                                    }
+                                    PyObjectPayload::BoundMethod { receiver, method } => {
+                                        match &method.payload {
+                                            PyObjectPayload::NativeFunction(nf) => {
+                                                Some((nf.func)(&[receiver.clone(), key_obj])?)
+                                            }
+                                            PyObjectPayload::NativeClosure(nc) => {
+                                                Some((nc.func)(&[receiver.clone(), key_obj])?)
+                                            }
+                                            _ => None,
+                                        }
                                     }
                                     _ => None,
                                 }

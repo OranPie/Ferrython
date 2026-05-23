@@ -303,6 +303,40 @@ fn cached_method_name(name: &str) -> Option<PyObjectRef> {
     }
 }
 
+#[inline(always)]
+fn native_function_binds_to_class_name(
+    class_name: &CompactString,
+    attr_name: &CompactString,
+    native_name: &str,
+) -> bool {
+    let expected_len = class_name.len() + attr_name.len() + 1;
+    if native_name.len() != expected_len {
+        return false;
+    }
+    native_name.starts_with(class_name.as_str())
+        && native_name.as_bytes().get(class_name.len()) == Some(&b'.')
+        && &native_name[class_name.len() + 1..] == attr_name.as_str()
+}
+
+#[inline(always)]
+fn native_function_binds_to_class(
+    cd: &ferrython_core::object::ClassData,
+    attr_name: &CompactString,
+    native_name: &str,
+) -> bool {
+    if native_function_binds_to_class_name(&cd.name, attr_name, native_name) {
+        return true;
+    }
+    for base in cd.mro.iter().chain(cd.bases.iter()) {
+        if let PyObjectPayload::Class(base_cd) = &base.payload {
+            if native_function_binds_to_class_name(&base_cd.name, attr_name, native_name) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Fast pointer-identity check: is this PyObjectRef the interned "append" name?
 #[inline(always)]
 fn is_interned_append(obj: &PyObjectRef) -> bool {
@@ -517,13 +551,20 @@ impl VirtualMachine {
         {
             SHARED_BUILTINS.get_or_init(|| builtins.clone());
             ferrython_core::error::register_thread_spawn(spawn_python_thread_impl);
+            ferrython_core::object::register_global_lookup_invalidate(
+                crate::frame::bump_globals_version,
+            );
         }
         // Register generator frame drop callback (core crate can't know Frame type)
         ferrython_core::object::register_gen_frame_drop(crate::vm_helpers::drop_generator_frame);
+        let mut modules = IndexMap::new();
+        if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
+            modules.insert(CompactString::from("builtins"), builtins_mod);
+        }
         Self {
             call_stack: Vec::with_capacity(64),
             builtins,
-            modules: IndexMap::new(),
+            modules,
             active_exception: None,
             sys_modules_dict: None,
             profiler: ExecutionProfiler::new(),
@@ -536,10 +577,14 @@ impl VirtualMachine {
     /// Create a lightweight VM for use in a spawned thread.
     /// Shares the same builtins map (Arc) so builtin lookup is free.
     pub fn new_for_thread(builtins: SharedBuiltins) -> Self {
+        let mut modules = IndexMap::new();
+        if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
+            modules.insert(CompactString::from("builtins"), builtins_mod);
+        }
         Self {
             call_stack: Vec::with_capacity(64),
             builtins,
-            modules: IndexMap::new(),
+            modules,
             active_exception: None,
             sys_modules_dict: None,
             profiler: ExecutionProfiler::new(),
@@ -552,6 +597,15 @@ impl VirtualMachine {
     /// Get a clone of the builtins Arc for passing to thread VMs.
     pub fn shared_builtins(&self) -> SharedBuiltins {
         self.builtins.clone()
+    }
+
+    pub(crate) fn builtins_module(&mut self) -> Option<PyObjectRef> {
+        if let Some(module) = self.modules.get("builtins") {
+            return Some(module.clone());
+        }
+        let module = ferrython_stdlib::load_module("builtins")?;
+        self.cache_module("builtins", &module);
+        Some(module)
     }
 
     /// Execute a Python function object with arguments on this VM.
@@ -590,20 +644,14 @@ impl VirtualMachine {
             }
             // In CPython, __builtins__ is available in every module's globals.
             // In __main__, it is the builtins module itself.
-            if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
+            if let Some(builtins_mod) = self.builtins_module() {
                 g.insert(CompactString::from("__builtins__"), builtins_mod);
             }
         }
-        // Register __main__ in sys.modules so that sys.modules["__main__"] works
-        let main_attrs = {
-            let g = globals.read();
-            let mut attrs = IndexMap::new();
-            for (k, v) in g.iter() {
-                attrs.insert(k.clone(), v.clone());
-            }
-            attrs
-        };
-        let main_mod = PyObject::module_with_attrs(CompactString::from("__main__"), main_attrs);
+        // Register __main__ in sys.modules so that sys.modules["__main__"] sees
+        // the live script globals populated during execution.
+        let main_mod =
+            PyObject::module_with_shared_globals(CompactString::from("__main__"), globals.clone());
         self.modules
             .insert(CompactString::from("__main__"), main_mod.clone());
         // If sys_modules_dict is already initialized, update it too
@@ -3741,9 +3789,13 @@ impl VirtualMachine {
                         (
                             PyObjectPayload::Int(PyInt::Small(x)),
                             PyObjectPayload::Int(PyInt::Small(y)),
-                        ) if *y >= 0 && *y < 64 => {
-                            unsafe { frame.binary_op_result(PyObject::int(*x << *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                        ) => {
+                            if let Some(result) = PyInt::checked_small_lshift(*x, *y) {
+                                unsafe { frame.binary_op_result(PyObject::int(result)) };
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            } else {
+                                self.execute_one(instr)
+                            }
                         }
                         _ => self.execute_one(instr),
                     }
@@ -6528,6 +6580,19 @@ impl VirtualMachine {
                                                 ) {
                                                     fast_kind = 1;
                                                     fast_val = Some(cached.clone());
+                                                } else if let PyObjectPayload::NativeFunction(nf) =
+                                                    &cached.payload
+                                                {
+                                                    fast_kind = if native_function_binds_to_class(
+                                                        cd,
+                                                        name,
+                                                        nf.name.as_str(),
+                                                    ) {
+                                                        1
+                                                    } else {
+                                                        2
+                                                    };
+                                                    fast_val = Some(cached.clone());
                                                 }
                                             }
                                             if fast_kind == 0 {
@@ -6557,13 +6622,30 @@ impl VirtualMachine {
                                                                 class_val.clone(),
                                                             );
                                                         fast_val = Some(class_val);
-                                                    } else if matches!(
-                                                        &class_val.payload,
-                                                        PyObjectPayload::NativeFunction(_)
-                                                    ) {
-                                                        // NativeFunction in class namespace — treat as unbound method
-                                                        // (fast_kind=1 so CallMethod prepends receiver as args[0]).
-                                                        fast_kind = 1;
+                                                    } else if let PyObjectPayload::NativeFunction(
+                                                        nf,
+                                                    ) = &class_val.payload
+                                                    {
+                                                        fast_kind =
+                                                            if native_function_binds_to_class(
+                                                                cd,
+                                                                name,
+                                                                nf.name.as_str(),
+                                                            ) {
+                                                                1
+                                                            } else {
+                                                                2
+                                                            };
+                                                        frame
+                                                            .attr_ic
+                                                            .get_or_insert_with(|| {
+                                                                Box::new(AttrInlineCache::empty())
+                                                            })
+                                                            .insert(
+                                                                ip,
+                                                                cd.class_version,
+                                                                class_val.clone(),
+                                                            );
                                                         fast_val = Some(class_val);
                                                     }
                                                 } else if let Some(v) =
@@ -6597,12 +6679,31 @@ impl VirtualMachine {
                                                                     method.clone(),
                                                                 );
                                                             fast_val = Some(method);
-                                                        } else if matches!(
-                                                            &method.payload,
-                                                            PyObjectPayload::NativeFunction(_)
-                                                        ) {
-                                                            // NativeFunction from MRO — treat as unbound method.
-                                                            fast_kind = 1;
+                                                        } else if let PyObjectPayload::NativeFunction(
+                                                            nf,
+                                                        ) = &method.payload
+                                                        {
+                                                            fast_kind = if native_function_binds_to_class(
+                                                                cd,
+                                                                name,
+                                                                nf.name.as_str(),
+                                                            ) {
+                                                                1
+                                                            } else {
+                                                                2
+                                                            };
+                                                            frame
+                                                                .attr_ic
+                                                                .get_or_insert_with(|| {
+                                                                    Box::new(
+                                                                        AttrInlineCache::empty(),
+                                                                    )
+                                                                })
+                                                                .insert(
+                                                                    ip,
+                                                                    cd.class_version,
+                                                                    method.clone(),
+                                                                );
                                                             fast_val = Some(method);
                                                         }
                                                     }
@@ -8154,11 +8255,18 @@ impl VirtualMachine {
                                             ) {
                                                 fast_kind = 1;
                                                 fast_val = Some(cached.clone());
-                                            } else if matches!(
-                                                &cached.payload,
-                                                PyObjectPayload::NativeFunction(_)
-                                            ) {
-                                                fast_kind = 2;
+                                            } else if let PyObjectPayload::NativeFunction(nf) =
+                                                &cached.payload
+                                            {
+                                                fast_kind = if native_function_binds_to_class(
+                                                    cd,
+                                                    name,
+                                                    nf.name.as_str(),
+                                                ) {
+                                                    1
+                                                } else {
+                                                    2
+                                                };
                                                 fast_val = Some(cached.clone());
                                             }
                                         }
@@ -8190,11 +8298,18 @@ impl VirtualMachine {
                                                             class_val.clone(),
                                                         );
                                                     fast_val = Some(class_val);
-                                                } else if matches!(
-                                                    &class_val.payload,
-                                                    PyObjectPayload::NativeFunction(_)
-                                                ) {
-                                                    fast_kind = 2;
+                                                } else if let PyObjectPayload::NativeFunction(nf) =
+                                                    &class_val.payload
+                                                {
+                                                    fast_kind = if native_function_binds_to_class(
+                                                        cd,
+                                                        name,
+                                                        nf.name.as_str(),
+                                                    ) {
+                                                        1
+                                                    } else {
+                                                        2
+                                                    };
                                                     frame
                                                         .attr_ic
                                                         .get_or_insert_with(|| {
@@ -8236,11 +8351,20 @@ impl VirtualMachine {
                                                                 method.clone(),
                                                             );
                                                         fast_val = Some(method);
-                                                    } else if matches!(
-                                                        &method.payload,
-                                                        PyObjectPayload::NativeFunction(_)
-                                                    ) {
-                                                        fast_kind = 2;
+                                                    } else if let PyObjectPayload::NativeFunction(
+                                                        nf,
+                                                    ) = &method.payload
+                                                    {
+                                                        fast_kind =
+                                                            if native_function_binds_to_class(
+                                                                cd,
+                                                                name,
+                                                                nf.name.as_str(),
+                                                            ) {
+                                                                1
+                                                            } else {
+                                                                2
+                                                            };
                                                         frame
                                                             .attr_ic
                                                             .get_or_insert_with(|| {
@@ -10340,6 +10464,7 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
             ExceptionKind::RuntimeError
                 | ExceptionKind::NotImplementedError
                 | ExceptionKind::RecursionError
+                | ExceptionKind::ReError
         ),
         ExceptionKind::NameError => matches!(
             actual,

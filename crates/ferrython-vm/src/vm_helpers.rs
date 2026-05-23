@@ -2577,6 +2577,7 @@ impl VirtualMachine {
         if args.len() >= 2 {
             // Accept both Dict and InstanceDict (returned by globals())
             if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
+                self.ensure_exec_builtins_in_attrmap(shared_globals);
                 // InstanceDict: execute directly with the shared attr map
                 let locals_dict = if args.len() >= 3 {
                     Some(&args[2])
@@ -2606,6 +2607,7 @@ impl VirtualMachine {
                     self.execute_with_globals(code, shared_globals.clone())?;
                 }
             } else if let PyObjectPayload::Dict(ref map) = args[1].payload {
+                self.ensure_exec_builtins_in_dict(map);
                 let mut new_globals = FxAttrMap::default();
                 let m = map.read();
                 for (k, v) in m.iter() {
@@ -2652,6 +2654,30 @@ impl VirtualMachine {
             self.execute_with_globals(code, globals)?;
         }
         Ok(PyObject::none())
+    }
+
+    fn ensure_exec_builtins_in_attrmap(&mut self, globals: &Rc<PyCell<FxAttrMap>>) {
+        if globals.read().contains_key("__builtins__") {
+            return;
+        }
+        if let Some(builtins_mod) = self.builtins_module() {
+            globals
+                .write()
+                .insert(CompactString::from("__builtins__"), builtins_mod);
+        }
+    }
+
+    fn ensure_exec_builtins_in_dict(
+        &mut self,
+        globals: &Rc<PyCell<ferrython_core::object::FxHashKeyMap>>,
+    ) {
+        let key = HashableKey::str_key(CompactString::from("__builtins__"));
+        if globals.read().contains_key(&key) {
+            return;
+        }
+        if let Some(builtins_mod) = self.builtins_module() {
+            globals.write().insert(key, builtins_mod);
+        }
     }
 
     fn merge_dict_into_attrmap(dict_obj: &PyObjectRef, target: &mut FxAttrMap) {

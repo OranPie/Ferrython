@@ -703,6 +703,19 @@ impl VirtualMachine {
             // Not a known parameter — goes into **kwargs
             extra_kwargs.insert(HashableKey::str_key(name), val);
         }
+        if !has_varkw && !extra_kwargs.is_empty() {
+            let unexpected = extra_kwargs
+                .keys()
+                .find_map(|key| match key {
+                    HashableKey::Str(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("?");
+            return Err(PyException::type_error(format!(
+                "{}() got an unexpected keyword argument '{}'",
+                code.name, unexpected
+            )));
+        }
 
         // Fill in defaults for missing positional args
         if !defaults.is_empty() {
@@ -714,6 +727,25 @@ impl VirtualMachine {
                     frame.set_local(i, defaults[default_idx].clone());
                 }
             }
+        }
+        let ndefaults = defaults.len();
+        let required = nparams - ndefaults;
+        let missing_names: Vec<&str> = (0..required)
+            .filter(|&i| frame.locals.get(i).map_or(true, |slot| slot.is_none()))
+            .filter_map(|i| code.varnames.get(i).map(|s| s.as_str()))
+            .collect();
+        if !missing_names.is_empty() {
+            return Err(PyException::type_error(format!(
+                "{}() missing {} required positional argument{}: {}",
+                code.name,
+                missing_names.len(),
+                if missing_names.len() == 1 { "" } else { "s" },
+                missing_names
+                    .iter()
+                    .map(|n| format!("'{}'", n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
 
         // Fill in kw_defaults for missing keyword-only args
@@ -2767,12 +2799,35 @@ impl VirtualMachine {
                                 kwargs.iter().find(|(k, _)| k.as_str() == "flags")
                             {
                                 let mut all = pos_args.clone();
-                                // Insert flags as second positional arg
-                                if all.len() < 2 {
-                                    all.push(flags_val.clone());
-                                } else {
-                                    all[1] = flags_val.clone();
+                                let flags_index = match nf_data.name.as_str() {
+                                    "re.compile" => 1,
+                                    "re.sub" | "re.subn" => 4,
+                                    "re.split" => 3,
+                                    _ => 2,
+                                };
+                                while all.len() <= flags_index {
+                                    all.push(PyObject::int(0));
                                 }
+                                if matches!(nf_data.name.as_str(), "re.sub" | "re.subn") {
+                                    if let Some((_, count_val)) =
+                                        kwargs.iter().find(|(k, _)| k.as_str() == "count")
+                                    {
+                                        while all.len() <= 3 {
+                                            all.push(PyObject::int(0));
+                                        }
+                                        all[3] = count_val.clone();
+                                    }
+                                } else if nf_data.name.as_str() == "re.split" {
+                                    if let Some((_, maxsplit_val)) =
+                                        kwargs.iter().find(|(k, _)| k.as_str() == "maxsplit")
+                                    {
+                                        while all.len() <= 2 {
+                                            all.push(PyObject::int(0));
+                                        }
+                                        all[2] = maxsplit_val.clone();
+                                    }
+                                }
+                                all[flags_index] = flags_val.clone();
                                 return (nf_data.func)(&all);
                             }
                         }

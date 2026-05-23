@@ -879,12 +879,27 @@ impl VirtualMachine {
                                     frame.push(obj);
                                     return Ok(None);
                                 }
-                                PyObjectPayload::NativeFunction(_) => {
-                                    // NativeFunction in class namespace — bind to receiver
-                                    // (same as Function: push [method, obj] so CallMethod
-                                    //  prepends receiver as args[0]).
-                                    frame.push(method);
-                                    frame.push(obj);
+                                PyObjectPayload::NativeFunction(nf) => {
+                                    let binds_to_class = if let PyObjectPayload::Class(cd) =
+                                        &effective_class.payload
+                                    {
+                                        let native_name = nf.name.as_str();
+                                        let expected_len = cd.name.len() + name.len() + 1;
+                                        native_name.len() == expected_len
+                                            && native_name.starts_with(cd.name.as_str())
+                                            && native_name.as_bytes().get(cd.name.len())
+                                                == Some(&b'.')
+                                            && &native_name[cd.name.len() + 1..] == name.as_str()
+                                    } else {
+                                        false
+                                    };
+                                    if binds_to_class {
+                                        frame.push(method);
+                                        frame.push(obj);
+                                    } else {
+                                        frame.push(PyObject::none());
+                                        frame.push(method);
+                                    }
                                     return Ok(None);
                                 }
                                 PyObjectPayload::NativeClosure(ref nc) if nc.name.contains('.') => {

@@ -2,10 +2,10 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::helpers::is_hidden_dict_key;
+use ferrython_core::object::helpers::{consume_bytearray_export, is_hidden_dict_key};
 use ferrython_core::object::IteratorData;
 use ferrython_core::object::{
-    check_args_min, checked_repeat_len, new_fx_hashkey_flatmap, new_fx_hashkey_map,
+    check_args_min, checked_repeat_len, new_fx_hashkey_flatmap, new_fx_hashkey_map, CompareOp,
     FxHashKeyFlatMap, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
 };
@@ -133,18 +133,22 @@ pub(crate) fn call_list_method(
         "count" => {
             check_args_min("count", args, 1)?;
             let target = &args[0];
-            let c = items
-                .read()
-                .iter()
-                .filter(|x| x.py_to_string() == target.py_to_string())
-                .count();
+            let snapshot = items.read().clone();
+            let mut c = 0usize;
+            for item in &snapshot {
+                if PyObjectRef::ptr_eq(item, target)
+                    || item.compare(target, CompareOp::Eq)?.is_truthy()
+                {
+                    c += 1;
+                }
+            }
             Ok(PyObject::int(c as i64))
         }
         "index" => {
             check_args_min("index", args, 1)?;
             let target = &args[0];
-            let items_r = items.read();
-            let len = items_r.len();
+            let snapshot = items.read().clone();
+            let len = snapshot.len();
             let start = if args.len() > 1 {
                 let s = args[1].to_int().unwrap_or(0);
                 if s < 0 {
@@ -166,7 +170,9 @@ pub(crate) fn call_list_method(
                 len
             };
             for i in start..stop {
-                if items_r[i].py_to_string() == target.py_to_string() {
+                if PyObjectRef::ptr_eq(&snapshot[i], target)
+                    || snapshot[i].compare(target, CompareOp::Eq)?.is_truthy()
+                {
                     return Ok(PyObject::int(i as i64));
                 }
             }
@@ -219,13 +225,19 @@ pub(crate) fn call_list_method(
         "remove" => {
             check_args_min("remove", args, 1)?;
             let target = &args[0];
-            let mut w = items.write();
-            let pos = w
-                .iter()
-                .position(|x| x.py_to_string() == target.py_to_string());
+            let snapshot = items.read().clone();
+            let mut pos = None;
+            for (i, item) in snapshot.iter().enumerate() {
+                if PyObjectRef::ptr_eq(item, target)
+                    || item.compare(target, CompareOp::Eq)?.is_truthy()
+                {
+                    pos = Some(i);
+                    break;
+                }
+            }
             match pos {
                 Some(i) => {
-                    w.remove(i);
+                    items.write().remove(i);
                     Ok(PyObject::none())
                 }
                 None => Err(PyException::value_error("list.remove(x): x not in list")),
@@ -2014,19 +2026,13 @@ pub(super) fn call_int_method(
         }
         "__lshift__" => {
             if !args.is_empty() {
-                let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() {
-                    return Ok(PyObject::int(n << (m as u32)));
-                }
+                return _receiver.lshift(&args[0]);
             }
             Ok(PyObject::not_implemented())
         }
         "__rshift__" => {
             if !args.is_empty() {
-                let n = _receiver.to_int()?;
-                if let Ok(m) = args[0].to_int() {
-                    return Ok(PyObject::int(n >> (m as u32)));
-                }
+                return _receiver.rshift(&args[0]);
             }
             Ok(PyObject::not_implemented())
         }
@@ -3273,6 +3279,12 @@ pub(super) fn call_bytearray_method(
             if args.is_empty() {
                 return Err(PyException::type_error(
                     "extend() takes exactly one argument",
+                ));
+            }
+            if consume_bytearray_export(receiver) {
+                return Err(PyException::new(
+                    ExceptionKind::BufferError,
+                    "Existing exports of data: object cannot be re-sized",
                 ));
             }
             let new_bytes: Vec<u8> = match &args[0].payload {
