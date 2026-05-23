@@ -6,8 +6,17 @@ use ferrython_core::object::{
     check_args, check_args_min, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use num_bigint::{BigInt, Sign};
+use num_integer::Integer;
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
+
+unsafe extern "C" {
+    fn ldexp(x: libc::c_double, exp: libc::c_int) -> libc::c_double;
+    #[link_name = "remainder"]
+    fn c_remainder(x: libc::c_double, y: libc::c_double) -> libc::c_double;
+}
 
 pub fn create_math_module() -> PyObjectRef {
     make_module(
@@ -54,19 +63,7 @@ pub fn create_math_module() -> PyObjectRef {
             ("perm", make_builtin(math_perm)),
             ("prod", make_builtin(math_prod)),
             ("lcm", make_builtin(math_lcm)),
-            (
-                "isqrt",
-                make_builtin(|args| {
-                    check_args("isqrt", args, 1)?;
-                    let n = args[0].as_int().ok_or_else(|| {
-                        PyException::type_error("isqrt() argument must be an integer")
-                    })?;
-                    if n < 0 {
-                        return Err(PyException::value_error("isqrt() argument must be >= 0"));
-                    }
-                    Ok(PyObject::int((n as f64).sqrt() as i64))
-                }),
-            ),
+            ("isqrt", make_builtin(math_isqrt)),
             (
                 "nextafter",
                 make_builtin(|args| {
@@ -126,29 +123,311 @@ pub fn create_math_module() -> PyObjectRef {
 
 fn math_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.sqrt", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
     if x < 0.0 {
         return Err(PyException::value_error("math domain error"));
     }
     Ok(PyObject::float(x.sqrt()))
 }
+
+fn math_number_to_float(obj: &PyObjectRef) -> PyResult<f64> {
+    match &obj.payload {
+        PyObjectPayload::Float(f) => Ok(*f),
+        PyObjectPayload::Int(PyInt::Small(n)) => Ok(*n as f64),
+        PyObjectPayload::Int(PyInt::Big(n)) => {
+            let value = n
+                .to_f64()
+                .ok_or_else(|| PyException::overflow_error("int too large to convert to float"))?;
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(PyException::overflow_error(
+                    "int too large to convert to float",
+                ))
+            }
+        }
+        PyObjectPayload::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        PyObjectPayload::Str(_) => Err(PyException::type_error("must be real number, not str")),
+        PyObjectPayload::Instance(inst) => {
+            {
+                let attrs = inst.attrs.read();
+                if attrs.contains_key("__decimal__") {
+                    if let Some(v) = attrs.get("_value") {
+                        if let Some(s) = v.as_str() {
+                            return s.parse::<f64>().map_err(|_| {
+                                PyException::value_error(format!(
+                                    "could not convert string to float: '{}'",
+                                    s
+                                ))
+                            });
+                        }
+                    }
+                }
+                if let Some(v) = attrs.get("__builtin_value__") {
+                    if matches!(
+                        &v.payload,
+                        PyObjectPayload::Float(_)
+                            | PyObjectPayload::Int(_)
+                            | PyObjectPayload::Bool(_)
+                    ) {
+                        return math_number_to_float(v);
+                    }
+                }
+                if let Some(v) = attrs.get("_value") {
+                    if let Some(s) = v.as_str() {
+                        return s.parse::<f64>().map_err(|_| {
+                            PyException::value_error(format!(
+                                "could not convert string to float: '{}'",
+                                s
+                            ))
+                        });
+                    }
+                }
+                if attrs.contains_key("__fraction__") {
+                    if let (Some(n), Some(d)) = (attrs.get("numerator"), attrs.get("denominator")) {
+                        return Ok(math_number_to_float(n)? / math_number_to_float(d)?);
+                    }
+                }
+            }
+            if let Some(method) = obj.get_attr("__float__") {
+                let result = ferrython_core::object::call_callable(&method, &[])?;
+                if let PyObjectPayload::Float(f) = &result.payload {
+                    return Ok(*f);
+                }
+                return Err(PyException::type_error("__float__ returned non-float"));
+            }
+            obj.to_float()
+        }
+        _ => Err(PyException::type_error(format!(
+            "must be real number, not {}",
+            obj.type_name()
+        ))),
+    }
+}
+
+fn index_bigint(obj: &PyObjectRef, func_name: &str) -> PyResult<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => Ok(match n {
+            PyInt::Small(v) => BigInt::from(*v),
+            PyInt::Big(v) => v.as_ref().clone(),
+        }),
+        PyObjectPayload::Bool(b) => Ok(BigInt::from(if *b { 1 } else { 0 })),
+        PyObjectPayload::Instance(inst) => {
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                if matches!(
+                    &value.payload,
+                    PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+                ) {
+                    return index_bigint(&value, func_name);
+                }
+            }
+            if let Some(method) = obj.get_attr("__index__") {
+                let result = ferrython_core::object::call_callable(&method, &[])?;
+                return index_bigint(&result, func_name);
+            }
+            Err(PyException::type_error(format!(
+                "{}() argument must be an integer",
+                func_name
+            )))
+        }
+        _ => Err(PyException::type_error(format!(
+            "{}() argument must be an integer",
+            func_name
+        ))),
+    }
+}
+
+fn bigint_to_object(value: BigInt) -> PyObjectRef {
+    if let Some(v) = value.to_i64() {
+        PyObject::int(v)
+    } else {
+        PyObject::big_int(value)
+    }
+}
+
+fn isqrt_bigint(n: &BigInt) -> BigInt {
+    if n.is_zero() {
+        return BigInt::zero();
+    }
+    let mut x = BigInt::one() << ((n.bits() + 1) / 2);
+    loop {
+        let y = (&x + n / &x) >> 1usize;
+        if y >= x {
+            return x;
+        }
+        x = y;
+    }
+}
+
+fn float_to_integral_object(x: f64, func_name: &str, op: fn(f64) -> f64) -> PyResult<PyObjectRef> {
+    if x.is_nan() {
+        return Err(PyException::value_error(format!(
+            "cannot convert float NaN to integer in {}",
+            func_name
+        )));
+    }
+    if x.is_infinite() {
+        return Err(PyException::overflow_error(format!(
+            "cannot convert float infinity to integer in {}",
+            func_name
+        )));
+    }
+    let value = op(x);
+    if value >= i64::MIN as f64 && value <= i64::MAX as f64 {
+        Ok(PyObject::int(value as i64))
+    } else {
+        BigInt::from_f64(value)
+            .map(PyObject::big_int)
+            .ok_or_else(|| PyException::overflow_error("float too large to convert to integer"))
+    }
+}
+
+fn pyint_ln(n: &PyInt) -> PyResult<f64> {
+    match n {
+        PyInt::Small(v) => {
+            if *v <= 0 {
+                Err(PyException::value_error("math domain error"))
+            } else {
+                Ok((*v as f64).ln())
+            }
+        }
+        PyInt::Big(v) => {
+            if v.sign() != Sign::Plus {
+                return Err(PyException::value_error("math domain error"));
+            }
+            let bits = v.bits();
+            if bits <= 1023 {
+                return v
+                    .to_f64()
+                    .map(|f| f.ln())
+                    .ok_or_else(|| PyException::overflow_error("int too large to convert"));
+            }
+            let shift = bits.saturating_sub(53) as usize;
+            let top = (v.as_ref() >> shift)
+                .to_u64()
+                .ok_or_else(|| PyException::overflow_error("int too large to convert"))?;
+            Ok((top as f64).ln() + (shift as f64) * std::f64::consts::LN_2)
+        }
+    }
+}
+
+fn pyint_log2(n: &PyInt) -> PyResult<f64> {
+    match n {
+        PyInt::Small(v) => {
+            if *v <= 0 {
+                Err(PyException::value_error("math domain error"))
+            } else if (*v & (*v - 1)) == 0 {
+                Ok((63 - v.leading_zeros()) as f64)
+            } else {
+                Ok((*v as f64).log2())
+            }
+        }
+        PyInt::Big(v) => {
+            if v.sign() != Sign::Plus {
+                return Err(PyException::value_error("math domain error"));
+            }
+            let bits = v.bits();
+            let one = BigInt::one();
+            if (v.as_ref() & (v.as_ref() - &one)).is_zero() {
+                return Ok((bits - 1) as f64);
+            }
+            Ok(pyint_ln(n)? / std::f64::consts::LN_2)
+        }
+    }
+}
+
+fn float_log2_exact_power(x: f64) -> Option<f64> {
+    if !(x > 0.0 && x.is_finite()) {
+        return None;
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & 0x000f_ffff_ffff_ffff;
+    if exp == 0 {
+        if frac != 0 && (frac & (frac - 1)) == 0 {
+            return Some((frac.trailing_zeros() as i32 - 1074) as f64);
+        }
+    } else if frac == 0 {
+        return Some((exp - 1023) as f64);
+    }
+    None
+}
+
+fn is_odd_integer_float(x: f64) -> bool {
+    x.is_finite() && x.fract() == 0.0 && x.abs() <= u64::MAX as f64 && ((x.abs() as u64) & 1) == 1
+}
+
+fn math_ln_arg(obj: &PyObjectRef) -> PyResult<f64> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => pyint_ln(n),
+        _ => {
+            let x = math_number_to_float(obj)?;
+            if x <= 0.0 {
+                return Err(PyException::value_error("math domain error"));
+            }
+            Ok(x.ln())
+        }
+    }
+}
+
 fn math_ceil(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.ceil", args, 1)?;
-    Ok(PyObject::int(args[0].to_float()?.ceil() as i64))
+    float_to_integral_object(math_number_to_float(&args[0])?, "math.ceil", f64::ceil)
 }
 fn math_floor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.floor", args, 1)?;
-    Ok(PyObject::int(args[0].to_float()?.floor() as i64))
+    float_to_integral_object(math_number_to_float(&args[0])?, "math.floor", f64::floor)
 }
 fn math_fabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.fabs", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.abs()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.abs()))
 }
 fn math_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.pow", args, 2)?;
-    Ok(PyObject::float(
-        args[0].to_float()?.powf(args[1].to_float()?),
-    ))
+    let x = math_number_to_float(&args[0])?;
+    let y = math_number_to_float(&args[1])?;
+    if y == 0.0 || x == 1.0 {
+        return Ok(PyObject::float(1.0));
+    }
+    if x.is_infinite() {
+        if y.is_nan() {
+            return Ok(PyObject::float(f64::NAN));
+        }
+        if y > 0.0 {
+            if x.is_sign_negative() && is_odd_integer_float(y) {
+                return Ok(PyObject::float(f64::NEG_INFINITY));
+            }
+            return Ok(PyObject::float(f64::INFINITY));
+        }
+        if y < 0.0 {
+            if x.is_sign_negative() && is_odd_integer_float(y) {
+                return Ok(PyObject::float(-0.0));
+            }
+            return Ok(PyObject::float(0.0));
+        }
+    }
+    if x == 0.0 && y < 0.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    if y.is_infinite() {
+        let ax = x.abs();
+        if ax == 1.0 {
+            return Ok(PyObject::float(1.0));
+        }
+        let grows = (ax > 1.0) == y.is_sign_positive();
+        return Ok(PyObject::float(if grows { f64::INFINITY } else { 0.0 }));
+    }
+    if x < 0.0 && y.is_finite() && y.fract() != 0.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    let result = x.powf(y);
+    if result.is_nan() && !x.is_nan() && !y.is_nan() {
+        return Err(PyException::value_error("math domain error"));
+    }
+    if result.is_infinite() && x.is_finite() && y.is_finite() {
+        return Err(PyException::overflow_error("math range error"));
+    }
+    Ok(PyObject::float(result))
 }
 fn math_log(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
@@ -156,124 +435,196 @@ fn math_log(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "math.log requires at least 1 argument",
         ));
     }
-    let x = args[0].to_float()?;
-    if x <= 0.0 {
-        return Err(PyException::value_error("math domain error"));
+    if args.len() > 2 {
+        return Err(PyException::type_error(
+            "math.log expected at most 2 arguments",
+        ));
     }
+    let ln_x = math_ln_arg(&args[0])?;
     if args.len() > 1 {
-        let base = args[1].to_float()?;
-        Ok(PyObject::float(x.ln() / base.ln()))
+        let ln_base = math_ln_arg(&args[1])?;
+        Ok(PyObject::float(ln_x / ln_base))
     } else {
-        Ok(PyObject::float(x.ln()))
+        Ok(PyObject::float(ln_x))
     }
 }
 fn math_log2(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.log2", args, 1)?;
-    let x = args[0].to_float()?;
+    if let PyObjectPayload::Int(n) = &args[0].payload {
+        return Ok(PyObject::float(pyint_log2(n)?));
+    }
+    let x = math_number_to_float(&args[0])?;
     if x <= 0.0 {
         return Err(PyException::value_error("math domain error"));
+    }
+    if let Some(exact) = float_log2_exact_power(x) {
+        return Ok(PyObject::float(exact));
     }
     Ok(PyObject::float(x.log2()))
 }
 fn math_log10(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.log10", args, 1)?;
-    let x = args[0].to_float()?;
-    if x <= 0.0 {
-        return Err(PyException::value_error("math domain error"));
-    }
-    Ok(PyObject::float(x.log10()))
+    Ok(PyObject::float(
+        math_ln_arg(&args[0])? / std::f64::consts::LN_10,
+    ))
 }
 fn math_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.exp", args, 1)?;
-    let result = args[0].to_float()?.exp();
-    if result.is_infinite() {
+    let x = math_number_to_float(&args[0])?;
+    if x == f64::INFINITY {
+        return Ok(PyObject::float(f64::INFINITY));
+    }
+    if x == f64::NEG_INFINITY {
+        return Ok(PyObject::float(0.0));
+    }
+    let result = x.exp();
+    if result.is_infinite() && x.is_finite() {
         return Err(PyException::overflow_error("math range error"));
     }
     Ok(PyObject::float(result))
 }
 fn math_sin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.sin", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.sin()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.sin()))
 }
 fn math_cos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.cos", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.cos()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.cos()))
 }
 fn math_tan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.tan", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.tan()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.tan()))
 }
 fn math_asin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.asin", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.asin()))
+    let x = math_number_to_float(&args[0])?;
+    if !x.is_nan() && !(-1.0..=1.0).contains(&x) {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(x.asin()))
 }
 fn math_acos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.acos", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.acos()))
+    let x = math_number_to_float(&args[0])?;
+    if !x.is_nan() && !(-1.0..=1.0).contains(&x) {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(x.acos()))
 }
 fn math_atan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.atan", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.atan()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.atan()))
 }
 fn math_atan2(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.atan2", args, 2)?;
     Ok(PyObject::float(
-        args[0].to_float()?.atan2(args[1].to_float()?),
+        math_number_to_float(&args[0])?.atan2(math_number_to_float(&args[1])?),
     ))
 }
 fn math_degrees(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.degrees", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.to_degrees()))
+    Ok(PyObject::float(
+        math_number_to_float(&args[0])?.to_degrees(),
+    ))
 }
 fn math_radians(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.radians", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.to_radians()))
+    Ok(PyObject::float(
+        math_number_to_float(&args[0])?.to_radians(),
+    ))
 }
 fn math_isnan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.isnan", args, 1)?;
-    Ok(PyObject::bool_val(args[0].to_float()?.is_nan()))
+    Ok(PyObject::bool_val(math_number_to_float(&args[0])?.is_nan()))
 }
 fn math_isinf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.isinf", args, 1)?;
-    Ok(PyObject::bool_val(args[0].to_float()?.is_infinite()))
+    Ok(PyObject::bool_val(
+        math_number_to_float(&args[0])?.is_infinite(),
+    ))
 }
 fn math_isfinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.isfinite", args, 1)?;
-    Ok(PyObject::bool_val(args[0].to_float()?.is_finite()))
+    Ok(PyObject::bool_val(
+        math_number_to_float(&args[0])?.is_finite(),
+    ))
 }
 fn math_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::int(0));
     }
     if args.len() == 1 {
-        return Ok(PyObject::int(args[0].to_int()?.abs()));
+        return Ok(bigint_to_object(index_bigint(&args[0], "gcd")?.abs()));
     }
-    let mut result = args[0].to_int()?.abs();
+    let mut result = index_bigint(&args[0], "gcd")?.abs();
     for arg in &args[1..] {
-        let mut b = arg.to_int()?.abs();
-        while b != 0 {
-            let t = b;
-            b = result % b;
-            result = t;
-        }
+        result = result.gcd(&index_bigint(arg, "gcd")?.abs());
     }
-    Ok(PyObject::int(result))
+    Ok(bigint_to_object(result))
 }
 fn math_factorial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.factorial", args, 1)?;
-    let n = args[0].to_int()?;
+    let n = match &args[0].payload {
+        PyObjectPayload::Int(PyInt::Small(v)) => *v,
+        PyObjectPayload::Int(PyInt::Big(v)) => {
+            if v.sign() == Sign::Minus {
+                return Err(PyException::value_error(
+                    "factorial() not defined for negative values",
+                ));
+            }
+            v.to_i64()
+                .ok_or_else(|| PyException::value_error("factorial() argument too large"))?
+        }
+        PyObjectPayload::Bool(b) => {
+            if *b {
+                1
+            } else {
+                0
+            }
+        }
+        PyObjectPayload::Float(f) => {
+            if *f < 0.0 {
+                return Err(PyException::value_error(
+                    "factorial() not defined for negative values",
+                ));
+            }
+            if !f.is_finite() || f.fract() != 0.0 {
+                return Err(PyException::value_error(
+                    "factorial() only accepts integral values",
+                ));
+            }
+            if *f > i64::MAX as f64 || *f < i64::MIN as f64 {
+                return Err(PyException::overflow_error(
+                    "factorial() argument too large",
+                ));
+            }
+            *f as i64
+        }
+        _ => {
+            return Err(PyException::type_error(
+                "factorial() argument must be an integer",
+            ))
+        }
+    };
     if n < 0 {
         return Err(PyException::value_error(
             "factorial() not defined for negative values",
         ));
     }
-    let mut result: i64 = 1;
+    let mut result = BigInt::one();
     for i in 2..=n {
-        result = result
-            .checked_mul(i)
-            .ok_or_else(|| PyException::overflow_error("factorial result too large"))?;
+        result *= i;
     }
-    Ok(PyObject::int(result))
+    Ok(PyObject::big_int(result))
+}
+
+fn math_isqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("isqrt", args, 1)?;
+    let n = index_bigint(&args[0], "isqrt")?;
+    if n.sign() == Sign::Minus {
+        return Err(PyException::value_error("isqrt() argument must be >= 0"));
+    }
+    Ok(bigint_to_object(isqrt_bigint(&n)))
 }
 fn math_trunc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.trunc", args, 1)?;
@@ -282,18 +633,47 @@ fn math_trunc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn math_copysign(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.copysign", args, 2)?;
     Ok(PyObject::float(
-        args[0].to_float()?.copysign(args[1].to_float()?),
+        math_number_to_float(&args[0])?.copysign(math_number_to_float(&args[1])?),
     ))
 }
 fn math_hypot(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("math.hypot", args, 2)?;
-    Ok(PyObject::float(
-        args[0].to_float()?.hypot(args[1].to_float()?),
-    ))
+    let mut values = Vec::with_capacity(args.len());
+    let mut max = 0.0f64;
+    let mut has_nan = false;
+    for arg in args {
+        let x = math_number_to_float(arg)?.abs();
+        if x.is_infinite() {
+            return Ok(PyObject::float(f64::INFINITY));
+        }
+        if x.is_nan() {
+            has_nan = true;
+        } else if x > max {
+            max = x;
+        }
+        values.push(x);
+    }
+    if has_nan {
+        return Ok(PyObject::float(f64::NAN));
+    }
+    if max == 0.0 {
+        return Ok(PyObject::float(0.0));
+    }
+    let mut sum = 0.0;
+    for value in values {
+        let scaled = value / max;
+        sum += scaled * scaled;
+    }
+    Ok(PyObject::float(max * sum.sqrt()))
 }
 fn math_modf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.modf", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
+    if x.is_infinite() {
+        return Ok(PyObject::tuple(vec![
+            PyObject::float(0.0f64.copysign(x)),
+            PyObject::float(x),
+        ]));
+    }
     let fract = x.fract();
     let trunc = x.trunc();
     Ok(PyObject::tuple(vec![
@@ -303,15 +683,20 @@ fn math_modf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_fmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.fmod", args, 2)?;
-    let y = args[1].to_float()?;
-    if y == 0.0 {
+    let x = math_number_to_float(&args[0])?;
+    let y = math_number_to_float(&args[1])?;
+    if y == 0.0 || x.is_infinite() {
         return Err(PyException::value_error("math domain error"));
     }
-    Ok(PyObject::float(args[0].to_float()? % y))
+    Ok(PyObject::float(x % y))
 }
 fn math_frexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.frexp", args, 1)?;
-    let (m, e) = frexp(args[0].to_float()?);
+    let x = math_number_to_float(&args[0])?;
+    if x.is_nan() || x.is_infinite() || x == 0.0 {
+        return Ok(PyObject::tuple(vec![PyObject::float(x), PyObject::int(0)]));
+    }
+    let (m, e) = frexp(x);
     Ok(PyObject::tuple(vec![
         PyObject::float(m),
         PyObject::int(e as i64),
@@ -319,9 +704,23 @@ fn math_frexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_ldexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.ldexp", args, 2)?;
-    let x = args[0].to_float()?;
-    let i = args[1].to_int()? as i32;
-    Ok(PyObject::float(x * (2.0f64).powi(i)))
+    let x = math_number_to_float(&args[0])?;
+    let exponent = index_bigint(&args[1], "ldexp")?;
+    if x == 0.0 || x.is_nan() || x.is_infinite() {
+        return Ok(PyObject::float(x));
+    }
+    let Some(i) = exponent.to_i32() else {
+        if exponent.sign() == Sign::Minus {
+            return Ok(PyObject::float(0.0f64.copysign(x)));
+        }
+        return Err(PyException::overflow_error("math range error"));
+    };
+    // libc ldexp/scalbn preserves subnormal results that powi-based scaling loses.
+    let result = unsafe { ldexp(x, i as libc::c_int) };
+    if result.is_infinite() {
+        return Err(PyException::overflow_error("math range error"));
+    }
+    Ok(PyObject::float(result))
 }
 
 fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -330,8 +729,8 @@ fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "isclose() requires at least 2 arguments",
         ));
     }
-    let a = args[0].to_float()?;
-    let b = args[1].to_float()?;
+    let a = math_number_to_float(&args[0])?;
+    let b = math_number_to_float(&args[1])?;
     // Extract rel_tol and abs_tol from positional args or trailing kwargs dict
     let mut rel_tol = 1e-9;
     let mut abs_tol = 0.0;
@@ -340,17 +739,20 @@ fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Dict(d) = &arg.payload {
             let map = d.read();
             if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("rel_tol"))) {
-                rel_tol = v.to_float()?;
+                rel_tol = math_number_to_float(v)?;
             }
             if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("abs_tol"))) {
-                abs_tol = v.to_float()?;
+                abs_tol = math_number_to_float(v)?;
             }
         } else if rel_tol == 1e-9 && abs_tol == 0.0 {
             // First non-dict remaining arg = rel_tol
-            rel_tol = arg.to_float()?;
+            rel_tol = math_number_to_float(arg)?;
         } else {
-            abs_tol = arg.to_float()?;
+            abs_tol = math_number_to_float(arg)?;
         }
+    }
+    if rel_tol < 0.0 || abs_tol < 0.0 {
+        return Err(PyException::value_error("tolerances must be non-negative"));
     }
     if a == b {
         return Ok(PyObject::bool_val(true));
@@ -366,40 +768,82 @@ fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn math_comb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.comb", args, 2)?;
-    let n = args[0].to_int()?;
-    let k = args[1].to_int()?;
-    if k < 0 || n < 0 {
-        return Ok(PyObject::int(0));
+    let n = index_bigint(&args[0], "comb")?;
+    let k = index_bigint(&args[1], "comb")?;
+    if n.sign() == Sign::Minus {
+        return Err(PyException::value_error("n must be a non-negative integer"));
+    }
+    if k.sign() == Sign::Minus {
+        return Err(PyException::value_error("k must be a non-negative integer"));
     }
     if k > n {
         return Ok(PyObject::int(0));
     }
-    let k = k.min(n - k) as u64;
-    let mut result: u64 = 1;
-    for i in 0..k {
-        result = result * (n as u64 - i) / (i + 1);
+    let n_minus_k = &n - &k;
+    let k = if k > n_minus_k { n_minus_k } else { k };
+    if k.is_zero() {
+        return Ok(PyObject::int(1));
     }
-    Ok(PyObject::int(result as i64))
+    if k.is_one() {
+        return Ok(bigint_to_object(n));
+    }
+    if k == BigInt::from(2) {
+        return Ok(bigint_to_object((&n * (&n - 1u32)) / 2u32));
+    }
+    let Some(k_u64) = k.to_u64() else {
+        return Err(PyException::overflow_error("comb() argument too large"));
+    };
+    if k_u64 > 1_000_000 {
+        return Err(PyException::overflow_error("comb() argument too large"));
+    }
+    let mut result = BigInt::one();
+    for i in 1..=k_u64 {
+        let i_big = BigInt::from(i);
+        result *= &n - &k + &i_big;
+        result /= i_big;
+    }
+    Ok(bigint_to_object(result))
 }
 
 fn math_perm(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() || args.len() > 2 {
         return Err(PyException::type_error("perm() requires 1 or 2 arguments"));
     }
-    let n = args[0].to_int()?;
-    let k = if args.len() == 2 {
-        args[1].to_int()?
+    let n = index_bigint(&args[0], "perm")?;
+    let k = if args.len() == 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        index_bigint(&args[1], "perm")?
     } else {
-        n
+        n.clone()
     };
-    if k < 0 || n < 0 || k > n {
+    if n.sign() == Sign::Minus {
+        return Err(PyException::value_error("n must be a non-negative integer"));
+    }
+    if k.sign() == Sign::Minus {
+        return Err(PyException::value_error("k must be a non-negative integer"));
+    }
+    if k > n {
         return Ok(PyObject::int(0));
     }
-    let mut result: i64 = 1;
-    for i in 0..k {
-        result *= n - i;
+    if k.is_zero() {
+        return Ok(PyObject::int(1));
     }
-    Ok(PyObject::int(result))
+    if k.is_one() {
+        return Ok(bigint_to_object(n));
+    }
+    if k == BigInt::from(2) {
+        return Ok(bigint_to_object(&n * (&n - 1u32)));
+    }
+    let Some(k_u64) = k.to_u64() else {
+        return Err(PyException::overflow_error("perm() argument too large"));
+    };
+    if k_u64 > 1_000_000 {
+        return Err(PyException::overflow_error("perm() argument too large"));
+    }
+    let mut result = BigInt::one();
+    for i in 0..k_u64 {
+        result *= &n - i;
+    }
+    Ok(bigint_to_object(result))
 }
 
 fn math_prod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -408,30 +852,86 @@ fn math_prod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "prod() requires at least 1 argument",
         ));
     }
-    let items = args[0].to_list()?;
-    let start = if args.len() >= 2 {
-        args[1].to_float()?
-    } else {
-        1.0
-    };
-    let mut is_int = args.len() < 2;
-    let mut product_f = start;
-    let mut product_i: i64 = if args.len() >= 2 { start as i64 } else { 1 };
-    for item in &items {
-        if let Ok(v) = item.to_int() {
-            if is_int {
-                product_i *= v;
+    let mut positional_end = args.len();
+    let mut start = PyObject::int(1);
+    if args.len() > 1 {
+        if let Some(PyObjectPayload::Dict(d)) = args.last().map(|a| &a.payload) {
+            let map = d.read();
+            if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("start"))) {
+                start = v.clone();
             }
-            product_f *= v as f64;
-        } else {
-            is_int = false;
-            product_f *= item.to_float()?;
+            positional_end -= 1;
         }
     }
-    if is_int {
-        Ok(PyObject::int(product_i))
+    if positional_end != 1 {
+        return Err(PyException::type_error(
+            "prod() takes exactly 1 positional argument",
+        ));
+    }
+    let items = args[0].to_list()?;
+    let mut int_product = match &start.payload {
+        PyObjectPayload::Int(PyInt::Small(v)) => Some(BigInt::from(*v)),
+        PyObjectPayload::Int(PyInt::Big(v)) => Some(v.as_ref().clone()),
+        PyObjectPayload::Bool(b) => Some(BigInt::from(if *b { 1 } else { 0 })),
+        _ => None,
+    };
+    let mut product = start;
+    for item in &items {
+        if let Some(acc) = int_product.as_mut() {
+            match &item.payload {
+                PyObjectPayload::Int(PyInt::Small(v)) => {
+                    *acc *= *v;
+                    continue;
+                }
+                PyObjectPayload::Int(PyInt::Big(v)) => {
+                    *acc *= v.as_ref();
+                    continue;
+                }
+                PyObjectPayload::Bool(b) => {
+                    *acc *= if *b { 1 } else { 0 };
+                    continue;
+                }
+                _ => {
+                    product = bigint_to_object(acc.clone());
+                    int_product = None;
+                }
+            }
+        }
+        product = prod_multiply(&product, item)?;
+    }
+    if let Some(product) = int_product {
+        Ok(bigint_to_object(product))
     } else {
-        Ok(PyObject::float(product_f))
+        Ok(product)
+    }
+}
+
+fn prod_multiply(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+        if let Some(method) = a.get_attr("__mul__") {
+            let result = ferrython_core::object::call_callable(&method, std::slice::from_ref(b))?;
+            if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                return Ok(result);
+            }
+        }
+    }
+    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+        if let Some(method) = b.get_attr("__rmul__").or_else(|| b.get_attr("__mul__")) {
+            let result = ferrython_core::object::call_callable(&method, std::slice::from_ref(a))?;
+            if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                return Ok(result);
+            }
+        }
+    }
+    let result = a.mul(b)?;
+    if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+        Err(PyException::type_error(format!(
+            "unsupported operand type(s) for *: '{}' and '{}'",
+            a.type_name(),
+            b.type_name()
+        )))
+    } else {
+        Ok(result)
     }
 }
 
@@ -459,52 +959,70 @@ fn math_lcm(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn math_remainder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.remainder", args, 2)?;
-    let x = args[0].to_float()?;
-    let y = args[1].to_float()?;
-    if y == 0.0 {
+    let x = math_number_to_float(&args[0])?;
+    let y = math_number_to_float(&args[1])?;
+    if x.is_nan() || y.is_nan() {
+        return Ok(PyObject::float(f64::NAN));
+    }
+    if y == 0.0 || x.is_infinite() {
         return Err(PyException::value_error("math domain error"));
     }
-    Ok(PyObject::float(x - (x / y).round() * y))
+    if y.is_infinite() {
+        return Ok(PyObject::float(x));
+    }
+    Ok(PyObject::float(unsafe { c_remainder(x, y) }))
 }
 
 fn math_expm1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.expm1", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.exp_m1()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.exp_m1()))
 }
 
 fn math_log1p(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.log1p", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.ln_1p()))
+    let x = math_number_to_float(&args[0])?;
+    if !x.is_nan() && x <= -1.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(x.ln_1p()))
 }
 
 fn math_sinh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.sinh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.sinh()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.sinh()))
 }
 fn math_cosh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.cosh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.cosh()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.cosh()))
 }
 fn math_tanh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.tanh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.tanh()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.tanh()))
 }
 fn math_asinh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.asinh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.asinh()))
+    Ok(PyObject::float(math_number_to_float(&args[0])?.asinh()))
 }
 fn math_acosh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.acosh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.acosh()))
+    let x = math_number_to_float(&args[0])?;
+    if !x.is_nan() && x < 1.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(x.acosh()))
 }
 fn math_atanh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.atanh", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.atanh()))
+    let x = math_number_to_float(&args[0])?;
+    if !x.is_nan() && x.abs() >= 1.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(x.atanh()))
 }
 
 fn math_erf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.erf", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
     // Abramowitz and Stegun approximation (7.1.26)
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
     let poly = t
@@ -515,7 +1033,7 @@ fn math_erf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_erfc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.erfc", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
     let poly = t
         * (0.254829592
@@ -525,7 +1043,7 @@ fn math_erfc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_gamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.gamma", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
     if x <= 0.0 && x == x.floor() {
         return Err(PyException::value_error("math domain error"));
     }
@@ -534,7 +1052,7 @@ fn math_gamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_lgamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.lgamma", args, 1)?;
-    let x = args[0].to_float()?;
+    let x = math_number_to_float(&args[0])?;
     if x <= 0.0 && x == x.floor() {
         return Err(PyException::value_error("math domain error"));
     }
@@ -544,28 +1062,96 @@ fn math_lgamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn math_fsum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.fsum", args, 1)?;
     let items = args[0].to_list()?;
-    // Shewchuk algorithm for accurate floating-point summation
-    let mut partials: Vec<f64> = Vec::new();
+    let mut total = BigInt::zero();
+    let mut total_exp = 0i32;
+    let mut initialized = false;
+    let mut pos_inf = false;
+    let mut neg_inf = false;
+    let mut has_nan = false;
     for item in &items {
-        let mut x = item.to_float()?;
-        let mut j = 0;
-        for i in 0..partials.len() {
-            let mut y = partials[i];
-            if x.abs() < y.abs() {
-                std::mem::swap(&mut x, &mut y);
-            }
-            let hi = x + y;
-            let lo = y - (hi - x);
-            if lo != 0.0 {
-                partials[j] = lo;
-                j += 1;
-            }
-            x = hi;
+        let x = math_number_to_float(item)?;
+        if x.is_nan() {
+            has_nan = true;
+            continue;
         }
-        partials.truncate(j);
-        partials.push(x);
+        if x.is_infinite() {
+            if x.is_sign_positive() {
+                pos_inf = true;
+            } else {
+                neg_inf = true;
+            }
+            continue;
+        }
+        if x == 0.0 {
+            continue;
+        }
+        let bits = x.to_bits();
+        let negative = (bits >> 63) != 0;
+        let raw_exp = ((bits >> 52) & 0x7ff) as i32;
+        let frac = bits & 0x000f_ffff_ffff_ffff;
+        let (mantissa, exp) = if raw_exp == 0 {
+            (frac, -1074)
+        } else {
+            ((1u64 << 52) | frac, raw_exp - 1075)
+        };
+        let mut mant = BigInt::from(mantissa);
+        if negative {
+            mant = -mant;
+        }
+        if !initialized {
+            total = mant;
+            total_exp = exp;
+            initialized = true;
+        } else if exp < total_exp {
+            total <<= (total_exp - exp) as usize;
+            total += mant;
+            total_exp = exp;
+        } else {
+            mant <<= (exp - total_exp) as usize;
+            total += mant;
+        }
     }
-    Ok(PyObject::float(partials.iter().sum::<f64>()))
+    if pos_inf && neg_inf {
+        return Err(PyException::value_error("-inf + inf in fsum"));
+    }
+    if pos_inf {
+        return Ok(PyObject::float(f64::INFINITY));
+    }
+    if neg_inf {
+        return Ok(PyObject::float(f64::NEG_INFINITY));
+    }
+    if has_nan {
+        return Ok(PyObject::float(f64::NAN));
+    }
+    if total.is_zero() {
+        return Ok(PyObject::float(0.0));
+    }
+
+    let sign = total.sign();
+    let mut mant = total.abs();
+    let bit_len = mant.bits() as i32;
+    let tail = (bit_len - 53).max(-1074 - total_exp);
+    if tail > 0 {
+        let mask = (BigInt::one() << tail as usize) - 1u32;
+        let remainder = &mant & &mask;
+        mant >>= tail as usize;
+        let half = BigInt::one() << (tail as usize - 1);
+        if remainder > half || (remainder == half && (&mant & BigInt::one()).is_one()) {
+            mant += 1u32;
+        }
+        total_exp += tail;
+    }
+    let mut rounded = mant
+        .to_f64()
+        .ok_or_else(|| PyException::overflow_error("intermediate overflow in fsum"))?;
+    if sign == Sign::Minus {
+        rounded = -rounded;
+    }
+    let result = unsafe { ldexp(rounded, total_exp as libc::c_int) };
+    if result.is_infinite() {
+        return Err(PyException::overflow_error("intermediate overflow in fsum"));
+    }
+    Ok(PyObject::float(result))
 }
 
 fn math_dist(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -577,12 +1163,33 @@ fn math_dist(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "both points must have the same number of dimensions",
         ));
     }
-    let mut sum = 0.0f64;
+    let mut diffs = Vec::with_capacity(p.len());
+    let mut max = 0.0f64;
+    let mut has_nan = false;
     for (a, b) in p.iter().zip(q.iter()) {
-        let diff = a.to_float()? - b.to_float()?;
-        sum += diff * diff;
+        let diff = (math_number_to_float(a)? - math_number_to_float(b)?).abs();
+        if diff.is_infinite() {
+            return Ok(PyObject::float(f64::INFINITY));
+        }
+        if diff.is_nan() {
+            has_nan = true;
+        } else if diff > max {
+            max = diff;
+        }
+        diffs.push(diff);
     }
-    Ok(PyObject::float(sum.sqrt()))
+    if has_nan {
+        return Ok(PyObject::float(f64::NAN));
+    }
+    if max == 0.0 {
+        return Ok(PyObject::float(0.0));
+    }
+    let mut sum = 0.0f64;
+    for diff in diffs {
+        let scaled = diff / max;
+        sum += scaled * scaled;
+    }
+    Ok(PyObject::float(max * sum.sqrt()))
 }
 
 fn lanczos_gamma(x: f64) -> f64 {
@@ -3694,34 +4301,68 @@ fn insort_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_fractions_module() -> PyObjectRef {
     use ferrython_core::object::{new_shared_fx, InstanceData};
 
-    fn frac_gcd(mut a: i64, mut b: i64) -> i64 {
-        a = a.abs();
-        b = b.abs();
-        while b != 0 {
-            let t = b;
-            b = a % b;
-            a = t;
+    fn object_to_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+        match &obj.payload {
+            PyObjectPayload::Int(PyInt::Small(n)) => Some(BigInt::from(*n)),
+            PyObjectPayload::Int(PyInt::Big(n)) => Some(n.as_ref().clone()),
+            PyObjectPayload::Bool(b) => Some(BigInt::from(if *b { 1 } else { 0 })),
+            _ => None,
         }
-        a
     }
 
-    fn get_frac_parts(obj: &PyObjectRef) -> Option<(i64, i64)> {
+    fn get_frac_bigint_parts(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             let attrs = inst.attrs.read();
             if attrs.contains_key("__fraction__") {
-                let n = attrs
-                    .get("numerator")
-                    .and_then(|v| v.to_int().ok())
-                    .unwrap_or(0);
-                let d = attrs
-                    .get("denominator")
-                    .and_then(|v| v.to_int().ok())
-                    .unwrap_or(1);
+                let n = attrs.get("numerator").and_then(object_to_bigint)?;
+                let d = attrs.get("denominator").and_then(object_to_bigint)?;
                 return Some((n, d));
             }
         }
-        if let PyObjectPayload::Int(n) = &obj.payload {
-            return Some((n.to_i64().unwrap_or(0), 1));
+        object_to_bigint(obj).map(|n| (n, BigInt::one()))
+    }
+
+    fn get_frac_parts(obj: &PyObjectRef) -> Option<(i64, i64)> {
+        let (n, d) = get_frac_bigint_parts(obj)?;
+        Some((n.to_i64()?, d.to_i64()?))
+    }
+
+    fn float_to_bigint_fraction(f: f64) -> Option<(BigInt, BigInt)> {
+        if !f.is_finite() {
+            return None;
+        }
+        if f == 0.0 {
+            return Some((BigInt::zero(), BigInt::one()));
+        }
+        let bits = f.to_bits();
+        let negative = (bits >> 63) != 0;
+        let raw_exp = ((bits >> 52) & 0x7ff) as i32;
+        let frac = bits & 0x000f_ffff_ffff_ffff;
+        let (mantissa, exp) = if raw_exp == 0 {
+            (frac, -1074)
+        } else {
+            ((1u64 << 52) | frac, raw_exp - 1075)
+        };
+        let mut numer = BigInt::from(mantissa);
+        let mut denom = BigInt::one();
+        if exp >= 0 {
+            numer <<= exp as usize;
+        } else {
+            denom <<= (-exp) as usize;
+        }
+        if negative {
+            numer = -numer;
+        }
+        let g = numer.abs().gcd(&denom);
+        Some((numer / &g, denom / g))
+    }
+
+    fn get_frac_cmp_parts(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
+        if let Some(parts) = get_frac_bigint_parts(obj) {
+            return Some(parts);
+        }
+        if let PyObjectPayload::Float(f) = &obj.payload {
+            return float_to_bigint_fraction(*f);
         }
         None
     }
@@ -3747,13 +4388,24 @@ pub fn create_fractions_module() -> PyObjectRef {
         }
     }
 
+    fn make_frac_bigint_instance(num: BigInt, den: BigInt) -> PyObjectRef {
+        let g = num.abs().gcd(&den.abs());
+        let mut num = num / &g;
+        let mut den = den / &g;
+        if den.sign() == Sign::Minus {
+            num = -num;
+            den = -den;
+        }
+        make_frac_normalized_instance(num, den)
+    }
+
     fn make_frac_instance(num: i64, den: i64) -> PyObjectRef {
-        let g = frac_gcd(num.abs(), den.abs());
-        let (num, den) = if den < 0 {
-            (-num / g, -den / g)
-        } else {
-            (num / g, den / g)
-        };
+        make_frac_bigint_instance(BigInt::from(num), BigInt::from(den))
+    }
+
+    fn make_frac_normalized_instance(num: BigInt, den: BigInt) -> PyObjectRef {
+        let num_obj = bigint_to_object(num);
+        let den_obj = bigint_to_object(den);
         let mut frac_ns = IndexMap::new();
         frac_ns.insert(CompactString::from("__add__"), make_builtin(frac_add));
         frac_ns.insert(CompactString::from("__radd__"), make_builtin(frac_add));
@@ -3842,8 +4494,8 @@ pub fn create_fractions_module() -> PyObjectRef {
                 CompactString::from("__fraction__"),
                 PyObject::bool_val(true),
             );
-            w.insert(CompactString::from("numerator"), PyObject::int(num));
-            w.insert(CompactString::from("denominator"), PyObject::int(den));
+            w.insert(CompactString::from("numerator"), num_obj);
+            w.insert(CompactString::from("denominator"), den_obj);
         }
         inst
     }
@@ -3852,44 +4504,44 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Err(PyException::type_error("Fraction.__add__ requires 2 args"));
         }
-        let (an, ad) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        let (bn, bd) =
-            get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(an * bd + bn * ad, ad * bd))
+        let (an, ad) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_bigint_parts(&args[1])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(&an * &bd + &bn * &ad, ad * bd))
     }
 
     fn frac_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error("Fraction.__sub__ requires 2 args"));
         }
-        let (an, ad) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        let (bn, bd) =
-            get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(an * bd - bn * ad, ad * bd))
+        let (an, ad) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_bigint_parts(&args[1])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(&an * &bd - &bn * &ad, ad * bd))
     }
 
     fn frac_rsub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error("requires 2 args"));
         }
-        let (an, ad) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        let (bn, bd) =
-            get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(bn * ad - an * bd, ad * bd))
+        let (an, ad) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_bigint_parts(&args[1])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(&bn * &ad - &an * &bd, ad * bd))
     }
 
     fn frac_mul(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error("Fraction.__mul__ requires 2 args"));
         }
-        let (an, ad) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        let (bn, bd) =
-            get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(an * bn, ad * bd))
+        let (an, ad) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_bigint_parts(&args[1])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(an * bn, ad * bd))
     }
 
     fn frac_div(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3898,16 +4550,16 @@ pub fn create_fractions_module() -> PyObjectRef {
                 "Fraction.__truediv__ requires 2 args",
             ));
         }
-        let (an, ad) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        let (bn, bd) =
-            get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        if bn == 0 {
+        let (an, ad) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_bigint_parts(&args[1])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        if bn.is_zero() {
             return Err(PyException::zero_division_error(
                 "Fraction division by zero",
             ));
         }
-        Ok(make_frac_instance(an * bd, ad * bn))
+        Ok(make_frac_bigint_instance(an * bd, ad * bn))
     }
 
     fn frac_floordiv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3928,23 +4580,23 @@ pub fn create_fractions_module() -> PyObjectRef {
     }
 
     fn frac_neg(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let (n, d) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(-n, d))
+        let (n, d) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(-n, d))
     }
 
     fn frac_abs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let (n, d) =
-            get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
-        Ok(make_frac_instance(n.abs(), d))
+        let (n, d) = get_frac_bigint_parts(&args[0])
+            .ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_bigint_instance(n.abs(), d))
     }
 
     fn frac_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
-        let a = get_frac_parts(&args[0]);
-        let b = get_frac_parts(&args[1]);
+        let a = get_frac_cmp_parts(&args[0]);
+        let b = get_frac_cmp_parts(&args[1]);
         match (a, b) {
             (Some((an, ad)), Some((bn, bd))) => Ok(PyObject::bool_val(an * bd == bn * ad)),
             _ => Ok(PyObject::bool_val(false)),
@@ -3955,8 +4607,8 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
-        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd < bn * ad))
     }
 
@@ -3964,8 +4616,8 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
-        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd <= bn * ad))
     }
 
@@ -3973,8 +4625,8 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
-        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd > bn * ad))
     }
 
@@ -3982,8 +4634,8 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
-        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd >= bn * ad))
     }
 
@@ -4011,8 +4663,14 @@ pub fn create_fractions_module() -> PyObjectRef {
     }
 
     fn frac_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        Ok(PyObject::float(n as f64 / d as f64))
+        let (n, d) = get_frac_bigint_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        let n = n
+            .to_f64()
+            .ok_or_else(|| PyException::overflow_error("int too large to convert to float"))?;
+        let d = d
+            .to_f64()
+            .ok_or_else(|| PyException::overflow_error("int too large to convert to float"))?;
+        Ok(PyObject::float(n / d))
     }
 
     fn frac_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -4198,7 +4856,11 @@ pub fn create_fractions_module() -> PyObjectRef {
                 if real_args.len() == 1 {
                     match &real_args[0].payload {
                         PyObjectPayload::Int(n) => {
-                            return Ok(make_frac_instance(n.to_i64().unwrap_or(0), 1))
+                            let n = match n {
+                                PyInt::Small(v) => BigInt::from(*v),
+                                PyInt::Big(v) => v.as_ref().clone(),
+                            };
+                            return Ok(make_frac_bigint_instance(n, BigInt::one()));
                         }
                         PyObjectPayload::Float(f) => {
                             let (n, d) = float_to_fraction(*f);
@@ -4250,15 +4912,15 @@ pub fn create_fractions_module() -> PyObjectRef {
                         }
                     }
                 }
-                let n = real_args[0].to_int()?;
-                let d = real_args[1].to_int()?;
-                if d == 0 {
+                let n = index_bigint(&real_args[0], "Fraction")?;
+                let d = index_bigint(&real_args[1], "Fraction")?;
+                if d.is_zero() {
                     return Err(PyException::new(
                         ferrython_core::error::ExceptionKind::ZeroDivisionError,
                         "Fraction(_, 0)",
                     ));
                 }
-                Ok(make_frac_instance(n, d))
+                Ok(make_frac_bigint_instance(n, d))
             }),
         );
         cd.invalidate_cache();
