@@ -298,7 +298,8 @@ fn main_inner() {
         let mut argv = vec![String::from("-c")];
         argv.extend_from_slice(&args[3..]);
         ferrython_stdlib::set_argv(argv);
-        run_string_with_opts(&args[2], "<string>", skip_first_line);
+        let command_source = decode_command_newlines(&args[2]);
+        run_string_with_opts(&command_source, "<string>", skip_first_line);
         if inspect_after {
             ferrython_repl::run_repl();
         }
@@ -539,6 +540,81 @@ fn run_string_with_opts(source: &str, filename: &str, skip_first_line: bool) {
     } else {
         run_string(source, filename);
     }
+}
+
+fn decode_command_newlines(source: &str) -> String {
+    if !source.contains("\\n") {
+        return source.to_string();
+    }
+
+    let chars: Vec<char> = source.chars().collect();
+    let mut decoded = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\'' || ch == '"' {
+            i = copy_python_string_literal(&chars, i, &mut decoded);
+            continue;
+        }
+        if ch == '\\' && chars.get(i + 1) == Some(&'n') {
+            decoded.push('\n');
+            i += 2;
+            continue;
+        }
+        decoded.push(ch);
+        i += 1;
+    }
+    decoded
+}
+
+fn copy_python_string_literal(chars: &[char], start: usize, out: &mut String) -> usize {
+    let quote = chars[start];
+    let triple = chars.get(start + 1) == Some(&quote) && chars.get(start + 2) == Some(&quote);
+    let mut i = start;
+    let mut escaped = false;
+
+    if triple {
+        out.push(chars[i]);
+        out.push(chars[i + 1]);
+        out.push(chars[i + 2]);
+        i += 3;
+        while i < chars.len() {
+            if !escaped
+                && chars[i] == quote
+                && chars.get(i + 1) == Some(&quote)
+                && chars.get(i + 2) == Some(&quote)
+            {
+                out.push(chars[i]);
+                out.push(chars[i + 1]);
+                out.push(chars[i + 2]);
+                return i + 3;
+            }
+            let ch = chars[i];
+            out.push(ch);
+            escaped = !escaped && ch == '\\';
+            if ch != '\\' {
+                escaped = false;
+            }
+            i += 1;
+        }
+        return i;
+    }
+
+    out.push(chars[i]);
+    i += 1;
+    while i < chars.len() {
+        let ch = chars[i];
+        out.push(ch);
+        i += 1;
+        if ch == quote && !escaped {
+            break;
+        }
+        escaped = !escaped && ch == '\\';
+        if ch != '\\' {
+            escaped = false;
+        }
+    }
+    i
 }
 
 fn dis_and_run_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
