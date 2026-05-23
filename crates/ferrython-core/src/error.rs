@@ -77,6 +77,7 @@ pub enum ExceptionKind {
     TabError,
     // Module-specific subclasses
     JSONDecodeError,
+    ReError,
     // subprocess module
     SubprocessError,
     CalledProcessError,
@@ -182,6 +183,7 @@ impl ExceptionKind {
                 ExceptionKind::RuntimeError
                     | ExceptionKind::RecursionError
                     | ExceptionKind::NotImplementedError
+                    | ExceptionKind::ReError
             ),
             ExceptionKind::SyntaxError => matches!(
                 self,
@@ -277,6 +279,7 @@ impl ExceptionKind {
             "IndentationError" => Some(Self::IndentationError),
             "TabError" => Some(Self::TabError),
             "JSONDecodeError" | "json.JSONDecodeError" => Some(Self::JSONDecodeError),
+            "error" | "re.error" => Some(Self::ReError),
             "SubprocessError" => Some(Self::SubprocessError),
             "CalledProcessError" => Some(Self::CalledProcessError),
             "TimeoutExpired" => Some(Self::TimeoutExpired),

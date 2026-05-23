@@ -27,3 +27,17 @@ def compile(p, flags=0):
 
 def isstring(obj):
     return isinstance(obj, (str, bytes))
+
+def _generate_overlap_table(prefix):
+    """Return the KMP overlap table used by CPython's SRE compiler tests."""
+    table = []
+    for _ in range(len(prefix)):
+        table.append(0)
+    candidate = 0
+    for index in range(1, len(prefix)):
+        while candidate and prefix[index] != prefix[candidate]:
+            candidate = table[candidate - 1]
+        if prefix[index] == prefix[candidate]:
+            candidate += 1
+        table[index] = candidate
+    return table

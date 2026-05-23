@@ -3829,6 +3829,66 @@ fn extract_mock_kwargs(args: &[PyObjectRef]) -> FxHashKeyMap {
     new_fx_hashkey_map()
 }
 
+fn set_mock_target_attr(target: &PyObjectRef, attr: &str, value: PyObjectRef) {
+    match &target.payload {
+        PyObjectPayload::Module(md) => {
+            md.attrs.write().insert(CompactString::from(attr), value);
+            ferrython_core::object::invalidate_global_lookups();
+        }
+        PyObjectPayload::Instance(inst) => {
+            inst.attrs.write().insert(CompactString::from(attr), value);
+        }
+        PyObjectPayload::Class(cd) => {
+            cd.namespace
+                .write()
+                .insert(CompactString::from(attr), value);
+            cd.invalidate_cache();
+        }
+        _ => {}
+    }
+}
+
+fn delete_mock_target_attr(target: &PyObjectRef, attr: &str) {
+    match &target.payload {
+        PyObjectPayload::Module(md) => {
+            md.attrs.write().shift_remove(attr);
+            ferrython_core::object::invalidate_global_lookups();
+        }
+        PyObjectPayload::Instance(inst) => {
+            inst.attrs.write().shift_remove(attr);
+        }
+        PyObjectPayload::Class(cd) => {
+            cd.namespace.write().shift_remove(attr);
+            cd.invalidate_cache();
+        }
+        _ => {}
+    }
+}
+
+fn resolve_patch_target(path: &str) -> Option<(PyObjectRef, String)> {
+    let (module_name, attr) = path.rsplit_once('.')?;
+    if let Some(globals) = crate::get_current_globals() {
+        let globals_r = globals.read();
+        let mut parts = module_name.split('.');
+        if let Some(first) = parts.next() {
+            if let Some(mut obj) = globals_r.get(first).cloned() {
+                for part in parts {
+                    obj = obj.get_attr(part)?;
+                }
+                return Some((obj, attr.to_string()));
+            }
+        }
+    }
+    if module_name == "builtins" {
+        if let Some(globals) = crate::get_current_globals() {
+            if let Some(module) = globals.read().get("__builtins__").cloned() {
+                return Some((module, attr.to_string()));
+            }
+        }
+    }
+    crate::load_module(module_name).map(|module| (module, attr.to_string()))
+}
+
 pub fn create_unittest_mock_module() -> PyObjectRef {
     let make_mock = |name: &'static str| -> PyObjectRef {
         PyObject::native_closure(name, move |args: &[PyObjectRef]| {
@@ -3854,16 +3914,39 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
                 PyObject::str_val(CompactString::from(target.as_str())),
             );
             let mock_for_enter = build_mock_instance("MagicMock", &kwargs);
-            let mfe = mock_for_enter.clone();
+            let replacement = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                mock_for_enter.clone()
+            };
+            let target_path = target.clone();
+            let repl_enter = replacement.clone();
+            let saved: Rc<PyCell<Option<(PyObjectRef, String, Option<PyObjectRef>)>>> =
+                Rc::new(PyCell::new(None));
+            let saved_for_exit = saved.clone();
             w.insert(
                 CompactString::from("__enter__"),
                 PyObject::native_closure("patch.__enter__", move |_: &[PyObjectRef]| {
-                    Ok(mfe.clone())
+                    if let Some((target_obj, attr_name)) = resolve_patch_target(&target_path) {
+                        let old = target_obj.get_attr(&attr_name);
+                        set_mock_target_attr(&target_obj, &attr_name, repl_enter.clone());
+                        *saved.write() = Some((target_obj, attr_name, old));
+                    }
+                    Ok(repl_enter.clone())
                 }),
             );
             w.insert(
                 CompactString::from("__exit__"),
-                make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))),
+                PyObject::native_closure("patch.__exit__", move |_: &[PyObjectRef]| {
+                    if let Some((target_obj, attr_name, old)) = saved_for_exit.write().take() {
+                        if let Some(old_val) = old {
+                            set_mock_target_attr(&target_obj, &attr_name, old_val);
+                        } else {
+                            delete_mock_target_attr(&target_obj, &attr_name);
+                        }
+                    }
+                    Ok(PyObject::bool_val(false))
+                }),
             );
             // As decorator: patch(target)(func) → wrapped func
             let mock_for_deco = mock_for_enter;
@@ -4002,11 +4085,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
                     let old = target_enter.get_attr(&attr_enter);
                     *saved.write() = old;
                     // Set new value
-                    if let PyObjectPayload::Instance(ref d) = target_enter.payload {
-                        d.attrs
-                            .write()
-                            .insert(CompactString::from(attr_enter.as_str()), repl_enter.clone());
-                    }
+                    set_mock_target_attr(&target_enter, &attr_enter, repl_enter.clone());
                     Ok(repl_enter.clone())
                 }),
             );
@@ -4014,17 +4093,11 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
                 CompactString::from("__exit__"),
                 PyObject::native_closure("patch.object.__exit__", move |_: &[PyObjectRef]| {
                     // Restore old value
-                    if let PyObjectPayload::Instance(ref d) = target_exit.payload {
-                        let old = saved_for_exit.read().clone();
-                        if let Some(old_val) = old {
-                            d.attrs
-                                .write()
-                                .insert(CompactString::from(attr_exit.as_str()), old_val);
-                        } else {
-                            d.attrs
-                                .write()
-                                .shift_remove(&CompactString::from(attr_exit.as_str()));
-                        }
+                    let old = saved_for_exit.read().clone();
+                    if let Some(old_val) = old {
+                        set_mock_target_attr(&target_exit, &attr_exit, old_val);
+                    } else {
+                        delete_mock_target_attr(&target_exit, &attr_exit);
                     }
                     Ok(PyObject::bool_val(false))
                 }),

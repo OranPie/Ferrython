@@ -3,8 +3,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args_min, make_builtin, make_module, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject,
-    PyObjectMethods, PyObjectPayload, PyObjectRef,
+    check_args_min, make_builtin, make_module, new_fx_hashkey_map, CompareOp, FxHashKeyMap, PyCell,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -12,16 +12,342 @@ use std::rc::Rc;
 
 // ── argparse module (basic) ──
 
+fn argparse_is_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+fn argparse_is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_alphabetic())
+        && chars.all(|c| c == '_' || c.is_alphanumeric())
+        && !argparse_is_keyword(name)
+}
+
+fn argparse_namespace_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::str_val(CompactString::from("Namespace()")));
+    }
+    let PyObjectPayload::Instance(inst) = &args[0].payload else {
+        return Ok(PyObject::str_val(CompactString::from("Namespace()")));
+    };
+    let attrs = inst.attrs.read();
+    let mut entries: Vec<(String, PyObjectRef)> = attrs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut valid_parts = Vec::new();
+    let mut invalid_parts = Vec::new();
+    for (name, value) in entries {
+        if argparse_is_identifier(&name) {
+            valid_parts.push(format!("{}={}", name, value.repr()));
+        } else {
+            let key = PyObject::str_val(CompactString::from(name.as_str())).repr();
+            invalid_parts.push(format!("{}: {}", key, value.repr()));
+        }
+    }
+
+    if !invalid_parts.is_empty() {
+        valid_parts.push(format!("**{{{}}}", invalid_parts.join(", ")));
+    }
+    Ok(PyObject::str_val(CompactString::from(format!(
+        "Namespace({})",
+        valid_parts.join(", ")
+    ))))
+}
+
+fn argparse_namespace_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Ok(PyObject::not_implemented());
+    }
+    let (PyObjectPayload::Instance(left), PyObjectPayload::Instance(right)) =
+        (&args[0].payload, &args[1].payload)
+    else {
+        return Ok(PyObject::not_implemented());
+    };
+    if right.class.get_attr("__argparse_namespace__").is_none() {
+        return Ok(PyObject::not_implemented());
+    }
+    let left_attrs = left.attrs.read();
+    let right_attrs = right.attrs.read();
+    if left_attrs.len() != right_attrs.len() {
+        return Ok(PyObject::bool_val(false));
+    }
+    for (name, value) in left_attrs.iter() {
+        let Some(other_value) = right_attrs.get(name.as_str()) else {
+            return Ok(PyObject::bool_val(false));
+        };
+        let eq = value.compare(other_value, CompareOp::Eq)?;
+        if !eq.is_truthy() {
+            return Ok(PyObject::bool_val(false));
+        }
+    }
+    Ok(PyObject::bool_val(true))
+}
+
+fn argparse_namespace_ne(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let eq = argparse_namespace_eq(args)?;
+    if matches!(eq.payload, PyObjectPayload::NotImplemented) {
+        Ok(eq)
+    } else {
+        Ok(PyObject::bool_val(!eq.is_truthy()))
+    }
+}
+
+fn argparse_namespace_contains(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("Namespace.__contains__", args, 2)?;
+    let key = args[1].py_to_string();
+    let contains = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        inst.attrs.read().contains_key(key.as_str())
+    } else {
+        false
+    };
+    Ok(PyObject::bool_val(contains))
+}
+
+fn argparse_namespace_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("Namespace.__init__", args, 1)?;
+    let Some(last) = args.last() else {
+        return Ok(PyObject::none());
+    };
+    if let PyObjectPayload::Dict(kw_map) = &last.payload {
+        if let PyObjectPayload::Instance(ref id) = args[0].payload {
+            let mut attrs = id.attrs.write();
+            let r = kw_map.read();
+            for (k, v) in r.iter() {
+                if let HashableKey::Str(ks) = k {
+                    attrs.insert(ks.to_compact_string(), v.clone());
+                }
+            }
+        }
+    }
+    Ok(PyObject::none())
+}
+
+fn create_argparse_namespace_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(
+        CompactString::from("__argparse_namespace__"),
+        PyObject::bool_val(true),
+    );
+    ns.insert(
+        CompactString::from("__init__"),
+        PyObject::native_function("Namespace.__init__", argparse_namespace_init),
+    );
+    ns.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_function("Namespace.__repr__", argparse_namespace_repr),
+    );
+    ns.insert(
+        CompactString::from("__eq__"),
+        PyObject::native_function("Namespace.__eq__", argparse_namespace_eq),
+    );
+    ns.insert(
+        CompactString::from("__ne__"),
+        PyObject::native_function("Namespace.__ne__", argparse_namespace_ne),
+    );
+    ns.insert(
+        CompactString::from("__contains__"),
+        PyObject::native_function("Namespace.__contains__", argparse_namespace_contains),
+    );
+    PyObject::class(CompactString::from("Namespace"), vec![], ns)
+}
+
+fn call_argparse_hidden_method(
+    public_name: &str,
+    hidden_name: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    check_args_min(public_name, args, 1)?;
+    let method = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        inst.attrs.read().get(hidden_name).cloned()
+    } else {
+        None
+    };
+    let Some(method) = method else {
+        return Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'",
+            args[0].type_name(),
+            public_name
+        )));
+    };
+    match &method.payload {
+        PyObjectPayload::NativeClosure(nc) => (nc.func)(&args[1..]),
+        PyObjectPayload::NativeFunction(nf) => (nf.func)(&args[1..]),
+        _ => Err(PyException::type_error(format!(
+            "{} internal method is not callable",
+            public_name
+        ))),
+    }
+}
+
+fn argparse_add_argument(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("add_argument", "__argparse_add_argument__", args)
+}
+
+fn argparse_parse_args_method(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("parse_args", "__argparse_parse_args__", args)
+}
+
+fn argparse_parse_known_args_method(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("parse_known_args", "__argparse_parse_known_args__", args)
+}
+
+fn argparse_print_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("print_help", "__argparse_print_help__", args)
+}
+
+fn argparse_add_subparsers(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("add_subparsers", "__argparse_add_subparsers__", args)
+}
+
+fn argparse_set_defaults(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("set_defaults", "__argparse_set_defaults__", args)
+}
+
+fn argparse_get_default(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method("get_default", "__argparse_get_default__", args)
+}
+
+fn argparse_add_mutually_exclusive_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    call_argparse_hidden_method(
+        "add_mutually_exclusive_group",
+        "__argparse_add_mutually_exclusive_group__",
+        args,
+    )
+}
+
+fn argparse_add_argument_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("add_argument_group", args, 1)?;
+    let parser = args[0].clone();
+    let group_cls = PyObject::class(
+        CompactString::from("_ArgumentGroup"),
+        vec![],
+        IndexMap::new(),
+    );
+    let group = PyObject::instance(group_cls);
+    if let PyObjectPayload::Instance(group_data) = &group.payload {
+        let parser_ref = parser;
+        group_data.attrs.write().insert(
+            CompactString::from("add_argument"),
+            PyObject::native_closure("ArgumentGroup.add_argument", move |group_args| {
+                let method = if let PyObjectPayload::Instance(inst) = &parser_ref.payload {
+                    inst.attrs.read().get("__argparse_add_argument__").cloned()
+                } else {
+                    None
+                };
+                let Some(method) = method else {
+                    return Err(PyException::attribute_error(
+                        "parser has no add_argument method",
+                    ));
+                };
+                match &method.payload {
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(group_args),
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(group_args),
+                    _ => Err(PyException::type_error("add_argument is not callable")),
+                }
+            }),
+        );
+    }
+    Ok(group)
+}
+
+fn argparse_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let status = args.get(1).cloned().unwrap_or_else(|| PyObject::int(0));
+    Err(PyException::system_exit(status))
+}
+
+fn argparse_error(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Err(PyException::system_exit(PyObject::int(2)))
+}
+
+fn argparse_argument_parser_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::str_val(CompactString::from(
+            "ArgumentParser(prog='', usage=None, description=None, formatter_class=<class 'HelpFormatter'>, conflict_handler='error', add_help=True)",
+        )));
+    }
+    let prog = args[0]
+        .get_attr("prog")
+        .map(|v| v.repr())
+        .unwrap_or_else(|| "''".to_string());
+    let description = args[0]
+        .get_attr("description")
+        .filter(|v| !v.py_to_string().is_empty())
+        .map(|v| v.repr())
+        .unwrap_or_else(|| "None".to_string());
+    Ok(PyObject::str_val(CompactString::from(format!(
+        "ArgumentParser(prog={}, usage=None, description={}, formatter_class=<class 'HelpFormatter'>, conflict_handler='error', add_help=True)",
+        prog, description
+    ))))
+}
+
 /// Create a fully-featured ArgumentParser instance.
 /// `ap_cls` is the shared class object for ArgumentParser.
 /// `args` are passed through for prog/description extraction.
-fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn create_argument_parser(
+    ap_cls: &PyObjectRef,
+    ns_cls: &PyObjectRef,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
     let inst = PyObject::instance(ap_cls.clone());
+    init_argument_parser(&inst, ap_cls, ns_cls, args)?;
+    Ok(inst)
+}
+
+fn init_argument_parser(
+    inst: &PyObjectRef,
+    ap_cls: &PyObjectRef,
+    ns_cls: &PyObjectRef,
+    args: &[PyObjectRef],
+) -> PyResult<()> {
     let arg_defs: Rc<PyCell<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>> =
         Rc::new(PyCell::new(Vec::new()));
 
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__namespace_class__"), ns_cls.clone());
         let mut description = CompactString::from("");
         let mut prog = CompactString::from("");
         if let Some(last) = args.last() {
@@ -51,7 +377,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
 
         let ad = arg_defs.clone();
         attrs.insert(
-            CompactString::from("add_argument"),
+            CompactString::from("__argparse_add_argument__"),
             PyObject::native_closure("add_argument", move |args: &[PyObjectRef]| {
                 let mut names: Vec<String> = Vec::new();
                 let mut kwargs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
@@ -80,7 +406,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         let pa = arg_defs.clone();
         let pa_inst = inst.clone();
         attrs.insert(
-            CompactString::from("parse_args"),
+            CompactString::from("__argparse_parse_args__"),
             PyObject::native_closure("parse_args", move |call_args: &[PyObjectRef]| {
                 argparse_parse_args(&pa, call_args, false, Some(&pa_inst)).map(|(ns, _)| ns)
             }),
@@ -90,7 +416,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         let pka = arg_defs.clone();
         let pka_inst = inst.clone();
         attrs.insert(
-            CompactString::from("parse_known_args"),
+            CompactString::from("__argparse_parse_known_args__"),
             PyObject::native_closure("parse_known_args", move |call_args: &[PyObjectRef]| {
                 let (ns, remaining) = argparse_parse_args(&pka, call_args, true, Some(&pka_inst))?;
                 let rem_list: Vec<PyObjectRef> = remaining
@@ -105,7 +431,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         let ph = arg_defs.clone();
         let prog_c = prog;
         attrs.insert(
-            CompactString::from("print_help"),
+            CompactString::from("__argparse_print_help__"),
             PyObject::native_closure("print_help", move |_| {
                 let defs = ph.read();
                 println!(
@@ -141,8 +467,9 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         // Returns a _SubParsersAction with .add_parser(name) → child ArgumentParser
         let inst_ref = inst.clone();
         let apc2 = ap_cls.clone();
+        let nsc2 = ns_cls.clone();
         attrs.insert(
-            CompactString::from("add_subparsers"),
+            CompactString::from("__argparse_add_subparsers__"),
             PyObject::native_closure("add_subparsers", move |sp_args: &[PyObjectRef]| {
                 // Extract dest kwarg (default "subcommand")
                 let mut dest = CompactString::from("subcommand");
@@ -190,13 +517,14 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     let mut sa = sp_data.attrs.write();
                     let reg = registry.clone();
                     let apc3 = apc2.clone();
+                    let nsc3 = nsc2.clone();
                     sa.insert(
                         CompactString::from("add_parser"),
                         PyObject::native_closure("add_parser", move |ap_args: &[PyObjectRef]| {
                             check_args_min("add_parser", ap_args, 1)?;
                             let name = CompactString::from(ap_args[0].py_to_string());
                             // Create a full child ArgumentParser by calling the factory
-                            let child = create_argument_parser(&apc3, ap_args)?;
+                            let child = create_argument_parser(&apc3, &nsc3, ap_args)?;
                             reg.write().insert(name, child.clone());
                             Ok(child)
                         }),
@@ -211,7 +539,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         // but are themselves overridden by actual command-line values.
         let sd_inst = inst.clone();
         attrs.insert(
-            CompactString::from("set_defaults"),
+            CompactString::from("__argparse_set_defaults__"),
             PyObject::native_closure("set_defaults", move |sd_args: &[PyObjectRef]| {
                 if let Some(last) = sd_args.last() {
                     if let PyObjectPayload::Dict(kw_map) = &last.payload {
@@ -238,7 +566,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         // ── get_default(dest) ──
         let gd_inst = inst.clone();
         attrs.insert(
-            CompactString::from("get_default"),
+            CompactString::from("__argparse_get_default__"),
             PyObject::native_closure("get_default", move |gd_args: &[PyObjectRef]| {
                 if gd_args.is_empty() {
                     return Ok(PyObject::none());
@@ -265,7 +593,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         let ad3 = arg_defs.clone();
         let meg_inst_ref = inst.clone();
         attrs.insert(
-            CompactString::from("add_mutually_exclusive_group"),
+            CompactString::from("__argparse_add_mutually_exclusive_group__"),
             PyObject::native_closure(
                 "add_mutually_exclusive_group",
                 move |meg_args: &[PyObjectRef]| {
@@ -366,45 +694,94 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
             ),
         );
     }
-    Ok(inst)
+    Ok(())
 }
 // End of create_argument_parser
 
 pub fn create_argparse_module() -> PyObjectRef {
-    let ap_cls = PyObject::class(
-        CompactString::from("ArgumentParser"),
-        vec![],
-        IndexMap::new(),
+    let namespace_cls = create_argparse_namespace_class();
+    let ns_for_init = namespace_cls.clone();
+
+    let mut ap_ns = IndexMap::new();
+    ap_ns.insert(
+        CompactString::from("__init__"),
+        PyObject::native_closure("ArgumentParser.__init__", move |args: &[PyObjectRef]| {
+            check_args_min("ArgumentParser.__init__", args, 1)?;
+            let ap_cls = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                inst.class.clone()
+            } else {
+                return Err(PyException::type_error(
+                    "ArgumentParser.__init__ requires an instance",
+                ));
+            };
+            init_argument_parser(&args[0], &ap_cls, &ns_for_init, &args[1..])?;
+            Ok(PyObject::none())
+        }),
     );
-    let apc = ap_cls.clone();
-    let argument_parser_fn =
-        PyObject::native_closure("ArgumentParser", move |args: &[PyObjectRef]| {
-            create_argument_parser(&apc, args)
-        });
-    let nsc = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
-    let namespace_fn = PyObject::native_closure("Namespace", move |args: &[PyObjectRef]| {
-        let inst = PyObject::instance(nsc.clone());
-        if let Some(last) = args.last() {
-            if let PyObjectPayload::Dict(kw_map) = &last.payload {
-                if let PyObjectPayload::Instance(ref id) = inst.payload {
-                    let mut attrs = id.attrs.write();
-                    let r = kw_map.read();
-                    for (k, v) in r.iter() {
-                        if let HashableKey::Str(ks) = k {
-                            attrs.insert(ks.to_compact_string(), v.clone());
-                        }
-                    }
-                }
-            }
-        }
-        Ok(inst)
-    });
+    ap_ns.insert(
+        CompactString::from("add_argument"),
+        PyObject::native_function("ArgumentParser.add_argument", argparse_add_argument),
+    );
+    ap_ns.insert(
+        CompactString::from("add_argument_group"),
+        PyObject::native_function(
+            "ArgumentParser.add_argument_group",
+            argparse_add_argument_group,
+        ),
+    );
+    ap_ns.insert(
+        CompactString::from("parse_args"),
+        PyObject::native_function("ArgumentParser.parse_args", argparse_parse_args_method),
+    );
+    ap_ns.insert(
+        CompactString::from("parse_known_args"),
+        PyObject::native_function(
+            "ArgumentParser.parse_known_args",
+            argparse_parse_known_args_method,
+        ),
+    );
+    ap_ns.insert(
+        CompactString::from("print_help"),
+        PyObject::native_function("ArgumentParser.print_help", argparse_print_help),
+    );
+    ap_ns.insert(
+        CompactString::from("add_subparsers"),
+        PyObject::native_function("ArgumentParser.add_subparsers", argparse_add_subparsers),
+    );
+    ap_ns.insert(
+        CompactString::from("set_defaults"),
+        PyObject::native_function("ArgumentParser.set_defaults", argparse_set_defaults),
+    );
+    ap_ns.insert(
+        CompactString::from("get_default"),
+        PyObject::native_function("ArgumentParser.get_default", argparse_get_default),
+    );
+    ap_ns.insert(
+        CompactString::from("add_mutually_exclusive_group"),
+        PyObject::native_function(
+            "ArgumentParser.add_mutually_exclusive_group",
+            argparse_add_mutually_exclusive_group,
+        ),
+    );
+    ap_ns.insert(
+        CompactString::from("exit"),
+        PyObject::native_function("ArgumentParser.exit", argparse_exit),
+    );
+    ap_ns.insert(
+        CompactString::from("error"),
+        PyObject::native_function("ArgumentParser.error", argparse_error),
+    );
+    ap_ns.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_function("ArgumentParser.__repr__", argparse_argument_parser_repr),
+    );
+    let ap_cls = PyObject::class(CompactString::from("ArgumentParser"), vec![], ap_ns);
 
     make_module(
         "argparse",
         vec![
-            ("ArgumentParser", argument_parser_fn),
-            ("Namespace", namespace_fn),
+            ("ArgumentParser", ap_cls),
+            ("Namespace", namespace_cls),
             ("Action", make_builtin(|_| Ok(PyObject::none()))),
             ("HelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
             (
@@ -448,8 +825,21 @@ fn argparse_parse_args(
     allow_unknown: bool,
     parser_inst: Option<&PyObjectRef>,
 ) -> PyResult<(PyObjectRef, Vec<String>)> {
-    let ns_cls = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
-    let ns_inst = PyObject::instance(ns_cls);
+    let ns_cls = parser_inst
+        .and_then(|p| {
+            if let PyObjectPayload::Instance(pid) = &p.payload {
+                pid.attrs.read().get("__namespace_class__").cloned()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(create_argparse_namespace_class);
+    let ns_inst =
+        if call_args.len() >= 2 && matches!(call_args[1].payload, PyObjectPayload::Instance(_)) {
+            call_args[1].clone()
+        } else {
+            PyObject::instance(ns_cls)
+        };
     let defs = arg_defs.read();
 
     let arg_strings: Vec<String> = if !call_args.is_empty()
@@ -575,7 +965,7 @@ fn argparse_parse_args(
         .unwrap_or(false);
     if help_at_this_level {
         if let Some(pinst) = parser_inst {
-            if let Some(ph_fn) = pinst.get_attr("print_help") {
+            if let Some(ph_fn) = pinst.get_attr("__argparse_print_help__") {
                 let _ = match &ph_fn.payload {
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
                     PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]),
@@ -856,7 +1246,7 @@ fn argparse_parse_args(
                                                 })
                                                 .collect();
                                             if let Some(parse_fn) =
-                                                child_parser.get_attr("parse_args")
+                                                child_parser.get_attr("__argparse_parse_args__")
                                             {
                                                 let child_ns = match &parse_fn.payload {
                                                     PyObjectPayload::NativeClosure(nc) => {

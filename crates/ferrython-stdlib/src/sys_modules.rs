@@ -23,6 +23,10 @@ static PROFILE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Set by the CLI before execution via `ferrython_stdlib::set_argv()`.
 static SYS_ARGV: std::sync::LazyLock<parking_lot::RwLock<Vec<String>>> =
     std::sync::LazyLock::new(|| parking_lot::RwLock::new(vec![String::new()]));
+static CURRENT_CTYPE_LOCALE: std::sync::LazyLock<parking_lot::RwLock<(String, String)>> =
+    std::sync::LazyLock::new(|| {
+        parking_lot::RwLock::new(("C".to_string(), "ANSI_X3.4-1968".to_string()))
+    });
 
 /// Set the process argv that will be exposed as `sys.argv`.
 /// Must be called before the first `import sys`.
@@ -33,6 +37,10 @@ pub fn set_argv(args: Vec<String>) {
 /// Get the current sys.argv values.
 pub fn get_argv() -> Vec<String> {
     SYS_ARGV.read().clone()
+}
+
+pub fn get_current_ctype_locale() -> (String, String) {
+    CURRENT_CTYPE_LOCALE.read().clone()
 }
 
 /// Check if any trace function is active (atomic load — ~1ns vs ~15ns for thread-local).
@@ -58,6 +66,8 @@ thread_local! {
     static CURRENT_FRAME: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
     static CURRENT_GLOBALS: std::cell::RefCell<Option<SharedGlobals>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_SYS_MODULE: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -119,13 +129,18 @@ pub fn get_current_frame() -> Option<PyObjectRef> {
     CURRENT_FRAME.with(|c| c.borrow().clone())
 }
 
+/// Get the active sys.stdout object, including Python-level replacements.
+pub fn get_current_stdout() -> Option<PyObjectRef> {
+    CURRENT_SYS_MODULE.with(|c| c.borrow().as_ref().and_then(|sys| sys.get_attr("stdout")))
+}
+
 /// Get the current recursion limit (for VM stack depth checking).
 pub fn get_recursion_limit() -> i64 {
     RECURSION_LIMIT.load(Ordering::Relaxed)
 }
 
 pub fn create_sys_module() -> PyObjectRef {
-    make_module("sys", vec![
+    let module = make_module("sys", vec![
         ("version", PyObject::str_val(CompactString::from("3.8.0 (ferrython)"))),
         ("version_info", {
             let vi_attrs = IndexMap::from([
@@ -568,7 +583,9 @@ pub fn create_sys_module() -> PyObjectRef {
             eprintln!("--Return--");
             Ok(PyObject::none())
         })),
-    ])
+    ]);
+    CURRENT_SYS_MODULE.with(|c| *c.borrow_mut() = Some(module.clone()));
+    module
 }
 
 fn sys_getrecursionlimit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3614,6 +3631,7 @@ pub fn create_locale_module() -> PyObjectRef {
     }
 
     let current_locale: Rc<PyCell<(String, String)>> = Rc::new(PyCell::new(get_system_locale()));
+    *CURRENT_CTYPE_LOCALE.write() = current_locale.read().clone();
 
     let cl1 = current_locale.clone();
     let getlocale_fn = PyObject::native_closure("getlocale", move |_: &[PyObjectRef]| {
@@ -3643,6 +3661,7 @@ pub fn create_locale_module() -> PyObjectRef {
             } else {
                 *cl2.write() = (locale_str.clone(), "UTF-8".to_string());
             }
+            *CURRENT_CTYPE_LOCALE.write() = cl2.read().clone();
         }
         let (name, enc) = cl2.read().clone();
         Ok(PyObject::str_val(CompactString::from(format!(

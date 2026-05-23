@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::collection_modules::{
     create_operator_module, namedtuple_rebuild_field, namedtuple_rebuild_instance,
 };
+use crate::text_modules::create_re_module;
 
 pub fn create_base64_module() -> PyObjectRef {
     make_module(
@@ -1342,6 +1343,17 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 buf.push(b's');
             }
         }
+        PyObjectPayload::MappingProxy(map) => {
+            let map = map.read();
+            buf.extend_from_slice(b"(dp");
+            buf.extend_from_slice(format!("{}\n", *memo).as_bytes());
+            *memo += 1;
+            for (k, v) in map.iter() {
+                pickle_serialize_p0(&hashable_key_to_pyobj(k), buf, memo)?;
+                pickle_serialize_p0(v, buf, memo)?;
+                buf.push(b's');
+            }
+        }
         PyObjectPayload::Set(items) => {
             buf.extend_from_slice(b"c__builtin__\nset\n(");
             let items_r = items.read();
@@ -1680,6 +1692,19 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
         },
         PyObjectPayload::Dict(map) => {
+            let map = map.read();
+            buf.push(b'}');
+            p2_emit_put(buf, memo);
+            if !map.is_empty() {
+                buf.push(b'(');
+                for (k, v) in map.iter() {
+                    pickle_serialize_p2(&hashable_key_to_pyobj(k), buf, memo)?;
+                    pickle_serialize_p2(v, buf, memo)?;
+                }
+                buf.push(b'u');
+            }
+        }
+        PyObjectPayload::MappingProxy(map) => {
             let map = map.read();
             buf.push(b'}');
             p2_emit_put(buf, memo);
@@ -2117,6 +2142,29 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     ))
                 })?;
                 ferrython_core::object::call_callable(&constructor, &arg_list)
+            }
+            ("__main__" | "re", "Pattern") => {
+                if let Some(first) = arg_list.first() {
+                    if let PyObjectPayload::Dict(map) = &first.payload {
+                        let map_r = map.read();
+                        let pattern = map_r
+                            .get(&HashableKey::str_key(CompactString::from("pattern")))
+                            .cloned()
+                            .unwrap_or_else(|| PyObject::str_val(CompactString::from("")));
+                        let flags = map_r
+                            .get(&HashableKey::str_key(CompactString::from("flags")))
+                            .cloned()
+                            .unwrap_or_else(|| PyObject::int(0));
+                        let module = create_re_module();
+                        let compile = module.get_attr("compile").ok_or_else(|| {
+                            PyException::runtime_error("UnpicklingError: missing re.compile")
+                        })?;
+                        return ferrython_core::object::call_callable(&compile, &[pattern, flags]);
+                    }
+                }
+                Err(PyException::runtime_error(
+                    "UnpicklingError: invalid Pattern state",
+                ))
             }
             (_, "namedtuple_field") => {
                 if let Some(first) = arg_list.first() {

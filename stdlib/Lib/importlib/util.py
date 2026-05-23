@@ -81,6 +81,9 @@ def module_from_spec(spec):
 def spec_from_file_location(name, location=None, *, loader=None,
                              submodule_search_locations=None):
     """Return a module spec based on a file location."""
+    if loader is None and location is not None:
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader(name, location)
     spec = ModuleSpec(name, loader, origin=location)
     if submodule_search_locations is not None:
         spec.submodule_search_locations = submodule_search_locations

@@ -36,6 +36,7 @@ pub use introspection_modules::ast_unparse_module;
 pub use introspection_modules::pyobj_ast_to_module;
 pub use serial_modules::json_dumps_fn;
 pub use sys_modules::get_argv;
+pub use sys_modules::get_current_ctype_locale;
 pub use sys_modules::get_exc_info;
 pub use sys_modules::get_recursion_limit;
 pub use sys_modules::set_argv;
@@ -108,6 +109,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Text processing
         "string" => Some(text_modules::create_string_module()),
         "re" => Some(text_modules::create_re_module()),
+        "_sre" => Some(text_modules::create_sre_module()),
         "textwrap" => Some(text_modules::create_textwrap_module()),
         "fnmatch" => Some(text_modules::create_fnmatch_module()),
         "html" => Some(text_modules::create_html_module()),
@@ -157,7 +159,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "logging.config" => Some(testing_modules::create_logging_config_module()),
         // unittest: pure Python module (stdlib/Lib/unittest/__init__.py)
         "pprint" => Some(text_modules::create_pprint_module()),
-        "argparse" => Some(config_modules::create_argparse_module()),
+        // argparse is provided by stdlib/Lib/argparse.py for CPython 3.8 compatibility.
         "errno" => Some(sys_modules::create_errno_module()),
         "uuid" => Some(crypto_modules::create_uuid_module()),
         "codecs" => Some(serial_modules::create_codecs_module()),

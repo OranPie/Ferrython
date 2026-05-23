@@ -118,7 +118,9 @@ class SourceFileLoader:
         return None
     
     def exec_module(self, module):
-        pass
+        with open(self.path, 'r', encoding='utf-8') as f:
+            source = f.read()
+        exec(source, module.__dict__)
     
     def get_filename(self, fullname=None):
         return self.path

@@ -14,6 +14,74 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::cell::RefCell;
 
+fn create_source_file_loader(name: CompactString, location: CompactString) -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(
+        CompactString::from("__init__"),
+        PyObject::native_function("SourceFileLoader.__init__", |args| {
+            check_args_min("SourceFileLoader.__init__", args, 3)?;
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let mut attrs = inst.attrs.write();
+                attrs.insert(
+                    CompactString::from("name"),
+                    PyObject::str_val(CompactString::from(args[1].py_to_string())),
+                );
+                attrs.insert(
+                    CompactString::from("path"),
+                    PyObject::str_val(CompactString::from(args[2].py_to_string())),
+                );
+            }
+            Ok(PyObject::none())
+        }),
+    );
+    ns.insert(
+        CompactString::from("exec_module"),
+        PyObject::native_function("SourceFileLoader.exec_module", |args| {
+            check_args_min("SourceFileLoader.exec_module", args, 2)?;
+            let path = args[0]
+                .get_attr("path")
+                .map(|p| p.py_to_string())
+                .ok_or_else(|| PyException::attribute_error("loader has no path"))?;
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| PyException::import_error(format!("{}: '{}'", e, path)))?;
+            let globals = args[1]
+                .get_attr("__dict__")
+                .ok_or_else(|| PyException::type_error("exec_module() requires a module"))?;
+            let exec_fn = PyObject::builtin_function(CompactString::from("exec"));
+            ferrython_core::object::call_callable(
+                &exec_fn,
+                &[PyObject::str_val(CompactString::from(source)), globals],
+            )?;
+            Ok(PyObject::none())
+        }),
+    );
+    ns.insert(
+        CompactString::from("get_filename"),
+        PyObject::native_function("SourceFileLoader.get_filename", |args| {
+            check_args_min("SourceFileLoader.get_filename", args, 1)?;
+            Ok(args[0].get_attr("path").unwrap_or_else(PyObject::none))
+        }),
+    );
+    ns.insert(
+        CompactString::from("get_data"),
+        PyObject::native_function("SourceFileLoader.get_data", |args| {
+            check_args_min("SourceFileLoader.get_data", args, 2)?;
+            let path = args[1].py_to_string();
+            let data = std::fs::read(&path)
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+            Ok(PyObject::bytes(data))
+        }),
+    );
+    let cls = PyObject::class(CompactString::from("SourceFileLoader"), vec![], ns);
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(data) = &inst.payload {
+        let mut attrs = data.attrs.write();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(name));
+        attrs.insert(CompactString::from("path"), PyObject::str_val(location));
+    }
+    inst
+}
+
 // ── Thread-local: import_module() signal ────────────────────────────────
 // importlib.import_module(name, package=None) stores the request here.
 // The VM intercepts after the call and performs the actual import.
@@ -91,7 +159,12 @@ fn create_importlib_util_module() -> PyObjectRef {
             CompactString::from("submodule_search_locations"),
             PyObject::none(),
         );
-        attrs.insert(CompactString::from("loader"), PyObject::none());
+        let loader = if location.is_empty() {
+            PyObject::none()
+        } else {
+            create_source_file_loader(name.clone(), location.clone())
+        };
+        attrs.insert(CompactString::from("loader"), loader);
         attrs.insert(CompactString::from("cached"), PyObject::none());
         attrs.insert(CompactString::from("parent"), {
             if let Some(dot) = name.rfind('.') {

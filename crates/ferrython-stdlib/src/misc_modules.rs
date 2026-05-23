@@ -2115,8 +2115,8 @@ pub fn create_builtins_module() -> PyObjectRef {
                 "slice",
                 PyObject::builtin_type(CompactString::from("slice")),
             ),
-            ("NotImplemented", PyObject::none()),
-            ("Ellipsis", PyObject::none()),
+            ("NotImplemented", PyObject::not_implemented()),
+            ("Ellipsis", PyObject::ellipsis()),
             ("__debug__", PyObject::bool_val(true)),
         ],
     )
