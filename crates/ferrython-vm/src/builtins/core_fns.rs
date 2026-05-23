@@ -230,7 +230,7 @@ fn builtin_type_create(
             let mut ns = FxAttrMap::default();
             for (k, v) in r.iter() {
                 let key_str = match k {
-                    HashableKey::Str(s) => s.as_ref().clone(),
+                    HashableKey::Str(s) => s.to_compact_string(),
                     _ => CompactString::from(k.to_object().py_to_string()),
                 };
                 ns.insert(key_str, v.clone());
@@ -1110,6 +1110,9 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
         "AsyncIterable" => &["async_generator"],
         "AsyncIterator" => &["async_generator"],
         "AsyncGenerator" => &["async_generator"],
+        "Number" | "Complex" => &["int", "bool", "float", "complex"],
+        "Real" => &["int", "bool", "float"],
+        "Rational" | "Integral" => &["int", "bool"],
         _ => &[],
     }
 }
@@ -2669,6 +2672,12 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // BuiltinType vs ABC Class: check _abc_builtin_types registry
         (PyObjectPayload::BuiltinType(type_name), PyObjectPayload::Class(sup_cd)) => {
+            if abc_builtin_type_names(sup_cd.name.as_str())
+                .iter()
+                .any(|builtin| *builtin == type_name.as_str())
+            {
+                return true;
+            }
             if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
                 if let PyObjectPayload::Set(set) = &registry.payload {
                     let key = HashableKey::str_key(CompactString::from(type_name.as_str()));

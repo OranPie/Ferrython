@@ -1214,6 +1214,18 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Iterator(iter_data_arc) => {
+                let map_one = {
+                    let data = iter_data_arc.read();
+                    if let IteratorData::MapOne { func, source } = &*data {
+                        Some((func.clone(), source.clone()))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((func, source)) = map_one {
+                    return self.collect_map_one_iterable(func, &source);
+                }
+
                 // Check for lazy iterators that need VM context
                 let is_lazy = {
                     let data = iter_data_arc.read();
@@ -1221,6 +1233,7 @@ impl VirtualMachine {
                         &*data,
                         IteratorData::Enumerate { .. }
                             | IteratorData::Zip { .. }
+                            | IteratorData::MapOne { .. }
                             | IteratorData::Map { .. }
                             | IteratorData::Filter { .. }
                             | IteratorData::FilterFalse { .. }
@@ -1295,6 +1308,149 @@ impl VirtualMachine {
             }
             _ => obj.to_list(),
         }
+    }
+
+    fn collect_map_one_iterable(
+        &mut self,
+        func: PyObjectRef,
+        source: &PyObjectRef,
+    ) -> PyResult<Vec<PyObjectRef>> {
+        match &source.payload {
+            PyObjectPayload::Iterator(iter_data_arc) => {
+                let mut data = iter_data_arc.write();
+                match &mut *data {
+                    IteratorData::List { items, index } | IteratorData::Tuple { items, index } => {
+                        let start = *index;
+                        let end = items.len();
+                        let mut result = Vec::with_capacity(end.saturating_sub(start));
+                        for item in &items[start..] {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                item.clone(),
+                            )?);
+                        }
+                        *index = end;
+                        Ok(result)
+                    }
+                    IteratorData::DictKeys { keys, index } => {
+                        let start = *index;
+                        let end = keys.len();
+                        let mut result = Vec::with_capacity(end.saturating_sub(start));
+                        for item in &keys[start..] {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                item.clone(),
+                            )?);
+                        }
+                        *index = end;
+                        Ok(result)
+                    }
+                    IteratorData::Range {
+                        current,
+                        stop,
+                        step,
+                    } => {
+                        let len = if *step > 0 {
+                            ((*stop - *current).max(0) + *step - 1) / *step
+                        } else {
+                            ((*current - *stop).max(0) + (-*step) - 1) / (-*step)
+                        };
+                        let mut result = Vec::with_capacity(len as usize);
+                        while (*step > 0 && *current < *stop) || (*step < 0 && *current > *stop) {
+                            let value = PyObject::int(*current);
+                            *current += *step;
+                            result.push(
+                                self.call_object_one_arg_fast_or_fallback(func.clone(), value)?,
+                            );
+                        }
+                        Ok(result)
+                    }
+                    _ => {
+                        drop(data);
+                        self.collect_map_one_iterable_slow(func, source)
+                    }
+                }
+            }
+            PyObjectPayload::RefIter {
+                source: inner,
+                index,
+            } => {
+                let idx = index.get();
+                match &inner.payload {
+                    PyObjectPayload::List(cell) => {
+                        let items = unsafe { &*cell.data_ptr() };
+                        let mut result = Vec::with_capacity(items.len().saturating_sub(idx));
+                        for item in &items[idx..] {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                item.clone(),
+                            )?);
+                        }
+                        index.set(usize::MAX);
+                        Ok(result)
+                    }
+                    PyObjectPayload::Tuple(items) => {
+                        let mut result = Vec::with_capacity(items.len().saturating_sub(idx));
+                        for item in &items[idx..] {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                item.clone(),
+                            )?);
+                        }
+                        index.set(usize::MAX);
+                        Ok(result)
+                    }
+                    _ => self.collect_map_one_iterable_slow(func, source),
+                }
+            }
+            PyObjectPayload::VecIter(data) => {
+                let idx = data.index.get();
+                let mut result = Vec::with_capacity(data.items.len().saturating_sub(idx));
+                for item in &data.items[idx..] {
+                    result.push(
+                        self.call_object_one_arg_fast_or_fallback(func.clone(), item.clone())?,
+                    );
+                }
+                data.index.set(usize::MAX);
+                Ok(result)
+            }
+            PyObjectPayload::RangeIter(ri) => {
+                let mut current = ri.current.get();
+                let len = if ri.step > 0 {
+                    ((ri.stop - current).max(0) + ri.step - 1) / ri.step
+                } else {
+                    ((current - ri.stop).max(0) + (-ri.step) - 1) / (-ri.step)
+                };
+                let mut result = Vec::with_capacity(len as usize);
+                while (ri.step > 0 && current < ri.stop) || (ri.step < 0 && current > ri.stop) {
+                    result.push(self.call_object_one_arg_fast_or_fallback(
+                        func.clone(),
+                        PyObject::int(current),
+                    )?);
+                    current += ri.step;
+                }
+                ri.current.set(ri.stop);
+                Ok(result)
+            }
+            _ => self.collect_map_one_iterable_slow(func, source),
+        }
+    }
+
+    fn collect_map_one_iterable_slow(
+        &mut self,
+        func: PyObjectRef,
+        source: &PyObjectRef,
+    ) -> PyResult<Vec<PyObjectRef>> {
+        let mut result = Vec::new();
+        loop {
+            match self.vm_iter_next(source)? {
+                Some(value) => {
+                    result.push(self.call_object_one_arg_fast_or_fallback(func.clone(), value)?);
+                }
+                None => break,
+            }
+        }
+        Ok(result)
     }
 
     /// Resume a generator, pushing the given `send_value` onto its stack and running
@@ -1706,6 +1862,20 @@ impl VirtualMachine {
                     Err(e) => Err(e),
                 }
             }
+            PyObjectPayload::RangeIter(ri) => {
+                let current = ri.current.get();
+                let done = if ri.step > 0 {
+                    current >= ri.stop
+                } else {
+                    current <= ri.stop
+                };
+                if done {
+                    Ok(None)
+                } else {
+                    ri.current.set(current + ri.step);
+                    Ok(Some(PyObject::int(current)))
+                }
+            }
             PyObjectPayload::Instance(_) => {
                 if let Some(next_method) = iter_obj.get_attr("__next__") {
                     match self.call_object(next_method, vec![]) {
@@ -1741,6 +1911,7 @@ impl VirtualMachine {
                     match &*data {
                         IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
+                        | IteratorData::MapOne { .. }
                         | IteratorData::Map { .. }
                         | IteratorData::Filter { .. }
                         | IteratorData::FilterFalse { .. }
@@ -1872,6 +2043,18 @@ impl VirtualMachine {
                     return Ok(None); // All exhausted at same time
                 }
                 Ok(Some(PyObject::tuple(items)))
+            }
+            IteratorData::MapOne { func, source } => {
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                match self.vm_iter_next(&src)? {
+                    Some(val) => {
+                        let result = self.call_object_one_arg_fast_or_fallback(f, val)?;
+                        Ok(Some(result))
+                    }
+                    None => Ok(None),
+                }
             }
             IteratorData::Map { func, sources } => {
                 let f = func.clone();
@@ -2427,7 +2610,7 @@ impl VirtualMachine {
                 let m = map.read();
                 for (k, v) in m.iter() {
                     let key_str = match k {
-                        HashableKey::Str(s) => s.as_ref().clone(),
+                        HashableKey::Str(s) => s.to_compact_string(),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
@@ -2476,7 +2659,7 @@ impl VirtualMachine {
             let lm = lmap.read();
             for (k, v) in lm.iter() {
                 let key_str = match k {
-                    HashableKey::Str(s) => s.as_ref().clone(),
+                    HashableKey::Str(s) => s.to_compact_string(),
                     _ => CompactString::from(format!("{:?}", k)),
                 };
                 target.insert(key_str, v.clone());
@@ -2546,7 +2729,7 @@ impl VirtualMachine {
                     let gm = globs_map.read();
                     for (k, v) in gm.iter() {
                         let key_str = match k {
-                            HashableKey::Str(s) => s.as_ref().clone(),
+                            HashableKey::Str(s) => s.to_compact_string(),
                             _ => CompactString::from(format!("{:?}", k)),
                         };
                         ng.insert(key_str, v.clone());

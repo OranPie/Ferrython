@@ -1,7 +1,7 @@
 //! Auxiliary Python types: `PyInt`, `PyFunction`, `HashableKey`.
 
 use crate::error::{PyException, PyResult};
-use crate::object::{new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef};
+use crate::object::{new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef, StrRepr};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::CodeObject;
@@ -484,10 +484,8 @@ pub enum HashableKey {
     Bool(bool),
     Int(PyInt),
     Float(OrderedFloat),
-    /// String key — boxed to keep HashableKey at 24 bytes (entries 40B vs CPython 24B).
-    /// Box adds one pointer indirection for hash/eq, but the 8-byte per-entry savings
-    /// improves cache utilization for table probing.
-    Str(Box<CompactString>),
+    /// String key — inline short strings to avoid per-key heap boxes on common dict paths.
+    Str(StrRepr),
     Bytes(Box<Vec<u8>>),
     Tuple(Box<Vec<HashableKey>>),
     FrozenSet(Rc<FrozenSetKeyData>),
@@ -508,7 +506,7 @@ impl HashableKey {
     /// Convenience constructor for string keys.
     #[inline]
     pub fn str_key(s: CompactString) -> Self {
-        HashableKey::Str(Box::new(s))
+        HashableKey::Str(StrRepr::from_compact(s))
     }
 
     pub fn from_object(obj: &PyObjectRef) -> PyResult<Self> {
@@ -530,7 +528,7 @@ impl HashableKey {
                     )))
                 }
             }
-            PyObjectPayload::Str(s) => Ok(HashableKey::str_key(s.to_compact_string())),
+            PyObjectPayload::Str(s) => Ok(HashableKey::Str(s.clone())),
             PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
             PyObjectPayload::Tuple(items) => {
                 let mut keys = Vec::with_capacity(items.len());
@@ -608,7 +606,7 @@ impl HashableKey {
     pub fn to_object(&self) -> PyObjectRef {
         match self {
             HashableKey::Int(n) => n.to_object(),
-            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+            HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
             HashableKey::None => PyObject::none(),
             HashableKey::Bool(b) => PyObject::bool_val(*b),
             HashableKey::Float(f) => PyObject::float(f.0),
@@ -727,7 +725,7 @@ impl PartialEq for HashableKey {
             // Int/Int (hot path — most dict keys are ints)
             (HashableKey::Int(PyInt::Small(a)), HashableKey::Int(PyInt::Small(b))) => a == b,
             (HashableKey::Int(a), HashableKey::Int(b)) => a == b,
-            // Str/Str (Box auto-derefs for comparison)
+            // Str/Str
             (HashableKey::Str(a), HashableKey::Str(b)) => a == b,
             // Bool/Bool
             (HashableKey::Bool(a), HashableKey::Bool(b)) => a == b,

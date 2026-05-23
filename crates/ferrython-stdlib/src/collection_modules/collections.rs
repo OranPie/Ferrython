@@ -164,7 +164,7 @@ fn counter_extract_kwargs(
                         continue;
                     }
                     if let HashableKey::Str(name) = k {
-                        kwds.insert(name.as_ref().clone(), v.clone());
+                        kwds.insert(name.to_compact_string(), v.clone());
                     }
                 }
             }

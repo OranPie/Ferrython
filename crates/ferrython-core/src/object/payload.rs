@@ -1919,6 +1919,10 @@ pub enum IteratorData {
         cached_tuple: Option<PyObjectRef>,
         items_buf: Vec<PyObjectRef>,
     },
+    MapOne {
+        func: PyObjectRef,
+        source: PyObjectRef,
+    },
     Map {
         func: PyObjectRef,
         /// One or more source iterators (multi-arg map is lazy, not eagerly zipped).

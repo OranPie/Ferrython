@@ -1183,7 +1183,7 @@ fn unpack_one_format(
 
 fn hashable_key_to_pyobj(k: &HashableKey) -> PyObjectRef {
     match k {
-        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+        HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
         HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
         HashableKey::Float(f) => PyObject::float(f.0),
         HashableKey::Bool(b) => PyObject::bool_val(*b),
@@ -1561,7 +1561,7 @@ fn pickle_extract_instance(
         if let PyObjectPayload::Dict(map) = &state.payload {
             for (k, v) in map.read().iter() {
                 if let HashableKey::Str(name) = k {
-                    data_pairs.push((name.as_ref().clone(), v.clone()));
+                    data_pairs.push((name.to_compact_string(), v.clone()));
                 }
             }
         }
@@ -2244,7 +2244,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                                         ) {
                                             continue;
                                         }
-                                        attrs.insert(key.as_ref().clone(), v.clone());
+                                        attrs.insert(key.to_compact_string(), v.clone());
                                     }
                                 }
                             }
@@ -2253,7 +2253,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         let mut attrs = IndexMap::new();
                         for (k, v) in map_r.iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.as_ref().clone(), v.clone());
+                                attrs.insert(s.to_compact_string(), v.clone());
                             }
                         }
                         let cls = PyObject::class(
@@ -4879,7 +4879,7 @@ pub fn create_shelve_module() -> PyObjectRef {
                         .read()
                         .keys()
                         .map(|k| match k {
-                            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+                            HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
                             _ => PyObject::none(),
                         })
                         .collect();
@@ -4905,7 +4905,7 @@ pub fn create_shelve_module() -> PyObjectRef {
                         .iter()
                         .map(|(k, v)| {
                             let key = match k {
-                                HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+                                HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
                                 _ => PyObject::none(),
                             };
                             PyObject::tuple(vec![key, v.clone()])
@@ -5118,7 +5118,7 @@ pub fn create_dbm_module() -> PyObjectRef {
                         .read()
                         .keys()
                         .map(|k| match k {
-                            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+                            HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
                             _ => PyObject::str_val(CompactString::from(format!("{:?}", k))),
                         })
                         .collect();
@@ -5282,7 +5282,7 @@ pub fn create_marshal_module() -> PyObjectRef {
                     buf.extend_from_slice(&(map.len() as u32).to_le_bytes());
                     for (k, v) in map.iter() {
                         let key_obj = match k {
-                            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
+                            HashableKey::Str(s) => PyObject::str_val(s.to_compact_string()),
                             HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
                             HashableKey::Bool(b) => PyObject::bool_val(*b),
                             _ => PyObject::none(),

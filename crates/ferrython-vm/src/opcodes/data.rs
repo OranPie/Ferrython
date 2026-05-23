@@ -762,7 +762,7 @@ impl VirtualMachine {
                             attrs.clear();
                             for (k, v) in map.read().iter() {
                                 if let HashableKey::Str(s) = k {
-                                    attrs.insert(s.as_ref().clone(), v.clone());
+                                    attrs.insert(s.to_compact_string(), v.clone());
                                 }
                             }
                         }

@@ -64,7 +64,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                             let r = kw_map.read();
                             for (k, v) in r.iter() {
                                 if let HashableKey::Str(ks) = k {
-                                    kwargs.insert(ks.as_ref().clone(), v.clone());
+                                    kwargs.insert(ks.to_compact_string(), v.clone());
                                 }
                             }
                         }
@@ -317,8 +317,10 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                                 let r = kw_map.read();
                                                 for (k, v) in r.iter() {
                                                     if let HashableKey::Str(ks) = k {
-                                                        kwargs
-                                                            .insert(ks.as_ref().clone(), v.clone());
+                                                        kwargs.insert(
+                                                            ks.to_compact_string(),
+                                                            v.clone(),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -389,7 +391,7 @@ pub fn create_argparse_module() -> PyObjectRef {
                     let r = kw_map.read();
                     for (k, v) in r.iter() {
                         if let HashableKey::Str(ks) = k {
-                            attrs.insert(ks.as_ref().clone(), v.clone());
+                            attrs.insert(ks.to_compact_string(), v.clone());
                         }
                     }
                 }
@@ -555,7 +557,7 @@ fn argparse_parse_args(
                         let mut wa = nd.attrs.write();
                         for (k, v) in dr.iter() {
                             if let HashableKey::Str(ks) = k {
-                                wa.insert(ks.as_ref().clone(), v.clone());
+                                wa.insert(ks.to_compact_string(), v.clone());
                             }
                         }
                     }
@@ -1466,7 +1468,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                 .keys()
                 .filter_map(|k| {
                     if let HashableKey::Str(s) = k {
-                        Some(PyObject::str_val(s.as_ref().clone()))
+                        Some(PyObject::str_val(s.to_compact_string()))
                     } else {
                         None
                     }
@@ -1523,7 +1525,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                         .keys()
                         .filter_map(|k| {
                             if let HashableKey::Str(s) = k {
-                                Some(PyObject::str_val(s.as_ref().clone()))
+                                Some(PyObject::str_val(s.to_compact_string()))
                             } else {
                                 None
                             }
@@ -1550,7 +1552,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                         .iter()
                         .map(|(k, v)| {
                             let key = if let HashableKey::Str(s) = k {
-                                PyObject::str_val(s.as_ref().clone())
+                                PyObject::str_val(s.to_compact_string())
                             } else {
                                 PyObject::none()
                             };

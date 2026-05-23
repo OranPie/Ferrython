@@ -194,6 +194,7 @@ impl VirtualMachine {
                             &*data,
                             IteratorData::Enumerate { .. }
                                 | IteratorData::Zip { .. }
+                                | IteratorData::MapOne { .. }
                                 | IteratorData::Map { .. }
                                 | IteratorData::Filter { .. }
                                 | IteratorData::FilterFalse { .. }
@@ -805,7 +806,7 @@ impl VirtualMachine {
                         PyObjectPayload::Dict(map) => {
                             for (k, v) in map.read().iter() {
                                 let name = match k {
-                                    HashableKey::Str(s) => s.as_ref().clone(),
+                                    HashableKey::Str(s) => s.to_compact_string(),
                                     _ => CompactString::from(format!("{:?}", k)),
                                 };
                                 kw_vec.push((name, v.clone()));
@@ -1033,7 +1034,7 @@ impl VirtualMachine {
                     if let PyObjectPayload::Dict(m) = &ann_obj.payload {
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                annotations.insert(name.as_ref().clone(), v.clone());
+                                annotations.insert(name.to_compact_string(), v.clone());
                             }
                         }
                     }
@@ -1044,7 +1045,7 @@ impl VirtualMachine {
                         let mut result = IndexMap::new();
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                result.insert(name.as_ref().clone(), v.clone());
+                                result.insert(name.to_compact_string(), v.clone());
                             }
                         }
                         result

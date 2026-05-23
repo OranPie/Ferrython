@@ -443,6 +443,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 // Lazy iterators that truly need VM context (call user functions)
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
+                | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
                 | IteratorData::FilterFalse { .. }

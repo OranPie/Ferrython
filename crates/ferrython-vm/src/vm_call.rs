@@ -5,6 +5,7 @@ use crate::frame::{Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
+use ferrython_bytecode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
@@ -13,9 +14,27 @@ use ferrython_core::object::{
     IteratorData, PartialData, PropertyData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyInt, SharedConstantCache, SharedGlobals};
+use ferrython_core::types::{HashableKey, PyFunction, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::rc::Rc;
+
+#[inline(always)]
+fn fast_exact_str(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Str(_) => Some(arg.clone()),
+        PyObjectPayload::Int(PyInt::Small(n)) => {
+            let mut buf = itoa::Buffer::new();
+            Some(PyObject::str_val(CompactString::from(buf.format(*n))))
+        }
+        PyObjectPayload::Bool(b) => Some(PyObject::str_val(CompactString::from(if *b {
+            "True"
+        } else {
+            "False"
+        }))),
+        PyObjectPayload::None => Some(PyObject::str_val(CompactString::from("None"))),
+        _ => None,
+    }
+}
 
 /// Attach `split` and `subgroup` methods to an ExceptionGroup instance.
 /// Reads `message` and `exceptions` from the instance attrs.
@@ -143,6 +162,174 @@ fn attach_eg_methods(eg: &PyObjectRef) {
 }
 
 impl VirtualMachine {
+    #[inline(always)]
+    fn fast_binary_result(
+        op: Opcode,
+        left: &PyObjectRef,
+        right: &PyObjectRef,
+    ) -> Option<PyObjectRef> {
+        match op {
+            Opcode::BinaryAdd | Opcode::InplaceAdd => match (&left.payload, &right.payload) {
+                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                    match x.checked_add(*y) {
+                        Some(r) => Some(PyObject::int(r)),
+                        None => {
+                            use num_bigint::BigInt;
+                            Some(PyObject::big_int(BigInt::from(*x) + BigInt::from(*y)))
+                        }
+                    }
+                }
+                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                    Some(PyObject::float(*x + *y))
+                }
+                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                    Some(PyObject::float(*x as f64 + *y))
+                }
+                (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                    Some(PyObject::float(*x + *y as f64))
+                }
+                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                    let mut s = String::with_capacity(x.len() + y.len());
+                    s.push_str(x);
+                    s.push_str(y);
+                    Some(PyObject::str_val(CompactString::from(s)))
+                }
+                _ => None,
+            },
+            Opcode::BinarySubtract | Opcode::InplaceSubtract => {
+                match (&left.payload, &right.payload) {
+                    (
+                        PyObjectPayload::Int(PyInt::Small(x)),
+                        PyObjectPayload::Int(PyInt::Small(y)),
+                    ) => match x.checked_sub(*y) {
+                        Some(r) => Some(PyObject::int(r)),
+                        None => {
+                            use num_bigint::BigInt;
+                            Some(PyObject::big_int(BigInt::from(*x) - BigInt::from(*y)))
+                        }
+                    },
+                    (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                        Some(PyObject::float(*x - *y))
+                    }
+                    (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                        Some(PyObject::float(*x as f64 - *y))
+                    }
+                    (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                        Some(PyObject::float(*x - *y as f64))
+                    }
+                    _ => None,
+                }
+            }
+            Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
+                match (&left.payload, &right.payload) {
+                    (
+                        PyObjectPayload::Int(PyInt::Small(x)),
+                        PyObjectPayload::Int(PyInt::Small(y)),
+                    ) => match x.checked_mul(*y) {
+                        Some(r) => Some(PyObject::int(r)),
+                        None => {
+                            use num_bigint::BigInt;
+                            Some(PyObject::big_int(BigInt::from(*x) * BigInt::from(*y)))
+                        }
+                    },
+                    (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                        Some(PyObject::float(*x * *y))
+                    }
+                    (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                        Some(PyObject::float(*x as f64 * *y))
+                    }
+                    (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                        Some(PyObject::float(*x * *y as f64))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_inline_simple_function_one_arg(
+        pyfunc: &PyFunction,
+        arg: &PyObjectRef,
+    ) -> Option<PyObjectRef> {
+        if pyfunc.code.arg_count != 1 {
+            return None;
+        }
+
+        let instrs = &pyfunc.code.instructions;
+        match instrs.len() {
+            1 => match instrs[0].op {
+                Opcode::LoadFastReturnValue if instrs[0].arg == 0 => Some(arg.clone()),
+                Opcode::LoadConstReturnValue => {
+                    pyfunc.constant_cache.get(instrs[0].arg as usize).cloned()
+                }
+                _ => None,
+            },
+            2 if instrs[1].op == Opcode::ReturnValue => match instrs[0].op {
+                Opcode::LoadFast if instrs[0].arg == 0 => Some(arg.clone()),
+                Opcode::LoadConst => pyfunc.constant_cache.get(instrs[0].arg as usize).cloned(),
+                Opcode::LoadFastLoadConstBinaryAdd
+                | Opcode::LoadFastLoadConstBinarySub
+                | Opcode::LoadFastLoadConstBinaryMul => {
+                    let local_idx = (instrs[0].arg >> 16) as usize;
+                    let const_idx = (instrs[0].arg & 0xFFFF) as usize;
+                    if local_idx != 0 {
+                        return None;
+                    }
+                    let op = match instrs[0].op {
+                        Opcode::LoadFastLoadConstBinaryAdd => Opcode::BinaryAdd,
+                        Opcode::LoadFastLoadConstBinarySub => Opcode::BinarySubtract,
+                        Opcode::LoadFastLoadConstBinaryMul => Opcode::BinaryMultiply,
+                        _ => unreachable!(),
+                    };
+                    let rhs = pyfunc.constant_cache.get(const_idx)?;
+                    Self::fast_binary_result(op, arg, rhs)
+                }
+                Opcode::LoadFastLoadFastBinaryAdd => {
+                    let left_idx = (instrs[0].arg >> 16) as usize;
+                    let right_idx = (instrs[0].arg & 0xFFFF) as usize;
+                    if left_idx == 0 && right_idx == 0 {
+                        Self::fast_binary_result(Opcode::BinaryAdd, arg, arg)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            3 if instrs[2].op == Opcode::ReturnValue => match instrs[0].op {
+                Opcode::LoadFastLoadConst => {
+                    let local_idx = (instrs[0].arg >> 16) as usize;
+                    let const_idx = (instrs[0].arg & 0xFFFF) as usize;
+                    if local_idx != 0 {
+                        return None;
+                    }
+                    let rhs = pyfunc.constant_cache.get(const_idx)?;
+                    Self::fast_binary_result(instrs[1].op, arg, rhs)
+                }
+                Opcode::LoadFastLoadFast => {
+                    let left_idx = (instrs[0].arg >> 16) as usize;
+                    let right_idx = (instrs[0].arg & 0xFFFF) as usize;
+                    if left_idx == 0 && right_idx == 0 {
+                        Self::fast_binary_result(instrs[1].op, arg, arg)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            4 if instrs[3].op == Opcode::ReturnValue
+                && instrs[0].op == Opcode::LoadFast
+                && instrs[0].arg == 0
+                && instrs[1].op == Opcode::LoadConst =>
+            {
+                let rhs = pyfunc.constant_cache.get(instrs[1].arg as usize)?;
+                Self::fast_binary_result(instrs[2].op, arg, rhs)
+            }
+            _ => None,
+        }
+    }
+
     /// Write text to a file-like object, handling both BoundMethod (e.g. StringIO)
     /// and NativeFunction (e.g. default sys.stdout) cases.
     fn write_to_file_object(&mut self, target: &PyObjectRef, text: &str) -> PyResult<()> {
@@ -568,6 +755,56 @@ impl VirtualMachine {
         }
 
         self.install_closure_and_run(frame, code, closure)
+    }
+
+    pub(crate) fn call_object_one_arg_fast_or_fallback(
+        &mut self,
+        func: PyObjectRef,
+        arg: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let pyfunc_ptr = match &func.payload {
+            PyObjectPayload::Function(pyfunc)
+                if pyfunc.is_simple
+                    && pyfunc.code.arg_count == 1
+                    && pyfunc.defaults.is_empty()
+                    && pyfunc.kw_defaults.is_empty()
+                    && pyfunc.closure.is_empty() =>
+            {
+                &**pyfunc as *const PyFunction
+            }
+            _ => return self.call_object(func, vec![arg]),
+        };
+
+        if ferrython_stdlib::is_trace_active() || ferrython_stdlib::is_profile_active() {
+            return self.call_object(func, vec![arg]);
+        }
+
+        // `func` owns the payload behind this pointer and is moved into the borrowed
+        // frame below, so the code/globals/constant cache stay alive while it runs.
+        let pyfunc = unsafe { &*pyfunc_ptr };
+        if let Some(result) = Self::try_inline_simple_function_one_arg(pyfunc, &arg) {
+            return Ok(result);
+        }
+
+        let mut frame =
+            unsafe { Frame::new_borrowed(pyfunc, func, &self.builtins, &mut self.frame_pool) };
+        frame.locals[0] = Some(arg);
+        frame.scope_kind = ScopeKind::Function;
+
+        self.call_stack.push(frame);
+        if self.call_stack.len() > self.recursion_limit {
+            if let Some(frame) = self.call_stack.pop() {
+                frame.recycle(&mut self.frame_pool);
+            }
+            return Err(PyException::recursion_error(
+                "maximum recursion depth exceeded",
+            ));
+        }
+        let result = self.run_frame();
+        if let Some(frame) = self.call_stack.pop() {
+            frame.recycle(&mut self.frame_pool);
+        }
+        result
     }
 
     /// Unified class instantiation: __new__, dataclass/namedtuple auto-init, __init__, exception attrs.
@@ -2995,6 +3232,11 @@ impl VirtualMachine {
                                 _ => {}
                             }
                         }
+                        if args.len() == 1 {
+                            if let Some(result) = fast_exact_str(&args[0]) {
+                                return Ok(result);
+                            }
+                        }
                         return self
                             .vm_str(&args[0])
                             .map(|s| PyObject::str_val(CompactString::from(s)));
@@ -3017,6 +3259,14 @@ impl VirtualMachine {
                         let mut sources = Vec::with_capacity(args.len() - 1);
                         for a in &args[1..] {
                             sources.push(self.resolve_iterable(a)?);
+                        }
+                        if sources.len() == 1 {
+                            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                                PyCell::new(IteratorData::MapOne {
+                                    func: func_obj,
+                                    source: sources.pop().unwrap(),
+                                }),
+                            ))));
                         }
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                             PyCell::new(IteratorData::Map {
@@ -4471,8 +4721,9 @@ impl VirtualMachine {
                                             && fname.as_str() != "module"
                                             && fname.as_str() != "rename"
                                         {
-                                            if !field_names.contains(&fname.as_ref().clone()) {
-                                                field_names.push(fname.as_ref().clone());
+                                            let fname = fname.to_compact_string();
+                                            if !field_names.contains(&fname) {
+                                                field_names.push(fname);
                                             }
                                         }
                                     }
@@ -4607,6 +4858,7 @@ impl VirtualMachine {
                             ) || matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
                                 let data = d.read();
                                 matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                    | IteratorData::MapOne { .. }
                                     | IteratorData::Map { .. } | IteratorData::Filter { .. }
                                     | IteratorData::FilterFalse { .. }
                                     | IteratorData::Sentinel { .. })
@@ -5091,7 +5343,8 @@ impl VirtualMachine {
                                         if all_str && !rd.is_empty() {
                                             for (k, v) in rd.iter() {
                                                 if let HashableKey::Str(s) = k {
-                                                    extracted.push((s.as_ref().clone(), v.clone()));
+                                                    extracted
+                                                        .push((s.to_compact_string(), v.clone()));
                                                 }
                                             }
                                             true
@@ -5157,6 +5410,7 @@ impl VirtualMachine {
                         ) || (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
                             let data = d.read();
                             matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                | IteratorData::MapOne { .. }
                                 | IteratorData::Map { .. } | IteratorData::Filter { .. }
                                 | IteratorData::FilterFalse { .. }
                                 | IteratorData::Sentinel { .. })

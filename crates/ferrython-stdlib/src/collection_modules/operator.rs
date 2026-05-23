@@ -799,7 +799,7 @@ pub fn create_operator_module() -> PyObjectRef {
                                     .iter()
                                     .map(|(k, v)| match k {
                                         ferrython_core::types::HashableKey::Str(name) => {
-                                            Ok((name.as_ref().clone(), v.clone()))
+                                            Ok((name.to_compact_string(), v.clone()))
                                         }
                                         _ => Err(PyException::type_error(
                                             "methodcaller keywords must be strings",

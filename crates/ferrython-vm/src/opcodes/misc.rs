@@ -291,6 +291,7 @@ impl VirtualMachine {
                             &*data,
                             IteratorData::Enumerate { .. }
                                 | IteratorData::Zip { .. }
+                                | IteratorData::MapOne { .. }
                                 | IteratorData::Map { .. }
                                 | IteratorData::Filter { .. }
                                 | IteratorData::FilterFalse { .. }

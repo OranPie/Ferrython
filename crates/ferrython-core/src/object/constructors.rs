@@ -440,6 +440,169 @@ static CHAR_CACHE: LazyLock<[PyObjectRef; 128]> = LazyLock::new(|| {
     })
 });
 
+fn immortal_builtin_type(name: &str) -> PyObjectRef {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::BuiltinType(Box::new(CompactString::from(name))),
+    })
+}
+
+macro_rules! define_builtin_type_cache {
+    ($(($id:ident, $name:literal)),+ $(,)?) => {
+        $(
+            static $id: LazyLock<PyObjectRef> =
+                LazyLock::new(|| immortal_builtin_type($name));
+        )+
+
+        #[inline]
+        fn cached_builtin_type(name: &str) -> Option<PyObjectRef> {
+            match name {
+                $($name => Some($id.clone()),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+define_builtin_type_cache!(
+    (TYPE_STR, "str"),
+    (TYPE_INT, "int"),
+    (TYPE_FLOAT, "float"),
+    (TYPE_BOOL, "bool"),
+    (TYPE_TYPE, "type"),
+    (TYPE_OBJECT, "object"),
+    (TYPE_LIST, "list"),
+    (TYPE_TUPLE, "tuple"),
+    (TYPE_DICT, "dict"),
+    (TYPE_SET, "set"),
+    (TYPE_FROZENSET, "frozenset"),
+    (TYPE_RANGE, "range"),
+    (TYPE_BYTES, "bytes"),
+    (TYPE_BYTEARRAY, "bytearray"),
+    (TYPE_COMPLEX, "complex"),
+    (TYPE_SLICE, "slice"),
+    (TYPE_MEMORYVIEW, "memoryview"),
+    (TYPE_SUPER, "super"),
+    (TYPE_CLASSMETHOD, "classmethod"),
+    (TYPE_STATICMETHOD, "staticmethod"),
+    (TYPE_PROPERTY, "property"),
+    (TYPE_MAP, "map"),
+    (TYPE_FILTER, "filter"),
+    (TYPE_NONE_TYPE, "NoneType"),
+    (TYPE_ELLIPSIS, "ellipsis"),
+    (TYPE_NOT_IMPLEMENTED, "NotImplementedType"),
+    (TYPE_MODULE, "module"),
+    (TYPE_FUNCTION, "function"),
+    (TYPE_BUILTIN_FUNCTION, "builtin_function_or_method"),
+    (TYPE_METHOD, "method"),
+    (TYPE_BUILTIN_METHOD, "builtin_method"),
+    (TYPE_CODE, "code"),
+    (TYPE_CELL, "cell"),
+    (TYPE_ITERATOR, "iterator"),
+    (TYPE_LIST_ITERATOR, "list_iterator"),
+    (TYPE_TUPLE_ITERATOR, "tuple_iterator"),
+    (TYPE_STR_ITERATOR, "str_ascii_iterator"),
+    (TYPE_DICT_ITEMITERATOR, "dict_itemiterator"),
+    (TYPE_DICT_KEYITERATOR, "dict_keyiterator"),
+    (TYPE_RANGE_ITERATOR, "range_iterator"),
+    (TYPE_CALLABLE_ITERATOR, "callable_iterator"),
+    (TYPE_MAPPINGPROXY, "mappingproxy"),
+    (TYPE_PARTIAL, "functools.partial"),
+    (TYPE_GENERATOR, "generator"),
+    (TYPE_COROUTINE, "coroutine"),
+    (TYPE_ASYNC_GENERATOR, "async_generator"),
+    (TYPE_ASYNC_GENERATOR_ASEND, "async_generator_asend"),
+    (TYPE_TRACEBACK, "traceback"),
+    (TYPE_FRAME, "frame"),
+    (TYPE_WRAPPER_DESCRIPTOR, "wrapper_descriptor"),
+    (TYPE_METHOD_DESCRIPTOR, "method_descriptor"),
+);
+
+const ALL_EXCEPTION_KINDS: &[ExceptionKind] = &[
+    ExceptionKind::BaseException,
+    ExceptionKind::SystemExit,
+    ExceptionKind::KeyboardInterrupt,
+    ExceptionKind::GeneratorExit,
+    ExceptionKind::Exception,
+    ExceptionKind::StopIteration,
+    ExceptionKind::StopAsyncIteration,
+    ExceptionKind::ArithmeticError,
+    ExceptionKind::FloatingPointError,
+    ExceptionKind::OverflowError,
+    ExceptionKind::ZeroDivisionError,
+    ExceptionKind::AssertionError,
+    ExceptionKind::AttributeError,
+    ExceptionKind::BlockingIOError,
+    ExceptionKind::BrokenPipeError,
+    ExceptionKind::BufferError,
+    ExceptionKind::EOFError,
+    ExceptionKind::FileExistsError,
+    ExceptionKind::FileNotFoundError,
+    ExceptionKind::ImportError,
+    ExceptionKind::ModuleNotFoundError,
+    ExceptionKind::IndexError,
+    ExceptionKind::KeyError,
+    ExceptionKind::LookupError,
+    ExceptionKind::MemoryError,
+    ExceptionKind::NameError,
+    ExceptionKind::NotImplementedError,
+    ExceptionKind::OSError,
+    ExceptionKind::PermissionError,
+    ExceptionKind::RecursionError,
+    ExceptionKind::ReferenceError,
+    ExceptionKind::RuntimeError,
+    ExceptionKind::SyntaxError,
+    ExceptionKind::SystemError,
+    ExceptionKind::TypeError,
+    ExceptionKind::UnboundLocalError,
+    ExceptionKind::UnicodeDecodeError,
+    ExceptionKind::UnicodeEncodeError,
+    ExceptionKind::UnicodeError,
+    ExceptionKind::ValueError,
+    ExceptionKind::Warning,
+    ExceptionKind::DeprecationWarning,
+    ExceptionKind::RuntimeWarning,
+    ExceptionKind::UserWarning,
+    ExceptionKind::TimeoutError,
+    ExceptionKind::IsADirectoryError,
+    ExceptionKind::NotADirectoryError,
+    ExceptionKind::ProcessLookupError,
+    ExceptionKind::ConnectionError,
+    ExceptionKind::ConnectionResetError,
+    ExceptionKind::ConnectionAbortedError,
+    ExceptionKind::ConnectionRefusedError,
+    ExceptionKind::InterruptedError,
+    ExceptionKind::ChildProcessError,
+    ExceptionKind::SyntaxWarning,
+    ExceptionKind::FutureWarning,
+    ExceptionKind::ImportWarning,
+    ExceptionKind::UnicodeWarning,
+    ExceptionKind::BytesWarning,
+    ExceptionKind::ResourceWarning,
+    ExceptionKind::PendingDeprecationWarning,
+    ExceptionKind::IndentationError,
+    ExceptionKind::TabError,
+    ExceptionKind::JSONDecodeError,
+    ExceptionKind::SubprocessError,
+    ExceptionKind::CalledProcessError,
+    ExceptionKind::TimeoutExpired,
+    ExceptionKind::ExceptionGroup,
+    ExceptionKind::BaseExceptionGroup,
+];
+
+static EXCEPTION_TYPE_CACHE: LazyLock<Vec<(ExceptionKind, PyObjectRef)>> = LazyLock::new(|| {
+    ALL_EXCEPTION_KINDS
+        .iter()
+        .map(|kind| {
+            (
+                *kind,
+                PyObjectRef::new_immortal(PyObject {
+                    payload: PyObjectPayload::ExceptionType(*kind),
+                }),
+            )
+        })
+        .collect()
+});
+
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 // Static UnsafeCell: no TLS overhead — single-threaded GIL interpreter.
 struct TrackedHolder(std::cell::UnsafeCell<Vec<PyWeakRef>>);
@@ -825,8 +988,17 @@ impl PyObject {
     pub fn builtin_function(name: CompactString) -> PyObjectRef {
         Self::wrap(PyObjectPayload::BuiltinFunction(Box::new(name)))
     }
+    #[inline]
+    pub fn builtin_type_by_name(name: &str) -> PyObjectRef {
+        cached_builtin_type(name).unwrap_or_else(|| {
+            Self::wrap(PyObjectPayload::BuiltinType(Box::new(CompactString::from(
+                name,
+            ))))
+        })
+    }
     pub fn builtin_type(name: CompactString) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::BuiltinType(Box::new(name)))
+        cached_builtin_type(name.as_str())
+            .unwrap_or_else(|| Self::wrap(PyObjectPayload::BuiltinType(Box::new(name))))
     }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Code(std::rc::Rc::new(code)))
@@ -1054,6 +1226,11 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Cell(cell))
     }
     pub fn exception_type(kind: ExceptionKind) -> PyObjectRef {
+        for (cached_kind, obj) in EXCEPTION_TYPE_CACHE.iter() {
+            if *cached_kind == kind {
+                return obj.clone();
+            }
+        }
         Self::wrap(PyObjectPayload::ExceptionType(kind))
     }
     pub fn exception_instance(

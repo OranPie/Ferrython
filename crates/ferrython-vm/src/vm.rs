@@ -317,6 +317,161 @@ fn is_interned_pop(obj: &PyObjectRef) -> bool {
     N_POP.get().map_or(false, |c| PyObjectRef::ptr_eq(obj, c))
 }
 
+#[inline(always)]
+fn fast_small_int_sequence_min_max(arg: &PyObjectRef, is_max: bool) -> Option<PyObjectRef> {
+    let items: &[PyObjectRef] = match &arg.payload {
+        PyObjectPayload::List(v) => unsafe { (&*v.data_ptr()).as_slice() },
+        PyObjectPayload::Tuple(v) => v.as_slice(),
+        _ => return None,
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let mut best_idx = 0usize;
+    let mut best_val = match &items[0].payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => *n,
+        _ => return None,
+    };
+    for (i, item) in items[1..].iter().enumerate() {
+        let value = match &item.payload {
+            PyObjectPayload::Int(PyInt::Small(n)) => *n,
+            _ => return None,
+        };
+        if (is_max && value > best_val) || (!is_max && value < best_val) {
+            best_idx = i + 1;
+            best_val = value;
+        }
+    }
+    Some(items[best_idx].clone())
+}
+
+#[inline(always)]
+fn fast_small_int_sequence_sorted(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    let all_small = match &arg.payload {
+        PyObjectPayload::List(v) => unsafe { &*v.data_ptr() }
+            .iter()
+            .all(|item| matches!(&item.payload, PyObjectPayload::Int(PyInt::Small(_)))),
+        PyObjectPayload::Tuple(items) => items
+            .iter()
+            .all(|item| matches!(&item.payload, PyObjectPayload::Int(PyInt::Small(_)))),
+        _ => return None,
+    };
+    if !all_small {
+        return None;
+    }
+
+    let mut items = match &arg.payload {
+        PyObjectPayload::List(v) if PyObjectRef::strong_count(arg) == 1 => {
+            std::mem::take(unsafe { &mut *v.data_ptr() })
+        }
+        PyObjectPayload::List(v) => unsafe { &*v.data_ptr() }.clone(),
+        PyObjectPayload::Tuple(items) => items.to_vec(),
+        _ => return None,
+    };
+    items.sort_unstable_by(|a, b| {
+        let av = if let PyObjectPayload::Int(PyInt::Small(v)) = &a.payload {
+            *v
+        } else {
+            0
+        };
+        let bv = if let PyObjectPayload::Int(PyInt::Small(v)) = &b.payload {
+            *v
+        } else {
+            0
+        };
+        av.cmp(&bv)
+    });
+    Some(PyObject::list(items))
+}
+
+#[inline(always)]
+fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::None => Some(PyObject::builtin_type_by_name("NoneType")),
+        PyObjectPayload::Ellipsis => Some(PyObject::builtin_type_by_name("ellipsis")),
+        PyObjectPayload::NotImplemented => {
+            Some(PyObject::builtin_type_by_name("NotImplementedType"))
+        }
+        PyObjectPayload::Bool(_) => Some(PyObject::builtin_type_by_name("bool")),
+        PyObjectPayload::Int(_) => Some(PyObject::builtin_type_by_name("int")),
+        PyObjectPayload::Float(_) => Some(PyObject::builtin_type_by_name("float")),
+        PyObjectPayload::Complex { .. } => Some(PyObject::builtin_type_by_name("complex")),
+        PyObjectPayload::Str(_) => Some(PyObject::builtin_type_by_name("str")),
+        PyObjectPayload::Bytes(_) => Some(PyObject::builtin_type_by_name("bytes")),
+        PyObjectPayload::ByteArray(_) => Some(PyObject::builtin_type_by_name("bytearray")),
+        PyObjectPayload::List(_) => Some(PyObject::builtin_type_by_name("list")),
+        PyObjectPayload::Tuple(_) => Some(PyObject::builtin_type_by_name("tuple")),
+        PyObjectPayload::Set(_) => Some(PyObject::builtin_type_by_name("set")),
+        PyObjectPayload::FrozenSet(_) => Some(PyObject::builtin_type_by_name("frozenset")),
+        PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) => {
+            Some(PyObject::builtin_type_by_name("dict"))
+        }
+        PyObjectPayload::MappingProxy(_) => Some(PyObject::builtin_type_by_name("mappingproxy")),
+        PyObjectPayload::Function(_) => Some(PyObject::builtin_type_by_name("function")),
+        PyObjectPayload::BuiltinFunction(_)
+        | PyObjectPayload::NativeFunction(_)
+        | PyObjectPayload::NativeClosure(_) => {
+            Some(PyObject::builtin_type_by_name("builtin_function_or_method"))
+        }
+        PyObjectPayload::BuiltinType(_)
+        | PyObjectPayload::Class(_)
+        | PyObjectPayload::ExceptionType(_) => Some(PyObject::builtin_type_by_name("type")),
+        PyObjectPayload::BoundMethod { .. } => Some(PyObject::builtin_type_by_name("method")),
+        PyObjectPayload::BuiltinBoundMethod(_) => {
+            Some(PyObject::builtin_type_by_name("builtin_method"))
+        }
+        PyObjectPayload::Code(_) => Some(PyObject::builtin_type_by_name("code")),
+        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+        PyObjectPayload::Module(_) => Some(PyObject::builtin_type_by_name("module")),
+        PyObjectPayload::Iterator(iter_data) => {
+            let guard = iter_data.read();
+            let name = match &*guard {
+                IteratorData::MapOne { .. } | IteratorData::Map { .. } => "map",
+                IteratorData::Filter { .. } => "filter",
+                IteratorData::Zip { .. } => "zip",
+                IteratorData::Enumerate { .. } => "enumerate",
+                IteratorData::Range { .. } => "range_iterator",
+                IteratorData::List { .. } => "list_iterator",
+                IteratorData::Tuple { .. } => "tuple_iterator",
+                IteratorData::Str { .. } => "str_ascii_iterator",
+                IteratorData::DictEntries { .. } => "dict_itemiterator",
+                IteratorData::DictKeys { .. } => "dict_keyiterator",
+                IteratorData::Sentinel { .. } => "callable_iterator",
+                _ => "iterator",
+            };
+            Some(PyObject::builtin_type_by_name(name))
+        }
+        PyObjectPayload::RangeIter(_) => Some(PyObject::builtin_type_by_name("range_iterator")),
+        PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => {
+            Some(PyObject::builtin_type_by_name("list_iterator"))
+        }
+        PyObjectPayload::Slice(_) => Some(PyObject::builtin_type_by_name("slice")),
+        PyObjectPayload::Cell(_) => Some(PyObject::builtin_type_by_name("cell")),
+        PyObjectPayload::ExceptionInstance(ei) => Some(PyObject::exception_type(ei.kind)),
+        PyObjectPayload::Generator(_) => Some(PyObject::builtin_type_by_name("generator")),
+        PyObjectPayload::Coroutine(_) | PyObjectPayload::BuiltinAwaitable(_) => {
+            Some(PyObject::builtin_type_by_name("coroutine"))
+        }
+        PyObjectPayload::AsyncGenerator(_) => {
+            Some(PyObject::builtin_type_by_name("async_generator"))
+        }
+        PyObjectPayload::AsyncGenAwaitable { .. } => {
+            Some(PyObject::builtin_type_by_name("async_generator_asend"))
+        }
+        PyObjectPayload::Property(_) => Some(PyObject::builtin_type_by_name("property")),
+        PyObjectPayload::StaticMethod(_) => Some(PyObject::builtin_type_by_name("staticmethod")),
+        PyObjectPayload::ClassMethod(_) => Some(PyObject::builtin_type_by_name("classmethod")),
+        PyObjectPayload::Super { .. } => Some(PyObject::builtin_type_by_name("super")),
+        PyObjectPayload::Partial(_) => Some(PyObject::builtin_type_by_name("functools.partial")),
+        PyObjectPayload::Range(_) => Some(PyObject::builtin_type_by_name("range")),
+        PyObjectPayload::DeferredSleep { .. } => Some(PyObject::builtin_type_by_name("coroutine")),
+        PyObjectPayload::DictKeys(_) => Some(PyObject::builtin_type_by_name("dict_keyiterator")),
+        PyObjectPayload::DictValues(_) | PyObjectPayload::DictItems(_) => {
+            Some(PyObject::builtin_type_by_name("dict_itemiterator"))
+        }
+    }
+}
+
 /// Callback registered with ferrython-core to spawn Python functions on real OS threads.
 fn spawn_python_thread_impl(
     func: PyObjectRef,
@@ -1696,7 +1851,7 @@ impl VirtualMachine {
                                     Some(match hk {
                                         HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
                                         HashableKey::Str(s) => {
-                                            PyObject::str_val(s.as_ref().clone())
+                                            PyObject::str_val(s.to_compact_string())
                                         }
                                         _ => hk.to_object(),
                                     })
@@ -2454,7 +2609,7 @@ impl VirtualMachine {
                                     Some(match hk {
                                         HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
                                         HashableKey::Str(s) => {
-                                            PyObject::str_val(s.as_ref().clone())
+                                            PyObject::str_val(s.to_compact_string())
                                         }
                                         _ => hk.to_object(),
                                     })
@@ -4703,12 +4858,10 @@ impl VirtualMachine {
                                 hot_ok!(profiling, self.profiler, instr.op)
                             } else {
                                 // Fast path for common builtins: len(x), range(n)
-                                let builtin_name = if let PyObjectPayload::BuiltinFunction(name) =
-                                    &sget!(frame, func_idx).payload
-                                {
-                                    Some(name.as_str())
-                                } else {
-                                    None
+                                let builtin_name = match &sget!(frame, func_idx).payload {
+                                    PyObjectPayload::BuiltinFunction(name)
+                                    | PyObjectPayload::BuiltinType(name) => Some(name.as_str()),
+                                    _ => None,
                                 };
                                 match (builtin_name, arg_count) {
                                     (Some("len"), 1) => {
@@ -4872,30 +5025,11 @@ impl VirtualMachine {
                                     // Inline type(obj) for builtin types
                                     (Some("type"), 1) => {
                                         let arg = sget!(frame, stack_len - 1);
-                                        let type_name = match &arg.payload {
-                                            PyObjectPayload::Int(_) => Some("int"),
-                                            PyObjectPayload::Float(_) => Some("float"),
-                                            PyObjectPayload::Str(_) => Some("str"),
-                                            PyObjectPayload::Bool(_) => Some("bool"),
-                                            PyObjectPayload::None => Some("NoneType"),
-                                            PyObjectPayload::List(_) => Some("list"),
-                                            PyObjectPayload::Tuple(_) => Some("tuple"),
-                                            PyObjectPayload::Dict(_) => Some("dict"),
-                                            PyObjectPayload::Set(_) => Some("set"),
-                                            PyObjectPayload::Bytes(_) => Some("bytes"),
-                                            PyObjectPayload::ByteArray(_) => Some("bytearray"),
-                                            _ => None,
-                                        };
-                                        if let Some(name) = type_name {
+                                        if let Some(type_obj) = fast_exact_type(arg) {
                                             unsafe {
                                                 frame.stack.set_len(func_idx);
                                             }
-                                            spush!(
-                                                frame,
-                                                PyObject::wrap(PyObjectPayload::BuiltinType(
-                                                    Box::new(name.into())
-                                                ))
-                                            );
+                                            spush!(frame, type_obj);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
                                             self.execute_one(instr)
@@ -5002,6 +5136,44 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(v) = result {
+                                            unsafe {
+                                                frame.stack.set_len(func_idx);
+                                            }
+                                            spush!(frame, v);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else {
+                                            self.execute_one(instr)
+                                        }
+                                    }
+                                    (Some("min"), 1) => {
+                                        let arg = sget!(frame, stack_len - 1);
+                                        match fast_small_int_sequence_min_max(arg, false) {
+                                            Some(v) => {
+                                                unsafe {
+                                                    frame.stack.set_len(func_idx);
+                                                }
+                                                spush!(frame, v);
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                            None => self.execute_one(instr),
+                                        }
+                                    }
+                                    (Some("max"), 1) => {
+                                        let arg = sget!(frame, stack_len - 1);
+                                        match fast_small_int_sequence_min_max(arg, true) {
+                                            Some(v) => {
+                                                unsafe {
+                                                    frame.stack.set_len(func_idx);
+                                                }
+                                                spush!(frame, v);
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                            None => self.execute_one(instr),
+                                        }
+                                    }
+                                    (Some("sorted"), 1) => {
+                                        let arg = sget!(frame, stack_len - 1);
+                                        if let Some(v) = fast_small_int_sequence_sorted(arg) {
                                             unsafe {
                                                 frame.stack.set_len(func_idx);
                                             }
@@ -5657,12 +5829,11 @@ impl VirtualMachine {
                             } // close mini-interpreter else block
                         } else {
                             // Fast path for builtins (len, range) from global cache
-                            let builtin_name =
-                                if let PyObjectPayload::BuiltinFunction(name) = &func_obj.payload {
-                                    Some(name.as_str())
-                                } else {
-                                    None
-                                };
+                            let builtin_name = match &func_obj.payload {
+                                PyObjectPayload::BuiltinFunction(name)
+                                | PyObjectPayload::BuiltinType(name) => Some(name.as_str()),
+                                _ => None,
+                            };
                             match (builtin_name, arg_count) {
                                 (Some("len"), 1) => {
                                     let arg = sget!(frame, frame.stack.len() - 1);
@@ -5862,11 +6033,7 @@ impl VirtualMachine {
                                 }
                                 (Some("type"), 1) => {
                                     let arg = sget!(frame, frame.stack.len() - 1);
-                                    let type_obj = match &arg.payload {
-                                        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
-                                        _ => None,
-                                    };
-                                    if let Some(t) = type_obj {
+                                    if let Some(t) = fast_exact_type(arg) {
                                         {
                                             let _ = spop!(frame);
                                         }
@@ -6066,6 +6233,51 @@ impl VirtualMachine {
                                             let _ = spop!(frame);
                                         }
                                         spush!(frame, PyObject::int(total));
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    } else {
+                                        spush!(frame, func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("min"), 1) => {
+                                    let arg = sget!(frame, frame.stack.len() - 1);
+                                    match fast_small_int_sequence_min_max(arg, false) {
+                                        Some(v) => {
+                                            let _ = spop!(frame);
+                                            spush!(frame, v);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        None => {
+                                            spush!(frame, func_obj.clone());
+                                            self.execute_one(Instruction::new(
+                                                Opcode::CallFunction,
+                                                1,
+                                            ))
+                                        }
+                                    }
+                                }
+                                (Some("max"), 1) => {
+                                    let arg = sget!(frame, frame.stack.len() - 1);
+                                    match fast_small_int_sequence_min_max(arg, true) {
+                                        Some(v) => {
+                                            let _ = spop!(frame);
+                                            spush!(frame, v);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        None => {
+                                            spush!(frame, func_obj.clone());
+                                            self.execute_one(Instruction::new(
+                                                Opcode::CallFunction,
+                                                1,
+                                            ))
+                                        }
+                                    }
+                                }
+                                (Some("sorted"), 1) => {
+                                    let arg = sget!(frame, frame.stack.len() - 1);
+                                    if let Some(v) = fast_small_int_sequence_sorted(arg) {
+                                        let _ = spop!(frame);
+                                        spush!(frame, v);
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
@@ -6786,6 +6998,7 @@ impl VirtualMachine {
                                                                 &*iter_data.read(),
                                                                 IteratorData::Enumerate { .. }
                                                                     | IteratorData::Zip { .. }
+                                                                    | IteratorData::MapOne { .. }
                                                                     | IteratorData::Map { .. }
                                                                     | IteratorData::Filter { .. }
                                                                     | IteratorData::FilterFalse { .. }
@@ -6850,6 +7063,7 @@ impl VirtualMachine {
                                                                 &*iter_data.read(),
                                                                 IteratorData::Enumerate { .. }
                                                                     | IteratorData::Zip { .. }
+                                                                    | IteratorData::MapOne { .. }
                                                                     | IteratorData::Map { .. }
                                                                     | IteratorData::Filter { .. }
                                                                     | IteratorData::FilterFalse { .. }
@@ -7289,19 +7503,33 @@ impl VirtualMachine {
                                     // list.extend with generator/instance: collect via VM first
                                     } else if n == "extend"
                                         && matches!(&receiver.payload, PyObjectPayload::List(_))
-                                        && matches!(
-                                            &a0.payload,
-                                            PyObjectPayload::Generator(_)
-                                                | PyObjectPayload::Instance(_)
-                                        )
                                     {
-                                        self.collect_iterable(&a0).and_then(|items| {
-                                            crate::builtins::call_method(
-                                                &receiver,
-                                                "extend",
-                                                &[PyObject::list(items)],
-                                            )
-                                        })
+                                        let needs_vm_collect = match &a0.payload {
+                                            PyObjectPayload::Generator(_)
+                                            | PyObjectPayload::Instance(_) => true,
+                                            PyObjectPayload::Iterator(iter_data) => matches!(
+                                                &*iter_data.read(),
+                                                IteratorData::Enumerate { .. }
+                                                    | IteratorData::Zip { .. }
+                                                    | IteratorData::MapOne { .. }
+                                                    | IteratorData::Map { .. }
+                                                    | IteratorData::Filter { .. }
+                                                    | IteratorData::FilterFalse { .. }
+                                                    | IteratorData::Sentinel { .. }
+                                            ),
+                                            _ => false,
+                                        };
+                                        if needs_vm_collect {
+                                            self.collect_iterable(&a0).and_then(|items| {
+                                                crate::builtins::call_method(
+                                                    &receiver,
+                                                    "extend",
+                                                    &[PyObject::list(items)],
+                                                )
+                                            })
+                                        } else {
+                                            crate::builtins::call_method(&receiver, n, &[a0])
+                                        }
                                     } else {
                                         crate::builtins::call_method(&receiver, n, &[a0])
                                     }

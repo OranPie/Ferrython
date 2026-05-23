@@ -47,7 +47,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::Iterator(iter_data) => {
             let guard = iter_data.read();
             match &*guard {
-                IteratorData::Map { .. } => "map",
+                IteratorData::MapOne { .. } | IteratorData::Map { .. } => "map",
                 IteratorData::Filter { .. } => "filter",
                 IteratorData::FilterFalse { .. } => "itertools.filterfalse",
                 IteratorData::Zip { .. } => "zip",
@@ -787,6 +787,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 // Lazy iterators can't be eagerly collected from core
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
+                | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
                 | IteratorData::FilterFalse { .. }
