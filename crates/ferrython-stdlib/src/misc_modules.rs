@@ -7,7 +7,7 @@ use ferrython_core::object::{
     ClassData, FxAttrMap, FxHashKeyMap, InstanceData, PyCell, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
@@ -1578,8 +1578,32 @@ fn copy_deepcopy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("deepcopy() requires 1 argument"));
     }
+    if args.len() >= 2 {
+        return deep_copy_with_memo_object(&args[0], &args[1]);
+    }
     let mut memo = std::collections::HashMap::new();
     deep_copy_with_memo(&args[0], &mut memo)
+}
+
+fn deep_copy_with_memo_object(obj: &PyObjectRef, memo_obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let mut memo = std::collections::HashMap::new();
+    if let PyObjectPayload::Dict(map) = &memo_obj.payload {
+        for (key, value) in map.read().iter() {
+            if let HashableKey::Int(n) = key {
+                if let Some(ptr) = n.to_i64() {
+                    memo.insert(ptr as usize, value.clone());
+                }
+            }
+        }
+    }
+    let result = deep_copy_with_memo(obj, &mut memo)?;
+    if let PyObjectPayload::Dict(map) = &memo_obj.payload {
+        let mut write = map.write();
+        for (ptr, value) in memo {
+            write.insert(HashableKey::Int(PyInt::Small(ptr as i64)), value);
+        }
+    }
+    Ok(result)
 }
 
 fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
@@ -1676,14 +1700,35 @@ fn deep_copy_with_memo(
         }
         PyObjectPayload::Set(set) => {
             let mut new_set = new_fx_hashkey_map();
-            for (k, v) in set.read().iter() {
-                new_set.insert(k.clone(), deep_copy_with_memo(v, memo)?);
+            for v in set.read().values() {
+                let copied = deep_copy_with_memo(v, memo)?;
+                let key = copied.to_hashable_key()?;
+                new_set.entry(key).or_insert(copied);
             }
             let result = PyObject::set(new_set);
             memo.insert(ptr, result.clone());
             Ok(result)
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some(deepcopy_fn) = obj.get_attr("__deepcopy__") {
+                let mut memo_map = new_fx_hashkey_map();
+                for (ptr, value) in memo.iter() {
+                    memo_map.insert(HashableKey::Int(PyInt::Small(*ptr as i64)), value.clone());
+                }
+                let memo_obj = PyObject::dict(memo_map);
+                let copied = call_callable(&deepcopy_fn, &[memo_obj.clone()])?;
+                memo.insert(ptr, copied.clone());
+                if let PyObjectPayload::Dict(updated) = &memo_obj.payload {
+                    for (key, value) in updated.read().iter() {
+                        if let HashableKey::Int(n) = key {
+                            if let Some(ptr) = n.to_i64() {
+                                memo.insert(ptr as usize, value.clone());
+                            }
+                        }
+                    }
+                }
+                return Ok(copied);
+            }
             // Pre-insert placeholder instance to handle circular refs
             let result = PyObject::instance_with_attrs(inst.class.clone(), IndexMap::new());
             memo.insert(ptr, result.clone());

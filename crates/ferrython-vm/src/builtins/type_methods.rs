@@ -9,9 +9,49 @@ use ferrython_core::object::{
     FxHashKeyFlatMap, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
 use std::rc::Rc;
+
+fn collect_hash_entries(arg: &PyObjectRef) -> PyResult<Vec<(HashableKey, PyObjectRef)>> {
+    match &arg.payload {
+        PyObjectPayload::Dict(items) => {
+            let read = items.read();
+            Ok(read
+                .keys()
+                .map(|key| (key.clone(), key.to_object()))
+                .collect())
+        }
+        PyObjectPayload::Set(items) => {
+            let read = items.read();
+            Ok(read
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect())
+        }
+        PyObjectPayload::FrozenSet(items) => Ok(items
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()),
+        _ => {
+            let items = arg.to_list()?;
+            let mut entries = Vec::with_capacity(items.len());
+            for item in items {
+                let key = item.to_hashable_key()?;
+                entries.push((key, item));
+            }
+            Ok(entries)
+        }
+    }
+}
+
+#[inline]
+fn check_key_error() -> PyResult<()> {
+    match take_pending_eq_error() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
 
 // ── UTF-16/32 decode helpers ──────────────────────────────────────
 
@@ -1215,7 +1255,9 @@ pub(crate) fn call_set_method(
                 let read = items.read();
                 let mut keys: Vec<HashableKey> = read.keys().cloned().collect();
                 keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
-                Ok(HashableKey::FrozenSet(Box::new(keys)))
+                Ok(HashableKey::FrozenSet(std::rc::Rc::new(
+                    ferrython_core::types::FrozenSetKeyData::new(keys),
+                )))
             }
             PyObjectPayload::Instance(inst) => {
                 let has_user_hash = if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -1240,64 +1282,83 @@ pub(crate) fn call_set_method(
     }
 
     match method {
-        "__init__" => Ok(PyObject::none()),
+        "__init__" => {
+            if args.len() > 1 {
+                return Err(PyException::type_error(format!(
+                    "set expected at most 1 argument, got {}",
+                    args.len()
+                )));
+            }
+            let mut guard = m.write();
+            guard.clear();
+            if let Some(arg) = args.first() {
+                for (key, value) in collect_hash_entries(arg)? {
+                    guard.entry(key).or_insert(value);
+                    check_key_error()?;
+                }
+            }
+            Ok(PyObject::none())
+        }
         "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
             let mut result = m.read().clone();
-            let other_list = args[0].to_list()?;
-            for item in other_list {
-                let hk = item.to_hashable_key()?;
-                result.entry(hk).or_insert(item);
+            for arg in args {
+                for (key, value) in collect_hash_entries(arg)? {
+                    result.entry(key).or_insert(value);
+                    check_key_error()?;
+                }
             }
             Ok(PyObject::set_from_flatmap(result))
         }
         "intersection" | "__and__" => {
-            check_args_min("intersection", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: FxHashKeyFlatMap = guard
-                .iter()
-                .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let mut result = guard.clone();
+            drop(guard);
+            for arg in args {
+                let entries = collect_hash_entries(arg)?;
+                result.retain(|key, _| entries.iter().any(|(other_key, _)| other_key == key));
+                check_key_error()?;
+                if result.is_empty() {
+                    break;
+                }
+            }
             Ok(PyObject::set_from_flatmap(result))
         }
         "difference" | "__sub__" => {
-            check_args_min("difference", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
-            let guard = m.read();
-            let result: FxHashKeyFlatMap = guard
-                .iter()
-                .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let mut result = m.read().clone();
+            for arg in args {
+                for (key, _) in collect_hash_entries(arg)? {
+                    result.remove(&key);
+                    check_key_error()?;
+                }
+            }
             Ok(PyObject::set_from_flatmap(result))
         }
         "symmetric_difference" | "__xor__" => {
             check_args_min("symmetric_difference", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let guard = m.read();
-            let self_keys: std::collections::HashSet<String> =
-                guard.values().map(|x| x.py_to_string()).collect();
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
-            let mut result = new_fx_hashkey_flatmap();
-            for (k, v) in guard.iter() {
-                if !other_keys.contains(&v.py_to_string()) {
-                    result.insert(k.clone(), v.clone());
-                }
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "symmetric_difference expected 1 argument, got {}",
+                    args.len()
+                )));
             }
-            for item in &other_items {
-                if !self_keys.contains(&item.py_to_string()) {
-                    if let Ok(hk) = item.to_hashable_key() {
-                        result.insert(hk, item.clone());
-                    }
+            let guard = m.read();
+            let mut result = new_fx_hashkey_flatmap();
+            for (key, value) in guard.iter() {
+                result.insert(key.clone(), value.clone());
+            }
+            drop(guard);
+            let mut other = new_fx_hashkey_flatmap();
+            for (key, value) in collect_hash_entries(&args[0])? {
+                other.entry(key).or_insert(value);
+                check_key_error()?;
+            }
+            for (key, value) in other {
+                if result.remove(&key).is_none() {
+                    result.insert(key, value);
                 }
+                check_key_error()?;
             }
             Ok(PyObject::set_from_flatmap(result))
         }
@@ -1339,12 +1400,15 @@ pub(crate) fn call_set_method(
             let hk = args[0].to_hashable_key()?;
             // Use entry API to avoid Rc::clone when key already exists
             m.write().entry(hk).or_insert_with(|| args[0].clone());
+            check_key_error()?;
             Ok(PyObject::none())
         }
         "remove" => {
             check_args_min("remove", args, 1)?;
             let hk = set_lookup_key(&args[0])?;
-            if m.write().remove(&hk).is_none() {
+            let removed = m.write().remove(&hk);
+            check_key_error()?;
+            if removed.is_none() {
                 return Err(PyException::key_error_value(args[0].clone()));
             }
             Ok(PyObject::none())
@@ -1353,6 +1417,7 @@ pub(crate) fn call_set_method(
             check_args_min("discard", args, 1)?;
             let hk = set_lookup_key(&args[0])?;
             m.write().remove(&hk);
+            check_key_error()?;
             Ok(PyObject::none())
         }
         "pop" => {
@@ -1372,70 +1437,64 @@ pub(crate) fn call_set_method(
             check_args_min("update", args, 1)?;
             let mut guard = m.write();
             for arg in args {
-                let items = arg.to_list()?;
-                for item in items {
-                    if let Ok(hk) = item.to_hashable_key() {
-                        guard.insert(hk, item);
-                    }
+                for (key, value) in collect_hash_entries(arg)? {
+                    guard.entry(key).or_insert(value);
+                    check_key_error()?;
                 }
             }
             Ok(PyObject::none())
         }
         "difference_update" => {
-            check_args_min("difference_update", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let remove_keys: Vec<HashableKey> = other_items
-                .iter()
-                .filter_map(|x| x.to_hashable_key().ok())
-                .collect();
             let mut guard = m.write();
-            for k in &remove_keys {
-                guard.remove(k);
+            for arg in args {
+                for (key, _) in collect_hash_entries(arg)? {
+                    guard.remove(&key);
+                    check_key_error()?;
+                }
             }
             Ok(PyObject::none())
         }
         "intersection_update" => {
             check_args_min("intersection_update", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
             let mut guard = m.write();
-            guard.retain(|_, v| other_keys.contains(&v.py_to_string()));
+            for arg in args {
+                let entries = collect_hash_entries(arg)?;
+                guard.retain(|key, _| entries.iter().any(|(other_key, _)| other_key == key));
+                check_key_error()?;
+                if guard.is_empty() {
+                    break;
+                }
+            }
             Ok(PyObject::none())
         }
         "symmetric_difference_update" => {
             check_args_min("symmetric_difference_update", args, 1)?;
-            let other_items = args[0].to_list()?;
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "symmetric_difference_update expected 1 argument, got {}",
+                    args.len()
+                )));
+            }
             let mut guard = m.write();
-            let self_keys: std::collections::HashSet<String> =
-                guard.values().map(|x| x.py_to_string()).collect();
-            // Remove items that are in both
-            let mut to_remove = Vec::new();
-            for item in &other_items {
-                let s = item.py_to_string();
-                if self_keys.contains(&s) {
-                    if let Ok(hk) = item.to_hashable_key() {
-                        to_remove.push(hk);
-                    }
-                }
+            let mut other = new_fx_hashkey_flatmap();
+            for (key, value) in collect_hash_entries(&args[0])? {
+                other.entry(key).or_insert(value);
+                check_key_error()?;
             }
-            for k in &to_remove {
-                guard.remove(k);
-            }
-            // Add items from other that weren't in self
-            for item in &other_items {
-                if !self_keys.contains(&item.py_to_string()) {
-                    if let Ok(hk) = item.to_hashable_key() {
-                        guard.insert(hk, item.clone());
-                    }
+            for (key, value) in other {
+                if guard.remove(&key).is_none() {
+                    guard.insert(key, value);
                 }
+                check_key_error()?;
             }
             Ok(PyObject::none())
         }
         "__contains__" => {
             check_args_min("set.__contains__", args, 1)?;
             let key = set_lookup_key(&args[0])?;
-            Ok(PyObject::bool_val(m.read().contains_key(&key)))
+            let contains = m.read().contains_key(&key);
+            check_key_error()?;
+            Ok(PyObject::bool_val(contains))
         }
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
         "__bool__" => Ok(PyObject::bool_val(!m.read().is_empty())),
@@ -1456,61 +1515,71 @@ pub(super) fn call_frozenset_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
-        "__init__" => Ok(PyObject::none()),
+        "__init__" => {
+            if args.len() > 1 {
+                return Err(PyException::type_error(format!(
+                    "frozenset expected at most 1 argument, got {}",
+                    args.len()
+                )));
+            }
+            Ok(PyObject::none())
+        }
         "copy" => Ok(PyObject::frozenset(m.clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
             let mut result = m.clone();
-            let other_list = args[0].to_list()?;
-            for item in other_list {
-                let hk = item.to_hashable_key()?;
-                result.entry(hk).or_insert(item);
+            for arg in args {
+                for (key, value) in collect_hash_entries(arg)? {
+                    result.entry(key).or_insert(value);
+                    check_key_error()?;
+                }
             }
             Ok(PyObject::frozenset(result))
         }
         "intersection" | "__and__" => {
-            check_args_min("intersection", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
-            let result: FxHashKeyMap = m
-                .iter()
-                .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let mut result = m.clone();
+            for arg in args {
+                let entries = collect_hash_entries(arg)?;
+                result.retain(|key, _| entries.iter().any(|(other_key, _)| other_key == key));
+                check_key_error()?;
+                if result.is_empty() {
+                    break;
+                }
+            }
             Ok(PyObject::frozenset(result))
         }
         "difference" | "__sub__" => {
-            check_args_min("difference", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
-            let result: FxHashKeyMap = m
-                .iter()
-                .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let mut result = m.clone();
+            for arg in args {
+                for (key, _) in collect_hash_entries(arg)? {
+                    result.remove(&key);
+                    check_key_error()?;
+                }
+            }
             Ok(PyObject::frozenset(result))
         }
         "symmetric_difference" | "__xor__" => {
             check_args_min("symmetric_difference", args, 1)?;
-            let other_items = args[0].to_list()?;
-            let self_keys: std::collections::HashSet<String> =
-                m.values().map(|x| x.py_to_string()).collect();
-            let other_keys: std::collections::HashSet<String> =
-                other_items.iter().map(|x| x.py_to_string()).collect();
-            let mut result = IndexMap::new();
-            for (k, v) in m.iter() {
-                if !other_keys.contains(&v.py_to_string()) {
-                    result.insert(k.clone(), v.clone());
-                }
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "symmetric_difference expected 1 argument, got {}",
+                    args.len()
+                )));
             }
-            for item in &other_items {
-                if !self_keys.contains(&item.py_to_string()) {
-                    if let Ok(hk) = item.to_hashable_key() {
-                        result.insert(hk, item.clone());
-                    }
+            let mut result = IndexMap::new();
+            for (key, value) in m.iter() {
+                result.insert(key.clone(), value.clone());
+            }
+            let mut other = new_fx_hashkey_map();
+            for (key, value) in collect_hash_entries(&args[0])? {
+                other.entry(key).or_insert(value);
+                check_key_error()?;
+            }
+            for (key, value) in other {
+                if result.remove(&key).is_none() {
+                    result.insert(key, value);
                 }
+                check_key_error()?;
             }
             Ok(PyObject::frozenset(result))
         }

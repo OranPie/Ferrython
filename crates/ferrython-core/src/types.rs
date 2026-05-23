@@ -9,18 +9,19 @@ use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
 /// The VM sets this before any dict/set operation that may compare Custom keys.
-type EqDispatchFn = Box<dyn FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool>>;
+type EqDispatchFn = Box<dyn FnMut(&PyObjectRef, &PyObjectRef) -> PyResult<Option<bool>>>;
 type HashDispatchFn = Box<dyn FnMut(&PyObjectRef) -> Option<i64>>;
 
 thread_local! {
     static EQ_DISPATCH: RefCell<Option<EqDispatchFn>> = RefCell::new(None);
     static HASH_DISPATCH: RefCell<Option<HashDispatchFn>> = RefCell::new(None);
+    static PENDING_EQ_ERROR: RefCell<Option<PyException>> = const { RefCell::new(None) };
     /// Cache of constant caches keyed by CodeObject pointer.
     /// Code objects live for the program's lifetime (they're compiled once),
     /// so their constant caches are safe to cache permanently.
@@ -29,7 +30,9 @@ thread_local! {
 }
 
 /// Install an __eq__ dispatch callback (called by VM before dict/set ops).
-pub fn set_eq_dispatch<F: FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool> + 'static>(f: F) {
+pub fn set_eq_dispatch<F: FnMut(&PyObjectRef, &PyObjectRef) -> PyResult<Option<bool>> + 'static>(
+    f: F,
+) {
     EQ_DISPATCH.with(|cell| {
         *cell.borrow_mut() = Some(Box::new(f));
     });
@@ -48,13 +51,25 @@ fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
         // Take the closure out to avoid re-entrant borrow panic
         let func = cell.borrow_mut().take();
         if let Some(mut f) = func {
-            let result = f(a, b);
+            let result = match f(a, b) {
+                Ok(result) => result,
+                Err(err) => {
+                    PENDING_EQ_ERROR.with(|pending| {
+                        *pending.borrow_mut() = Some(err);
+                    });
+                    None
+                }
+            };
             *cell.borrow_mut() = Some(f);
             result
         } else {
             None
         }
     })
+}
+
+pub fn take_pending_eq_error() -> Option<PyException> {
+    PENDING_EQ_ERROR.with(|pending| pending.borrow_mut().take())
 }
 
 /// Call the installed __hash__ dispatch, if any.
@@ -418,6 +433,52 @@ impl PyFunction {
 // ── HashableKey ──
 
 #[derive(Debug, Clone)]
+pub struct FrozenSetKeyData {
+    pub items: Vec<HashableKey>,
+    hash_cache: Cell<Option<u64>>,
+    py_hash_cache: Cell<Option<i64>>,
+}
+
+impl FrozenSetKeyData {
+    #[inline]
+    pub fn new(items: Vec<HashableKey>) -> Self {
+        Self {
+            items,
+            hash_cache: Cell::new(None),
+            py_hash_cache: Cell::new(None),
+        }
+    }
+
+    #[inline]
+    pub fn py_hash(&self) -> i64 {
+        if let Some(cached) = self.py_hash_cache.get() {
+            return cached;
+        }
+        let hash = hash_frozenset_keys(&self.items);
+        self.py_hash_cache.set(Some(hash));
+        hash
+    }
+}
+
+impl PartialEq for FrozenSetKeyData {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+    }
+}
+
+impl Eq for FrozenSetKeyData {}
+
+impl std::ops::Deref for FrozenSetKeyData {
+    type Target = [HashableKey];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum HashableKey {
     None,
     Bool(bool),
@@ -429,7 +490,7 @@ pub enum HashableKey {
     Str(Box<CompactString>),
     Bytes(Box<Vec<u8>>),
     Tuple(Box<Vec<HashableKey>>),
-    FrozenSet(Box<Vec<HashableKey>>),
+    FrozenSet(Rc<FrozenSetKeyData>),
     /// Identity-based key using the Arc pointer address, preserving the original object.
     Identity(usize, PyObjectRef),
     /// Custom hashable key for objects with __hash__/__eq__.
@@ -485,10 +546,10 @@ impl HashableKey {
                 }
                 // Sort by hash value for deterministic ordering without heap allocation
                 keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
-                Ok(HashableKey::FrozenSet(Box::new(keys)))
+                Ok(HashableKey::FrozenSet(Rc::new(FrozenSetKeyData::new(keys))))
             }
             PyObjectPayload::Ellipsis => Ok(HashableKey::str_key(CompactString::from("Ellipsis"))),
-            // Instance objects: use __hash__ if available via dispatch, else identity
+            // Instance objects: use __hash__ if available via dispatch, else identity.
             PyObjectPayload::Instance(_) => {
                 if let Some(hash_val) = call_hash_dispatch(obj) {
                     Ok(HashableKey::Custom {
@@ -570,10 +631,91 @@ impl HashableKey {
     /// Return a u64 hash for deterministic ordering (used by frozenset key sorting).
     #[inline]
     pub fn hash_key(&self) -> u64 {
+        if let HashableKey::FrozenSet(items) = self {
+            if let Some(cached) = items.hash_cache.get() {
+                return cached;
+            }
+        }
         use std::hash::{Hash, Hasher};
         let mut h = rustc_hash::FxHasher::default();
         self.hash(&mut h);
-        h.finish()
+        let result = h.finish();
+        if let HashableKey::FrozenSet(items) = self {
+            items.hash_cache.set(Some(result));
+        }
+        result
+    }
+}
+
+#[inline]
+fn shuffle_frozenset_hash_bits(h: u64) -> u64 {
+    ((h ^ 89_869_747) ^ (h << 16)).wrapping_mul(3_644_798_167)
+}
+
+#[inline]
+pub fn hash_frozenset_key_iter<'a, I>(items: I, len: usize) -> i64
+where
+    I: IntoIterator<Item = &'a HashableKey>,
+{
+    let mut hash = 0u64;
+    for item in items {
+        hash ^= shuffle_frozenset_hash_bits(hash_key_like_python(item) as u64);
+    }
+    hash ^= (len as u64 + 1).wrapping_mul(1_927_868_237);
+    hash ^= (hash >> 11) ^ (hash >> 25);
+    hash = hash.wrapping_mul(69_069).wrapping_add(907_133_923);
+    let result = hash as i64;
+    if result == -1 {
+        590_923_713
+    } else {
+        result
+    }
+}
+
+#[inline]
+pub fn hash_frozenset_keys(items: &[HashableKey]) -> i64 {
+    hash_frozenset_key_iter(items.iter(), items.len())
+}
+
+#[inline]
+pub fn hash_key_like_python(key: &HashableKey) -> i64 {
+    match key {
+        HashableKey::Int(n) => n.to_i64().unwrap_or(0),
+        HashableKey::Bool(b) => *b as i64,
+        HashableKey::Str(s) => {
+            let mut h: u64 = 5381;
+            for c in s.bytes() {
+                h = h.wrapping_mul(33).wrapping_add(c as u64);
+            }
+            h as i64
+        }
+        HashableKey::Float(f) => {
+            let fv = f.0;
+            if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
+                fv as i64
+            } else {
+                f.0.to_bits() as i64
+            }
+        }
+        HashableKey::None => 0,
+        HashableKey::Tuple(items) => {
+            let mut h: u64 = 0x345678;
+            let mult: u64 = 1_000_003;
+            for item in items.iter() {
+                h = h.wrapping_mul(mult) ^ (hash_key_like_python(item) as u64);
+            }
+            h as i64
+        }
+        HashableKey::FrozenSet(items) => items.py_hash(),
+        HashableKey::Bytes(b) => {
+            let mut h: u64 = 5381;
+            for x in b.iter() {
+                h = h.wrapping_mul(33).wrapping_add(*x as u64);
+            }
+            h as i64
+        }
+        HashableKey::Identity(ptr, _) => *ptr as i64,
+        HashableKey::Custom { hash_value, .. } => *hash_value,
     }
 }
 
@@ -625,10 +767,25 @@ impl PartialEq for HashableKey {
                 if ha != hb {
                     return false;
                 }
+                if PyObjectRef::ptr_eq(oa, ob) {
+                    return true;
+                }
                 if let Some(result) = call_eq_dispatch(oa, ob) {
                     return result;
                 }
-                PyObjectRef::ptr_eq(oa, ob)
+                false
+            }
+            (HashableKey::Custom { object, .. }, other) => {
+                if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
+                    return result;
+                }
+                false
+            }
+            (other, HashableKey::Custom { object, .. }) => {
+                if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
+                    return result;
+                }
+                false
             }
             _ => false,
         }
@@ -681,14 +838,21 @@ impl Hash for HashableKey {
             }
             HashableKey::FrozenSet(items) => {
                 6u8.hash(state);
-                items.hash(state);
+                if let Some(cached) = items.hash_cache.get() {
+                    cached.hash(state);
+                } else {
+                    let mut h = rustc_hash::FxHasher::default();
+                    items.items.hash(&mut h);
+                    let cached = h.finish();
+                    items.hash_cache.set(Some(cached));
+                    cached.hash(state);
+                }
             }
             HashableKey::Identity(ptr, _) => {
                 7u8.hash(state);
                 ptr.hash(state);
             }
             HashableKey::Custom { hash_value, .. } => {
-                8u8.hash(state);
                 hash_value.hash(state);
             }
         }
@@ -740,6 +904,9 @@ impl indexmap::Equivalent<HashableKey> for BorrowedIntKey {
         match key {
             HashableKey::Int(PyInt::Small(n)) => *n == self.0,
             HashableKey::Bool(b) => (*b as i64) == self.0,
+            HashableKey::Custom { object, .. } => {
+                call_eq_dispatch(object, &PyObject::int(self.0)).unwrap_or(false)
+            }
             _ => false,
         }
     }

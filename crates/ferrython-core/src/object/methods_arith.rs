@@ -251,7 +251,9 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
             let rb = b.read();
@@ -261,7 +263,9 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
             let ra = a.read();
@@ -1022,7 +1026,9 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
             let rb = b.read();
@@ -1032,7 +1038,9 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
             let ra = a.read();
@@ -1121,19 +1129,23 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             )))))
         }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
-            let mut result = a.clone();
+            let mut result = a.items.clone();
             for (k, v) in b.iter() {
                 result.insert(k.clone(), v.clone());
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
-            let mut result = a.clone();
+            let mut result = a.items.clone();
             let rb = b.read();
             for (k, v) in rb.iter() {
                 result.insert(k.clone(), v.clone());
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
             let ra = a.read();
@@ -1247,7 +1259,9 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
             let rb = b.read();
@@ -1262,7 +1276,9 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                     result.insert(k.clone(), v.clone());
                 }
             }
-            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
+            Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(
+                FrozenSetData::new(result),
+            ))))
         }
         (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
             let ra = a.read();

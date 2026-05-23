@@ -67,16 +67,28 @@ impl VirtualMachine {
         ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
             let vm = unsafe { &mut *vm_ptr };
             if let Some(eq_method) = a.get_attr("__eq__") {
-                if let Ok(result) = vm.call_object(eq_method, vec![b.clone()]) {
-                    return Some(result.is_truthy());
-                }
+                let result = vm.call_object(eq_method, vec![b.clone()])?;
+                return Ok(Some(result.is_truthy()));
             }
-            None
+            Ok(None)
         });
 
         let vm_ptr2 = self as *mut VirtualMachine;
         ferrython_core::types::set_hash_dispatch(move |obj: &PyObjectRef| {
             let vm = unsafe { &mut *vm_ptr2 };
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    if matches!(&value.payload, PyObjectPayload::FrozenSet(_)) {
+                        if let Ok(key) = value.to_hashable_key() {
+                            use std::collections::hash_map::DefaultHasher;
+                            use std::hash::{Hash, Hasher};
+                            let mut hasher = DefaultHasher::new();
+                            key.hash(&mut hasher);
+                            return Some(hasher.finish() as i64);
+                        }
+                    }
+                }
+            }
             if let Some(hash_method) = obj.get_attr("__hash__") {
                 if let Ok(result) = vm.call_object(hash_method, vec![]) {
                     return Some(result.as_int().unwrap_or(0));
@@ -735,6 +747,13 @@ impl VirtualMachine {
     /// Convert a Python object to a HashableKey, calling __hash__/__eq__ on instances.
     /// Dispatches are installed at VM init, so from_object will use them automatically.
     pub(crate) fn vm_to_hashable_key(&mut self, obj: &PyObjectRef) -> PyResult<HashableKey> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                if matches!(&value.payload, PyObjectPayload::FrozenSet(_)) {
+                    return value.to_hashable_key();
+                }
+            }
+        }
         obj.to_hashable_key()
     }
 

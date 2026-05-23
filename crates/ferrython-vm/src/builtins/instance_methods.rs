@@ -10,7 +10,7 @@ use ferrython_core::object::{
     check_args_min, new_fx_hashkey_map, CompareOp, FxHashKeyMap, InstanceData, NativeFunctionData,
     PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{hash_key_like_python, HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
@@ -230,63 +230,6 @@ pub(super) fn call_namedtuple_method(
             // Hash the stored tuple payload.
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
-                    fn hash_key_like_python(key: &HashableKey) -> i64 {
-                        match key {
-                            HashableKey::Int(n) => n.to_i64().unwrap_or(0),
-                            HashableKey::Bool(b) => *b as i64,
-                            HashableKey::Float(f) => f.0.to_bits() as i64,
-                            HashableKey::Str(s) => {
-                                let mut h: u64 = 5381;
-                                for c in s.bytes() {
-                                    h = h.wrapping_mul(33).wrapping_add(c as u64);
-                                }
-                                h as i64
-                            }
-                            HashableKey::None => 0,
-                            HashableKey::Bytes(b) => {
-                                let mut h: u64 = 5381;
-                                for x in b.iter() {
-                                    h = h.wrapping_mul(33).wrapping_add(*x as u64);
-                                }
-                                h as i64
-                            }
-                            HashableKey::Tuple(items) => {
-                                let mut h: u64 = 0x345678;
-                                let mult: u64 = 1_000_003;
-                                for item in items.iter() {
-                                    h = h.wrapping_mul(mult)
-                                        ^ hash_key_like_python(
-                                            &item
-                                                .to_object()
-                                                .to_hashable_key()
-                                                .unwrap_or(HashableKey::None),
-                                        ) as u64;
-                                }
-                                h as i64
-                            }
-                            HashableKey::FrozenSet(items) => {
-                                let mut h: u64 = 1927868237u64.wrapping_mul(items.len() as u64 + 1);
-                                for item in items.iter() {
-                                    let ih = hash_key_like_python(
-                                        &item
-                                            .to_object()
-                                            .to_hashable_key()
-                                            .unwrap_or(HashableKey::None),
-                                    ) as u64;
-                                    h ^= (ih ^ (ih << 16) ^ 89869747).wrapping_mul(3644798167);
-                                }
-                                h = h.wrapping_mul(69069).wrapping_add(907133923);
-                                let result = h as i64;
-                                if result == -1 {
-                                    590923713
-                                } else {
-                                    result
-                                }
-                            }
-                            HashableKey::Identity(ptr, _) => *ptr as i64,
-                            HashableKey::Custom { hash_value, .. } => *hash_value,
-                        }
-                    }
                     let mut h: u64 = 0x345678;
                     let mult: u64 = 1_000_003;
                     for item in items.iter() {

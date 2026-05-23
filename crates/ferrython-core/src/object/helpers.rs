@@ -2152,9 +2152,16 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if args.len() != 1 {
                 return Err(PyException::type_error("__hash__ takes 1 argument"));
             }
+            let value = unwrap_builtin_subclass(&args[0]);
+            if let PyObjectPayload::Int(n) = &value.payload {
+                return Ok(n.to_object());
+            }
+            if let PyObjectPayload::Bool(b) = &value.payload {
+                return Ok(PyObject::int(*b as i64));
+            }
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
-            let hk = args[0].to_hashable_key()?;
+            let hk = value.to_hashable_key()?;
             let mut hasher = DefaultHasher::new();
             hk.hash(&mut hasher);
             Ok(PyObject::int(hasher.finish() as i64))

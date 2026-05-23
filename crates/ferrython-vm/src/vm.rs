@@ -7689,7 +7689,7 @@ impl VirtualMachine {
                             if set.capacity() == 0 {
                                 set.reserve(16);
                             }
-                            set.insert(hk, item);
+                            set.entry(hk).or_insert(item);
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)

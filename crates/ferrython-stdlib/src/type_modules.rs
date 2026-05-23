@@ -2315,7 +2315,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                         PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(w))))
                     }
                     PyObjectPayload::FrozenSet(set) => {
-                        let mut w = (**set).clone();
+                        let mut w = set.items.clone();
                         for name in names {
                             w.remove(&HashableKey::str_key(CompactString::from(*name)));
                         }

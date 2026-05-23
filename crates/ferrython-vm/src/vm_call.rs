@@ -1092,26 +1092,47 @@ impl VirtualMachine {
                                         }
                                     }
                                     "set" => {
-                                        let mut map = new_fx_hashkey_flatmap();
-                                        for item in
-                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
-                                        {
-                                            if let Ok(key) = item.to_hashable_key() {
-                                                map.insert(key, item);
+                                        if let PyObjectPayload::Dict(items) = &pos_args[0].payload {
+                                            let read = items.read();
+                                            let mut map = new_fx_hashkey_flatmap();
+                                            map.reserve(read.len());
+                                            for key in read.keys() {
+                                                map.insert(key.clone(), key.to_object());
                                             }
+                                            Some(PyObject::set_from_flatmap(map))
+                                        } else {
+                                            let mut map = new_fx_hashkey_flatmap();
+                                            for item in self
+                                                .collect_iterable(&pos_args[0])
+                                                .unwrap_or_default()
+                                            {
+                                                if let Ok(key) = item.to_hashable_key() {
+                                                    map.insert(key, item);
+                                                }
+                                            }
+                                            Some(PyObject::set_from_flatmap(map))
                                         }
-                                        Some(PyObject::set_from_flatmap(map))
                                     }
                                     "frozenset" => {
-                                        let mut map = new_fx_hashkey_map();
-                                        for item in
-                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
-                                        {
-                                            if let Ok(key) = item.to_hashable_key() {
-                                                map.insert(key, item);
+                                        if let PyObjectPayload::Dict(items) = &pos_args[0].payload {
+                                            let read = items.read();
+                                            let mut map = new_fx_hashkey_map();
+                                            for key in read.keys() {
+                                                map.insert(key.clone(), key.to_object());
                                             }
+                                            Some(PyObject::frozenset(map))
+                                        } else {
+                                            let mut map = new_fx_hashkey_map();
+                                            for item in self
+                                                .collect_iterable(&pos_args[0])
+                                                .unwrap_or_default()
+                                            {
+                                                if let Ok(key) = item.to_hashable_key() {
+                                                    map.insert(key, item);
+                                                }
+                                            }
+                                            Some(PyObject::frozenset(map))
                                         }
-                                        Some(PyObject::frozenset(map))
                                     }
                                     "bytes" => Some(pos_args[0].clone()),
                                     "bytearray" => Some(pos_args[0].clone()),
@@ -1217,26 +1238,45 @@ impl VirtualMachine {
                                     }
                                 }
                                 "set" => {
-                                    let mut map = new_fx_hashkey_flatmap();
-                                    for item in
-                                        self.collect_iterable(&pos_args[0]).unwrap_or_default()
-                                    {
-                                        if let Ok(key) = item.to_hashable_key() {
-                                            map.insert(key, item);
+                                    if let PyObjectPayload::Dict(items) = &pos_args[0].payload {
+                                        let read = items.read();
+                                        let mut map = new_fx_hashkey_flatmap();
+                                        map.reserve(read.len());
+                                        for key in read.keys() {
+                                            map.insert(key.clone(), key.to_object());
                                         }
+                                        Some(PyObject::set_from_flatmap(map))
+                                    } else {
+                                        let mut map = new_fx_hashkey_flatmap();
+                                        for item in
+                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                        {
+                                            if let Ok(key) = item.to_hashable_key() {
+                                                map.insert(key, item);
+                                            }
+                                        }
+                                        Some(PyObject::set_from_flatmap(map))
                                     }
-                                    Some(PyObject::set_from_flatmap(map))
                                 }
                                 "frozenset" => {
-                                    let mut map = new_fx_hashkey_map();
-                                    for item in
-                                        self.collect_iterable(&pos_args[0]).unwrap_or_default()
-                                    {
-                                        if let Ok(key) = item.to_hashable_key() {
-                                            map.insert(key, item);
+                                    if let PyObjectPayload::Dict(items) = &pos_args[0].payload {
+                                        let read = items.read();
+                                        let mut map = new_fx_hashkey_map();
+                                        for key in read.keys() {
+                                            map.insert(key.clone(), key.to_object());
                                         }
+                                        Some(PyObject::frozenset(map))
+                                    } else {
+                                        let mut map = new_fx_hashkey_map();
+                                        for item in
+                                            self.collect_iterable(&pos_args[0]).unwrap_or_default()
+                                        {
+                                            if let Ok(key) = item.to_hashable_key() {
+                                                map.insert(key, item);
+                                            }
+                                        }
+                                        Some(PyObject::frozenset(map))
                                     }
-                                    Some(PyObject::frozenset(map))
                                 }
                                 "bytes" | "bytearray" => Some(pos_args[0].clone()),
                                 "complex" => {
@@ -1900,6 +1940,16 @@ impl VirtualMachine {
                                 return self.call_object(func, resolved);
                             }
                             _ => {
+                                if matches!(
+                                    &bbm.receiver.payload,
+                                    PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                                ) && bbm.method_name.as_str() == "__init__"
+                                {
+                                    return Err(PyException::type_error(format!(
+                                        "{}() takes no keyword arguments",
+                                        bbm.method_name
+                                    )));
+                                }
                                 // Generic fallback: pass kwargs as trailing dict
                                 let mut all_args = pos_args;
                                 let mut kw_map = IndexMap::new();
@@ -3330,15 +3380,38 @@ impl VirtualMachine {
                         }
                     }
                     "set" => {
+                        if args.len() > 1 {
+                            return builtins::dispatch("set", &args);
+                        }
                         if args.is_empty() {
                             return builtins::dispatch("set", &[]);
+                        }
+                        if let PyObjectPayload::Dict(items) = &args[0].payload {
+                            let read = items.read();
+                            let mut map = new_fx_hashkey_flatmap();
+                            map.reserve(read.len());
+                            for key in read.keys() {
+                                map.insert(key.clone(), key.to_object());
+                            }
+                            return Ok(PyObject::set_from_flatmap(map));
                         }
                         let items = self.collect_iterable(&args[0])?;
                         return builtins::dispatch("set", &[PyObject::list(items)]);
                     }
                     "frozenset" => {
+                        if args.len() > 1 {
+                            return builtins::dispatch("frozenset", &args);
+                        }
                         if args.is_empty() {
                             return builtins::dispatch("frozenset", &[]);
+                        }
+                        if let PyObjectPayload::Dict(items) = &args[0].payload {
+                            let read = items.read();
+                            let mut map = new_fx_hashkey_map();
+                            for key in read.keys() {
+                                map.insert(key.clone(), key.to_object());
+                            }
+                            return Ok(PyObject::frozenset(map));
                         }
                         let items = self.collect_iterable(&args[0])?;
                         return builtins::dispatch("frozenset", &[PyObject::list(items)]);

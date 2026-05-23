@@ -2,7 +2,7 @@
 
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
-use crate::types::HashableKey;
+use crate::types::{take_pending_eq_error, FrozenSetKeyData, HashableKey};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use std::rc::Rc;
@@ -41,7 +41,7 @@ fn set_membership_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
             let read = items.read();
             let mut keys: Vec<HashableKey> = read.keys().cloned().collect();
             keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
-            Ok(HashableKey::FrozenSet(Box::new(keys)))
+            Ok(HashableKey::FrozenSet(Rc::new(FrozenSetKeyData::new(keys))))
         }
         PyObjectPayload::Instance(inst) => {
             let has_user_hash = if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -454,11 +454,19 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
         }
         PyObjectPayload::Set(m) => {
             let hk = set_membership_key(item)?;
-            Ok(m.read().contains_key(&hk))
+            let contains = m.read().contains_key(&hk);
+            if let Some(err) = take_pending_eq_error() {
+                return Err(err);
+            }
+            Ok(contains)
         }
         PyObjectPayload::FrozenSet(m) => {
             let hk = set_membership_key(item)?;
-            Ok(m.contains_key(&hk))
+            let contains = m.contains_key(&hk);
+            if let Some(err) = take_pending_eq_error() {
+                return Err(err);
+            }
+            Ok(contains)
         }
         PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
             let hk = item.to_hashable_key()?;

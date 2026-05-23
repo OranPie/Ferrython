@@ -1041,7 +1041,7 @@ impl PyObject {
         items: IndexMap<HashableKey, PyObjectRef, S>,
     ) -> PyObjectRef {
         let fx: FxHashKeyMap = items.into_iter().collect();
-        Self::wrap(PyObjectPayload::FrozenSet(Box::new(fx)))
+        Self::wrap(PyObjectPayload::FrozenSet(Box::new(FrozenSetData::new(fx))))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Range(Box::new(RangeData {

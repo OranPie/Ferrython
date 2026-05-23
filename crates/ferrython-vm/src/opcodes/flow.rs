@@ -326,9 +326,8 @@ impl VirtualMachine {
                 let _ = frame;
                 let mut set = IndexMap::new();
                 for item in stack_items {
-                    if let Ok(key) = self.vm_to_hashable_key(&item) {
-                        set.insert(key, item);
-                    }
+                    let key = self.vm_to_hashable_key(&item)?;
+                    set.entry(key).or_insert(item);
                 }
                 self.vm_frame().push(PyObject::set(set));
             }
@@ -420,9 +419,8 @@ impl VirtualMachine {
                 let set_obj = frame.stack[stack_pos].clone();
                 let _ = frame;
                 if let PyObjectPayload::Set(s) = &set_obj.payload {
-                    if let Ok(key) = self.vm_to_hashable_key(&item) {
-                        s.write().insert(key, item);
-                    }
+                    let key = self.vm_to_hashable_key(&item)?;
+                    s.write().entry(key).or_insert(item);
                 }
                 // frame not needed after this
             }

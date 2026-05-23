@@ -2,7 +2,7 @@
 
 use crate::error::{ExceptionKind, PyResult};
 use crate::object::methods::PyObjectMethods;
-use crate::types::{HashableKey, PyFunction, PyInt};
+use crate::types::{hash_frozenset_key_iter, HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
@@ -125,6 +125,41 @@ pub fn new_fx_hashkey_flatmap_with_capacity(cap: usize) -> FxHashKeyFlatMap {
 #[inline]
 pub fn to_fx_hashkey_map(map: IndexMap<HashableKey, PyObjectRef>) -> FxHashKeyMap {
     map.into_iter().collect()
+}
+
+#[derive(Clone)]
+pub struct FrozenSetData {
+    pub items: FxHashKeyMap,
+    pub hash_cache: Cell<Option<i64>>,
+}
+
+impl FrozenSetData {
+    #[inline]
+    pub fn new(items: FxHashKeyMap) -> Self {
+        Self {
+            items,
+            hash_cache: Cell::new(None),
+        }
+    }
+
+    #[inline]
+    pub fn py_hash(&self) -> i64 {
+        if let Some(cached) = self.hash_cache.get() {
+            return cached;
+        }
+        let hash = hash_frozenset_key_iter(self.items.keys(), self.items.len());
+        self.hash_cache.set(Some(hash));
+        hash
+    }
+}
+
+impl std::ops::Deref for FrozenSetData {
+    type Target = FxHashKeyMap;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
 }
 
 /// Shared attribute map behind Rc<PyCell> — used by InstanceData and InstanceDict.
@@ -1025,7 +1060,7 @@ pub enum PyObjectPayload {
     List(Box<PyCell<Vec<PyObjectRef>>>),
     Tuple(Box<Vec<PyObjectRef>>),
     Set(Rc<PyCell<FxHashKeyFlatMap>>),
-    FrozenSet(Box<FxHashKeyMap>),
+    FrozenSet(Box<FrozenSetData>),
     Dict(Rc<PyCell<FxHashKeyMap>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
     InstanceDict(SharedFxAttrMap),

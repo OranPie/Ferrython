@@ -1334,16 +1334,35 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 "fromkeys() requires at least 1 argument",
                             ));
                         }
-                        let keys = args[0].to_list()?;
                         let value = if args.len() >= 2 {
                             args[1].clone()
                         } else {
                             PyObject::none()
                         };
                         let mut map = new_fx_hashkey_map();
-                        for k in keys {
-                            let dk = HashableKey::from_object(&k)?;
-                            map.insert(dk, value.clone());
+                        match &args[0].payload {
+                            PyObjectPayload::Dict(keys) => {
+                                for key in keys.read().keys() {
+                                    map.insert(key.clone(), value.clone());
+                                }
+                            }
+                            PyObjectPayload::Set(keys) => {
+                                for key in keys.read().keys() {
+                                    map.insert(key.clone(), value.clone());
+                                }
+                            }
+                            PyObjectPayload::FrozenSet(keys) => {
+                                for key in keys.keys() {
+                                    map.insert(key.clone(), value.clone());
+                                }
+                            }
+                            _ => {
+                                let keys = args[0].to_list()?;
+                                for k in keys {
+                                    let dk = HashableKey::from_object(&k)?;
+                                    map.insert(dk, value.clone());
+                                }
+                            }
                         }
                         Ok(PyObject::dict(map))
                     }))

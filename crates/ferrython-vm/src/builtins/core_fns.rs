@@ -4,10 +4,10 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, guard_eager_allocation, guarded_push, lookup_in_class_mro,
-    new_fx_hashkey_map, FxAttrMap, FxHashKeyMap, IteratorData, PropertyData, PyCell, PyObject,
-    PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize,
+    new_fx_hashkey_flatmap, new_fx_hashkey_map, FxAttrMap, FxHashKeyMap, IteratorData,
+    PropertyData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{hash_key_like_python, take_pending_eq_error, HashableKey, PyInt};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
@@ -695,69 +695,11 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
+    if let PyObjectPayload::FrozenSet(items) = &args[0].payload {
+        return Ok(PyObject::int(items.py_hash()));
+    }
     let key = args[0].to_hashable_key()?;
-    let h = match key {
-        HashableKey::Int(n) => n.to_i64().unwrap_or(0),
-        HashableKey::Bool(b) => b as i64,
-        HashableKey::Str(ref s) => {
-            let mut h: u64 = 5381;
-            for c in s.bytes() {
-                h = h.wrapping_mul(33).wrapping_add(c as u64);
-            }
-            h as i64
-        }
-        HashableKey::Float(f) => {
-            // Match hash consistency: integer-valued floats hash like their int
-            let fv = f.0;
-            if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
-                fv as i64
-            } else {
-                f.0.to_bits() as i64
-            }
-        }
-        HashableKey::None => 0,
-        HashableKey::Tuple(items) => {
-            // CPython tuple hash: xxHash-based mixing
-            let mut h: u64 = 0x345678;
-            let mult: u64 = 1000003;
-            for item in items.iter() {
-                let item_hash = builtin_hash(&[item.to_object()])
-                    .map(|v| v.as_int().unwrap_or(0) as u64)
-                    .unwrap_or(0);
-                h = h.wrapping_mul(mult) ^ item_hash;
-            }
-            h as i64
-        }
-        HashableKey::FrozenSet(items) => {
-            // CPython frozenset hash algorithm (order-independent, collision-resistant)
-            let mask: u64 = u64::MAX;
-            let n = items.len() as u64;
-            let mut h: u64 = 1927868237u64.wrapping_mul(n.wrapping_add(1)) & mask;
-            for item in items.iter() {
-                let hx = builtin_hash(&[item.to_object()])
-                    .map(|v| v.as_int().unwrap_or(0) as u64)
-                    .unwrap_or(0);
-                h ^= (hx ^ (hx << 16) ^ 89869747).wrapping_mul(3644798167) & mask;
-            }
-            h = h.wrapping_mul(69069).wrapping_add(907133923) & mask;
-            let result = h as i64;
-            if result == -1 {
-                590923713
-            } else {
-                result
-            }
-        }
-        HashableKey::Bytes(b) => {
-            let mut h: u64 = 5381;
-            for x in b.iter() {
-                h = h.wrapping_mul(33).wrapping_add(*x as u64);
-            }
-            h as i64
-        }
-        HashableKey::Identity(ptr, _) => ptr as i64,
-        HashableKey::Custom { hash_value, .. } => hash_value,
-    };
-    Ok(PyObject::int(h))
+    Ok(PyObject::int(hash_key_like_python(&key)))
 }
 
 pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1846,28 +1788,89 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() > 1 {
+        return Err(PyException::type_error(format!(
+            "set expected at most 1 argument, got {}",
+            args.len()
+        )));
+    }
     if args.is_empty() {
         return Ok(PyObject::set(new_fx_hashkey_map()));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Dict(items) => {
+            let read = items.read();
+            let mut set = new_fx_hashkey_flatmap();
+            set.reserve(read.len());
+            for key in read.keys() {
+                set.insert(key.clone(), key.to_object());
+            }
+            return Ok(PyObject::set_from_flatmap(set));
+        }
+        PyObjectPayload::Set(items) => {
+            return Ok(PyObject::set_from_flatmap(items.read().clone()));
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            let mut set = new_fx_hashkey_flatmap();
+            set.reserve(items.len());
+            for (key, value) in items.iter() {
+                set.insert(key.clone(), value.clone());
+            }
+            return Ok(PyObject::set_from_flatmap(set));
+        }
+        _ => {}
     }
     let items = args[0].to_list()?;
     let mut set = IndexMap::new();
     for item in items {
-        if let Ok(key) = item.to_hashable_key() {
-            set.insert(key, item);
+        let key = item.to_hashable_key()?;
+        set.entry(key).or_insert(item);
+        if let Some(err) = take_pending_eq_error() {
+            return Err(err);
         }
     }
     Ok(PyObject::set(set))
 }
 
 pub(super) fn builtin_frozenset(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() > 1 {
+        return Err(PyException::type_error(format!(
+            "frozenset expected at most 1 argument, got {}",
+            args.len()
+        )));
+    }
     if args.is_empty() {
         return Ok(PyObject::frozenset(new_fx_hashkey_map()));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Dict(items) => {
+            let read = items.read();
+            let mut set = new_fx_hashkey_map();
+            for key in read.keys() {
+                set.insert(key.clone(), key.to_object());
+            }
+            return Ok(PyObject::frozenset(set));
+        }
+        PyObjectPayload::Set(items) => {
+            let read = items.read();
+            let mut set = new_fx_hashkey_map();
+            for (key, value) in read.iter() {
+                set.insert(key.clone(), value.clone());
+            }
+            return Ok(PyObject::frozenset(set));
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            return Ok(PyObject::frozenset(items.items.clone()));
+        }
+        _ => {}
     }
     let items = args[0].to_list()?;
     let mut set = IndexMap::new();
     for item in items {
-        if let Ok(key) = item.to_hashable_key() {
-            set.insert(key, item);
+        let key = item.to_hashable_key()?;
+        set.entry(key).or_insert(item);
+        if let Some(err) = take_pending_eq_error() {
+            return Err(err);
         }
     }
     Ok(PyObject::frozenset(set))
@@ -2720,6 +2723,11 @@ pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         PyObjectPayload::Set(items) => {
             for (item, _) in items.read().iter() {
                 map.insert(item.clone(), value.clone());
+            }
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            for key in items.keys() {
+                map.insert(key.clone(), value.clone());
             }
         }
         PyObjectPayload::Str(s) => {

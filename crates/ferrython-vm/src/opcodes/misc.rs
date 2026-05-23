@@ -9,7 +9,7 @@ use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    new_fx_hashkey_map, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
 
@@ -283,6 +283,59 @@ impl VirtualMachine {
                         let frame = self.vm_frame();
                         frame.pop();
                         frame.push(PyObject::none());
+                    }
+                } else if let PyObjectPayload::Iterator(ref iter_data_arc) = sub_iter.payload {
+                    let needs_vm = {
+                        let data = iter_data_arc.read();
+                        matches!(
+                            &*data,
+                            IteratorData::Enumerate { .. }
+                                | IteratorData::Zip { .. }
+                                | IteratorData::Map { .. }
+                                | IteratorData::Filter { .. }
+                                | IteratorData::FilterFalse { .. }
+                                | IteratorData::Sentinel { .. }
+                                | IteratorData::TakeWhile { .. }
+                                | IteratorData::DropWhile { .. }
+                                | IteratorData::Count { .. }
+                                | IteratorData::Cycle { .. }
+                                | IteratorData::Repeat { .. }
+                                | IteratorData::Chain { .. }
+                                | IteratorData::SeqIter { .. }
+                                | IteratorData::Starmap { .. }
+                                | IteratorData::Tee { .. }
+                        )
+                    };
+                    if needs_vm {
+                        match self.advance_lazy_iterator(&sub_iter) {
+                            Ok(Some(val)) => {
+                                let frame = self.vm_frame();
+                                frame.yielded = true;
+                                frame.ip -= 1;
+                                return Ok(Some(val));
+                            }
+                            Ok(None) => {
+                                let frame = self.vm_frame();
+                                frame.pop();
+                                frame.push(PyObject::none());
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        let frame = self.vm_frame();
+                        match builtins::iter_advance(&sub_iter)? {
+                            Some((new_iter, value)) => {
+                                frame.pop();
+                                frame.push(new_iter);
+                                frame.yielded = true;
+                                frame.ip -= 1;
+                                return Ok(Some(value));
+                            }
+                            None => {
+                                frame.pop();
+                                frame.push(PyObject::none());
+                            }
+                        }
                     }
                 } else {
                     let frame = self.vm_frame();
