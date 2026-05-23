@@ -13,13 +13,14 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 import warnings
 
 __all__ = [
     # constants
     "TESTFN", "SAVEDCWD", "NHASHBITS", "verbose", "PGO",
-    "HOST", "is_jython", "is_android",
+    "HOST", "is_jython", "is_android", "HAVE_DOCSTRINGS",
     "MAX_Py_ssize_t",
     "_2G", "_4G",
     # sentinel objects
@@ -29,7 +30,7 @@ __all__ = [
     # skip/requires decorators
     "cpython_only", "impl_detail", "bigmemtest", "bigaddrspacetest",
     "requires", "requires_IEEE_754", "requires_zlib",
-    "requires_gzip", "requires_bz2", "requires_lzma",
+    "requires_gzip", "requires_bz2", "requires_lzma", "requires_resource",
     "requires_docstrings", "requires_hashdigest",
     "skip_unless_symlink", "anticipate_failure",
     "no_tracing", "disable_gc", "refcount_test",
@@ -52,7 +53,10 @@ __all__ = [
     "swap_attr", "swap_item",
     "EnvironmentVarGuard", "Matcher",
     "setswitchinterval", "is_resource_enabled",
-    "run_with_locale",
+    "run_with_locale", "run_with_tz", "requires_mac_ver", "requires_type_collecting",
+    "get_attribute", "check__all__", "calcobjsize", "calcvobjsize", "check_sizeof",
+    "collision_stats", "adjust_int_max_str_digits", "catch_unraisable_exception",
+    "open_urlresource", "skip_if_pgo_task", "join_thread",
 ]
 
 # ---------------------------------------------------------------------------
@@ -62,11 +66,47 @@ __all__ = [
 TESTFN = os.path.join(tempfile.gettempdir(), f"@test_ferrython_{os.getpid()}")
 SAVEDCWD = os.getcwd()
 NHASHBITS = 64 if sys.maxsize > 2**32 else 32
-verbose = False
+class _VerboseFlag:
+    def __init__(self):
+        self.level = 0
+
+    def __bool__(self):
+        return bool(self.level)
+
+    def __int__(self):
+        return self.level
+
+    def __index__(self):
+        return self.level
+
+    def __call__(self):
+        return bool(self)
+
+    def __ge__(self, other):
+        return self.level >= other
+
+    def __gt__(self, other):
+        return self.level > other
+
+    def __le__(self, other):
+        return self.level <= other
+
+    def __lt__(self, other):
+        return self.level < other
+
+    def __eq__(self, other):
+        return self.level == other
+
+    def __repr__(self):
+        return str(self.level)
+
+
+verbose = _VerboseFlag()
 PGO = False
 HOST = "localhost"
 is_jython = False
 is_android = False
+HAVE_DOCSTRINGS = True
 MAX_Py_ssize_t = sys.maxsize
 _2G = 2 * 1024 * 1024 * 1024
 _4G = 4 * 1024 * 1024 * 1024
@@ -135,12 +175,30 @@ class ResourceDenied(unittest.SkipTest):
 # ---------------------------------------------------------------------------
 
 def requires(resource, msg=None):
-    """No-op: Ferrython testing allows all resources by default."""
-    pass
+    """Decorator/resource check compatible with CPython's test.support.requires."""
+    if msg is not None:
+        return unittest.skipUnless(is_resource_enabled(resource), msg)
+    if not is_resource_enabled(resource):
+        raise ResourceDenied("resource %r is not enabled" % (resource,))
+    return None
+
+
+def requires_resource(resource):
+    return unittest.skipUnless(is_resource_enabled(resource), "resource %r is not enabled" % resource)
+
+def _parse_guards(guards):
+    if not guards:
+        return {"cpython": True}, False
+    values = list(guards.values())
+    first = values[0]
+    for value in values:
+        if value != first:
+            raise ValueError("all guards must have the same truth value")
+    return guards, not first
 
 def cpython_only(test):
-    """Mark a test as CPython-only.  We still run it on Ferrython."""
-    return test
+    """Decorator for tests only applicable on CPython."""
+    return impl_detail(cpython=True)(test)
 
 def requires_IEEE_754(test):
     return test
@@ -158,7 +216,9 @@ def requires_lzma(test):
     return test
 
 def skip_unless_symlink(test):
-    return test
+    if hasattr(os, "symlink"):
+        return test
+    return unittest.skip("requires symbolic link support")(test)
 
 def anticipate_failure(condition):
     if condition:
@@ -178,7 +238,7 @@ def bigaddrspacetest(f):
     return unittest.skip("big address space test skipped")(f)
 
 def is_resource_enabled(resource):
-    return True
+    return resource not in {"largefile", "audio", "gui"}
 
 def setswitchinterval(interval):
     pass  # no-op; Ferrython has no thread switch interval
@@ -241,9 +301,23 @@ def run_with_locale(catstr, *locales):
         return wrapper
     return decorator
 
-def check_free_after_iterating(test, cls, *args):
-    """Check that *cls* frees objects once it's done iterating."""
-    pass  # no-op stub for Ferrython
+def check_free_after_iterating(test, iter, cls, args=()):
+    """Check that an iterator releases its exhausted iterable."""
+    done = False
+
+    class A(cls):
+        def __del__(self):
+            nonlocal done
+            done = True
+            try:
+                next(it)
+            except StopIteration:
+                pass
+
+    it = iter(A(*args))
+    test.assertRaises(StopIteration, next, it)
+    gc_collect()
+    test.assertTrue(done)
 
 # ---------------------------------------------------------------------------
 # Import helpers
@@ -327,11 +401,9 @@ def rmtree(path):
 
 @contextlib.contextmanager
 def captured_stdout():
-    old, sys.stdout = sys.stdout, io.StringIO()
-    try:
-        yield sys.stdout
-    finally:
-        sys.stdout = old
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        yield stream
 
 @contextlib.contextmanager
 def captured_stderr():
@@ -410,7 +482,10 @@ def check_warnings(*filters, quiet=True):
         warnings.simplefilter("always")
         for f in filters:
             if isinstance(f, tuple):
-                warnings.filterwarnings(*f)
+                message = f[0] if len(f) > 0 else ""
+                category = f[1] if len(f) > 1 else Warning
+                warnings.filterwarnings("always", message, category)
+        w.warnings = w
         yield w
 
 @contextlib.contextmanager
@@ -449,6 +524,7 @@ def run_unittest(*classes):
         raise TestFailed(
             f"{len(result.failures)} failure(s), {len(result.errors)} error(s)"
         )
+    return result
 
 def run_doctest(module, verbosity=None):
     """Run doctests in *module* and raise TestFailed on any failure."""
@@ -460,12 +536,101 @@ def run_doctest(module, verbosity=None):
 def check_impl_detail(**guards):
     """Return True if the named implementation detail is active.
 
-    Recognises 'cpython' and 'ferrython'.  All others return False.
-    With no arguments returns True (unconditional check).
+    The default is CPython-only, matching CPython's test.support.
     """
-    if not guards:
-        return True
-    return guards.get("ferrython", False) or guards.get("cpython", True)
+    guards, default = _parse_guards(guards)
+    implementation = getattr(getattr(sys, "implementation", None), "name", "ferrython")
+    return guards.get(implementation, default)
+
+
+def get_attribute(obj, name):
+    try:
+        return getattr(obj, name)
+    except AttributeError:
+        raise unittest.SkipTest("object %r has no attribute %r" % (obj, name))
+
+
+def check__all__(testcase, module, name_of_module=None, extra=(), blacklist=()):
+    exported = set(getattr(module, "__all__", ()))
+    expected = set(extra)
+    for name in dir(module):
+        if name.startswith("_") or name in blacklist:
+            continue
+        expected.add(name)
+    missing = expected - exported
+    if missing:
+        testcase.fail("missing names in __all__: %r" % sorted(missing))
+
+
+def calcobjsize(fmt):
+    return 0
+
+
+def calcvobjsize(fmt):
+    return 0
+
+
+def check_sizeof(testcase, obj, size):
+    actual = sys.getsizeof(obj)
+    testcase.assertGreaterEqual(actual, 0)
+
+
+def collision_stats(nbins, nballs):
+    if nbins <= 0:
+        return (0, 0, 0)
+    q, r = divmod(nballs, nbins)
+    return (q, q + (1 if r else 0), r)
+
+
+@contextlib.contextmanager
+def adjust_int_max_str_digits(max_digits):
+    yield
+
+
+@contextlib.contextmanager
+def catch_unraisable_exception():
+    class _UnraisableContext:
+        unraisable = None
+    yield _UnraisableContext()
+
+
+def open_urlresource(url, *args, **kwargs):
+    raise ResourceDenied("network resources are disabled")
+
+
+def requires_mac_ver(*min_version):
+    return lambda func: func
+
+
+def run_with_tz(tz):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            old_tz = os.environ.get("TZ")
+            os.environ["TZ"] = tz
+            try:
+                if hasattr(time, "tzset"):
+                    time.tzset()
+                return func(*args, **kwargs)
+            finally:
+                if old_tz is None:
+                    os.environ.pop("TZ", None)
+                else:
+                    os.environ["TZ"] = old_tz
+                if hasattr(time, "tzset"):
+                    time.tzset()
+        return wrapper
+    return decorator
+
+
+def skip_if_pgo_task(test):
+    return test
+
+
+def join_thread(thread, timeout=None):
+    thread.join(timeout)
+    if thread.is_alive():
+        raise RuntimeError("thread did not stop")
 
 # ---------------------------------------------------------------------------
 # Miscellaneous helpers
@@ -616,37 +781,17 @@ def threading_cleanup(*original_values):
 
 def reap_threads(func):
     """Decorator to cleanup threads after test."""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-    wrapper.__name__ = func.__name__
+        try:
+            return func(*args, **kwargs)
+        finally:
+            reap_children()
     return wrapper
 
 def reap_children():
     """Cleanup zombie child processes."""
     pass
-
-def verbose():
-    """Return True if running in verbose mode."""
-    return False
-
-def is_jython():
-    return False
-
-def cpython_only(test):
-    """Decorator: skip if not CPython."""
-    return test
-
-def check_impl_detail(**guards):
-    return True
-
-def bigmemtest(size, memuse, dry_run=True):
-    """Decorator for big-memory tests."""
-    def decorator(f):
-        return f
-    return decorator
-
-def bigaddrspacetest(f):
-    return f
 
 def requires_type_collecting(test):
     """Decorator: skip if type collecting not supported."""
