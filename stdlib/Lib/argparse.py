@@ -2082,6 +2082,10 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
         return [arg_line]
 
     def _match_argument(self, action, arg_strings_pattern):
+        arg_count = self._match_nargs_count(action, arg_strings_pattern)
+        if arg_count is not None:
+            return arg_count
+
         # match the pattern for this action to the arg strings
         nargs_pattern = self._get_nargs_pattern(action)
         match = _re.match(nargs_pattern, arg_strings_pattern)
@@ -2103,12 +2107,110 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
         # return the number of arguments matched
         return len(match.group(1))
 
+    def _match_nargs_count(self, action, arg_strings_pattern):
+        nargs = action.nargs
+        length = len(arg_strings_pattern)
+
+        if action.option_strings:
+            if nargs is None:
+                return 1 if length >= 1 and arg_strings_pattern[0] == 'A' else None
+            elif nargs == OPTIONAL:
+                return 1 if length >= 1 and arg_strings_pattern[0] == 'A' else 0
+            elif nargs == ZERO_OR_MORE:
+                count = 0
+                while count < length and arg_strings_pattern[count] == 'A':
+                    count += 1
+                return count
+            elif nargs == ONE_OR_MORE:
+                count = 0
+                while count < length and arg_strings_pattern[count] == 'A':
+                    count += 1
+                return count if count else None
+            elif nargs == REMAINDER:
+                count = 0
+                while count < length and arg_strings_pattern[count] in 'AO':
+                    count += 1
+                return count
+            elif nargs == PARSER:
+                if length < 1 or arg_strings_pattern[0] != 'A':
+                    return None
+                count = 1
+                while count < length and arg_strings_pattern[count] in 'AO':
+                    count += 1
+                return count
+            elif nargs == SUPPRESS:
+                return 0
+            elif isinstance(nargs, int):
+                if length < nargs:
+                    return None
+                for i in range(nargs):
+                    if arg_strings_pattern[i] != 'A':
+                        return None
+                return nargs
+            else:
+                return None
+
+        idx = 0
+
+        def consume_separators(index):
+            while index < length and arg_strings_pattern[index] == '-':
+                index += 1
+            return index
+
+        if nargs is None:
+            idx = consume_separators(idx)
+            if idx >= length or arg_strings_pattern[idx] != 'A':
+                return None
+            idx += 1
+            return consume_separators(idx)
+        elif nargs == OPTIONAL:
+            idx = consume_separators(idx)
+            if idx < length and arg_strings_pattern[idx] == 'A':
+                idx += 1
+            return consume_separators(idx)
+        elif nargs == ZERO_OR_MORE:
+            while idx < length and arg_strings_pattern[idx] in 'A-':
+                idx += 1
+            return idx
+        elif nargs == ONE_OR_MORE:
+            idx = consume_separators(idx)
+            if idx >= length or arg_strings_pattern[idx] != 'A':
+                return None
+            idx += 1
+            while idx < length and arg_strings_pattern[idx] in 'A-':
+                idx += 1
+            return idx
+        elif nargs == REMAINDER:
+            return length
+        elif nargs == PARSER:
+            idx = consume_separators(idx)
+            if idx >= length or arg_strings_pattern[idx] != 'A':
+                return None
+            return length
+        elif nargs == SUPPRESS:
+            return consume_separators(idx)
+        elif isinstance(nargs, int):
+            for _ in range(nargs):
+                idx = consume_separators(idx)
+                if idx >= length or arg_strings_pattern[idx] != 'A':
+                    return None
+                idx += 1
+            return consume_separators(idx)
+        return None
+
     def _match_arguments_partial(self, actions, arg_strings_pattern):
         # progressively shorten the actions list by slicing off the
         # final actions until we find a match
         result = []
         for i in range(len(actions), 0, -1):
             actions_slice = actions[:i]
+            if i == 1:
+                arg_count = self._match_nargs_count(actions_slice[0],
+                                                    arg_strings_pattern)
+                if arg_count is not None:
+                    result.append(arg_count)
+                    break
+                continue
             pattern = ''.join([self._get_nargs_pattern(action)
                                for action in actions_slice])
             match = _re.match(pattern, arg_strings_pattern)
@@ -2358,10 +2460,25 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
     def _get_values(self, action, arg_strings):
         # for everything but PARSER, REMAINDER args, strip out first '--'
         if action.nargs not in [PARSER, REMAINDER]:
-            try:
+            if '--' in arg_strings:
                 arg_strings.remove('--')
-            except ValueError:
-                pass
+
+        if action.type is None and action.choices is None:
+            if not arg_strings and action.nargs == OPTIONAL:
+                if action.option_strings:
+                    return action.const
+                return action.default
+            elif (not arg_strings and action.nargs == ZERO_OR_MORE and
+                  not action.option_strings):
+                if action.default is not None:
+                    return action.default
+                return arg_strings
+            elif len(arg_strings) == 1 and action.nargs in [None, OPTIONAL]:
+                return arg_strings[0]
+            elif action.nargs == SUPPRESS:
+                return SUPPRESS
+            else:
+                return arg_strings
 
         # optional argument produces a default when not present
         if not arg_strings and action.nargs == OPTIONAL:
@@ -2371,7 +2488,8 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
                 value = action.default
             if isinstance(value, str):
                 value = self._get_value(action, value)
-                self._check_value(action, value)
+                if action.choices is not None:
+                    self._check_value(action, value)
 
         # when nargs='*' on a positional, if there were no command-line
         # args, use the default if it is anything other than None
@@ -2381,13 +2499,15 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
                 value = action.default
             else:
                 value = arg_strings
-            self._check_value(action, value)
+            if action.choices is not None:
+                self._check_value(action, value)
 
         # single argument or optional argument produces a single value
         elif len(arg_strings) == 1 and action.nargs in [None, OPTIONAL]:
             arg_string, = arg_strings
             value = self._get_value(action, arg_string)
-            self._check_value(action, value)
+            if action.choices is not None:
+                self._check_value(action, value)
 
         # REMAINDER arguments convert all values, checking none
         elif action.nargs == REMAINDER:
@@ -2396,7 +2516,8 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
         # PARSER arguments convert all values, but check only the first
         elif action.nargs == PARSER:
             value = [self._get_value(action, v) for v in arg_strings]
-            self._check_value(action, value[0])
+            if action.choices is not None:
+                self._check_value(action, value[0])
 
         # SUPPRESS argument does not put anything in the namespace
         elif action.nargs == SUPPRESS:
@@ -2405,8 +2526,9 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
         # all other types of nargs produce a list
         else:
             value = [self._get_value(action, v) for v in arg_strings]
-            for v in value:
-                self._check_value(action, v)
+            if action.choices is not None:
+                for v in value:
+                    self._check_value(action, v)
 
         # return the converted value
         return value

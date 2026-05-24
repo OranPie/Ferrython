@@ -362,6 +362,77 @@ fn fast_deque_native_closure_returns_none(name: &str, arg_count: usize) -> Optio
 }
 
 #[inline(always)]
+fn try_fast_builtin_setattr_stack(stack: &mut Vec<PyObjectRef>, func_idx: usize) -> bool {
+    if stack.len() < func_idx + 4 {
+        return false;
+    }
+
+    unsafe {
+        let base = stack.as_mut_ptr();
+        let obj = &*base.add(func_idx + 1);
+        let name_obj = &*base.add(func_idx + 2);
+        let inst = match &obj.payload {
+            PyObjectPayload::Instance(inst)
+                if inst.class_flags
+                    & (CLASS_FLAG_HAS_SETATTR
+                        | CLASS_FLAG_HAS_DESCRIPTORS
+                        | CLASS_FLAG_HAS_SLOTS)
+                    == 0 =>
+            {
+                inst
+            }
+            _ => return false,
+        };
+        let name = match &name_obj.payload {
+            PyObjectPayload::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        let map = &mut *inst.attrs.data_ptr();
+        let value = std::ptr::read(base.add(func_idx + 3));
+        if let Some(slot) = map.get_mut(name) {
+            let old = std::mem::replace(slot, value);
+            drop(old);
+        } else {
+            map.insert(CompactString::from(name), value);
+        }
+        let _func = std::ptr::read(base.add(func_idx));
+        let _obj = std::ptr::read(base.add(func_idx + 1));
+        let _name = std::ptr::read(base.add(func_idx + 2));
+        stack.set_len(func_idx);
+    }
+    true
+}
+
+#[inline(always)]
+fn fast_callable_bool(arg: &PyObjectRef) -> Option<bool> {
+    match &arg.payload {
+        PyObjectPayload::Function(_)
+        | PyObjectPayload::BuiltinFunction(_)
+        | PyObjectPayload::BuiltinType(_)
+        | PyObjectPayload::BoundMethod { .. }
+        | PyObjectPayload::BuiltinBoundMethod(_)
+        | PyObjectPayload::Class(_)
+        | PyObjectPayload::ExceptionType(_)
+        | PyObjectPayload::NativeFunction(_)
+        | PyObjectPayload::NativeClosure(_)
+        | PyObjectPayload::Partial(_) => Some(true),
+        PyObjectPayload::Instance(_) => None,
+        _ => Some(false),
+    }
+}
+
+#[inline(always)]
+fn fast_int_conversion(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Int(_) => Some(arg.clone()),
+        PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { 1 } else { 0 })),
+        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+        PyObjectPayload::Str(s) => s.trim().parse::<i64>().ok().map(PyObject::int),
+        _ => None,
+    }
+}
+
+#[inline(always)]
 fn fast_small_int_sequence_min_max(arg: &PyObjectRef, is_max: bool) -> Option<PyObjectRef> {
     let items: &[PyObjectRef] = match &arg.payload {
         PyObjectPayload::List(v) => unsafe { (&*v.data_ptr()).as_slice() },
@@ -5082,6 +5153,23 @@ impl VirtualMachine {
                                     _ => None,
                                 };
                                 match (builtin_name, arg_count) {
+                                    (Some("setattr"), 3) => {
+                                        if try_fast_builtin_setattr_stack(
+                                            &mut frame.stack,
+                                            func_idx,
+                                        ) {
+                                            chain_pop_none!(
+                                                frame,
+                                                instr_base,
+                                                instr_count,
+                                                profiling,
+                                                self.profiler,
+                                                instr.op
+                                            )
+                                        } else {
+                                            self.execute_one(instr)
+                                        }
+                                    }
                                     (Some("len"), 1) => {
                                         let arg = sget!(frame, stack_len - 1);
                                         let fast_len = match &arg.payload {
@@ -5276,19 +5364,15 @@ impl VirtualMachine {
                                     }
                                     // Inline int(x) for common conversions
                                     (Some("int"), 1) => {
-                                        let arg = sget!(frame, stack_len - 1);
-                                        let result = match &arg.payload {
-                                            PyObjectPayload::Int(_) => Some(arg.clone()),
-                                            PyObjectPayload::Bool(b) => {
-                                                Some(PyObject::int(if *b { 1 } else { 0 }))
-                                            }
-                                            PyObjectPayload::Float(f) => {
-                                                Some(PyObject::int(*f as i64))
-                                            }
-                                            _ => None,
+                                        let result = {
+                                            let arg = sget!(frame, stack_len - 1);
+                                            fast_int_conversion(arg)
                                         };
                                         if let Some(v) = result {
                                             unsafe {
+                                                let base = frame.stack.as_ptr();
+                                                let _func = std::ptr::read(base.add(func_idx));
+                                                let _arg = std::ptr::read(base.add(func_idx + 1));
                                                 frame.stack.set_len(func_idx);
                                             }
                                             spush!(frame, v);
@@ -5496,6 +5580,24 @@ impl VirtualMachine {
                                                 s.as_str(),
                                             );
                                             unsafe {
+                                                frame.stack.set_len(func_idx);
+                                            }
+                                            spush!(frame, PyObject::bool_val(result));
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else {
+                                            self.execute_one(instr)
+                                        }
+                                    }
+                                    (Some("callable"), 1) => {
+                                        let result = {
+                                            let arg = sget!(frame, stack_len - 1);
+                                            fast_callable_bool(arg)
+                                        };
+                                        if let Some(result) = result {
+                                            unsafe {
+                                                let base = frame.stack.as_ptr();
+                                                let _func = std::ptr::read(base.add(func_idx));
+                                                let _arg = std::ptr::read(base.add(func_idx + 1));
                                                 frame.stack.set_len(func_idx);
                                             }
                                             spush!(frame, PyObject::bool_val(result));
@@ -6254,17 +6356,24 @@ impl VirtualMachine {
                                 }
                                 (Some("int"), 1) => {
                                     let arg = sget!(frame, frame.stack.len() - 1);
-                                    let result = match &arg.payload {
-                                        PyObjectPayload::Int(_) => Some(arg.clone()),
-                                        PyObjectPayload::Bool(b) => Some(PyObject::int(*b as i64)),
-                                        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
-                                        _ => None,
-                                    };
-                                    if let Some(v) = result {
+                                    if let Some(v) = fast_int_conversion(arg) {
                                         {
                                             let _ = spop!(frame);
                                         }
                                         spush!(frame, v);
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    } else {
+                                        spush!(frame, func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("callable"), 1) => {
+                                    let arg = sget!(frame, frame.stack.len() - 1);
+                                    if let Some(result) = fast_callable_bool(arg) {
+                                        {
+                                            let _ = spop!(frame);
+                                        }
+                                        spush!(frame, PyObject::bool_val(result));
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
