@@ -499,7 +499,7 @@ impl VirtualMachine {
                     with_enum_fallback!(a, b, floor_div)
                 }
             }
-            Opcode::BinaryModulo | Opcode::InplaceModulo => {
+            Opcode::BinaryModulo => {
                 // str % val → Python printf-style formatting
                 if let PyObjectPayload::Str(fmt_str) = &a.payload {
                     self.vm_string_percent_format(fmt_str, &b)?
@@ -513,14 +513,32 @@ impl VirtualMachine {
                     with_enum_fallback!(a, b, modulo)
                 }
             }
-            Opcode::BinaryPower | Opcode::InplacePower => {
+            Opcode::InplaceModulo => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imod__", "__mod__")? {
+                    r
+                } else if let PyObjectPayload::Str(fmt_str) = &a.payload {
+                    self.vm_string_percent_format(fmt_str, &b)?
+                } else if let PyObjectPayload::Bytes(fmt_bytes) = &a.payload {
+                    self.vm_bytes_percent_format(fmt_bytes, &b)?
+                } else {
+                    with_enum_fallback!(a, b, modulo)
+                }
+            }
+            Opcode::BinaryPower => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__pow__", Some("__rpow__"))? {
                     r
                 } else {
                     with_enum_fallback!(a, b, power)
                 }
             }
-            Opcode::BinaryLshift | Opcode::InplaceLshift => {
+            Opcode::InplacePower => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ipow__", "__pow__")? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, power)
+                }
+            }
+            Opcode::BinaryLshift => {
                 if let Some(r) =
                     self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))?
                 {
@@ -529,10 +547,24 @@ impl VirtualMachine {
                     with_enum_fallback!(a, b, lshift)
                 }
             }
-            Opcode::BinaryRshift | Opcode::InplaceRshift => {
+            Opcode::InplaceLshift => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ilshift__", "__lshift__")? {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, lshift)
+                }
+            }
+            Opcode::BinaryRshift => {
                 if let Some(r) =
                     self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))?
                 {
+                    r
+                } else {
+                    with_enum_fallback!(a, b, rshift)
+                }
+            }
+            Opcode::InplaceRshift => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__irshift__", "__rshift__")? {
                     r
                 } else {
                     with_enum_fallback!(a, b, rshift)
@@ -624,7 +656,7 @@ impl VirtualMachine {
                     with_enum_fallback!(a, b, bit_xor)
                 }
             }
-            Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
+            Opcode::BinaryMatrixMultiply => {
                 if let Some(r) =
                     self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))?
                 {
@@ -632,6 +664,17 @@ impl VirtualMachine {
                 } else {
                     return Err(PyException::type_error(format!(
                         "unsupported operand type(s) for @: '{}' and '{}'",
+                        a.type_name(),
+                        b.type_name()
+                    )));
+                }
+            }
+            Opcode::InplaceMatrixMultiply => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__imatmul__", "__matmul__")? {
+                    r
+                } else {
+                    return Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for @=: '{}' and '{}'",
                         a.type_name(),
                         b.type_name()
                     )));
