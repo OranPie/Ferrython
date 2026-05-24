@@ -497,31 +497,49 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             }
         }
         PyObjectPayload::DictKeys(map) => {
+            let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
+            if !repr_enter(ptr) {
+                return "dict_keys([...])".into();
+            }
             let keys: Vec<String> = map
                 .read()
                 .keys()
                 .filter(|k| !is_hidden_dict_key(k))
                 .map(|k| k.to_object().repr())
                 .collect();
-            format!("dict_keys([{}])", keys.join(", "))
+            let result = format!("dict_keys([{}])", keys.join(", "));
+            repr_leave(ptr);
+            result
         }
         PyObjectPayload::DictValues(map) => {
+            let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
+            if !repr_enter(ptr) {
+                return "dict_values([...])".into();
+            }
             let vals: Vec<String> = map
                 .read()
                 .iter()
                 .filter(|(k, _)| !is_hidden_dict_key(k))
                 .map(|(_, v)| v.repr())
                 .collect();
-            format!("dict_values([{}])", vals.join(", "))
+            let result = format!("dict_values([{}])", vals.join(", "));
+            repr_leave(ptr);
+            result
         }
         PyObjectPayload::DictItems(map) => {
+            let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
+            if !repr_enter(ptr) {
+                return "dict_items([...])".into();
+            }
             let items: Vec<String> = map
                 .read()
                 .iter()
                 .filter(|(k, _)| !is_hidden_dict_key(k))
                 .map(|(k, v)| format!("({}, {})", k.to_object().repr(), v.repr()))
                 .collect();
-            format!("dict_items([{}])", items.join(", "))
+            let result = format!("dict_items([{}])", items.join(", "));
+            repr_leave(ptr);
+            result
         }
         _ => format!("<{}>", obj.type_name()),
     }
