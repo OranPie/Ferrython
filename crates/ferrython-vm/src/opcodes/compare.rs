@@ -203,6 +203,25 @@ impl VirtualMachine {
             }
             Ok(None)
         };
+        let has_instance_dunder = |obj: &PyObjectRef, method_name: &str| -> bool {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                lookup_in_class_mro(&inst.class, method_name).is_some()
+            } else {
+                false
+            }
+        };
+        let call_instance_ne = |vm: &mut Self,
+                                obj: &PyObjectRef,
+                                other: &PyObjectRef|
+         -> Result<Option<PyObjectRef>, PyException> {
+            if has_instance_dunder(obj, "__ne__") {
+                return call_instance_dunder(vm, obj, other, "__ne__");
+            }
+            if let Some(result) = call_instance_dunder(vm, obj, other, "__eq__")? {
+                return Ok(Some(PyObject::bool_val(!result.is_truthy())));
+            }
+            Ok(None)
+        };
 
         if let cmp @ 0..=5 = op {
             // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup
@@ -253,31 +272,18 @@ impl VirtualMachine {
             };
             if cmp == 3 {
                 if right_is_subclass {
-                    if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
+                    if let Some(result) = call_instance_ne(self, &b, &a)? {
                         self.vm_push(result);
                         return Ok(None);
                     }
                 }
-                if let Some(result) = call_instance_dunder(self, &a, &b, dunder)? {
+                if let Some(result) = call_instance_ne(self, &a, &b)? {
                     self.vm_push(result);
                     return Ok(None);
                 }
-
-                // object.__ne__ falls back through equality.  Do not let an
-                // unrelated right-hand __ne__ block a left-hand __eq__ result.
-                if right_is_subclass {
-                    if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
-                        self.vm_push(PyObject::bool_val(!result.is_truthy()));
-                        return Ok(None);
-                    }
-                }
-                if let Some(result) = call_instance_dunder(self, &a, &b, "__eq__")? {
-                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
-                    return Ok(None);
-                }
                 if !right_is_subclass {
-                    if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
-                        self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                    if let Some(result) = call_instance_ne(self, &b, &a)? {
+                        self.vm_push(result);
                         return Ok(None);
                     }
                 }

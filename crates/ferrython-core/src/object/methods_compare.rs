@@ -285,6 +285,23 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             }
             Ok(None)
         };
+    let has_instance_dunder = |obj: &PyObjectRef, name: &str| -> bool {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            lookup_in_class_mro(&inst.class, name).is_some()
+        } else {
+            false
+        }
+    };
+    let call_instance_ne =
+        |obj: &PyObjectRef, other: &PyObjectRef| -> PyResult<Option<PyObjectRef>> {
+            if has_instance_dunder(obj, "__ne__") {
+                return call_instance_dunder(obj, other, "__ne__");
+            }
+            if let Some(result) = call_instance_dunder(obj, other, "__eq__")? {
+                return Ok(Some(PyObject::bool_val(!result.is_truthy())));
+            }
+            Ok(None)
+        };
 
     if matches!(op, CompareOp::Eq | CompareOp::Ne) {
         if matches!(op, CompareOp::Ne) {
@@ -293,24 +310,16 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 _ => false,
             };
             if right_is_subclass {
-                if let Some(result) = call_instance_dunder(b, a, "__ne__")? {
+                if let Some(result) = call_instance_ne(b, a)? {
                     return Ok(result);
                 }
             }
-            if let Some(result) = call_instance_dunder(a, b, "__ne__")? {
+            if let Some(result) = call_instance_ne(a, b)? {
                 return Ok(result);
             }
-            if right_is_subclass {
-                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
-                    return Ok(PyObject::bool_val(!result.is_truthy()));
-                }
-            }
-            if let Some(result) = call_instance_dunder(a, b, "__eq__")? {
-                return Ok(PyObject::bool_val(!result.is_truthy()));
-            }
             if !right_is_subclass {
-                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
-                    return Ok(PyObject::bool_val(!result.is_truthy()));
+                if let Some(result) = call_instance_ne(b, a)? {
+                    return Ok(result);
                 }
             }
         } else {
