@@ -378,6 +378,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             let idx = index_to_i64(key).map_err(|e| {
                 if e.kind == crate::error::ExceptionKind::OverflowError {
                     PyException::index_error(e.message)
+                } else if e.kind == crate::error::ExceptionKind::TypeError {
+                    let message = if matches!(&obj.payload, PyObjectPayload::ByteArray(_)) {
+                        "bytearray indices must be integers or slices"
+                    } else {
+                        "byte indices must be integers or slices"
+                    };
+                    PyException::type_error(message)
                 } else {
                     e
                 }

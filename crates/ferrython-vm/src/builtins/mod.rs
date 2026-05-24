@@ -962,6 +962,14 @@ fn call_instance_method(
     method: &str,
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
+    if inst.attrs.read().contains_key("__memoryview__") {
+        let base = inst.attrs.read().get("obj").cloned();
+        if let Some(base) = base {
+            if let PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) = &base.payload {
+                return call_bytes_method(b, method, args);
+            }
+        }
+    }
     // Dict subclass: delegate dict methods to dict_storage
     if let Some(ref ds) = inst.dict_storage {
         return call_dict_method(ds, method, args);

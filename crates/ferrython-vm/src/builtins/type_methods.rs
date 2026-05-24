@@ -15,6 +15,35 @@ use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+fn bytes_like_data(obj: &PyObjectRef) -> Option<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some((**b).clone()),
+        PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__memoryview__") {
+                if let Some(base) = inst.attrs.read().get("obj").cloned() {
+                    return bytes_like_data(&base);
+                }
+            }
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return bytes_like_data(&value);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn bytes_fill_arg(obj: &PyObjectRef) -> PyResult<u8> {
+    let data = bytes_like_data(obj)
+        .ok_or_else(|| PyException::type_error("fill character must be a bytes-like object"))?;
+    if data.len() != 1 {
+        return Err(PyException::type_error(
+            "fill character must be exactly one byte",
+        ));
+    }
+    Ok(data[0])
+}
+
 fn bytes_search_bounds(
     len: usize,
     args: &[PyObjectRef],
@@ -2583,7 +2612,13 @@ pub(super) fn call_bytes_method(
     match method {
         "__getitem__" => {
             check_args_min("bytes.__getitem__", args, 1)?;
-            let idx = index_to_i64(&args[0])?;
+            let idx = index_to_i64(&args[0]).map_err(|e| {
+                if e.kind == ExceptionKind::TypeError {
+                    PyException::type_error("byte indices must be integers or slices")
+                } else {
+                    e
+                }
+            })?;
             let len = b.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
@@ -2601,6 +2636,7 @@ pub(super) fn call_bytes_method(
             }
             Ok(PyObject::bytes(result))
         }
+        "__rmod__" => Ok(PyObject::not_implemented()),
         "decode" => {
             let encoding = if !args.is_empty() {
                 args[0].py_to_string().to_lowercase()
@@ -2759,24 +2795,43 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 Ok(PyObject::str_val(CompactString::from(hex_str)))
             } else {
-                // sep argument: insert separator between each pair of hex digits
-                let sep = args[0].py_to_string();
-                let bytes_per_group = if args.len() > 1 {
-                    args[1].to_int().unwrap_or(1).abs() as usize
-                } else {
-                    1
-                };
-                let chars_per_group = bytes_per_group * 2;
-                let hex_bytes = hex_str.as_bytes();
-                let mut result = String::new();
-                let mut i = 0;
-                while i < hex_bytes.len() {
-                    if i > 0 {
-                        result.push_str(&sep);
+                let sep = match &args[0].payload {
+                    PyObjectPayload::Str(s) => {
+                        let mut chars = s.chars();
+                        let Some(ch) = chars.next() else {
+                            return Err(PyException::value_error("sep must be length 1"));
+                        };
+                        if chars.next().is_some() || !ch.is_ascii() {
+                            return Err(PyException::value_error("sep must be ASCII and length 1"));
+                        }
+                        ch.to_string()
                     }
-                    let end = (i + chars_per_group).min(hex_bytes.len());
-                    result.push_str(&hex_str[i..end]);
-                    i = end;
+                    PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) => {
+                        if sep.len() != 1 || !sep[0].is_ascii() {
+                            return Err(PyException::value_error("sep must be ASCII and length 1"));
+                        }
+                        (sep[0] as char).to_string()
+                    }
+                    _ => return Err(PyException::type_error("sep must be str or bytes")),
+                };
+                let group = if args.len() > 1 { args[1].to_int()? } else { 1 };
+                if group == 0 || b.is_empty() {
+                    return Ok(PyObject::str_val(CompactString::from(hex_str)));
+                }
+                let group_abs = group.unsigned_abs() as usize;
+                let mut result = String::new();
+                for i in 0..b.len() {
+                    if i > 0 {
+                        let insert = if group > 0 {
+                            (b.len() - i) % group_abs == 0
+                        } else {
+                            i % group_abs == 0
+                        };
+                        if insert {
+                            result.push_str(&sep);
+                        }
+                    }
+                    result.push_str(&hex_str[i * 2..i * 2 + 2]);
                 }
                 Ok(PyObject::str_val(CompactString::from(result)))
             }
@@ -2835,7 +2890,10 @@ pub(super) fn call_bytes_method(
                         .unwrap_or(-1),
                 ))
             } else {
-                Err(PyException::type_error("a bytes-like object is required"))
+                Err(PyException::type_error(format!(
+                    "startswith first arg must be bytes or a tuple of bytes, not {}",
+                    args[0].type_name()
+                )))
             }
         }
         "startswith" => {
@@ -2852,7 +2910,10 @@ pub(super) fn call_bytes_method(
                     slice.starts_with(prefix)
                 }))
             } else {
-                Err(PyException::type_error("a bytes-like object is required"))
+                Err(PyException::type_error(format!(
+                    "endswith first arg must be bytes or a tuple of bytes, not {}",
+                    args[0].type_name()
+                )))
             }
         }
         "endswith" => {
@@ -2875,15 +2936,32 @@ pub(super) fn call_bytes_method(
         "upper" => Ok(PyObject::bytes(b.to_ascii_uppercase())),
         "lower" => Ok(PyObject::bytes(b.to_ascii_lowercase())),
         "strip" => {
+            let chars = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(bytes_like_data(&args[0]).ok_or_else(|| {
+                    PyException::type_error("a bytes-like object is required, not str")
+                })?)
+            };
             let stripped = b
                 .iter()
                 .copied()
-                .skip_while(|c| c.is_ascii_whitespace())
+                .skip_while(|c| {
+                    chars
+                        .as_ref()
+                        .map(|bytes| bytes.contains(c))
+                        .unwrap_or_else(|| c.is_ascii_whitespace())
+                })
                 .collect::<Vec<u8>>();
             let stripped: Vec<u8> = stripped
                 .into_iter()
                 .rev()
-                .skip_while(|c| c.is_ascii_whitespace())
+                .skip_while(|c| {
+                    chars
+                        .as_ref()
+                        .map(|bytes| bytes.contains(c))
+                        .unwrap_or_else(|| c.is_ascii_whitespace())
+                })
                 .collect::<Vec<u8>>()
                 .into_iter()
                 .rev()
@@ -2924,10 +3002,11 @@ pub(super) fn call_bytes_method(
             }
         }
         "join" => {
-            if args.is_empty() {
+            if args.len() != 1 {
                 return Err(PyException::type_error("join requires an argument"));
             }
-            // Extract items from list, tuple, or other sequence types
+            // Extract items from list, tuple, or other sequence types.
+            // VM dispatch normalizes lazy iterables to a list before reaching this helper.
             let items: Vec<PyObjectRef> = match &args[0].payload {
                 PyObjectPayload::List(items) => items.read().clone(),
                 PyObjectPayload::Tuple(items) => (**items).clone(),
@@ -2943,6 +3022,15 @@ pub(super) fn call_bytes_method(
                 match &item.payload {
                     PyObjectPayload::Bytes(ib) => result.extend_from_slice(ib),
                     PyObjectPayload::ByteArray(ib) => result.extend_from_slice(ib),
+                    PyObjectPayload::Instance(_) => {
+                        if let Some(data) = bytes_like_data(item) {
+                            result.extend_from_slice(&data);
+                        } else {
+                            return Err(PyException::type_error(
+                                "sequence item: expected a bytes-like object",
+                            ));
+                        }
+                    }
                     _ => {
                         return Err(PyException::type_error(
                             "sequence item: expected a bytes-like object",
@@ -3060,11 +3148,7 @@ pub(super) fn call_bytes_method(
             }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
-                    fb[0]
-                } else {
-                    b' '
-                }
+                bytes_fill_arg(&args[1])?
             } else {
                 b' '
             };
@@ -3085,11 +3169,7 @@ pub(super) fn call_bytes_method(
             }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
-                    fb[0]
-                } else {
-                    b' '
-                }
+                bytes_fill_arg(&args[1])?
             } else {
                 b' '
             };
@@ -3106,11 +3186,7 @@ pub(super) fn call_bytes_method(
             }
             let width = args[0].to_int()? as usize;
             let fill = if args.len() > 1 {
-                if let PyObjectPayload::Bytes(fb) = &args[1].payload {
-                    fb[0]
-                } else {
-                    b' '
-                }
+                bytes_fill_arg(&args[1])?
             } else {
                 b' '
             };
@@ -3122,16 +3198,40 @@ pub(super) fn call_bytes_method(
             Ok(PyObject::bytes(result))
         }
         "lstrip" => {
+            let chars = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(bytes_like_data(&args[0]).ok_or_else(|| {
+                    PyException::type_error("a bytes-like object is required, not str")
+                })?)
+            };
             let stripped: Vec<u8> = b
                 .iter()
                 .copied()
-                .skip_while(|c| c.is_ascii_whitespace())
+                .skip_while(|c| {
+                    chars
+                        .as_ref()
+                        .map(|bytes| bytes.contains(c))
+                        .unwrap_or_else(|| c.is_ascii_whitespace())
+                })
                 .collect();
             Ok(PyObject::bytes(stripped))
         }
         "rstrip" => {
             let mut result = b.to_vec();
-            while result.last().map_or(false, |c| c.is_ascii_whitespace()) {
+            let chars = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(bytes_like_data(&args[0]).ok_or_else(|| {
+                    PyException::type_error("a bytes-like object is required, not str")
+                })?)
+            };
+            while result.last().map_or(false, |c| {
+                chars
+                    .as_ref()
+                    .map(|bytes| bytes.contains(c))
+                    .unwrap_or_else(|| c.is_ascii_whitespace())
+            }) {
                 result.pop();
             }
             Ok(PyObject::bytes(result))
@@ -3384,6 +3484,23 @@ pub(super) fn call_bytes_method(
                     "translate requires a table argument",
                 ));
             }
+            let kwargs_delete = args.last().and_then(|last| {
+                if let PyObjectPayload::Dict(map) = &last.payload {
+                    map.read()
+                        .get(&HashableKey::str_key(CompactString::from("delete")))
+                        .cloned()
+                } else {
+                    None
+                }
+            });
+            let positional_len = if matches!(
+                args.last().map(|arg| &arg.payload),
+                Some(PyObjectPayload::Dict(_))
+            ) {
+                args.len() - 1
+            } else {
+                args.len()
+            };
             let table = match &args[0].payload {
                 PyObjectPayload::Bytes(t) | PyObjectPayload::ByteArray(t) => (**t).clone(),
                 PyObjectPayload::None => vec![],
@@ -3393,11 +3510,19 @@ pub(super) fn call_bytes_method(
                     ))
                 }
             };
-            let delete: Vec<u8> = if args.len() > 1 {
-                match &args[1].payload {
-                    PyObjectPayload::Bytes(d) | PyObjectPayload::ByteArray(d) => (**d).clone(),
-                    _ => vec![],
-                }
+            if !table.is_empty() && table.len() != 256 {
+                return Err(PyException::value_error(
+                    "translation table must be 256 characters long",
+                ));
+            }
+            let delete_obj = if positional_len > 1 {
+                Some(args[1].clone())
+            } else {
+                kwargs_delete
+            };
+            let delete: Vec<u8> = if let Some(obj) = delete_obj {
+                bytes_like_data(&obj)
+                    .ok_or_else(|| PyException::type_error("delete must be a bytes-like object"))?
             } else {
                 vec![]
             };
@@ -3612,13 +3737,43 @@ pub(super) fn call_bytearray_method(
             Ok(PyObject::none())
         }
         "copy" => Ok(PyObject::bytearray(b.to_vec())),
+        "__getitem__" => {
+            check_args_min("bytearray.__getitem__", args, 1)?;
+            let idx = index_to_i64(&args[0]).map_err(|e| {
+                if e.kind == ExceptionKind::TypeError {
+                    PyException::type_error("bytearray indices must be integers or slices")
+                } else {
+                    e
+                }
+            })?;
+            let len = b.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("bytearray index out of range"));
+            }
+            Ok(PyObject::int(b[actual as usize] as i64))
+        }
+        "join" => {
+            let result = call_bytes_method(b, "join", args)?;
+            if let PyObjectPayload::Bytes(data) = &result.payload {
+                Ok(PyObject::bytearray((**data).clone()))
+            } else {
+                Ok(result)
+            }
+        }
         "__setitem__" => {
             if args.len() < 2 {
                 return Err(PyException::type_error(
                     "__setitem__() takes exactly 2 arguments",
                 ));
             }
-            let idx = index_to_i64(&args[0])?;
+            let idx = index_to_i64(&args[0]).map_err(|e| {
+                if e.kind == ExceptionKind::TypeError {
+                    PyException::type_error("bytearray indices must be integers or slices")
+                } else {
+                    e
+                }
+            })?;
             let byte_val = args[1].to_int()? as u8;
             let len = b.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };

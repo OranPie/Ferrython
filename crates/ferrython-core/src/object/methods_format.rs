@@ -1017,6 +1017,8 @@ pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
                 "__iter__",
                 "__len__",
                 "__mul__",
+                "__rmod__",
+                "__rmul__",
                 "__bool__",
             ];
             v.extend_from_slice(common_dunders);

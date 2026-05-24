@@ -1247,23 +1247,44 @@ pub(super) fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
     if args.is_empty() {
         return Err(PyException::type_error("bytes.fromhex requires 1 argument"));
     }
-    let hex_str = args[0].py_to_string();
-    let clean: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
-    if clean.len() % 2 != 0 {
-        return Err(PyException::value_error(
-            "non-hexadecimal number found in fromhex() arg",
-        ));
-    }
-    let mut bytes = Vec::new();
-    for i in (0..clean.len()).step_by(2) {
-        match u8::from_str_radix(&clean[i..i + 2], 16) {
-            Ok(b) => bytes.push(b),
-            Err(_) => {
-                return Err(PyException::value_error(
-                    "non-hexadecimal number found in fromhex() arg",
-                ))
-            }
+    let hex_str = match &args[0].payload {
+        PyObjectPayload::Str(s) => s,
+        _ => {
+            return Err(PyException::type_error(format!(
+                "fromhex() argument must be str, not {}",
+                args[0].type_name()
+            )))
         }
+    };
+    let mut bytes = Vec::with_capacity(hex_str.len() / 2);
+    let mut hi: Option<(usize, u8)> = None;
+    for (pos, &byte) in hex_str.as_bytes().iter().enumerate() {
+        if matches!(byte, b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r' | b' ') {
+            if hi.is_some() {
+                return Err(PyException::value_error(format!(
+                    "non-hexadecimal number found in fromhex() arg at position {}",
+                    pos
+                )));
+            }
+            continue;
+        }
+        let Some(value) = (byte as char).to_digit(16).map(|v| v as u8) else {
+            return Err(PyException::value_error(format!(
+                "non-hexadecimal number found in fromhex() arg at position {}",
+                pos
+            )));
+        };
+        if let Some((_, high)) = hi.take() {
+            bytes.push((high << 4) | value);
+        } else {
+            hi = Some((pos, value));
+        }
+    }
+    if let Some((pos, _)) = hi {
+        return Err(PyException::value_error(format!(
+            "non-hexadecimal number found in fromhex() arg at position {}",
+            pos + 1
+        )));
     }
     Ok(PyObject::bytes(bytes))
 }

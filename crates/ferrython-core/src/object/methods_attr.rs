@@ -11,6 +11,50 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 use super::payload::*;
 
+fn bytes_fromhex_data(obj: &PyObjectRef) -> Result<Vec<u8>, PyException> {
+    let s = match &obj.payload {
+        PyObjectPayload::Str(s) => s,
+        _ => {
+            return Err(PyException::type_error(format!(
+                "fromhex() argument must be str, not {}",
+                obj.type_name()
+            )))
+        }
+    };
+    let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len() / 2);
+    let mut hi: Option<(usize, u8)> = None;
+    for (pos, &byte) in bytes.iter().enumerate() {
+        if matches!(byte, b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r' | b' ') {
+            if hi.is_some() {
+                return Err(PyException::value_error(format!(
+                    "non-hexadecimal number found in fromhex() arg at position {}",
+                    pos
+                )));
+            }
+            continue;
+        }
+        let Some(value) = (byte as char).to_digit(16).map(|v| v as u8) else {
+            return Err(PyException::value_error(format!(
+                "non-hexadecimal number found in fromhex() arg at position {}",
+                pos
+            )));
+        };
+        if let Some((_, high)) = hi.take() {
+            result.push((high << 4) | value);
+        } else {
+            hi = Some((pos, value));
+        }
+    }
+    if let Some((pos, _)) = hi {
+        return Err(PyException::value_error(format!(
+            "non-hexadecimal number found in fromhex() arg at position {}",
+            pos + 1
+        )));
+    }
+    Ok(result)
+}
+
 fn code_object_co_code(code: &ferrython_bytecode::CodeObject) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(code.instructions.len() * 2);
     for instruction in &code.instructions {
@@ -282,6 +326,12 @@ fn instance_builtin_method(
             )),
         })
     };
+
+    if inst.attrs.read().contains_key("__memoryview__")
+        && matches!(name, "hex" | "tobytes" | "tolist" | "release")
+    {
+        return Some(make_bound(name));
+    }
 
     // Dict subclass: expose dict methods bound to the instance
     if inst.dict_storage.is_some() {
@@ -1508,27 +1558,10 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             func: std::rc::Rc::new(move |args| {
                                 if args.is_empty() {
                                     return Err(PyException::type_error(
-                                        "fromhex() requires a string",
+                                        "fromhex() missing required argument",
                                     ));
                                 }
-                                let s = args[0].py_to_string();
-                                let clean: String =
-                                    s.chars().filter(|c| !c.is_whitespace()).collect();
-                                if clean.len() % 2 != 0 {
-                                    return Err(PyException::value_error(
-                                        "non-hexadecimal number found in fromhex() arg",
-                                    ));
-                                }
-                                let mut bytes = Vec::with_capacity(clean.len() / 2);
-                                for i in (0..clean.len()).step_by(2) {
-                                    let byte =
-                                        u8::from_str_radix(&clean[i..i + 2], 16).map_err(|_| {
-                                            PyException::value_error(
-                                                "non-hexadecimal number found in fromhex() arg",
-                                            )
-                                        })?;
-                                    bytes.push(byte);
-                                }
+                                let bytes = bytes_fromhex_data(&args[0])?;
                                 if is_bytearray {
                                     Ok(PyObject::bytearray(bytes))
                                 } else {
@@ -2969,6 +3002,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__add__"
                     | "__mul__"
                     | "__rmul__"
+                    | "__rmod__"
                     | "__bool__"
                     | "__hash__"
                     | "__sizeof__"

@@ -9,10 +9,10 @@ use ferrython_bytecode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    get_builtin_base_type_name, has_descriptor_get, is_data_descriptor, lookup_in_class_mro,
-    new_fx_hashkey_flatmap, new_fx_hashkey_map, AsyncGenAction, CompareOp, FxHashKeyMap,
-    IteratorData, PartialData, PropertyData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef,
+    get_builtin_base_type_name, guard_eager_allocation, has_descriptor_get, is_data_descriptor,
+    lookup_in_class_mro, new_fx_hashkey_flatmap, new_fx_hashkey_map, AsyncGenAction, CompareOp,
+    FxHashKeyMap, IteratorData, PartialData, PropertyData, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
@@ -212,6 +212,42 @@ impl VirtualMachine {
         }
     }
 
+    fn builtin_type_instance_operand(
+        type_name: &str,
+        method_name: &str,
+        args: &[PyObjectRef],
+    ) -> PyResult<(PyObjectRef, Vec<PyObjectRef>)> {
+        let Some(instance) = args.first() else {
+            return Err(PyException::type_error(format!(
+                "unbound method {}.{}() needs an argument",
+                type_name, method_name
+            )));
+        };
+        let matches_receiver = match type_name {
+            "bytes" => matches!(&instance.payload, PyObjectPayload::Bytes(_)),
+            "bytearray" => matches!(&instance.payload, PyObjectPayload::ByteArray(_)),
+            _ => false,
+        };
+        if matches_receiver {
+            return Ok((instance.clone(), args[1..].to_vec()));
+        }
+        if let PyObjectPayload::Instance(inst) = &instance.payload {
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if cd.builtin_base_name.as_ref().map(|s| s.as_str()) == Some(type_name) {
+                    if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                        return Ok((value, args[1..].to_vec()));
+                    }
+                }
+            }
+        }
+        Err(PyException::type_error(format!(
+            "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
+            method_name,
+            type_name,
+            instance.type_name()
+        )))
+    }
+
     fn split_trailing_kwargs_dict(
         args: &[PyObjectRef],
     ) -> (Vec<PyObjectRef>, Vec<(CompactString, PyObjectRef)>) {
@@ -231,6 +267,157 @@ impl VirtualMachine {
             }
         }
         (args.to_vec(), Vec::new())
+    }
+
+    fn bytes_like_data(obj: &PyObjectRef) -> Option<Vec<u8>> {
+        match &obj.payload {
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some((**b).clone()),
+            PyObjectPayload::Instance(inst) => {
+                if inst.attrs.read().contains_key("__memoryview__") {
+                    if let Some(base) = inst.attrs.read().get("obj").cloned() {
+                        return Self::bytes_like_data(&base);
+                    }
+                }
+                if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return Self::bytes_like_data(&value);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn bytes_size_from_index(obj: &PyObjectRef) -> PyResult<usize> {
+        let index = obj.to_index()?;
+        let n = index.to_i64().ok_or_else(|| {
+            PyException::overflow_error("cannot fit 'int' into an index-sized integer")
+        })?;
+        if isize::try_from(n).is_err() {
+            return Err(PyException::overflow_error(
+                "cannot fit 'int' into an index-sized integer",
+            ));
+        }
+        if n < 0 {
+            return Err(PyException::value_error("negative count"));
+        }
+        Ok(n as usize)
+    }
+
+    fn byte_from_index(obj: &PyObjectRef) -> PyResult<u8> {
+        let index = obj.to_index().map_err(|e| {
+            if e.kind == ExceptionKind::TypeError {
+                PyException::type_error("an integer is required")
+            } else {
+                e
+            }
+        })?;
+        let Some(n) = index.to_i64() else {
+            return Err(PyException::value_error("bytes must be in range(0, 256)"));
+        };
+        if !(0..=255).contains(&n) {
+            return Err(PyException::value_error("bytes must be in range(0, 256)"));
+        }
+        Ok(n as u8)
+    }
+
+    fn bytes_from_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<u8>> {
+        if let PyObjectPayload::List(items) = &obj.payload {
+            let mut result = Vec::new();
+            let mut index = 0usize;
+            loop {
+                let item = {
+                    let read = items.read();
+                    if index >= read.len() {
+                        break;
+                    }
+                    read[index].clone()
+                };
+                guard_eager_allocation(result.len().saturating_add(1), "bytes iterable")?;
+                result.push(Self::byte_from_index(&item)?);
+                index += 1;
+            }
+            return Ok(result);
+        }
+
+        let items = self.collect_iterable(obj)?;
+        let mut result = Vec::with_capacity(items.len());
+        for item in items {
+            result.push(Self::byte_from_index(&item)?);
+        }
+        Ok(result)
+    }
+
+    fn vm_bytes_constructor(
+        &mut self,
+        args: &[PyObjectRef],
+        mutable: bool,
+    ) -> PyResult<PyObjectRef> {
+        let make = |data: Vec<u8>| {
+            if mutable {
+                PyObject::bytearray(data)
+            } else {
+                PyObject::bytes(data)
+            }
+        };
+        if args.is_empty() {
+            return Ok(make(Vec::new()));
+        }
+        if args.len() > 3 {
+            return Err(PyException::type_error(format!(
+                "{}() takes at most 3 arguments ({} given)",
+                if mutable { "bytearray" } else { "bytes" },
+                args.len()
+            )));
+        }
+
+        let source = &args[0];
+        if args.len() > 1 {
+            if let PyObjectPayload::Str(s) = &source.payload {
+                let encoded = builtins::call_str_method(s.as_str(), "encode", &args[1..])?;
+                if let PyObjectPayload::Bytes(b) = &encoded.payload {
+                    return Ok(make((**b).clone()));
+                }
+                return Err(PyException::type_error(
+                    "string encode did not return bytes",
+                ));
+            }
+            return Err(PyException::type_error(
+                "encoding without a string argument",
+            ));
+        }
+
+        if let Some(data) = Self::bytes_like_data(source) {
+            return Ok(make(data));
+        }
+
+        if !mutable {
+            if let PyObjectPayload::Instance(_) = &source.payload {
+                if let Some(method) = Self::resolve_instance_dunder(source, "__bytes__") {
+                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        vec![]
+                    } else {
+                        vec![source.clone()]
+                    };
+                    let result = self.call_object(method, ca)?;
+                    if let PyObjectPayload::Bytes(b) = &result.payload {
+                        return Ok(PyObject::bytes((**b).clone()));
+                    }
+                    return Err(PyException::type_error("__bytes__ returned non-bytes"));
+                }
+            }
+        }
+
+        let has_index = matches!(
+            source.payload,
+            PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+        ) || source.get_attr("__index__").is_some();
+        if has_index {
+            let size = Self::bytes_size_from_index(source)?;
+            guard_eager_allocation(size, if mutable { "bytearray()" } else { "bytes()" })?;
+            return Ok(make(vec![0u8; size]));
+        }
+
+        Ok(make(self.bytes_from_iterable(source)?))
     }
 
     fn ast_constructor_owner(cls: &PyObjectRef) -> CompactString {
@@ -3641,6 +3828,12 @@ impl VirtualMachine {
                             .vm_str(&args[0])
                             .map(|s| PyObject::str_val(CompactString::from(s)));
                     }
+                    "bytes" => {
+                        return self.vm_bytes_constructor(&args, false);
+                    }
+                    "bytearray" => {
+                        return self.vm_bytes_constructor(&args, true);
+                    }
                     "repr" => {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));
@@ -4741,25 +4934,6 @@ impl VirtualMachine {
                             }
                         }
                     }
-                    "bytes" => {
-                        if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
-                                if let Some(method) =
-                                    Self::resolve_instance_dunder(&args[0], "__bytes__")
-                                {
-                                    let ca = if matches!(
-                                        &method.payload,
-                                        PyObjectPayload::BoundMethod { .. }
-                                    ) {
-                                        vec![]
-                                    } else {
-                                        vec![args[0].clone()]
-                                    };
-                                    return self.call_object(method, ca);
-                                }
-                            }
-                        }
-                    }
                     "bool" => {
                         if args.len() == 1 {
                             let obj = &args[0];
@@ -5299,7 +5473,14 @@ impl VirtualMachine {
                     | PyObjectPayload::ByteArray(_)
                     | PyObjectPayload::FrozenSet(_)
                         if !(matches!(&bbm.receiver.payload, PyObjectPayload::List(_))
-                            && bbm.method_name.as_str() == "sort") =>
+                            && bbm.method_name.as_str() == "sort")
+                            && !(bbm.method_name.as_str() == "join"
+                                && matches!(
+                                    &bbm.receiver.payload,
+                                    PyObjectPayload::Str(_)
+                                        | PyObjectPayload::Bytes(_)
+                                        | PyObjectPayload::ByteArray(_)
+                                )) =>
                     {
                         return builtins::call_method(
                             &bbm.receiver,
@@ -5567,24 +5748,27 @@ impl VirtualMachine {
                     {
                         if !args.is_empty() {
                             let sep = sep.clone();
+                            let mutable_result =
+                                matches!(&bbm.receiver.payload, PyObjectPayload::ByteArray(_));
                             let items = self.collect_iterable(&args[0])?;
                             let mut result = Vec::new();
                             for (i, item) in items.iter().enumerate() {
                                 if i > 0 {
                                     result.extend_from_slice(&sep);
                                 }
-                                match &item.payload {
-                                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
-                                        result.extend_from_slice(b)
-                                    }
-                                    _ => {
-                                        return Err(PyException::type_error(
-                                            "sequence item: expected a bytes-like object",
-                                        ))
-                                    }
+                                if let Some(data) = Self::bytes_like_data(item) {
+                                    result.extend_from_slice(&data);
+                                } else {
+                                    return Err(PyException::type_error(
+                                        "sequence item: expected a bytes-like object",
+                                    ));
                                 }
                             }
-                            return Ok(PyObject::bytes(result));
+                            return Ok(if mutable_result {
+                                PyObject::bytearray(result)
+                            } else {
+                                PyObject::bytes(result)
+                            });
                         }
                     }
                 }
@@ -5802,6 +5986,20 @@ impl VirtualMachine {
                             }
                             return (nf.func)(&args);
                         }
+                    }
+                    if matches!(tn.as_str(), "bytes" | "bytearray")
+                        && bbm.method_name.as_str() == "hex"
+                    {
+                        let (instance, rest_args) = Self::builtin_type_instance_operand(
+                            tn.as_str(),
+                            bbm.method_name.as_str(),
+                            &args,
+                        )?;
+                        return builtins::call_method(
+                            &instance,
+                            bbm.method_name.as_str(),
+                            &rest_args,
+                        );
                     }
                     if !args.is_empty() {
                         let instance = args[0].clone();

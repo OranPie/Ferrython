@@ -7107,34 +7107,18 @@ impl VirtualMachine {
                                                     && matches!(
                                                         &receiver.payload,
                                                         PyObjectPayload::Str(_)
+                                                            | PyObjectPayload::Bytes(_)
+                                                            | PyObjectPayload::ByteArray(_)
                                                     )
                                                 {
                                                     match &a0.payload {
-                                                        PyObjectPayload::Generator(_) => self
+                                                        PyObjectPayload::Generator(_)
+                                                        | PyObjectPayload::Instance(_)
+                                                        | PyObjectPayload::Iterator(_)
+                                                        | PyObjectPayload::VecIter(_)
+                                                        | PyObjectPayload::RefIter { .. } => self
                                                             .collect_iterable(&a0)
                                                             .map(PyObject::list),
-                                                        PyObjectPayload::Iterator(iter_data) => {
-                                                            let needs_vm = matches!(
-                                                                &*iter_data.read(),
-                                                                IteratorData::Enumerate { .. }
-                                                                    | IteratorData::Zip { .. }
-                                                                    | IteratorData::MapOne { .. }
-                                                                    | IteratorData::Map { .. }
-                                                                    | IteratorData::Filter { .. }
-                                                                    | IteratorData::FilterFalse { .. }
-                                                                    | IteratorData::Chain { .. }
-                                                                    | IteratorData::Starmap { .. }
-                                                                    | IteratorData::TakeWhile { .. }
-                                                                    | IteratorData::DropWhile { .. }
-                                                                    | IteratorData::Tee { .. }
-                                                            );
-                                                            if needs_vm {
-                                                                self.collect_iterable(&a0)
-                                                                    .map(PyObject::list)
-                                                            } else {
-                                                                Ok(a0)
-                                                            }
-                                                        }
                                                         _ => Ok(a0),
                                                     }
                                                 } else if matches!(
