@@ -862,7 +862,11 @@ class TestLoader:
             module = sys.modules[mod_name]
             parts = parts[1:]
         obj = module
+        parent = None
+        attr_name = None
         for part in parts:
+            parent = obj
+            attr_name = part
             obj = getattr(obj, part)
         if isinstance(obj, type) and issubclass(obj, TestCase):
             return self.loadTestsFromTestCase(obj)
@@ -870,9 +874,23 @@ class TestLoader:
             suite = self.suiteClass()
             suite.addTest(obj)
             return suite
-        elif callable(obj):
+        elif (parent is not None and isinstance(parent, type) and
+              issubclass(parent, TestCase) and attr_name is not None and
+              callable(obj)):
             suite = self.suiteClass()
-            suite.addTest(obj())
+            suite.addTest(parent(attr_name))
+            return suite
+        elif hasattr(obj, "_tests") and hasattr(obj, "run"):
+            return obj
+        elif callable(obj):
+            test = obj()
+            if hasattr(test, "run"):
+                suite = self.suiteClass()
+                suite.addTest(test)
+                return suite
+            if hasattr(test, "_tests"):
+                return test
+            suite = self.suiteClass()
             return suite
         return self.suiteClass()
 
