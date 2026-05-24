@@ -16,7 +16,20 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyFunction, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
+use std::cell::Cell;
 use std::rc::Rc;
+
+const FRAMELESS_CALL_RECURSION_LIMIT: usize = 128;
+
+struct CallObjectDepthGuard {
+    depth: Rc<Cell<usize>>,
+}
+
+impl Drop for CallObjectDepthGuard {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get().saturating_sub(1));
+    }
+}
 
 #[inline(always)]
 fn fast_exact_str(arg: &PyObjectRef) -> Option<PyObjectRef> {
@@ -162,6 +175,26 @@ fn attach_eg_methods(eg: &PyObjectRef) {
 }
 
 impl VirtualMachine {
+    #[inline]
+    fn enter_frameless_call_dispatch(&self) -> PyResult<CallObjectDepthGuard> {
+        let depth = Rc::clone(&self.call_object_depth);
+        let next = depth.get().saturating_add(1);
+        let raw_limit = ferrython_stdlib::get_recursion_limit();
+        let configured_limit = if raw_limit > 0 {
+            raw_limit as usize
+        } else {
+            self.recursion_limit
+        };
+        let limit = configured_limit.min(FRAMELESS_CALL_RECURSION_LIMIT);
+        if next > limit {
+            return Err(PyException::recursion_error(
+                "maximum recursion depth exceeded",
+            ));
+        }
+        depth.set(next);
+        Ok(CallObjectDepthGuard { depth })
+    }
+
     fn ast_class_name(cls: &PyObjectRef) -> Option<CompactString> {
         let PyObjectPayload::Class(cd) = &cls.payload else {
             return None;
@@ -3693,6 +3726,7 @@ impl VirtualMachine {
                             return self.vm_singledispatch_call_instance(&func, &pos_args);
                         }
                         if let Some(method) = func.get_attr("__call__") {
+                            let _dispatch_guard = self.enter_frameless_call_dispatch()?;
                             return self.call_object_kw(method, pos_args, kwargs);
                         }
                         return Err(PyException::type_error(format!(
@@ -6551,6 +6585,7 @@ impl VirtualMachine {
                     return self.vm_singledispatch_call_instance(&func, &args);
                 }
                 if let Some(method) = func.get_attr("__call__") {
+                    let _dispatch_guard = self.enter_frameless_call_dispatch()?;
                     self.call_object(method, args)
                 } else {
                     Err(PyException::type_error(format!(

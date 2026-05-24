@@ -197,6 +197,7 @@ use ferrython_core::object::{
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
 use indexmap::IndexMap;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -538,6 +539,8 @@ pub struct VirtualMachine {
     pub(crate) frame_pool: FramePool,
     /// Cached recursion limit (avoids thread-local access on every call).
     pub(crate) recursion_limit: usize,
+    /// Recursion depth for call dispatch paths that do not create Python frames.
+    pub(crate) call_object_depth: Rc<Cell<usize>>,
 }
 
 impl VirtualMachine {
@@ -571,6 +574,7 @@ impl VirtualMachine {
             breakpoints: BreakpointManager::new(),
             frame_pool: FramePool::new(),
             recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
+            call_object_depth: Rc::new(Cell::new(0)),
         }
     }
 
@@ -591,6 +595,7 @@ impl VirtualMachine {
             breakpoints: BreakpointManager::new(),
             frame_pool: FramePool::new(),
             recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
+            call_object_depth: Rc::new(Cell::new(0)),
         }
     }
 
