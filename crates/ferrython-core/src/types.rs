@@ -466,7 +466,7 @@ impl PyFunction {
                             set.insert(key, obj);
                         }
                     }
-                    PyObject::set(set)
+                    PyObject::frozenset(set)
                 }
             }
         }

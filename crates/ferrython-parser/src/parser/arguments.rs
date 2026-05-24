@@ -32,24 +32,38 @@ impl Parser {
                 {
                     // bare * separator
                 } else {
+                    let location = self.current_location();
                     let name = self.expect_name()?;
                     let annotation = self.try_parse_annotation()?;
+                    let location = annotation
+                        .as_ref()
+                        .map(|ann| {
+                            Self::with_end_location(location, Self::expression_outer_location(ann))
+                        })
+                        .unwrap_or(location);
                     args.vararg = Some(Arg {
                         arg: name,
                         annotation,
                         type_comment: None,
-                        location: self.current_location(),
+                        location,
                     });
                 }
             } else if self.check(TokenKind::DoubleStar) {
                 self.advance();
+                let location = self.current_location();
                 let name = self.expect_name()?;
                 let annotation = self.try_parse_annotation()?;
+                let location = annotation
+                    .as_ref()
+                    .map(|ann| {
+                        Self::with_end_location(location, Self::expression_outer_location(ann))
+                    })
+                    .unwrap_or(location);
                 args.kwarg = Some(Arg {
                     arg: name,
                     annotation,
                     type_comment: None,
-                    location: self.current_location(),
+                    location,
                 });
             } else if self.check(TokenKind::Slash) {
                 self.advance();
@@ -57,8 +71,15 @@ impl Parser {
                 // Move all args collected so far to posonlyargs
                 args.posonlyargs.extend(args.args.drain(..));
             } else {
+                let location = self.current_location();
                 let name = self.expect_name()?;
                 let annotation = self.try_parse_annotation()?;
+                let location = annotation
+                    .as_ref()
+                    .map(|ann| {
+                        Self::with_end_location(location, Self::expression_outer_location(ann))
+                    })
+                    .unwrap_or(location);
                 let default = if self.check(TokenKind::Equal) {
                     self.advance();
                     Some(self.parse_test()?)
@@ -69,7 +90,7 @@ impl Parser {
                     arg: name,
                     annotation,
                     type_comment: None,
-                    location: self.current_location(),
+                    location,
                 };
                 if seen_star {
                     args.kwonlyargs.push(arg);
@@ -113,6 +134,7 @@ impl Parser {
 
     pub(super) fn parse_call_args(
         &mut self,
+        open_location: SourceLocation,
     ) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
         let mut args = Vec::new();
         let mut keywords = Vec::new();
@@ -125,12 +147,17 @@ impl Parser {
 
         loop {
             if self.check(TokenKind::DoubleStar) {
+                let star_span = self.peek().span;
                 self.advance();
                 let value = self.parse_test()?;
+                let location = Self::with_end_location(
+                    Self::location_from_span(star_span),
+                    Self::expression_outer_location(&value),
+                );
                 keywords.push(Keyword {
                     arg: None,
                     value,
-                    location: self.current_location(),
+                    location,
                 });
                 has_keyword = true;
                 has_kwarg_unpacking = true;
@@ -146,24 +173,40 @@ impl Parser {
                         span,
                     ));
                 }
+                let loc = Self::with_end_location(
+                    Self::location_from_span(span),
+                    Self::expression_outer_location(&value),
+                );
                 args.push(Expression::new(
                     ExpressionKind::Starred {
                         value: Box::new(value),
                         ctx: ExprContext::Load,
                     },
-                    self.current_location(),
+                    loc,
                 ));
             } else {
                 let expr = self.parse_test()?;
                 // Check for generator expression: func(expr for x in iter)
                 if self.check(TokenKind::For) && args.is_empty() && keywords.is_empty() {
                     let generators = self.parse_comp_for()?;
+                    let loc = Self::with_end_location(
+                        open_location,
+                        generators
+                            .last()
+                            .and_then(|gen| {
+                                gen.ifs
+                                    .last()
+                                    .map(Self::expression_outer_location)
+                                    .or(Some(Self::expression_outer_location(&gen.iter)))
+                            })
+                            .unwrap_or_else(|| Self::expression_outer_location(&expr)),
+                    );
                     args.push(Expression::new(
                         ExpressionKind::GeneratorExp {
                             elt: Box::new(expr),
                             generators,
                         },
-                        self.current_location(),
+                        loc,
                     ));
                     break; // generator expression is always the sole argument
                 }
@@ -173,10 +216,14 @@ impl Parser {
                         let name = id.clone();
                         self.advance();
                         let value = self.parse_test()?;
+                        let location = Self::with_end_location(
+                            Self::expression_outer_location(&expr),
+                            Self::expression_outer_location(&value),
+                        );
                         keywords.push(Keyword {
                             arg: Some(name),
                             value,
-                            location: expr.location,
+                            location,
                         });
                         has_keyword = true;
                     } else {
@@ -227,7 +274,8 @@ impl Parser {
 
     pub(super) fn parse_class_args(
         &mut self,
+        open_location: SourceLocation,
     ) -> Result<(Vec<Expression>, Vec<Keyword>), ParseError> {
-        self.parse_call_args()
+        self.parse_call_args(open_location)
     }
 }

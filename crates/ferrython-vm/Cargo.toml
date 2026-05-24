@@ -7,6 +7,7 @@ description = "Stack-based bytecode virtual machine for Ferrython"
 
 [dependencies]
 ferrython-async = { workspace = true }
+ferrython-ast = { workspace = true }
 ferrython-bytecode = { workspace = true }
 ferrython-core = { workspace = true }
 ferrython-compiler = { workspace = true }

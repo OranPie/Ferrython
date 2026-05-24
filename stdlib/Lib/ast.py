@@ -8,6 +8,8 @@ from _ast import *
 from _ast import parse, dump, literal_eval, walk, get_docstring
 from _ast import fix_missing_locations, increment_lineno, iter_child_nodes
 from _ast import copy_location, unparse
+import builtins
+import warnings
 
 # Re-export PyCF_ONLY_AST
 try:
@@ -31,6 +33,33 @@ class NodeVisitor:
         # Also check _type_name for AST nodes from the Rust parser
         if hasattr(node, '_type_name'):
             method = 'visit_' + node._type_name
+        if method == 'visit_Constant' and not hasattr(self, method):
+            missing = object()
+            try:
+                value = node.value
+            except AttributeError:
+                value = missing
+            old_name = None
+            if isinstance(value, (int, float, complex)) and not isinstance(value, bool):
+                old_name = 'Num'
+            elif isinstance(value, str):
+                old_name = 'Str'
+            elif isinstance(value, bytes):
+                old_name = 'Bytes'
+            elif value is True or value is False or value is None:
+                old_name = 'NameConstant'
+            elif value is builtins.Ellipsis:
+                old_name = 'Ellipsis'
+            if old_name is not None:
+                old_method = 'visit_' + old_name
+                visitor = getattr(self, old_method, None)
+                if visitor is not None:
+                    warnings.warn(
+                        old_method + ' is deprecated; add visit_Constant',
+                        PendingDeprecationWarning,
+                        stacklevel=2,
+                    )
+                    return visitor(node)
         visitor = getattr(self, method, self.generic_visit)
         return visitor(node)
 

@@ -8,7 +8,7 @@ mod statements;
 
 use crate::error::{ParseError, ParseErrorKind};
 use crate::lexer::Lexer;
-use crate::token::{Token, TokenKind};
+use crate::token::{Span, Token, TokenKind};
 use compact_str::CompactString;
 use ferrython_ast::*;
 
@@ -25,7 +25,15 @@ pub fn parse_expression(source: &str, filename: &str) -> Result<Expression, Pars
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
     let mut parser = Parser::new(tokens, filename);
-    parser.parse_expr()
+    let expr = parser.parse_test_list_star_expr()?;
+    parser.skip_newlines();
+    if !parser.check(TokenKind::Eof) {
+        return Err(ParseError::new(
+            ParseErrorKind::InvalidSyntax("unexpected token after expression".into()),
+            parser.peek().span,
+        ));
+    }
+    Ok(expr)
 }
 
 struct Parser {
@@ -204,9 +212,45 @@ impl Parser {
         self.pos >= self.tokens.len() || matches!(self.peek().kind, TokenKind::Eof)
     }
 
+    fn location_from_span(span: Span) -> SourceLocation {
+        SourceLocation::new(span.start_line, span.start_col).with_end(span.end_line, span.end_col)
+    }
+
     fn current_location(&self) -> SourceLocation {
-        let span = self.peek().span;
-        SourceLocation::new(span.start_line, span.start_col)
+        Self::location_from_span(self.peek().span)
+    }
+
+    fn end_of_location(loc: SourceLocation) -> (u32, u32) {
+        (
+            loc.end_line.unwrap_or(loc.line),
+            loc.end_column.unwrap_or(loc.column),
+        )
+    }
+
+    fn with_end_location(start: SourceLocation, end: SourceLocation) -> SourceLocation {
+        let (end_line, end_column) = Self::end_of_location(end);
+        start.with_end(end_line, end_column)
+    }
+
+    fn with_end_span(start: SourceLocation, span: Span) -> SourceLocation {
+        start.with_end(span.end_line, span.end_col)
+    }
+
+    fn expression_outer_location(expr: &Expression) -> SourceLocation {
+        expr.outer_location
+    }
+
+    fn last_statement_location(stmts: &[Statement]) -> Option<SourceLocation> {
+        stmts.last().map(|stmt| stmt.location)
+    }
+
+    fn suite_end_location<'a>(
+        groups: impl IntoIterator<Item = &'a [Statement]>,
+    ) -> Option<SourceLocation> {
+        groups
+            .into_iter()
+            .filter_map(Self::last_statement_location)
+            .last()
     }
 }
 

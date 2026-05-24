@@ -162,6 +162,297 @@ fn attach_eg_methods(eg: &PyObjectRef) {
 }
 
 impl VirtualMachine {
+    fn ast_class_name(cls: &PyObjectRef) -> Option<CompactString> {
+        let PyObjectPayload::Class(cd) = &cls.payload else {
+            return None;
+        };
+        if cd
+            .namespace
+            .read()
+            .get("__ferrython_ast_node__")
+            .map(|v| v.is_truthy())
+            .unwrap_or(false)
+        {
+            return Some(cd.name.clone());
+        }
+        for base in &cd.mro {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if bcd
+                    .namespace
+                    .read()
+                    .get("__ferrython_ast_node__")
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(false)
+                {
+                    return Some(bcd.name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn ast_class_fields(cls: &PyObjectRef) -> Vec<CompactString> {
+        match cls.get_attr("_fields") {
+            Some(fields) => match &fields.payload {
+                PyObjectPayload::Tuple(items) => items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(CompactString::from))
+                    .collect(),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    fn ast_storage_name(name: &str) -> CompactString {
+        if name == "n" || name == "s" {
+            CompactString::from("value")
+        } else {
+            CompactString::from(name)
+        }
+    }
+
+    fn split_trailing_kwargs_dict(
+        args: &[PyObjectRef],
+    ) -> (Vec<PyObjectRef>, Vec<(CompactString, PyObjectRef)>) {
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(map) = &last.payload {
+                let kwargs = map
+                    .read()
+                    .iter()
+                    .filter_map(|(key, value)| match key {
+                        HashableKey::Str(name) => {
+                            Some((CompactString::from(name.as_str()), value.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                return (args[..args.len() - 1].to_vec(), kwargs);
+            }
+        }
+        (args.to_vec(), Vec::new())
+    }
+
+    fn ast_constructor_owner(cls: &PyObjectRef) -> CompactString {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            cd.name.clone()
+        } else {
+            CompactString::from("AST")
+        }
+    }
+
+    fn ast_exact_legacy_name(cls: &PyObjectRef) -> Option<&'static str> {
+        let PyObjectPayload::Class(cd) = &cls.payload else {
+            return None;
+        };
+        match cd.name.as_str() {
+            "Num" => Some("Num"),
+            "Str" => Some("Str"),
+            "Bytes" => Some("Bytes"),
+            "NameConstant" => Some("NameConstant"),
+            "Ellipsis" => Some("Ellipsis"),
+            _ => None,
+        }
+    }
+
+    fn ast_find_mro_class(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd.name.as_str() == name {
+                return Some(cls.clone());
+            }
+            for base in &cd.mro {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    if bcd.name.as_str() == name {
+                        return Some(base.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn ast_constant_class(cls: &PyObjectRef) -> Option<PyObjectRef> {
+        Self::ast_find_mro_class(cls, "Constant").or_else(|| {
+            Self::ast_find_mro_class(cls, "Num")
+                .and_then(|c| Self::ast_find_mro_class(&c, "Constant"))
+        })
+    }
+
+    fn populate_ast_node_attrs(
+        instance: &PyObjectRef,
+        cls: &PyObjectRef,
+        pos_args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
+        if Self::ast_class_name(cls).is_none() {
+            return Ok(());
+        }
+        let owner = Self::ast_constructor_owner(cls);
+        let exact_legacy = Self::ast_exact_legacy_name(cls);
+        let fields = match exact_legacy {
+            Some("Num") => vec![CompactString::from("n"), CompactString::from("kind")],
+            Some("Str") | Some("Bytes") => {
+                vec![CompactString::from("s"), CompactString::from("kind")]
+            }
+            Some("Ellipsis") => vec![CompactString::from("kind")],
+            _ => Self::ast_class_fields(cls),
+        };
+        if pos_args.len() > fields.len() {
+            let constructor_name = if exact_legacy.is_some() {
+                "Constant"
+            } else {
+                owner.as_str()
+            };
+            return Err(PyException::type_error(format!(
+                "{} constructor takes at most {} positional argument{}",
+                constructor_name,
+                fields.len(),
+                if fields.len() == 1 { "" } else { "s" }
+            )));
+        }
+
+        let mut writes: Vec<(CompactString, PyObjectRef)> = Vec::new();
+        for (i, value) in pos_args.iter().enumerate() {
+            if let Some(field) = fields.get(i) {
+                writes.push((Self::ast_storage_name(field.as_str()), value.clone()));
+            }
+        }
+
+        for (key, value) in kwargs {
+            if let Some(pos) = fields
+                .iter()
+                .position(|field| field.as_str() == key.as_str())
+            {
+                if pos < pos_args.len() {
+                    let duplicate_owner =
+                        if matches!(exact_legacy, Some("Num" | "Str" | "Bytes" | "Ellipsis"))
+                            && key.as_str() == "kind"
+                        {
+                            "Constant"
+                        } else {
+                            owner.as_str()
+                        };
+                    return Err(PyException::type_error(format!(
+                        "{} got multiple values for argument '{}'",
+                        duplicate_owner, key
+                    )));
+                }
+            } else if key.as_str() == "value" {
+                let value_taken = match exact_legacy {
+                    Some("Ellipsis") => true,
+                    Some("Num") | Some("Str") | Some("Bytes") => !pos_args.is_empty(),
+                    _ => fields
+                        .iter()
+                        .take(pos_args.len())
+                        .any(|field| field.as_str() == "value"),
+                };
+                if value_taken {
+                    let duplicate_owner =
+                        if matches!(exact_legacy, Some("Num" | "Str" | "Bytes" | "Ellipsis")) {
+                            "Constant"
+                        } else {
+                            owner.as_str()
+                        };
+                    return Err(PyException::type_error(format!(
+                        "{} got multiple values for argument '{}'",
+                        duplicate_owner, key
+                    )));
+                }
+            } else if key.as_str() == "kind" {
+                let kind_taken = fields
+                    .iter()
+                    .take(pos_args.len())
+                    .any(|field| field.as_str() == "kind");
+                if kind_taken {
+                    let duplicate_owner =
+                        if matches!(exact_legacy, Some("Num" | "Str" | "Bytes" | "Ellipsis")) {
+                            "Constant"
+                        } else {
+                            owner.as_str()
+                        };
+                    return Err(PyException::type_error(format!(
+                        "{} got multiple values for argument '{}'",
+                        duplicate_owner, key
+                    )));
+                }
+            }
+            writes.push((Self::ast_storage_name(key.as_str()), value.clone()));
+        }
+
+        if let PyObjectPayload::Instance(inst) = &instance.payload {
+            let mut attrs = inst.attrs.write();
+            for (key, value) in writes {
+                attrs.insert(key, value);
+            }
+        }
+        Ok(())
+    }
+
+    fn try_instantiate_ast_node(
+        &mut self,
+        cls: &PyObjectRef,
+        pos_args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+    ) -> PyResult<Option<PyObjectRef>> {
+        if Self::ast_class_name(cls).is_none() {
+            return Ok(None);
+        }
+
+        let exact_legacy = Self::ast_exact_legacy_name(cls);
+        let target_cls = if exact_legacy.is_some() {
+            Self::ast_constant_class(cls).unwrap_or_else(|| cls.clone())
+        } else {
+            cls.clone()
+        };
+        let instance = PyObject::instance(target_cls);
+
+        if exact_legacy.is_none() {
+            if let Some(init) = cls.get_attr("__init__") {
+                let is_builtin_init = matches!(&init.payload,
+                    PyObjectPayload::BuiltinBoundMethod(bbm)
+                        if matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(_)));
+                let is_ast_native_init = matches!(&init.payload,
+                    PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "_ast.AST.__init__")
+                    || matches!(&init.payload,
+                        PyObjectPayload::BoundMethod { method, .. }
+                            if matches!(&method.payload, PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "_ast.AST.__init__"));
+                if !is_builtin_init && !is_ast_native_init {
+                    let init_fn = match &init.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => init.clone(),
+                    };
+                    let mut init_args = vec![instance.clone()];
+                    init_args.extend(pos_args);
+                    let result = if kwargs.is_empty() {
+                        self.call_object(init_fn, init_args)?
+                    } else {
+                        self.call_object_kw(init_fn, init_args, kwargs)?
+                    };
+                    if !matches!(&result.payload, PyObjectPayload::None) {
+                        return Err(PyException::type_error(
+                            "__init__() should return None, not '".to_string()
+                                + result.type_name()
+                                + "'",
+                        ));
+                    }
+                    return Ok(Some(instance));
+                }
+            }
+        }
+
+        if exact_legacy == Some("Ellipsis") {
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                inst.attrs
+                    .write()
+                    .insert(CompactString::from("value"), PyObject::ellipsis());
+            }
+        }
+
+        Self::populate_ast_node_attrs(&instance, cls, &pos_args, &kwargs)?;
+
+        Ok(Some(instance))
+    }
+
     #[inline(always)]
     fn fast_binary_result(
         op: Opcode,
@@ -846,6 +1137,12 @@ impl VirtualMachine {
         mut pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        if let Some(instance) =
+            self.try_instantiate_ast_node(cls, pos_args.clone(), kwargs.clone())?
+        {
+            return Ok(instance);
+        }
+
         // ── FAST PATH: simple class — skip ABC check entirely ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.is_simple_class.get()
@@ -2636,6 +2933,32 @@ impl VirtualMachine {
                 // Handle other payload types that support kwargs
                 match &func.payload {
                     PyObjectPayload::NativeFunction(nf_data) => {
+                        if nf_data.name.as_str() == "_ast.AST.__init__" {
+                            if pos_args.is_empty() {
+                                return Err(PyException::type_error("__init__ requires self"));
+                            }
+                            let instance = &pos_args[0];
+                            let cls = match &instance.payload {
+                                PyObjectPayload::Instance(inst) => inst.class.clone(),
+                                _ => {
+                                    return Err(PyException::type_error(
+                                        "AST.__init__ requires an AST instance",
+                                    ))
+                                }
+                            };
+                            Self::populate_ast_node_attrs(instance, &cls, &pos_args[1..], &kwargs)?;
+                            return Ok(PyObject::none());
+                        }
+                        if nf_data.name.as_str() == "_ast.AST.__new__" {
+                            if pos_args.is_empty() {
+                                return Err(PyException::type_error("__new__ requires cls"));
+                            }
+                            let cls = pos_args[0].clone();
+                            let args = pos_args[1..].to_vec();
+                            return Ok(self
+                                .try_instantiate_ast_node(&cls, args, kwargs)?
+                                .unwrap_or_else(|| PyObject::instance(cls)));
+                        }
                         // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
                         if nf_data.name.as_str() == "property.__init__" {
                             if pos_args.is_empty() {
@@ -5642,6 +5965,40 @@ impl VirtualMachine {
             }
             PyObjectPayload::NativeFunction(nf_data) => {
                 // Intercept functions that need VM access to call Python callables
+                if nf_data.name.as_str() == "_ast.AST.__init__" {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__init__ requires self"));
+                    }
+                    let (pos_args, kwargs) = Self::split_trailing_kwargs_dict(&args);
+                    if pos_args.is_empty() {
+                        return Err(PyException::type_error("__init__ requires self"));
+                    }
+                    let instance = &pos_args[0];
+                    let cls = match &instance.payload {
+                        PyObjectPayload::Instance(inst) => inst.class.clone(),
+                        _ => {
+                            return Err(PyException::type_error(
+                                "AST.__init__ requires an AST instance",
+                            ))
+                        }
+                    };
+                    Self::populate_ast_node_attrs(instance, &cls, &pos_args[1..], &kwargs)?;
+                    return Ok(PyObject::none());
+                }
+                if nf_data.name.as_str() == "_ast.AST.__new__" {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__new__ requires cls"));
+                    }
+                    let (pos_args, kwargs) = Self::split_trailing_kwargs_dict(&args);
+                    if pos_args.is_empty() {
+                        return Err(PyException::type_error("__new__ requires cls"));
+                    }
+                    let cls = pos_args[0].clone();
+                    let pos_args = pos_args[1..].to_vec();
+                    return Ok(self
+                        .try_instantiate_ast_node(&cls, pos_args, kwargs)?
+                        .unwrap_or_else(|| PyObject::instance(cls)));
+                }
                 // property.__get__(self, obj, objtype) — must call fget(obj) and return result
                 if nf_data.name.as_str() == "property.__get__" {
                     if args.is_empty() {

@@ -451,9 +451,7 @@ impl<'src> Lexer<'src> {
     // ─── Strings ────────────────────────────────────────────────────
 
     fn try_lex_string_prefix(&mut self) -> Result<Option<Token>, ParseError> {
-        let _start_pos = self.pos;
-        let _start_line = self.line;
-        let _start_col = self.col;
+        let start = (self.line, self.col);
 
         let mut is_raw = false;
         let mut is_bytes = false;
@@ -508,14 +506,18 @@ impl<'src> Lexer<'src> {
 
         // Now lex the string
         if is_fstring {
-            self.lex_fstring(is_raw).map(Some)
+            self.lex_fstring_from(is_raw, start).map(Some)
         } else {
-            self.lex_string(is_raw, is_bytes).map(Some)
+            self.lex_string_from(is_raw, is_bytes, start).map(Some)
         }
     }
 
     fn lex_fstring(&mut self, is_raw: bool) -> Result<Token, ParseError> {
         let start = (self.line, self.col);
+        self.lex_fstring_from(is_raw, start)
+    }
+
+    fn lex_fstring_from(&mut self, is_raw: bool, start: (u32, u32)) -> Result<Token, ParseError> {
         let quote = self.peek_char();
         self.advance();
 
@@ -631,6 +633,10 @@ impl<'src> Lexer<'src> {
                 }
                 content.push(c);
                 self.advance();
+                if c == '\n' {
+                    self.line += 1;
+                    self.col = 0;
+                }
                 continue;
             }
 
@@ -821,6 +827,10 @@ impl<'src> Lexer<'src> {
             }
             content.push(c);
             self.advance();
+            if c == '\n' {
+                self.line += 1;
+                self.col = 0;
+            }
         }
         Ok(Token {
             kind: TokenKind::FString(CompactString::from(content)),
@@ -830,6 +840,15 @@ impl<'src> Lexer<'src> {
 
     fn lex_string(&mut self, is_raw: bool, is_bytes: bool) -> Result<Token, ParseError> {
         let start = (self.line, self.col);
+        self.lex_string_from(is_raw, is_bytes, start)
+    }
+
+    fn lex_string_from(
+        &mut self,
+        is_raw: bool,
+        is_bytes: bool,
+        start: (u32, u32),
+    ) -> Result<Token, ParseError> {
         let quote = self.peek_char();
         self.advance();
 
@@ -898,11 +917,13 @@ impl<'src> Lexer<'src> {
                             self.span_from(start),
                         ));
                     }
-                    self.line += 1;
-                    self.col = 0;
                 }
                 content.push(c);
                 self.advance();
+                if c == '\n' {
+                    self.line += 1;
+                    self.col = 0;
+                }
             }
         }
 
@@ -1086,8 +1107,9 @@ impl<'src> Lexer<'src> {
 
     fn advance(&mut self) {
         if self.pos < self.chars.len() {
+            let c = self.chars[self.pos];
             self.pos += 1;
-            self.col += 1;
+            self.col += c.len_utf8() as u32;
         }
     }
 

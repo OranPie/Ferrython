@@ -2020,6 +2020,32 @@ impl Compiler {
         Ok(())
     }
 
+    fn constant_to_annotation(value: &Constant) -> String {
+        match value {
+            Constant::Str(s) => format!("'{}'", s),
+            Constant::Int(n) => match n {
+                BigInt::Small(v) => v.to_string(),
+                BigInt::Big(v) => v.to_string(),
+            },
+            Constant::Float(f) => f.to_string(),
+            Constant::Complex { real, imag } => format!("{}+{}j", real, imag),
+            Constant::None => "None".to_string(),
+            Constant::Bool(true) => "True".to_string(),
+            Constant::Bool(false) => "False".to_string(),
+            Constant::Ellipsis => "...".to_string(),
+            Constant::Bytes(_) => "b'...'".to_string(),
+            Constant::Tuple(items) => {
+                let parts: Vec<String> = items.iter().map(Self::constant_to_annotation).collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            Constant::FrozenSet(_) => "frozenset(...)".to_string(),
+        }
+    }
+
     /// Convert an annotation expression AST to its source-code string representation.
     /// Used by PEP 563 (`from __future__ import annotations`) to store annotations as strings.
     pub(super) fn annotation_to_string(expr: &Expression) -> String {
@@ -2043,20 +2069,7 @@ impl Compiler {
                 let parts: Vec<String> = elts.iter().map(Self::annotation_to_string).collect();
                 format!("[{}]", parts.join(", "))
             }
-            ExpressionKind::Constant { value } => match value {
-                Constant::Str(s) => format!("'{}'", s),
-                Constant::Int(n) => match n {
-                    BigInt::Small(v) => v.to_string(),
-                    BigInt::Big(v) => v.to_string(),
-                },
-                Constant::Float(f) => f.to_string(),
-                Constant::Complex { real, imag } => format!("{}+{}j", real, imag),
-                Constant::None => "None".to_string(),
-                Constant::Bool(true) => "True".to_string(),
-                Constant::Bool(false) => "False".to_string(),
-                Constant::Ellipsis => "...".to_string(),
-                Constant::Bytes(_) => "b'...'".to_string(),
-            },
+            ExpressionKind::Constant { value } => Self::constant_to_annotation(value),
             ExpressionKind::BinOp { left, op, right } => {
                 let op_str = match op {
                     Operator::BitOr => "|",

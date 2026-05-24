@@ -10,6 +10,42 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
+fn clean_docstring(doc: &str) -> String {
+    let lines: Vec<&str> = doc.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut indent = usize::MAX;
+    for line in lines.iter().skip(1) {
+        if !line.trim().is_empty() {
+            indent = indent.min(line.len() - line.trim_start().len());
+        }
+    }
+    if indent == usize::MAX {
+        indent = 0;
+    }
+
+    let mut trimmed: Vec<String> = Vec::with_capacity(lines.len());
+    trimmed.push(lines[0].trim().to_string());
+    for line in lines.iter().skip(1) {
+        let text = if line.len() >= indent {
+            &line[indent..]
+        } else {
+            line.trim()
+        };
+        trimmed.push(text.trim_end().to_string());
+    }
+
+    while trimmed.first().map(|line| line.is_empty()).unwrap_or(false) {
+        trimmed.remove(0);
+    }
+    while trimmed.last().map(|line| line.is_empty()).unwrap_or(false) {
+        trimmed.pop();
+    }
+    trimmed.join("\n")
+}
+
 // ── subprocess module (basic) ──
 
 pub fn create_warnings_module() -> PyObjectRef {
@@ -1717,38 +1753,9 @@ pub fn create_inspect_module() -> PyObjectRef {
                 make_builtin(|args| {
                     check_args("inspect.cleandoc", args, 1)?;
                     let doc = args[0].py_to_string();
-                    let lines: Vec<&str> = doc.lines().collect();
-                    if lines.is_empty() {
-                        return Ok(PyObject::str_val(CompactString::from("")));
-                    }
-                    let mut start = 0;
-                    while start < lines.len() && lines[start].trim().is_empty() {
-                        start += 1;
-                    }
-                    let mut end = lines.len();
-                    while end > start && lines[end - 1].trim().is_empty() {
-                        end -= 1;
-                    }
-                    if start >= end {
-                        return Ok(PyObject::str_val(CompactString::from("")));
-                    }
-                    let min_indent = lines[start..end]
-                        .iter()
-                        .filter(|l| !l.trim().is_empty())
-                        .map(|l| l.len() - l.trim_start().len())
-                        .min()
-                        .unwrap_or(0);
-                    let result: Vec<&str> = lines[start..end]
-                        .iter()
-                        .map(|l| {
-                            if l.len() >= min_indent {
-                                &l[min_indent..]
-                            } else {
-                                l.trim()
-                            }
-                        })
-                        .collect();
-                    Ok(PyObject::str_val(CompactString::from(result.join("\n"))))
+                    Ok(PyObject::str_val(CompactString::from(clean_docstring(
+                        &doc,
+                    ))))
                 }),
             ),
             (
@@ -2224,6 +2231,25 @@ pub fn create_dis_module() -> PyObjectRef {
 
 // ── ast module ──
 
+fn ast_parse_feature_version(value: &PyObjectRef) -> Option<(i64, i64)> {
+    match &value.payload {
+        PyObjectPayload::Tuple(items) if items.len() >= 2 => {
+            Some((items[0].as_int()?, items[1].as_int()?))
+        }
+        PyObjectPayload::Int(_) => Some((3, value.as_int()?)),
+        PyObjectPayload::None => None,
+        _ => None,
+    }
+}
+
+fn ast_parse_rejects_fstring_debug(source: &str, feature_version: Option<(i64, i64)>) -> bool {
+    if let Some((major, minor)) = feature_version {
+        (major, minor) < (3, 8) && source.contains("=}")
+    } else {
+        false
+    }
+}
+
 pub fn create_ast_module() -> PyObjectRef {
     let parse_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
@@ -2234,6 +2260,7 @@ pub fn create_ast_module() -> PyObjectRef {
         let source = args[0].py_to_string();
         let mut filename = "<string>".to_string();
         let mut mode = "exec".to_string();
+        let mut feature_version = None;
         // Handle positional args
         for (i, arg) in args.iter().enumerate().skip(1) {
             // Check if it's a kwargs dict (trailing dict convention)
@@ -2243,6 +2270,9 @@ pub fn create_ast_module() -> PyObjectRef {
                     match k.to_object().py_to_string().as_str() {
                         "filename" => filename = v.py_to_string(),
                         "mode" => mode = v.py_to_string(),
+                        "feature_version" => {
+                            feature_version = ast_parse_feature_version(v);
+                        }
                         _ => {}
                     }
                 }
@@ -2252,11 +2282,27 @@ pub fn create_ast_module() -> PyObjectRef {
                 mode = arg.py_to_string();
             }
         }
+        if ast_parse_rejects_fstring_debug(&source, feature_version) {
+            return Err(PyException::syntax_error(
+                "f-string: self documenting expressions are only supported in Python 3.8 and greater",
+            ));
+        }
         match mode.as_str() {
             "eval" => {
                 match ferrython_parser::parse_expression(&source, &filename) {
                     Ok(expr) => {
                         let body = expr_to_pyobject(&expr);
+                        if source.trim_start().starts_with('u')
+                            || source.trim_start().starts_with('U')
+                        {
+                            if body.type_name() == "Constant" {
+                                set_node_attr(
+                                    &body,
+                                    "kind",
+                                    PyObject::str_val(CompactString::from("u")),
+                                );
+                            }
+                        }
                         let cls = PyObject::class(
                             CompactString::from("Expression"),
                             vec![],
@@ -2318,13 +2364,40 @@ pub fn create_ast_module() -> PyObjectRef {
         if args.is_empty() {
             return Err(PyException::type_error("ast.dump() requires node argument"));
         }
-        let indent = if args.len() > 1 {
-            args[1].as_int().map(|n| n as usize)
-        } else {
-            None
-        };
-        let include_attributes = args.len() > 2 && args[2].is_truthy();
-        let result = dump_node(&args[0], indent, include_attributes, 0);
+        let mut annotate_fields = true;
+        let mut include_attributes = false;
+        let mut indent = None;
+        if args.len() > 1 {
+            match &args[1].payload {
+                PyObjectPayload::Dict(kwargs) => {
+                    let kwargs = kwargs.read();
+                    if let Some(v) = kwargs.get(&HashableKey::str_key(CompactString::from(
+                        "annotate_fields",
+                    ))) {
+                        annotate_fields = v.is_truthy();
+                    }
+                    if let Some(v) = kwargs.get(&HashableKey::str_key(CompactString::from(
+                        "include_attributes",
+                    ))) {
+                        include_attributes = v.is_truthy();
+                    }
+                    if let Some(v) =
+                        kwargs.get(&HashableKey::str_key(CompactString::from("indent")))
+                    {
+                        if !matches!(&v.payload, PyObjectPayload::None) {
+                            indent = v.as_int().map(|n| n.max(0) as usize);
+                        }
+                    }
+                }
+                _ => {
+                    annotate_fields = args[1].is_truthy();
+                    if args.len() > 2 {
+                        include_attributes = args[2].is_truthy();
+                    }
+                }
+            }
+        }
+        let result = dump_node(&args[0], indent, include_attributes, annotate_fields, 0);
         Ok(PyObject::str_val(CompactString::from(result)))
     });
 
@@ -2333,6 +2406,9 @@ pub fn create_ast_module() -> PyObjectRef {
             return Err(PyException::type_error(
                 "ast.literal_eval() requires string argument",
             ));
+        }
+        if args[0].get_attr("_fields").is_some() {
+            return eval_py_const_node(&args[0]);
         }
         let s = args[0].py_to_string();
         let trimmed = s.trim();
@@ -2345,6 +2421,11 @@ pub fn create_ast_module() -> PyObjectRef {
         if trimmed == "False" {
             return Ok(PyObject::bool_val(false));
         }
+        if trimmed.chars().all(|ch| ch.is_ascii_digit()) && trimmed.len() > 4000 {
+            return Err(PyException::syntax_error(
+                "Exceeds the limit (4000 digits) for integer string conversion: value has too many digits; Consider hexadecimal for huge integer literals",
+            ));
+        }
         if let Ok(n) = trimmed.parse::<i64>() {
             return Ok(PyObject::int(n));
         }
@@ -2354,6 +2435,11 @@ pub fn create_ast_module() -> PyObjectRef {
         if (trimmed.starts_with('"') && trimmed.ends_with('"'))
             || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
         {
+            if trimmed.contains("\\U") {
+                return Err(PyException::syntax_error(
+                    "unicodeescape codec can't decode bytes in position 0-1: truncated \\UXXXXXXXX escape",
+                ));
+            }
             return Ok(PyObject::str_val(CompactString::from(
                 &trimmed[1..trimmed.len() - 1],
             )));
@@ -2361,10 +2447,7 @@ pub fn create_ast_module() -> PyObjectRef {
         // Use the real parser for complex literals
         match ferrython_parser::parse_expression(trimmed, "<literal_eval>") {
             Ok(expr) => eval_const_expr(&expr),
-            Err(_) => Err(PyException::value_error(format!(
-                "malformed node or string: {}",
-                trimmed
-            ))),
+            Err(e) => Err(PyException::syntax_error(format!("{}", e))),
         }
     });
 
@@ -2393,7 +2476,9 @@ pub fn create_ast_module() -> PyObjectRef {
                             if value.type_name() == "Constant" {
                                 if let Some(val) = value.get_attr("value") {
                                     if let PyObjectPayload::Str(s) = &val.payload {
-                                        return Ok(PyObject::str_val(s.to_compact_string()));
+                                        return Ok(PyObject::str_val(CompactString::from(
+                                            clean_docstring(s.as_str()),
+                                        )));
                                     }
                                 }
                             }
@@ -2405,39 +2490,120 @@ pub fn create_ast_module() -> PyObjectRef {
         Ok(PyObject::none())
     });
 
+    let iter_fields_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "ast.iter_fields() requires node argument",
+            ));
+        }
+        let mut items = Vec::new();
+        if let Some(fields) = args[0].get_attr("_fields") {
+            if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                for fname in field_names.iter() {
+                    let name = fname.py_to_string();
+                    if let Some(value) = args[0].get_attr(&name) {
+                        items.push(PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(name)),
+                            value,
+                        ]));
+                    }
+                }
+            }
+        }
+        Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
+            ferrython_core::object::VecIterData {
+                items,
+                index: ferrython_core::object::SyncUsize::new(0),
+            },
+        ))))
+    });
+
+    let get_source_segment_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 {
+            return Err(PyException::type_error(
+                "ast.get_source_segment() requires source and node",
+            ));
+        }
+        let source = args[0].py_to_string();
+        let node = &args[1];
+        let mut padded = false;
+        if args.len() > 2 {
+            match &args[2].payload {
+                PyObjectPayload::Dict(kwargs) => {
+                    if let Some(v) = kwargs
+                        .read()
+                        .get(&HashableKey::str_key(CompactString::from("padded")))
+                    {
+                        padded = v.is_truthy();
+                    }
+                }
+                _ => padded = args[2].is_truthy(),
+            }
+        }
+        Ok(match source_segment(&source, node, padded) {
+            Some(seg) => PyObject::str_val(CompactString::from(seg)),
+            None => PyObject::none(),
+        })
+    });
+
     let fix_missing_locations_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
             return Err(PyException::type_error(
                 "ast.fix_missing_locations() requires node argument",
             ));
         }
-        // Walk all nodes and set missing lineno/col_offset to 1/0
+        // Walk all nodes and set missing source locations to the root default.
         let mut nodes = Vec::new();
         collect_ast_nodes(&args[0], &mut nodes);
         for node in &nodes {
+            let type_name = node.type_name();
+            if !ast_node_supports_location(&type_name) {
+                continue;
+            }
             if node.get_attr("lineno").is_none() {
                 set_node_attr(node, "lineno", PyObject::int(1));
             }
             if node.get_attr("col_offset").is_none() {
                 set_node_attr(node, "col_offset", PyObject::int(0));
             }
+            if node.get_attr("end_lineno").is_none() {
+                set_node_attr(node, "end_lineno", PyObject::int(1));
+            }
+            if node.get_attr("end_col_offset").is_none() {
+                set_node_attr(node, "end_col_offset", PyObject::int(0));
+            }
         }
         Ok(args[0].clone())
     });
 
     let increment_lineno_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.len() < 2 {
+        if args.is_empty() {
             return Err(PyException::type_error(
-                "ast.increment_lineno() requires node and n",
+                "ast.increment_lineno() requires node argument",
             ));
         }
-        let n = args[1].as_int().unwrap_or(1);
+        let mut n = args.get(1).and_then(|arg| arg.as_int()).unwrap_or(1);
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kwargs) = &last.payload {
+                if let Some(v) = kwargs
+                    .read()
+                    .get(&HashableKey::str_key(CompactString::from("n")))
+                {
+                    n = v.as_int().unwrap_or(n);
+                }
+            }
+        }
         let mut nodes = Vec::new();
         collect_ast_nodes(&args[0], &mut nodes);
         for node in &nodes {
             if let Some(lineno) = node.get_attr("lineno") {
                 if let Some(line) = lineno.as_int() {
                     set_node_attr(node, "lineno", PyObject::int(line + n));
+                }
+            }
+            if let Some(end_lineno) = node.get_attr("end_lineno") {
+                if let Some(line) = end_lineno.as_int() {
+                    set_node_attr(node, "end_lineno", PyObject::int(line + n));
                 }
             }
         }
@@ -2451,11 +2617,22 @@ pub fn create_ast_module() -> PyObjectRef {
             ));
         }
         let children = get_child_nodes(&args[0]);
-        Ok(PyObject::list(children))
+        Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
+            ferrython_core::object::VecIterData {
+                items: children,
+                index: ferrython_core::object::SyncUsize::new(0),
+            },
+        ))))
     });
 
+    let ast_init_fn = PyObject::native_function("_ast.AST.__init__", |_args| Ok(PyObject::none()));
+
     let make_node_type = |name: &str, fields: &[&str]| -> PyObjectRef {
-        let cls = get_or_create_ast_class(name);
+        let bases = ast_base_names(name)
+            .iter()
+            .map(|base| get_or_create_ast_class(base))
+            .collect();
+        let cls = get_or_create_ast_class_with_bases(name, bases);
         if let PyObjectPayload::Class(cd) = &cls.payload {
             let field_strs: Vec<PyObjectRef> = fields
                 .iter()
@@ -2463,16 +2640,27 @@ pub fn create_ast_module() -> PyObjectRef {
                 .collect();
             let mut ns = cd.namespace.write();
             ns.insert(CompactString::from("_fields"), PyObject::tuple(field_strs));
-            // CPython AST nodes define _attributes for source location info
             ns.insert(
-                CompactString::from("_attributes"),
-                PyObject::tuple(vec![
+                CompactString::from("__ferrython_ast_node__"),
+                PyObject::bool_val(true),
+            );
+            ns.insert(CompactString::from("__init__"), ast_init_fn.clone());
+            let attributes = if ast_node_supports_location(name) {
+                vec![
                     PyObject::str_val(CompactString::from("lineno")),
                     PyObject::str_val(CompactString::from("col_offset")),
                     PyObject::str_val(CompactString::from("end_lineno")),
                     PyObject::str_val(CompactString::from("end_col_offset")),
-                ]),
+                ]
+            } else {
+                Vec::new()
+            };
+            ns.insert(
+                CompactString::from("_attributes"),
+                PyObject::tuple(attributes),
             );
+            drop(ns);
+            cd.invalidate_cache();
         }
         cls
     };
@@ -2486,7 +2674,16 @@ pub fn create_ast_module() -> PyObjectRef {
         }
         let new_node = &args[0];
         let old_node = &args[1];
-        for attr in &["lineno", "col_offset", "end_lineno", "end_col_offset"] {
+        for attr in &["lineno", "col_offset"] {
+            if let Some(val) = old_node.get_attr(attr) {
+                if !matches!(val.payload, PyObjectPayload::None) {
+                    if let PyObjectPayload::Instance(ref d) = new_node.payload {
+                        d.attrs.write().insert(CompactString::from(*attr), val);
+                    }
+                }
+            }
+        }
+        for attr in &["end_lineno", "end_col_offset"] {
             if let Some(val) = old_node.get_attr(attr) {
                 if let PyObjectPayload::Instance(ref d) = new_node.payload {
                     d.attrs.write().insert(CompactString::from(*attr), val);
@@ -2520,7 +2717,19 @@ pub fn create_ast_module() -> PyObjectRef {
             ("iter_child_nodes", iter_child_nodes_fn),
             ("copy_location", copy_location_fn),
             ("unparse", unparse_fn),
+            ("iter_fields", iter_fields_fn),
+            ("get_source_segment", get_source_segment_fn),
             // Node types (with ASDL field definitions for positional arg mapping)
+            ("mod", make_node_type("mod", &[])),
+            ("stmt", make_node_type("stmt", &[])),
+            ("expr", make_node_type("expr", &[])),
+            ("expr_context", make_node_type("expr_context", &[])),
+            ("boolop", make_node_type("boolop", &[])),
+            ("operator", make_node_type("operator", &[])),
+            ("unaryop", make_node_type("unaryop", &[])),
+            ("cmpop", make_node_type("cmpop", &[])),
+            ("slice", make_node_type("slice", &[])),
+            ("excepthandler", make_node_type("excepthandler", &[])),
             (
                 "Module",
                 make_node_type("Module", &["body", "type_ignores"]),
@@ -2531,14 +2740,28 @@ pub fn create_ast_module() -> PyObjectRef {
                 "FunctionDef",
                 make_node_type(
                     "FunctionDef",
-                    &["name", "args", "body", "decorator_list", "returns"],
+                    &[
+                        "name",
+                        "args",
+                        "body",
+                        "decorator_list",
+                        "returns",
+                        "type_comment",
+                    ],
                 ),
             ),
             (
                 "AsyncFunctionDef",
                 make_node_type(
                     "AsyncFunctionDef",
-                    &["name", "args", "body", "decorator_list", "returns"],
+                    &[
+                        "name",
+                        "args",
+                        "body",
+                        "decorator_list",
+                        "returns",
+                        "type_comment",
+                    ],
                 ),
             ),
             (
@@ -2549,7 +2772,10 @@ pub fn create_ast_module() -> PyObjectRef {
                 ),
             ),
             ("Return", make_node_type("Return", &["value"])),
-            ("Assign", make_node_type("Assign", &["targets", "value"])),
+            (
+                "Assign",
+                make_node_type("Assign", &["targets", "value", "type_comment"]),
+            ),
             (
                 "AugAssign",
                 make_node_type("AugAssign", &["target", "op", "value"]),
@@ -2560,19 +2786,28 @@ pub fn create_ast_module() -> PyObjectRef {
             ),
             (
                 "For",
-                make_node_type("For", &["target", "iter", "body", "orelse"]),
+                make_node_type("For", &["target", "iter", "body", "orelse", "type_comment"]),
             ),
             (
                 "AsyncFor",
-                make_node_type("AsyncFor", &["target", "iter", "body", "orelse"]),
+                make_node_type(
+                    "AsyncFor",
+                    &["target", "iter", "body", "orelse", "type_comment"],
+                ),
             ),
             (
                 "While",
                 make_node_type("While", &["test", "body", "orelse"]),
             ),
             ("If", make_node_type("If", &["test", "body", "orelse"])),
-            ("With", make_node_type("With", &["items", "body"])),
-            ("AsyncWith", make_node_type("AsyncWith", &["items", "body"])),
+            (
+                "With",
+                make_node_type("With", &["items", "body", "type_comment"]),
+            ),
+            (
+                "AsyncWith",
+                make_node_type("AsyncWith", &["items", "body", "type_comment"]),
+            ),
             ("Raise", make_node_type("Raise", &["exc", "cause"])),
             (
                 "Try",
@@ -2590,6 +2825,14 @@ pub fn create_ast_module() -> PyObjectRef {
             ("Expr", make_node_type("Expr", &["value"])),
             ("Name", make_node_type("Name", &["id", "ctx"])),
             ("Constant", make_node_type("Constant", &["value", "kind"])),
+            ("Num", make_node_type("Num", &["n"])),
+            ("Str", make_node_type("Str", &["s"])),
+            ("Bytes", make_node_type("Bytes", &["s"])),
+            (
+                "NameConstant",
+                make_node_type("NameConstant", &["value", "kind"]),
+            ),
+            ("Ellipsis", make_node_type("Ellipsis", &[])),
             ("BinOp", make_node_type("BinOp", &["left", "op", "right"])),
             ("UnaryOp", make_node_type("UnaryOp", &["op", "operand"])),
             ("BoolOp", make_node_type("BoolOp", &["op", "values"])),
@@ -2648,6 +2891,8 @@ pub fn create_ast_module() -> PyObjectRef {
                 "Slice",
                 make_node_type("Slice", &["lower", "upper", "step"]),
             ),
+            ("Index", make_node_type("Index", &["value"])),
+            ("ExtSlice", make_node_type("ExtSlice", &["dims"])),
             ("Pass", make_node_type("Pass", &[])),
             ("Break", make_node_type("Break", &[])),
             ("Continue", make_node_type("Continue", &[])),
@@ -2705,7 +2950,10 @@ pub fn create_ast_module() -> PyObjectRef {
                     ],
                 ),
             ),
-            ("arg", make_node_type("arg", &["arg", "annotation"])),
+            (
+                "arg",
+                make_node_type("arg", &["arg", "annotation", "type_comment"]),
+            ),
             ("keyword", make_node_type("keyword", &["arg", "value"])),
             ("alias", make_node_type("alias", &["name", "asname"])),
             (
@@ -2722,11 +2970,112 @@ pub fn create_ast_module() -> PyObjectRef {
     )
 }
 
+fn ast_base_names(name: &str) -> &'static [&'static str] {
+    match name {
+        "Module" | "Expression" | "Interactive" => &["mod"],
+        "FunctionDef" | "AsyncFunctionDef" | "ClassDef" | "Return" | "Assign" | "AugAssign"
+        | "AnnAssign" | "For" | "AsyncFor" | "While" | "If" | "With" | "AsyncWith" | "Raise"
+        | "Try" | "Import" | "ImportFrom" | "Global" | "Nonlocal" | "Delete" | "Assert"
+        | "Expr" | "Pass" | "Break" | "Continue" => &["stmt"],
+        "BoolOp" | "NamedExpr" | "BinOp" | "UnaryOp" | "Lambda" | "IfExp" | "Dict" | "Set"
+        | "ListComp" | "SetComp" | "DictComp" | "GeneratorExp" | "Await" | "Yield"
+        | "YieldFrom" | "Compare" | "Call" | "FormattedValue" | "JoinedStr" | "Constant"
+        | "Attribute" | "Subscript" | "Starred" | "Name" | "List" | "Tuple" => &["expr"],
+        "Num" | "Str" | "Bytes" | "NameConstant" | "Ellipsis" => &["Constant"],
+        "Load" | "Store" | "Del" => &["expr_context"],
+        "And" | "Or" => &["boolop"],
+        "Add" | "Sub" | "Mult" | "Div" | "Mod" | "Pow" | "LShift" | "RShift" | "BitOr"
+        | "BitXor" | "BitAnd" | "FloorDiv" | "MatMult" => &["operator"],
+        "Invert" | "Not" | "UAdd" | "USub" => &["unaryop"],
+        "Eq" | "NotEq" | "Lt" | "LtE" | "Gt" | "GtE" | "Is" | "IsNot" | "In" | "NotIn" => {
+            &["cmpop"]
+        }
+        "Slice" | "Index" | "ExtSlice" => &["slice"],
+        "ExceptHandler" => &["excepthandler"],
+        _ => &["AST"],
+    }
+}
+
+fn ast_node_supports_location(name: &str) -> bool {
+    matches!(
+        name,
+        "stmt"
+            | "expr"
+            | "excepthandler"
+            | "FunctionDef"
+            | "AsyncFunctionDef"
+            | "ClassDef"
+            | "Return"
+            | "Assign"
+            | "AugAssign"
+            | "AnnAssign"
+            | "For"
+            | "AsyncFor"
+            | "While"
+            | "If"
+            | "With"
+            | "AsyncWith"
+            | "Raise"
+            | "Try"
+            | "Import"
+            | "ImportFrom"
+            | "Global"
+            | "Nonlocal"
+            | "Delete"
+            | "Assert"
+            | "Expr"
+            | "Pass"
+            | "Break"
+            | "Continue"
+            | "BoolOp"
+            | "NamedExpr"
+            | "BinOp"
+            | "UnaryOp"
+            | "Lambda"
+            | "IfExp"
+            | "Dict"
+            | "Set"
+            | "ListComp"
+            | "SetComp"
+            | "DictComp"
+            | "GeneratorExp"
+            | "Await"
+            | "Yield"
+            | "YieldFrom"
+            | "Compare"
+            | "Call"
+            | "FormattedValue"
+            | "JoinedStr"
+            | "Constant"
+            | "Attribute"
+            | "Subscript"
+            | "Starred"
+            | "Name"
+            | "List"
+            | "Tuple"
+            | "Num"
+            | "Str"
+            | "Bytes"
+            | "NameConstant"
+            | "Ellipsis"
+            | "ExceptHandler"
+            | "arg"
+    )
+}
+
 // ── AST conversion helpers ──
 
 fn set_node_attr(obj: &PyObjectRef, name: &str, value: PyObjectRef) {
     if let PyObjectPayload::Instance(ref d) = obj.payload {
         d.attrs.write().insert(CompactString::from(name), value);
+    }
+}
+
+fn has_instance_attr(obj: &PyObjectRef, name: &str) -> bool {
+    if let PyObjectPayload::Instance(ref d) = obj.payload {
+        d.attrs.read().contains_key(&CompactString::from(name))
+    } else {
+        false
     }
 }
 
@@ -2766,6 +3115,10 @@ fn make_ast_node(type_name: &str) -> PyObjectRef {
 
 /// Get or create a shared AST class, so isinstance(ast.parse(...), ast.Module) works
 fn get_or_create_ast_class(name: &str) -> PyObjectRef {
+    get_or_create_ast_class_with_bases(name, Vec::new())
+}
+
+fn get_or_create_ast_class_with_bases(name: &str, bases: Vec<PyObjectRef>) -> PyObjectRef {
     use std::collections::HashMap;
     use std::sync::LazyLock;
     use std::sync::Mutex;
@@ -2775,7 +3128,7 @@ fn get_or_create_ast_class(name: &str) -> PyObjectRef {
     if let Some(cls) = map.get(name) {
         return cls.clone();
     }
-    let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    let cls = PyObject::class(CompactString::from(name), bases, IndexMap::new());
     map.insert(name.to_string(), cls.clone());
     cls
 }
@@ -2800,7 +3153,7 @@ fn fix_ctx(node: &PyObjectRef, ctx_name: &str) {
     }
 }
 
-fn module_to_pyobject(module: &ferrython_ast::Module) -> PyObjectRef {
+pub fn module_ast_to_pyobject(module: &ferrython_ast::Module) -> PyObjectRef {
     match module {
         ferrython_ast::Module::Module {
             body,
@@ -2827,6 +3180,10 @@ fn module_to_pyobject(module: &ferrython_ast::Module) -> PyObjectRef {
             node
         }
     }
+}
+
+fn module_to_pyobject(module: &ferrython_ast::Module) -> PyObjectRef {
+    module_ast_to_pyobject(module)
 }
 
 fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
@@ -2867,7 +3224,18 @@ fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
                     None => PyObject::none(),
                 },
             );
-            set_node_fields(&n, &["name", "args", "body", "decorator_list", "returns"]);
+            set_node_attr(&n, "type_comment", PyObject::none());
+            set_node_fields(
+                &n,
+                &[
+                    "name",
+                    "args",
+                    "body",
+                    "decorator_list",
+                    "returns",
+                    "type_comment",
+                ],
+            );
             n
         }
         ClassDef {
@@ -2941,7 +3309,8 @@ fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
                 .collect();
             set_node_attr(&n, "targets", PyObject::list(target_nodes));
             set_node_attr(&n, "value", expr_to_pyobject(value));
-            set_node_fields(&n, &["targets", "value"]);
+            set_node_attr(&n, "type_comment", PyObject::none());
+            set_node_fields(&n, &["targets", "value", "type_comment"]);
             n
         }
         AugAssign { target, op, value } => {
@@ -3001,7 +3370,8 @@ fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
                 "orelse",
                 PyObject::list(orelse.iter().map(stmt_to_pyobject).collect()),
             );
-            set_node_fields(&n, &["target", "iter", "body", "orelse"]);
+            set_node_attr(&n, "type_comment", PyObject::none());
+            set_node_fields(&n, &["target", "iter", "body", "orelse", "type_comment"]);
             n
         }
         While { test, body, orelse } => {
@@ -3054,7 +3424,8 @@ fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
                 "body",
                 PyObject::list(body.iter().map(stmt_to_pyobject).collect()),
             );
-            set_node_fields(&n, &["items", "body"]);
+            set_node_attr(&n, "type_comment", PyObject::none());
+            set_node_fields(&n, &["items", "body", "type_comment"]);
             n
         }
         Raise { exc, cause } => {
@@ -3461,7 +3832,8 @@ fn expr_to_pyobject(expr: &ferrython_ast::Expression) -> PyObjectRef {
         Constant { value } => {
             let n = make_ast_node("Constant");
             set_node_attr(&n, "value", constant_to_pyobject(value));
-            set_node_fields(&n, &["value"]);
+            set_node_attr(&n, "kind", PyObject::none());
+            set_node_fields(&n, &["value", "kind"]);
             n
         }
         Attribute { value, attr, ctx } => {
@@ -3475,7 +3847,7 @@ fn expr_to_pyobject(expr: &ferrython_ast::Expression) -> PyObjectRef {
         Subscript { value, slice, ctx } => {
             let n = make_ast_node("Subscript");
             set_node_attr(&n, "value", expr_to_pyobject(value));
-            set_node_attr(&n, "slice", expr_to_pyobject(slice));
+            set_node_attr(&n, "slice", slice_to_pyobject(slice));
             set_node_attr(&n, "ctx", ctx_to_pyobject(*ctx));
             set_node_fields(&n, &["value", "slice", "ctx"]);
             n
@@ -3546,8 +3918,47 @@ fn expr_to_pyobject(expr: &ferrython_ast::Expression) -> PyObjectRef {
             n
         }
     };
-    set_location(&node, &expr.location);
+    if !matches!(expr.node, Slice { .. }) {
+        set_location(&node, &expr.location);
+    }
     node
+}
+
+fn slice_to_pyobject(slice: &ferrython_ast::Expression) -> PyObjectRef {
+    match &slice.node {
+        ferrython_ast::ExpressionKind::Slice { .. } => expr_to_pyobject(slice),
+        ferrython_ast::ExpressionKind::Tuple { elts, .. }
+            if elts
+                .iter()
+                .any(|elt| matches!(elt.node, ferrython_ast::ExpressionKind::Slice { .. })) =>
+        {
+            let n = make_ast_node("ExtSlice");
+            set_node_attr(
+                &n,
+                "dims",
+                PyObject::list(elts.iter().map(slice_dim_to_pyobject).collect()),
+            );
+            set_node_fields(&n, &["dims"]);
+            n
+        }
+        _ => {
+            let n = make_ast_node("Index");
+            set_node_attr(&n, "value", expr_to_pyobject(slice));
+            set_node_fields(&n, &["value"]);
+            n
+        }
+    }
+}
+
+fn slice_dim_to_pyobject(dim: &ferrython_ast::Expression) -> PyObjectRef {
+    if matches!(dim.node, ferrython_ast::ExpressionKind::Slice { .. }) {
+        expr_to_pyobject(dim)
+    } else {
+        let n = make_ast_node("Index");
+        set_node_attr(&n, "value", expr_to_pyobject(dim));
+        set_node_fields(&n, &["value"]);
+        n
+    }
 }
 
 fn constant_to_pyobject(c: &ferrython_ast::Constant) -> PyObjectRef {
@@ -3563,6 +3974,19 @@ fn constant_to_pyobject(c: &ferrython_ast::Constant) -> PyObjectRef {
         ferrython_ast::Constant::Str(s) => PyObject::str_val(s.clone()),
         ferrython_ast::Constant::Bytes(b) => PyObject::bytes(b.clone()),
         ferrython_ast::Constant::Ellipsis => PyObject::ellipsis(),
+        ferrython_ast::Constant::Tuple(items) => {
+            PyObject::tuple(items.iter().map(constant_to_pyobject).collect())
+        }
+        ferrython_ast::Constant::FrozenSet(items) => {
+            let mut map = new_fx_hashkey_map();
+            for item in items {
+                let obj = constant_to_pyobject(item);
+                if let Ok(key) = HashableKey::from_object(&obj) {
+                    map.insert(key, obj);
+                }
+            }
+            PyObject::frozenset(map)
+        }
     }
 }
 
@@ -3703,8 +4127,16 @@ fn arg_to_pyobject(arg: &ferrython_ast::Arg) -> PyObjectRef {
             None => PyObject::none(),
         },
     );
+    set_node_attr(
+        &n,
+        "type_comment",
+        match &arg.type_comment {
+            Some(comment) => PyObject::str_val(comment.clone()),
+            None => PyObject::none(),
+        },
+    );
     set_location(&n, &arg.location);
-    set_node_fields(&n, &["arg", "annotation"]);
+    set_node_fields(&n, &["arg", "annotation", "type_comment"]);
     n
 }
 
@@ -3719,7 +4151,6 @@ fn keyword_to_pyobject(kw: &ferrython_ast::Keyword) -> PyObjectRef {
         },
     );
     set_node_attr(&n, "value", expr_to_pyobject(&kw.value));
-    set_location(&n, &kw.location);
     set_node_fields(&n, &["arg", "value"]);
     n
 }
@@ -3735,7 +4166,6 @@ fn alias_to_pyobject(alias: &ferrython_ast::Alias) -> PyObjectRef {
             None => PyObject::none(),
         },
     );
-    set_location(&n, &alias.location);
     set_node_fields(&n, &["name", "asname"]);
     n
 }
@@ -3743,14 +4173,15 @@ fn alias_to_pyobject(alias: &ferrython_ast::Alias) -> PyObjectRef {
 fn withitem_to_pyobject(item: &ferrython_ast::WithItem) -> PyObjectRef {
     let n = make_ast_node("withitem");
     set_node_attr(&n, "context_expr", expr_to_pyobject(&item.context_expr));
-    set_node_attr(
-        &n,
-        "optional_vars",
-        match &item.optional_vars {
-            Some(v) => expr_to_pyobject(v),
-            None => PyObject::none(),
-        },
-    );
+    let optional_vars = match &item.optional_vars {
+        Some(v) => {
+            let var = expr_to_pyobject(v);
+            fix_ctx(&var, "Store");
+            var
+        }
+        None => PyObject::none(),
+    };
+    set_node_attr(&n, "optional_vars", optional_vars);
     set_node_fields(&n, &["context_expr", "optional_vars"]);
     n
 }
@@ -3785,14 +4216,20 @@ fn except_handler_to_pyobject(handler: &ferrython_ast::ExceptHandler) -> PyObjec
 
 fn comprehension_to_pyobject(comp: &ferrython_ast::Comprehension) -> PyObjectRef {
     let n = make_ast_node("comprehension");
-    set_node_attr(&n, "target", expr_to_pyobject(&comp.target));
+    let target = expr_to_pyobject(&comp.target);
+    fix_ctx(&target, "Store");
+    set_node_attr(&n, "target", target);
     set_node_attr(&n, "iter", expr_to_pyobject(&comp.iter));
     set_node_attr(
         &n,
         "ifs",
         PyObject::list(comp.ifs.iter().map(expr_to_pyobject).collect()),
     );
-    set_node_attr(&n, "is_async", PyObject::bool_val(comp.is_async));
+    set_node_attr(
+        &n,
+        "is_async",
+        PyObject::int(if comp.is_async { 1 } else { 0 }),
+    );
     set_node_fields(&n, &["target", "iter", "ifs", "is_async"]);
     n
 }
@@ -3822,19 +4259,33 @@ fn eval_const_expr(expr: &ferrython_ast::Expression) -> PyResult<PyObjectRef> {
             Ok(PyObject::frozenset(map))
         }
         Dict { keys, values } => {
+            if keys.len() != values.len() {
+                return Err(PyException::value_error("malformed node or string"));
+            }
             let mut map = IndexMap::new();
             for (k, v) in keys.iter().zip(values.iter()) {
                 let val = eval_const_expr(v)?;
-                if let Some(key_expr) = k {
-                    let key_obj = eval_const_expr(key_expr)?;
-                    if let Ok(hk) = ferrython_core::types::HashableKey::from_object(&key_obj) {
-                        map.insert(hk, val);
-                    }
+                let key_expr = match k {
+                    Some(key_expr) => key_expr,
+                    None => return Err(PyException::value_error("malformed node or string")),
+                };
+                let key_obj = eval_const_expr(key_expr)?;
+                if let Ok(hk) = ferrython_core::types::HashableKey::from_object(&key_obj) {
+                    map.insert(hk, val);
                 }
             }
             Ok(PyObject::dict(map))
         }
         UnaryOp { op, operand } => {
+            if matches!(
+                (&op, &operand.node),
+                (
+                    ferrython_ast::UnaryOperator::UAdd | ferrython_ast::UnaryOperator::USub,
+                    UnaryOp { .. }
+                ) | (ferrython_ast::UnaryOperator::USub, BinOp { .. })
+            ) {
+                return Err(PyException::value_error("malformed node or string"));
+            }
             let val = eval_const_expr(operand)?;
             match op {
                 ferrython_ast::UnaryOperator::USub => {
@@ -3844,29 +4295,72 @@ fn eval_const_expr(expr: &ferrython_ast::Expression) -> PyResult<PyObjectRef> {
                     if let PyObjectPayload::Float(f) = &val.payload {
                         return Ok(PyObject::float(-f));
                     }
-                    Err(PyException::value_error("malformed node or string"))
-                }
-                ferrython_ast::UnaryOperator::UAdd => Ok(val),
-                _ => Err(PyException::value_error("malformed node or string")),
-            }
-        }
-        BinOp { left, op, right } => {
-            // Only allow Add/Sub for complex number literals: 1+2j, 1-2j
-            let l = eval_const_expr(left)?;
-            let r = eval_const_expr(right)?;
-            match op {
-                ferrython_ast::Operator::Add | ferrython_ast::Operator::Sub => {
-                    // Must be numeric
-                    if l.as_int().is_some() || matches!(&l.payload, PyObjectPayload::Float(_)) {
-                        if r.as_int().is_some() || matches!(&r.payload, PyObjectPayload::Float(_)) {
-                            return Err(PyException::value_error("malformed node or string"));
-                        }
+                    if let PyObjectPayload::Complex { real, imag } = &val.payload {
+                        return Ok(PyObject::complex(-real, -imag));
                     }
                     Err(PyException::value_error("malformed node or string"))
                 }
+                ferrython_ast::UnaryOperator::UAdd => {
+                    if matches!(
+                        &val.payload,
+                        PyObjectPayload::Int(_)
+                            | PyObjectPayload::Float(_)
+                            | PyObjectPayload::Complex { .. }
+                    ) {
+                        Ok(val)
+                    } else {
+                        Err(PyException::value_error("malformed node or string"))
+                    }
+                }
                 _ => Err(PyException::value_error("malformed node or string")),
             }
         }
+        BinOp { left, op, right } => match op {
+            ferrython_ast::Operator::Add | ferrython_ast::Operator::Sub => {
+                let left_num = match &left.node {
+                    Constant {
+                        value: ferrython_ast::Constant::Int(i),
+                    } => match i {
+                        ferrython_ast::BigInt::Small(n) => Some(*n as f64),
+                        ferrython_ast::BigInt::Big(_) => None,
+                    },
+                    Constant {
+                        value: ferrython_ast::Constant::Float(f),
+                    } => Some(*f),
+                    UnaryOp {
+                        op: ferrython_ast::UnaryOperator::USub,
+                        operand,
+                    } => match &operand.node {
+                        Constant {
+                            value: ferrython_ast::Constant::Int(i),
+                        } => match i {
+                            ferrython_ast::BigInt::Small(n) => Some(-(*n as f64)),
+                            ferrython_ast::BigInt::Big(_) => None,
+                        },
+                        Constant {
+                            value: ferrython_ast::Constant::Float(f),
+                        } => Some(-*f),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let right_complex = match &right.node {
+                    Constant {
+                        value: ferrython_ast::Constant::Complex { real, imag },
+                    } => Some((*real, *imag)),
+                    _ => None,
+                };
+                if let (Some(left_f), Some((real, imag))) = (left_num, right_complex) {
+                    return Ok(match op {
+                        ferrython_ast::Operator::Add => PyObject::complex(left_f + real, imag),
+                        ferrython_ast::Operator::Sub => PyObject::complex(left_f - real, -imag),
+                        _ => unreachable!(),
+                    });
+                }
+                Err(PyException::value_error("malformed node or string"))
+            }
+            _ => Err(PyException::value_error("malformed node or string")),
+        },
         _ => Err(PyException::value_error("malformed node or string")),
     }
 }
@@ -3876,6 +4370,7 @@ fn dump_node(
     obj: &PyObjectRef,
     indent: Option<usize>,
     include_attrs: bool,
+    annotate_fields: bool,
     depth: usize,
 ) -> String {
     let type_name = obj.type_name();
@@ -3893,10 +4388,21 @@ fn dump_node(
     };
 
     let mut parts: Vec<String> = Vec::new();
+    let mut omitted_field = false;
     for name in &field_names {
+        if type_name == "Constant" && name == "kind" && !has_instance_attr(obj, name) {
+            omitted_field = true;
+            continue;
+        }
         if let Some(val) = obj.get_attr(name) {
-            let val_str = dump_value(&val, indent, include_attrs, depth + 1);
-            parts.push(format!("{}={}", name, val_str));
+            let val_str = dump_value(&val, indent, include_attrs, annotate_fields, depth + 1);
+            if annotate_fields || omitted_field {
+                parts.push(format!("{}={}", name, val_str));
+            } else {
+                parts.push(val_str);
+            }
+        } else {
+            omitted_field = true;
         }
     }
 
@@ -3931,11 +4437,12 @@ fn dump_value(
     obj: &PyObjectRef,
     indent: Option<usize>,
     include_attrs: bool,
+    annotate_fields: bool,
     depth: usize,
 ) -> String {
     // Check if it's an AST node (has _fields)
     if obj.get_attr("_fields").is_some() {
-        return dump_node(obj, indent, include_attrs, depth);
+        return dump_node(obj, indent, include_attrs, annotate_fields, depth);
     }
     // Check if it's a list of AST nodes
     if let PyObjectPayload::List(items) = &obj.payload {
@@ -3945,7 +4452,7 @@ fn dump_value(
         }
         let inner: Vec<String> = items
             .iter()
-            .map(|item| dump_value(item, indent, include_attrs, depth))
+            .map(|item| dump_value(item, indent, include_attrs, annotate_fields, depth))
             .collect();
         if let Some(indent_size) = indent {
             let indent_str = " ".repeat(indent_size * (depth + 1));
@@ -3961,6 +4468,95 @@ fn dump_value(
     } else {
         format_value(obj)
     }
+}
+
+fn eval_py_const_node(node: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let expr_obj = if node.type_name() == "Expression" {
+        node.get_attr("body")
+            .ok_or_else(|| PyException::value_error("malformed node or string"))?
+    } else {
+        node.clone()
+    };
+    let expr = convert_expr(&expr_obj)
+        .map_err(|_| PyException::value_error("malformed node or string"))?;
+    eval_const_expr(&expr)
+}
+
+fn source_segment(source: &str, node: &PyObjectRef, padded: bool) -> Option<String> {
+    let lineno = node.get_attr("lineno")?.as_int()? as usize;
+    let col_offset = node.get_attr("col_offset")?.as_int()? as usize;
+    let end_lineno = node.get_attr("end_lineno")?.as_int()? as usize;
+    let end_col_offset = node.get_attr("end_col_offset")?.as_int()? as usize;
+    if lineno == 0 || end_lineno == 0 {
+        return None;
+    }
+
+    let mut line_starts = vec![0usize];
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                line_starts.push(i + 1);
+                i += 1;
+            }
+            b'\r' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    line_starts.push(i + 2);
+                    i += 2;
+                } else {
+                    line_starts.push(i + 1);
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    if lineno > line_starts.len() || end_lineno > line_starts.len() {
+        return None;
+    }
+
+    let line_bounds = |idx: usize| -> (usize, usize) {
+        let start = line_starts[idx - 1];
+        let end = if idx < line_starts.len() {
+            let mut end = line_starts[idx];
+            while end > start && matches!(bytes[end - 1], b'\n' | b'\r') {
+                end -= 1;
+            }
+            end
+        } else {
+            bytes.len()
+        };
+        (start, end)
+    };
+
+    let mut parts = Vec::new();
+    for line_idx in lineno..=end_lineno {
+        let (start, end) = line_bounds(line_idx);
+        let line = &source[start..end];
+        let segment = if line_idx == lineno && line_idx == end_lineno {
+            line.get(col_offset..end_col_offset)?.to_string()
+        } else if line_idx == lineno {
+            line.get(col_offset..)?.to_string()
+        } else if line_idx == end_lineno {
+            line.get(..end_col_offset)?.to_string()
+        } else {
+            line.to_string()
+        };
+        parts.push(segment);
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    let mut segment = parts.join("\n");
+    if padded && lineno != end_lineno {
+        let (start, end) = line_bounds(lineno);
+        let line = &source[start..end];
+        let prefix = line.get(..col_offset).unwrap_or("");
+        segment = format!("{}{}", prefix, segment);
+    }
+    Some(segment)
 }
 
 fn format_value(obj: &PyObjectRef) -> String {
@@ -5599,6 +6195,7 @@ pub fn pyobj_ast_to_module(node: &PyObjectRef) -> Result<AstModule, String> {
                 .get_attr("body")
                 .ok_or_else(|| "Expression node missing 'body'".to_string())?;
             let expr = convert_expr(&body_expr)?;
+            require_load_context(&expr)?;
             Ok(AstModule::Expression {
                 body: Box::new(expr),
             })
@@ -5615,21 +6212,21 @@ pub fn pyobj_ast_to_module(node: &PyObjectRef) -> Result<AstModule, String> {
 }
 
 fn loc_from_node(node: &PyObjectRef) -> SourceLocation {
-    let line = node
-        .get_attr("lineno")
-        .and_then(|v| v.to_int().map(|i| i as u32).ok())
-        .unwrap_or(1);
-    let col = node
-        .get_attr("col_offset")
-        .and_then(|v| v.to_int().map(|i| i as u32).ok())
-        .unwrap_or(0);
+    let line = node.get_attr("lineno").and_then(|v| match &v.payload {
+        PyObjectPayload::None => Some(0),
+        _ => v.to_int().map(|i| i as u32).ok(),
+    });
+    let col = node.get_attr("col_offset").and_then(|v| match &v.payload {
+        PyObjectPayload::None => Some(0),
+        _ => v.to_int().map(|i| i as u32).ok(),
+    });
     let end_line = node
         .get_attr("end_lineno")
         .and_then(|v| v.to_int().map(|i| i as u32).ok());
     let end_col = node
         .get_attr("end_col_offset")
         .and_then(|v| v.to_int().map(|i| i as u32).ok());
-    let mut loc = SourceLocation::new(line, col);
+    let mut loc = SourceLocation::new(line.unwrap_or(1), col.unwrap_or(0));
     if let (Some(el), Some(ec)) = (end_line, end_col) {
         loc = loc.with_end(el, ec);
     }
@@ -5650,10 +6247,47 @@ fn get_list_attr(node: &PyObjectRef, attr: &str) -> Vec<PyObjectRef> {
         .unwrap_or_default()
 }
 
+fn value_error(message: &str) -> String {
+    format!("ValueError: {}", message)
+}
+
+fn type_error(message: &str) -> String {
+    format!("TypeError: {}", message)
+}
+
+fn get_checked_list_attr(node: &PyObjectRef, attr: &str) -> Result<Vec<PyObjectRef>, String> {
+    let items = get_list_attr(node, attr);
+    if items
+        .iter()
+        .any(|item| matches!(&item.payload, PyObjectPayload::None))
+    {
+        return Err(value_error("None disallowed"));
+    }
+    Ok(items)
+}
+
+fn ensure_non_empty<T>(items: &[T], message: &str) -> Result<(), String> {
+    if items.is_empty() {
+        Err(value_error(message))
+    } else {
+        Ok(())
+    }
+}
+
 fn get_str_attr(node: &PyObjectRef, attr: &str) -> CompactString {
     node.get_attr(attr)
         .map(|v| CompactString::from(v.py_to_string()))
         .unwrap_or_default()
+}
+
+fn get_identifier_attr(node: &PyObjectRef, attr: &str) -> Result<CompactString, String> {
+    match node.get_attr(attr) {
+        Some(v) => match &v.payload {
+            PyObjectPayload::Str(s) => Ok(CompactString::from(s.as_str())),
+            _ => Err(type_error("identifier must be of type str")),
+        },
+        None => Ok(CompactString::from("")),
+    }
 }
 
 fn get_optional_str(node: &PyObjectRef, attr: &str) -> Option<CompactString> {
@@ -5667,13 +6301,290 @@ fn get_optional_str(node: &PyObjectRef, attr: &str) -> Option<CompactString> {
 }
 
 fn convert_stmt_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<Statement>, String> {
-    let items = get_list_attr(parent, attr);
+    let items = get_checked_list_attr(parent, attr)?;
     items.iter().map(convert_stmt).collect()
 }
 
 fn convert_expr_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstExpression>, String> {
-    let items = get_list_attr(parent, attr);
+    let items = get_checked_list_attr(parent, attr)?;
     items.iter().map(convert_expr).collect()
+}
+
+fn require_load_context(expr: &AstExpression) -> Result<(), String> {
+    match &expr.node {
+        ExpressionKind::BoolOp { values, .. } => {
+            for value in values {
+                require_load_context(value)?;
+            }
+        }
+        ExpressionKind::NamedExpr { target, value } => {
+            require_store_context(target)?;
+            require_load_context(value)?;
+        }
+        ExpressionKind::BinOp { left, right, .. } => {
+            require_load_context(left)?;
+            require_load_context(right)?;
+        }
+        ExpressionKind::UnaryOp { operand, .. } => require_load_context(operand)?,
+        ExpressionKind::Lambda { args, body } => {
+            validate_arguments(args)?;
+            require_load_context(body)?;
+        }
+        ExpressionKind::IfExp { test, body, orelse } => {
+            require_load_context(test)?;
+            require_load_context(body)?;
+            require_load_context(orelse)?;
+        }
+        ExpressionKind::Dict { keys, values } => {
+            for key in keys.iter().flatten() {
+                require_load_context(key)?;
+            }
+            for value in values {
+                require_load_context(value)?;
+            }
+        }
+        ExpressionKind::Set { elts } => {
+            for elt in elts {
+                require_load_context(elt)?;
+            }
+        }
+        ExpressionKind::ListComp { elt, generators }
+        | ExpressionKind::SetComp { elt, generators }
+        | ExpressionKind::GeneratorExp { elt, generators } => {
+            require_load_context(elt)?;
+            validate_comprehensions(generators)?;
+        }
+        ExpressionKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            require_load_context(key)?;
+            require_load_context(value)?;
+            validate_comprehensions(generators)?;
+        }
+        ExpressionKind::Await { value } => require_load_context(value)?,
+        ExpressionKind::Yield { value } => {
+            if let Some(value) = value {
+                require_load_context(value)?;
+            }
+        }
+        ExpressionKind::YieldFrom { value } => require_load_context(value)?,
+        ExpressionKind::Compare {
+            left, comparators, ..
+        } => {
+            require_load_context(left)?;
+            for comparator in comparators {
+                require_load_context(comparator)?;
+            }
+        }
+        ExpressionKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            require_load_context(func)?;
+            for arg in args {
+                require_load_context(arg)?;
+            }
+            for keyword in keywords {
+                require_load_context(&keyword.value)?;
+            }
+        }
+        ExpressionKind::FormattedValue {
+            value, format_spec, ..
+        } => {
+            require_load_context(value)?;
+            if let Some(format_spec) = format_spec {
+                require_load_context(format_spec)?;
+            }
+        }
+        ExpressionKind::JoinedStr { values } => {
+            for value in values {
+                require_load_context(value)?;
+            }
+        }
+        ExpressionKind::Attribute { value, ctx, .. } => {
+            require_context(*ctx, ExprContext::Load)?;
+            require_load_context(value)?;
+        }
+        ExpressionKind::Subscript {
+            value, slice, ctx, ..
+        } => {
+            require_context(*ctx, ExprContext::Load)?;
+            require_load_context(value)?;
+            require_load_context(slice)?;
+        }
+        ExpressionKind::Starred { value, ctx } => {
+            require_context(*ctx, ExprContext::Load)?;
+            require_load_context(value)?;
+        }
+        ExpressionKind::Name { ctx, .. } => require_context(*ctx, ExprContext::Load)?,
+        ExpressionKind::List { elts, ctx } | ExpressionKind::Tuple { elts, ctx } => {
+            require_context(*ctx, ExprContext::Load)?;
+            for elt in elts {
+                require_load_context(elt)?;
+            }
+        }
+        ExpressionKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                require_load_context(lower)?;
+            }
+            if let Some(upper) = upper {
+                require_load_context(upper)?;
+            }
+            if let Some(step) = step {
+                require_load_context(step)?;
+            }
+        }
+        ExpressionKind::Constant { .. } => {}
+    }
+    Ok(())
+}
+
+fn require_store_context(expr: &AstExpression) -> Result<(), String> {
+    match &expr.node {
+        ExpressionKind::Name { ctx, .. } => require_context(*ctx, ExprContext::Store)?,
+        ExpressionKind::Attribute { value, ctx, .. } => {
+            require_context(*ctx, ExprContext::Store)?;
+            require_load_context(value)?;
+        }
+        ExpressionKind::Subscript {
+            value, slice, ctx, ..
+        } => {
+            require_context(*ctx, ExprContext::Store)?;
+            require_load_context(value)?;
+            require_load_context(slice)?;
+        }
+        ExpressionKind::Starred { value, ctx } => {
+            require_context(*ctx, ExprContext::Store)?;
+            require_store_context(value)?;
+        }
+        ExpressionKind::List { elts, ctx } | ExpressionKind::Tuple { elts, ctx } => {
+            require_context(*ctx, ExprContext::Store)?;
+            for elt in elts {
+                require_store_context(elt)?;
+            }
+        }
+        _ => {
+            return Err(value_error(
+                "expression which can't be assigned to in Store context",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_del_context(expr: &AstExpression) -> Result<(), String> {
+    match &expr.node {
+        ExpressionKind::Name { ctx, .. } => require_context(*ctx, ExprContext::Del)?,
+        ExpressionKind::Attribute { value, ctx, .. } => {
+            require_context(*ctx, ExprContext::Del)?;
+            require_load_context(value)?;
+        }
+        ExpressionKind::Subscript {
+            value, slice, ctx, ..
+        } => {
+            require_context(*ctx, ExprContext::Del)?;
+            require_load_context(value)?;
+            require_load_context(slice)?;
+        }
+        ExpressionKind::List { elts, ctx } | ExpressionKind::Tuple { elts, ctx } => {
+            require_context(*ctx, ExprContext::Del)?;
+            for elt in elts {
+                require_del_context(elt)?;
+            }
+        }
+        _ => return Err(value_error("expression must have Del context")),
+    }
+    Ok(())
+}
+
+fn require_context(actual: ExprContext, expected: ExprContext) -> Result<(), String> {
+    if actual == expected {
+        return Ok(());
+    }
+    let expected = match expected {
+        ExprContext::Load => "Load",
+        ExprContext::Store => "Store",
+        ExprContext::Del => "Del",
+    };
+    Err(value_error(&format!(
+        "expression must have {} context",
+        expected
+    )))
+}
+
+fn validate_arguments(args: &AstArguments) -> Result<(), String> {
+    if args.defaults.len() > args.posonlyargs.len() + args.args.len() {
+        return Err(value_error("more positional defaults than args"));
+    }
+    if args.kwonlyargs.len() != args.kw_defaults.len() {
+        return Err(value_error(
+            "length of kwonlyargs is not the same as kw_defaults",
+        ));
+    }
+
+    for arg in args.posonlyargs.iter().chain(args.args.iter()) {
+        if let Some(annotation) = &arg.annotation {
+            require_load_context(annotation)?;
+        }
+    }
+    if let Some(vararg) = &args.vararg {
+        if let Some(annotation) = &vararg.annotation {
+            require_load_context(annotation)?;
+        }
+    }
+    for arg in &args.kwonlyargs {
+        if let Some(annotation) = &arg.annotation {
+            require_load_context(annotation)?;
+        }
+    }
+    if let Some(kwarg) = &args.kwarg {
+        if let Some(annotation) = &kwarg.annotation {
+            require_load_context(annotation)?;
+        }
+    }
+    for default in &args.defaults {
+        require_load_context(default)?;
+    }
+    for default in args.kw_defaults.iter().flatten() {
+        require_load_context(default)?;
+    }
+    Ok(())
+}
+
+fn validate_comprehensions(generators: &[AstComprehension]) -> Result<(), String> {
+    ensure_non_empty(generators, "comprehension with no generators")?;
+    for generator in generators {
+        require_store_context(&generator.target)?;
+        require_load_context(&generator.iter)?;
+        for if_expr in &generator.ifs {
+            require_load_context(if_expr)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_sequence_context(elts: &[AstExpression], ctx: ExprContext) -> Result<(), String> {
+    match ctx {
+        ExprContext::Load => {
+            for elt in elts {
+                require_load_context(elt)?;
+            }
+        }
+        ExprContext::Store => {
+            for elt in elts {
+                require_store_context(elt)?;
+            }
+        }
+        ExprContext::Del => {
+            for elt in elts {
+                require_del_context(elt)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn convert_optional_expr(
@@ -5698,9 +6609,17 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .get_attr("args")
                 .map(|a| convert_arguments(&a))
                 .unwrap_or_else(|| Ok(AstArguments::empty()))?;
+            validate_arguments(&args)?;
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, &format!("empty body on {}", type_name))?;
             let decorator_list = convert_expr_list(node, "decorator_list")?;
+            for decorator in &decorator_list {
+                require_load_context(decorator)?;
+            }
             let returns = convert_optional_expr(node, "returns")?;
+            if let Some(returns) = &returns {
+                require_load_context(returns)?;
+            }
             StatementKind::FunctionDef {
                 name,
                 args: Box::new(args),
@@ -5714,9 +6633,16 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
         "ClassDef" => {
             let name = get_str_attr(node, "name");
             let bases = convert_expr_list(node, "bases")?;
+            for base in &bases {
+                require_load_context(base)?;
+            }
             let keywords = convert_keyword_list(node, "keywords")?;
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, "empty body on ClassDef")?;
             let decorator_list = convert_expr_list(node, "decorator_list")?;
+            for decorator in &decorator_list {
+                require_load_context(decorator)?;
+            }
             StatementKind::ClassDef {
                 name,
                 bases,
@@ -5727,18 +6653,30 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
         }
         "Return" => {
             let value = convert_optional_expr(node, "value")?;
+            if let Some(value) = &value {
+                require_load_context(value)?;
+            }
             StatementKind::Return { value }
         }
         "Delete" => {
             let targets = convert_expr_list(node, "targets")?;
+            ensure_non_empty(&targets, "empty targets on Delete")?;
+            for target in &targets {
+                require_del_context(target)?;
+            }
             StatementKind::Delete { targets }
         }
         "Assign" => {
             let targets = convert_expr_list(node, "targets")?;
+            ensure_non_empty(&targets, "empty targets on Assign")?;
             let value_node = node
                 .get_attr("value")
                 .ok_or_else(|| "Assign missing 'value'".to_string())?;
             let value = Box::new(convert_expr(&value_node)?);
+            for target in &targets {
+                require_store_context(target)?;
+            }
+            require_load_context(&value)?;
             StatementKind::Assign {
                 targets,
                 value,
@@ -5758,6 +6696,8 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .get_attr("value")
                 .ok_or_else(|| "AugAssign missing 'value'".to_string())?;
             let value = Box::new(convert_expr(&value_node)?);
+            require_store_context(&target)?;
+            require_load_context(&value)?;
             StatementKind::AugAssign { target, op, value }
         }
         "AnnAssign" => {
@@ -5770,6 +6710,11 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .ok_or_else(|| "AnnAssign missing 'annotation'".to_string())?;
             let annotation = Box::new(convert_expr(&ann_node)?);
             let value = convert_optional_expr(node, "value")?;
+            require_store_context(&target)?;
+            require_load_context(&annotation)?;
+            if let Some(value) = &value {
+                require_load_context(value)?;
+            }
             let simple = node
                 .get_attr("simple")
                 .and_then(|v| v.to_int().ok())
@@ -5792,7 +6737,10 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .ok_or_else(|| "For missing 'iter'".to_string())?;
             let iter_expr = Box::new(convert_expr(&iter_node)?);
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, &format!("empty body on {}", type_name))?;
             let orelse = convert_stmt_list(node, "orelse")?;
+            require_store_context(&target)?;
+            require_load_context(&iter_expr)?;
             StatementKind::For {
                 target,
                 iter: iter_expr,
@@ -5808,7 +6756,9 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .ok_or_else(|| "While missing 'test'".to_string())?;
             let test = Box::new(convert_expr(&test_node)?);
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, "empty body on While")?;
             let orelse = convert_stmt_list(node, "orelse")?;
+            require_load_context(&test)?;
             StatementKind::While { test, body, orelse }
         }
         "If" => {
@@ -5817,11 +6767,14 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .ok_or_else(|| "If missing 'test'".to_string())?;
             let test = Box::new(convert_expr(&test_node)?);
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, "empty body on If")?;
             let orelse = convert_stmt_list(node, "orelse")?;
+            require_load_context(&test)?;
             StatementKind::If { test, body, orelse }
         }
         "With" | "AsyncWith" => {
-            let items = get_list_attr(node, "items");
+            let items = get_checked_list_attr(node, "items")?;
+            ensure_non_empty(&items, &format!("empty items on {}", type_name))?;
             let with_items: Vec<AstWithItem> = items
                 .iter()
                 .map(|item| {
@@ -5830,6 +6783,10 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                         .ok_or_else(|| "WithItem missing 'context_expr'".to_string())?;
                     let context_expr = convert_expr(&ctx_node)?;
                     let optional_vars = convert_optional_expr(item, "optional_vars")?;
+                    require_load_context(&context_expr)?;
+                    if let Some(optional_vars) = &optional_vars {
+                        require_store_context(optional_vars)?;
+                    }
                     Ok(AstWithItem {
                         context_expr,
                         optional_vars,
@@ -5837,6 +6794,7 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 })
                 .collect::<Result<_, String>>()?;
             let body = convert_stmt_list(node, "body")?;
+            ensure_non_empty(&body, &format!("empty body on {}", type_name))?;
             StatementKind::With {
                 items: with_items,
                 body,
@@ -5847,17 +6805,31 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
         "Raise" => {
             let exc = convert_optional_expr(node, "exc")?;
             let cause = convert_optional_expr(node, "cause")?;
+            if exc.is_none() && cause.is_some() {
+                return Err(value_error("Raise with cause but no exception"));
+            }
+            if let Some(exc) = &exc {
+                require_load_context(exc)?;
+            }
+            if let Some(cause) = &cause {
+                require_load_context(cause)?;
+            }
             StatementKind::Raise { exc, cause }
         }
         "Try" | "TryStar" => {
             let body = convert_stmt_list(node, "body")?;
-            let handlers = get_list_attr(node, "handlers");
+            ensure_non_empty(&body, &format!("empty body on {}", type_name))?;
+            let handlers = get_checked_list_attr(node, "handlers")?;
             let except_handlers: Vec<AstExceptHandler> = handlers
                 .iter()
                 .map(|h| {
                     let typ = convert_optional_expr(h, "type")?;
                     let name = get_optional_str(h, "name");
                     let handler_body = convert_stmt_list(h, "body")?;
+                    ensure_non_empty(&handler_body, "empty body on ExceptHandler")?;
+                    if let Some(typ) = &typ {
+                        require_load_context(typ)?;
+                    }
                     Ok(AstExceptHandler {
                         typ,
                         name,
@@ -5869,6 +6841,12 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .collect::<Result<_, String>>()?;
             let orelse = convert_stmt_list(node, "orelse")?;
             let finalbody = convert_stmt_list(node, "finalbody")?;
+            if except_handlers.is_empty() && finalbody.is_empty() {
+                return Err(value_error("Try has neither except handlers nor finalbody"));
+            }
+            if except_handlers.is_empty() && !orelse.is_empty() {
+                return Err(value_error("Try has orelse but no except handlers"));
+            }
             StatementKind::Try {
                 body,
                 handlers: except_handlers,
@@ -5882,19 +6860,41 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .ok_or_else(|| "Assert missing 'test'".to_string())?;
             let test = Box::new(convert_expr(&test_node)?);
             let msg = convert_optional_expr(node, "msg")?;
+            require_load_context(&test)?;
+            if let Some(msg) = &msg {
+                require_load_context(msg)?;
+            }
             StatementKind::Assert { test, msg }
         }
         "Import" => {
             let names = convert_alias_list(node, "names")?;
+            ensure_non_empty(&names, "empty names on Import")?;
             StatementKind::Import { names }
         }
         "ImportFrom" => {
             let module = get_optional_str(node, "module");
             let names = convert_alias_list(node, "names")?;
-            let level = node
-                .get_attr("level")
-                .and_then(|v| v.to_int().ok())
-                .unwrap_or(0) as u32;
+            ensure_non_empty(&names, "empty names on ImportFrom")?;
+            if node
+                .get_attr("lineno")
+                .map(|v| matches!(&v.payload, PyObjectPayload::None))
+                .unwrap_or(false)
+            {
+                return Err("ValueError: invalid integer value: None".to_string());
+            }
+            let level = match node.get_attr("level") {
+                Some(v) if matches!(&v.payload, PyObjectPayload::None) => 0,
+                Some(v) => {
+                    let level = v
+                        .to_int()
+                        .map_err(|_| format!("invalid integer value: {}", v.py_to_string()))?;
+                    if level < 0 {
+                        return Err(value_error("Negative ImportFrom level"));
+                    }
+                    level as u32
+                }
+                None => 0,
+            };
             StatementKind::ImportFrom {
                 module,
                 names,
@@ -5905,14 +6905,16 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
             let names = get_list_attr(node, "names")
                 .iter()
                 .map(|n| CompactString::from(n.py_to_string()))
-                .collect();
+                .collect::<Vec<_>>();
+            ensure_non_empty(&names, "empty names on Global")?;
             StatementKind::Global { names }
         }
         "Nonlocal" => {
             let names = get_list_attr(node, "names")
                 .iter()
                 .map(|n| CompactString::from(n.py_to_string()))
-                .collect();
+                .collect::<Vec<_>>();
+            ensure_non_empty(&names, "empty names on Nonlocal")?;
             StatementKind::Nonlocal { names }
         }
         "Expr" => {
@@ -5920,6 +6922,7 @@ fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
                 .get_attr("value")
                 .ok_or_else(|| "Expr missing 'value'".to_string())?;
             let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&value)?;
             StatementKind::Expr { value }
         }
         "Pass" => StatementKind::Pass,
@@ -5937,12 +6940,38 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
     let type_name = node.type_name().to_string();
     let location = loc_from_node(node);
     let kind = match type_name.as_str() {
+        "Num" | "Str" | "Bytes" | "NameConstant" | "Ellipsis" => {
+            let value = if type_name == "Num" {
+                node.get_attr("n")
+            } else if type_name == "Str" || type_name == "Bytes" {
+                node.get_attr("s")
+            } else if type_name == "Ellipsis" {
+                Some(PyObject::ellipsis())
+            } else {
+                node.get_attr("value")
+            }
+            .map(|v| {
+                if type_name == "Num" && is_ast_constant_builtin_subclass(&v) {
+                    return Err("TypeError: invalid type in Num".to_string());
+                }
+                Ok(convert_constant(&v))
+            })
+            .transpose()?
+            .unwrap_or(AstConstant::None);
+            ExpressionKind::Constant { value }
+        }
         "BoolOp" => {
             let op = node
                 .get_attr("op")
                 .map(|o| convert_bool_op(&o))
                 .unwrap_or(BoolOperator::And);
             let values = convert_expr_list(node, "values")?;
+            if values.len() < 2 {
+                return Err(value_error("BoolOp with less than 2 values"));
+            }
+            for value in &values {
+                require_load_context(value)?;
+            }
             ExpressionKind::BoolOp { op, values }
         }
         "NamedExpr" => {
@@ -5952,10 +6981,11 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let value_node = node
                 .get_attr("value")
                 .ok_or_else(|| "NamedExpr missing 'value'".to_string())?;
-            ExpressionKind::NamedExpr {
-                target: Box::new(convert_expr(&target_node)?),
-                value: Box::new(convert_expr(&value_node)?),
-            }
+            let target = Box::new(convert_expr(&target_node)?);
+            let value = Box::new(convert_expr(&value_node)?);
+            require_store_context(&target)?;
+            require_load_context(&value)?;
+            ExpressionKind::NamedExpr { target, value }
         }
         "BinOp" => {
             let left_node = node
@@ -5968,11 +6998,11 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("op")
                 .map(|o| convert_operator(&o))
                 .unwrap_or(Operator::Add);
-            ExpressionKind::BinOp {
-                left: Box::new(convert_expr(&left_node)?),
-                op,
-                right: Box::new(convert_expr(&right_node)?),
-            }
+            let left = Box::new(convert_expr(&left_node)?);
+            let right = Box::new(convert_expr(&right_node)?);
+            require_load_context(&left)?;
+            require_load_context(&right)?;
+            ExpressionKind::BinOp { left, op, right }
         }
         "UnaryOp" => {
             let op = node
@@ -5982,22 +7012,24 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let operand_node = node
                 .get_attr("operand")
                 .ok_or_else(|| "UnaryOp missing 'operand'".to_string())?;
-            ExpressionKind::UnaryOp {
-                op,
-                operand: Box::new(convert_expr(&operand_node)?),
-            }
+            let operand = Box::new(convert_expr(&operand_node)?);
+            require_load_context(&operand)?;
+            ExpressionKind::UnaryOp { op, operand }
         }
         "Lambda" => {
             let args = node
                 .get_attr("args")
                 .map(|a| convert_arguments(&a))
                 .unwrap_or_else(|| Ok(AstArguments::empty()))?;
+            validate_arguments(&args)?;
             let body_node = node
                 .get_attr("body")
                 .ok_or_else(|| "Lambda missing 'body'".to_string())?;
+            let body = Box::new(convert_expr(&body_node)?);
+            require_load_context(&body)?;
             ExpressionKind::Lambda {
                 args: Box::new(args),
-                body: Box::new(convert_expr(&body_node)?),
+                body,
             }
         }
         "IfExp" => {
@@ -6010,15 +7042,22 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let orelse = node
                 .get_attr("orelse")
                 .ok_or_else(|| "IfExp missing 'orelse'".to_string())?;
-            ExpressionKind::IfExp {
-                test: Box::new(convert_expr(&test)?),
-                body: Box::new(convert_expr(&body)?),
-                orelse: Box::new(convert_expr(&orelse)?),
-            }
+            let test = Box::new(convert_expr(&test)?);
+            let body = Box::new(convert_expr(&body)?);
+            let orelse = Box::new(convert_expr(&orelse)?);
+            require_load_context(&test)?;
+            require_load_context(&body)?;
+            require_load_context(&orelse)?;
+            ExpressionKind::IfExp { test, body, orelse }
         }
         "Dict" => {
             let keys_raw = get_list_attr(node, "keys");
-            let values_raw = get_list_attr(node, "values");
+            let values_raw = get_checked_list_attr(node, "values")?;
+            if keys_raw.len() != values_raw.len() {
+                return Err(value_error(
+                    "Dict doesn't have same number of keys as values",
+                ));
+            }
             let keys: Vec<Option<AstExpression>> = keys_raw
                 .iter()
                 .map(|k| {
@@ -6033,10 +7072,19 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .iter()
                 .map(|v| convert_expr(v))
                 .collect::<Result<_, String>>()?;
+            for key in keys.iter().flatten() {
+                require_load_context(key)?;
+            }
+            for value in &values {
+                require_load_context(value)?;
+            }
             ExpressionKind::Dict { keys, values }
         }
         "Set" => {
             let elts = convert_expr_list(node, "elts")?;
+            for elt in &elts {
+                require_load_context(elt)?;
+            }
             ExpressionKind::Set { elts }
         }
         "ListComp" => {
@@ -6044,20 +7092,20 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("elt")
                 .ok_or_else(|| "ListComp missing 'elt'".to_string())?;
             let generators = convert_comprehension_list(node)?;
-            ExpressionKind::ListComp {
-                elt: Box::new(convert_expr(&elt_node)?),
-                generators,
-            }
+            ensure_non_empty(&generators, "comprehension with no generators")?;
+            let elt = Box::new(convert_expr(&elt_node)?);
+            require_load_context(&elt)?;
+            ExpressionKind::ListComp { elt, generators }
         }
         "SetComp" => {
             let elt_node = node
                 .get_attr("elt")
                 .ok_or_else(|| "SetComp missing 'elt'".to_string())?;
             let generators = convert_comprehension_list(node)?;
-            ExpressionKind::SetComp {
-                elt: Box::new(convert_expr(&elt_node)?),
-                generators,
-            }
+            ensure_non_empty(&generators, "comprehension with no generators")?;
+            let elt = Box::new(convert_expr(&elt_node)?);
+            require_load_context(&elt)?;
+            ExpressionKind::SetComp { elt, generators }
         }
         "DictComp" => {
             let key_node = node
@@ -6067,9 +7115,14 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("value")
                 .ok_or_else(|| "DictComp missing 'value'".to_string())?;
             let generators = convert_comprehension_list(node)?;
+            ensure_non_empty(&generators, "comprehension with no generators")?;
+            let key = Box::new(convert_expr(&key_node)?);
+            let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&key)?;
+            require_load_context(&value)?;
             ExpressionKind::DictComp {
-                key: Box::new(convert_expr(&key_node)?),
-                value: Box::new(convert_expr(&value_node)?),
+                key,
+                value,
                 generators,
             }
         }
@@ -6078,21 +7131,24 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("elt")
                 .ok_or_else(|| "GeneratorExp missing 'elt'".to_string())?;
             let generators = convert_comprehension_list(node)?;
-            ExpressionKind::GeneratorExp {
-                elt: Box::new(convert_expr(&elt_node)?),
-                generators,
-            }
+            ensure_non_empty(&generators, "comprehension with no generators")?;
+            let elt = Box::new(convert_expr(&elt_node)?);
+            require_load_context(&elt)?;
+            ExpressionKind::GeneratorExp { elt, generators }
         }
         "Await" => {
             let value_node = node
                 .get_attr("value")
                 .ok_or_else(|| "Await missing 'value'".to_string())?;
-            ExpressionKind::Await {
-                value: Box::new(convert_expr(&value_node)?),
-            }
+            let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&value)?;
+            ExpressionKind::Await { value }
         }
         "Yield" => {
             let value = convert_optional_expr(node, "value")?;
+            if let Some(value) = &value {
+                require_load_context(value)?;
+            }
             ExpressionKind::Yield {
                 value: value.map(|b| *b).map(Box::new),
             }
@@ -6101,9 +7157,12 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let value_node = node
                 .get_attr("value")
                 .ok_or_else(|| "YieldFrom missing 'value'".to_string())?;
-            ExpressionKind::YieldFrom {
-                value: Box::new(convert_expr(&value_node)?),
+            if matches!(&value_node.payload, PyObjectPayload::None) {
+                return Err(value_error("field value is required for YieldFrom"));
             }
+            let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&value)?;
+            ExpressionKind::YieldFrom { value }
         }
         "Compare" => {
             let left_node = node
@@ -6112,8 +7171,19 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let ops_raw = get_list_attr(node, "ops");
             let ops: Vec<CompareOperator> = ops_raw.iter().map(|o| convert_compare_op(o)).collect();
             let comparators = convert_expr_list(node, "comparators")?;
+            if comparators.is_empty() {
+                return Err(value_error("no comparators"));
+            }
+            if ops.len() != comparators.len() {
+                return Err(value_error("different number of comparators and operands"));
+            }
+            let left = Box::new(convert_expr(&left_node)?);
+            require_load_context(&left)?;
+            for comparator in &comparators {
+                require_load_context(comparator)?;
+            }
             ExpressionKind::Compare {
-                left: Box::new(convert_expr(&left_node)?),
+                left,
                 ops,
                 comparators,
             }
@@ -6124,8 +7194,13 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .ok_or_else(|| "Call missing 'func'".to_string())?;
             let args = convert_expr_list(node, "args")?;
             let keywords = convert_keyword_list(node, "keywords")?;
+            let func = Box::new(convert_expr(&func_node)?);
+            require_load_context(&func)?;
+            for arg in &args {
+                require_load_context(arg)?;
+            }
             ExpressionKind::Call {
-                func: Box::new(convert_expr(&func_node)?),
+                func,
                 args,
                 keywords,
             }
@@ -6134,6 +7209,8 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let value_node = node
                 .get_attr("value")
                 .ok_or_else(|| "FormattedValue missing 'value'".to_string())?;
+            let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&value)?;
             let conversion = node
                 .get_attr("conversion")
                 .and_then(|v| v.to_int().ok())
@@ -6145,21 +7222,29 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                     }
                 });
             let format_spec = convert_optional_expr(node, "format_spec")?;
+            if let Some(format_spec) = &format_spec {
+                require_load_context(format_spec)?;
+            }
             ExpressionKind::FormattedValue {
-                value: Box::new(convert_expr(&value_node)?),
+                value,
                 conversion,
                 format_spec,
             }
         }
         "JoinedStr" => {
             let values = convert_expr_list(node, "values")?;
+            for value in &values {
+                require_load_context(value)?;
+            }
             ExpressionKind::JoinedStr { values }
         }
         "Constant" => {
-            let value = node
-                .get_attr("value")
-                .map(|v| convert_constant(&v))
-                .unwrap_or(AstConstant::None);
+            let value = if let Some(value) = node.get_attr("value") {
+                validate_ast_constant_value(&value).map_err(|msg| format!("TypeError: {}", msg))?;
+                convert_constant(&value)
+            } else {
+                AstConstant::None
+            };
             ExpressionKind::Constant { value }
         }
         "Attribute" => {
@@ -6171,11 +7256,9 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("ctx")
                 .map(|c| convert_expr_context(&c))
                 .unwrap_or(ExprContext::Load);
-            ExpressionKind::Attribute {
-                value: Box::new(convert_expr(&value_node)?),
-                attr,
-                ctx,
-            }
+            let value = Box::new(convert_expr(&value_node)?);
+            require_load_context(&value)?;
+            ExpressionKind::Attribute { value, attr, ctx }
         }
         "Subscript" => {
             let value_node = node
@@ -6184,15 +7267,22 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             let slice_node = node
                 .get_attr("slice")
                 .ok_or_else(|| "Subscript missing 'slice'".to_string())?;
+            let slice_node = if slice_node.type_name() == "Index" {
+                slice_node
+                    .get_attr("value")
+                    .ok_or_else(|| "Index missing 'value'".to_string())?
+            } else {
+                slice_node
+            };
             let ctx = node
                 .get_attr("ctx")
                 .map(|c| convert_expr_context(&c))
                 .unwrap_or(ExprContext::Load);
-            ExpressionKind::Subscript {
-                value: Box::new(convert_expr(&value_node)?),
-                slice: Box::new(convert_expr(&slice_node)?),
-                ctx,
-            }
+            let value = Box::new(convert_expr(&value_node)?);
+            let slice = Box::new(convert_expr(&slice_node)?);
+            require_load_context(&value)?;
+            require_load_context(&slice)?;
+            ExpressionKind::Subscript { value, slice, ctx }
         }
         "Starred" => {
             let value_node = node
@@ -6208,7 +7298,13 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
             }
         }
         "Name" => {
-            let id = get_str_attr(node, "id");
+            let id = get_identifier_attr(node, "id")?;
+            if matches!(id.as_str(), "True" | "False" | "None") {
+                return Err(value_error(&format!(
+                    "Name node can't be used with '{}' constant",
+                    id
+                )));
+            }
             let ctx = node
                 .get_attr("ctx")
                 .map(|c| convert_expr_context(&c))
@@ -6221,6 +7317,7 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("ctx")
                 .map(|c| convert_expr_context(&c))
                 .unwrap_or(ExprContext::Load);
+            validate_sequence_context(&elts, ctx)?;
             ExpressionKind::List { elts, ctx }
         }
         "Tuple" => {
@@ -6229,13 +7326,45 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
                 .get_attr("ctx")
                 .map(|c| convert_expr_context(&c))
                 .unwrap_or(ExprContext::Load);
+            validate_sequence_context(&elts, ctx)?;
             ExpressionKind::Tuple { elts, ctx }
         }
         "Slice" => {
             let lower = convert_optional_expr(node, "lower")?;
             let upper = convert_optional_expr(node, "upper")?;
             let step = convert_optional_expr(node, "step")?;
+            if let Some(lower) = &lower {
+                require_load_context(lower)?;
+            }
+            if let Some(upper) = &upper {
+                require_load_context(upper)?;
+            }
+            if let Some(step) = &step {
+                require_load_context(step)?;
+            }
             ExpressionKind::Slice { lower, upper, step }
+        }
+        "Index" => {
+            let value = node
+                .get_attr("value")
+                .ok_or_else(|| "Index missing 'value'".to_string())?;
+            return convert_expr(&value);
+        }
+        "ExtSlice" => {
+            let dims = convert_expr_list(node, "dims")?;
+            ensure_non_empty(&dims, "empty dims on ExtSlice")?;
+            for dim in &dims {
+                require_load_context(dim)?;
+            }
+            ExpressionKind::Tuple {
+                elts: dims,
+                ctx: ExprContext::Load,
+            }
+        }
+        "expr" => {
+            return Err(type_error(
+                "expected some sort of expr, but got <_ast.expr object>",
+            ));
         }
         _ => {
             return Err(format!("Unknown expression type: {}", type_name));
@@ -6244,7 +7373,44 @@ fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
     Ok(AstExpression {
         node: kind,
         location,
+        outer_location: location,
     })
+}
+
+fn is_ast_constant_builtin_subclass(val: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Instance(inst) = &val.payload {
+        return inst.attrs.read().contains_key("__builtin_value__");
+    }
+    false
+}
+
+fn validate_ast_constant_value(val: &PyObjectRef) -> Result<(), String> {
+    match &val.payload {
+        PyObjectPayload::None
+        | PyObjectPayload::Bool(_)
+        | PyObjectPayload::Int(_)
+        | PyObjectPayload::Float(_)
+        | PyObjectPayload::Complex { .. }
+        | PyObjectPayload::Str(_)
+        | PyObjectPayload::Bytes(_)
+        | PyObjectPayload::Ellipsis => Ok(()),
+        PyObjectPayload::Tuple(items) => {
+            for item in items.iter() {
+                validate_ast_constant_value(item)?;
+            }
+            Ok(())
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            for item in items.values() {
+                validate_ast_constant_value(item)?;
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "got an invalid type in Constant: {}",
+            val.type_name()
+        )),
+    }
 }
 
 fn convert_constant(val: &PyObjectRef) -> AstConstant {
@@ -6257,8 +7423,25 @@ fn convert_constant(val: &PyObjectRef) -> AstConstant {
             PyInt::Big(bi) => AstConstant::Int(AstBigInt::Big(bi.clone())),
         },
         PyObjectPayload::Float(f) => AstConstant::Float(*f),
+        PyObjectPayload::Complex { real, imag } => AstConstant::Complex {
+            real: *real,
+            imag: *imag,
+        },
         PyObjectPayload::Str(s) => AstConstant::Str(CompactString::from(s.as_str())),
         PyObjectPayload::Bytes(b) => AstConstant::Bytes((**b).clone()),
+        PyObjectPayload::Ellipsis => AstConstant::Ellipsis,
+        PyObjectPayload::Tuple(items) => {
+            AstConstant::Tuple(items.iter().map(|item| convert_constant(item)).collect())
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            AstConstant::FrozenSet(items.values().map(|item| convert_constant(item)).collect())
+        }
+        PyObjectPayload::Instance(inst) => {
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return convert_constant(&value);
+            }
+            AstConstant::Str(CompactString::from(val.py_to_string()))
+        }
         _ => {
             let s = val.py_to_string();
             if let Ok(i) = s.parse::<i64>() {
@@ -6380,7 +7563,7 @@ fn convert_arguments(node: &PyObjectRef) -> Result<AstArguments, String> {
 }
 
 fn convert_arg_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstArg>, String> {
-    get_list_attr(parent, attr)
+    get_checked_list_attr(parent, attr)?
         .iter()
         .map(convert_arg)
         .collect()
@@ -6389,6 +7572,9 @@ fn convert_arg_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstArg>, Str
 fn convert_arg(node: &PyObjectRef) -> Result<AstArg, String> {
     let arg = get_str_attr(node, "arg");
     let annotation = convert_optional_expr(node, "annotation")?;
+    if let Some(annotation) = &annotation {
+        require_load_context(annotation)?;
+    }
     Ok(AstArg {
         arg,
         annotation,
@@ -6398,16 +7584,18 @@ fn convert_arg(node: &PyObjectRef) -> Result<AstArg, String> {
 }
 
 fn convert_keyword_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstKeyword>, String> {
-    get_list_attr(parent, attr)
+    get_checked_list_attr(parent, attr)?
         .iter()
         .map(|k| {
             let arg = get_optional_str(k, "arg");
             let value_node = k
                 .get_attr("value")
                 .ok_or_else(|| "keyword missing 'value'".to_string())?;
+            let value = convert_expr(&value_node)?;
+            require_load_context(&value)?;
             Ok(AstKeyword {
                 arg,
-                value: convert_expr(&value_node)?,
+                value,
                 location: loc_from_node(k),
             })
         })
@@ -6415,7 +7603,7 @@ fn convert_keyword_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstKeywo
 }
 
 fn convert_alias_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstAlias>, String> {
-    get_list_attr(parent, attr)
+    get_checked_list_attr(parent, attr)?
         .iter()
         .map(|a| {
             let name = get_str_attr(a, "name");
@@ -6430,7 +7618,7 @@ fn convert_alias_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstAlias>,
 }
 
 fn convert_comprehension_list(parent: &PyObjectRef) -> Result<Vec<AstComprehension>, String> {
-    get_list_attr(parent, "generators")
+    get_checked_list_attr(parent, "generators")?
         .iter()
         .map(|g| {
             let target_node = g
@@ -6445,9 +7633,16 @@ fn convert_comprehension_list(parent: &PyObjectRef) -> Result<Vec<AstComprehensi
                 .and_then(|v| v.to_int().ok())
                 .map(|i| i != 0)
                 .unwrap_or(false);
+            let target = convert_expr(&target_node)?;
+            let iter = convert_expr(&iter_node)?;
+            require_store_context(&target)?;
+            require_load_context(&iter)?;
+            for if_expr in &ifs {
+                require_load_context(if_expr)?;
+            }
             Ok(AstComprehension {
-                target: convert_expr(&target_node)?,
-                iter: convert_expr(&iter_node)?,
+                target,
+                iter,
                 ifs,
                 is_async,
             })

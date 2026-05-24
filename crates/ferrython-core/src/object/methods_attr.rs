@@ -152,6 +152,35 @@ fn native_function_binds_to_class(class: &PyObjectRef, attr_name: &str, native_n
     false
 }
 
+#[inline]
+fn ast_constant_alias_attr(inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
+    if !matches!(name, "n" | "s" | "kind") {
+        return None;
+    }
+    let is_constant = match &inst.class.payload {
+        PyObjectPayload::Class(cd) => {
+            cd.name.as_str() == "Constant"
+                || cd.mro.iter().any(|base| {
+                    matches!(&base.payload, PyObjectPayload::Class(bcd) if bcd.name.as_str() == "Constant")
+                })
+        }
+        _ => false,
+    };
+    if !is_constant {
+        return None;
+    }
+    if name == "kind" {
+        return Some(
+            inst.attrs
+                .read()
+                .get("kind")
+                .cloned()
+                .unwrap_or_else(PyObject::none),
+        );
+    }
+    inst.attrs.read().get("value").cloned()
+}
+
 /// Wrap a class-level attribute for instance access: bind functions as BoundMethod,
 /// unwrap StaticMethod/ClassMethod, handle cached_property/lru_cache wrappers.
 /// Extracted to avoid duplicating this logic in fast-path and descriptor-protocol paths.
@@ -659,6 +688,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = inst.attrs.read().get(name) {
                     return Some(v.clone());
                 }
+                if let Some(v) = ast_constant_alias_attr(inst, name) {
+                    return Some(v);
+                }
                 if inst.class.get_attr("__namedtuple__").is_some() {
                     if let Some(fields) = inst.class.get_attr("_fields") {
                         if let PyObjectPayload::Tuple(field_names) = &fields.payload {
@@ -877,6 +909,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = inst.attrs.read().get(name) {
                     return Some(v.clone());
                 }
+                if let Some(v) = ast_constant_alias_attr(inst, name) {
+                    return Some(v);
+                }
                 if let Some(v) = lookup_in_class_mro(&effective_class, name) {
                     return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
@@ -899,6 +934,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 // 2. Instance attributes
                 if let Some(v) = inst.attrs.read().get(name) {
                     return Some(v.clone());
+                }
+                if let Some(v) = ast_constant_alias_attr(inst, name) {
+                    return Some(v);
                 }
                 // 3. Non-data descriptors and other class attrs
                 if let Some(v) = class_attr {

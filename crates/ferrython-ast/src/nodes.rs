@@ -205,6 +205,8 @@ pub enum Pattern {
 pub struct Expression {
     pub node: ExpressionKind,
     pub location: SourceLocation,
+    /// Full syntactic span, including redundant parentheses around this expression.
+    pub outer_location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +349,8 @@ pub enum Constant {
     Str(CompactString),
     Bytes(Vec<u8>),
     Ellipsis,
+    Tuple(Vec<Constant>),
+    FrozenSet(Vec<Constant>),
 }
 
 /// Big integer representation (wraps num-bigint for arbitrary precision).
@@ -517,7 +521,16 @@ pub struct Comprehension {
 
 impl Expression {
     pub fn new(node: ExpressionKind, location: SourceLocation) -> Self {
-        Self { node, location }
+        Self {
+            node,
+            location,
+            outer_location: location,
+        }
+    }
+
+    pub fn with_outer_location(mut self, outer_location: SourceLocation) -> Self {
+        self.outer_location = outer_location;
+        self
     }
 
     /// Create a Name expression.

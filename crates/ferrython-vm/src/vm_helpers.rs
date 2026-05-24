@@ -2898,59 +2898,45 @@ impl VirtualMachine {
         }
         let filename = args[1].py_to_string();
         let mode = args[2].py_to_string();
+        let flags = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
+            args[3].as_int().unwrap_or(0)
+        } else if let Some(dict) = args.iter().find_map(|arg| {
+            if let PyObjectPayload::Dict(map) = &arg.payload {
+                Some(map)
+            } else {
+                None
+            }
+        }) {
+            dict.read()
+                .get(&HashableKey::str_key(CompactString::from("flags")))
+                .and_then(|v| v.as_int())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let only_ast = (flags & 1024) != 0;
 
         // Check if the argument is an AST object (Instance), not a string
         let is_ast_obj = matches!(&args[0].payload, PyObjectPayload::Instance(_));
 
         if is_ast_obj {
-            // Try direct PyObject AST → Rust AST conversion first.
-            // This handles non-standard identifiers (e.g. werkzeug's `<builder:...>`)
-            // that can't survive source-code roundtrip.
-            let has_stored_source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                let attrs = inst.attrs.read();
-                attrs
-                    .get("__source__")
-                    .map(|s| !s.py_to_string().is_empty())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_stored_source {
-                // Has original source from ast.parse() — use it (fast path)
-                let source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                    inst.attrs.read().get("__source__").unwrap().py_to_string()
-                } else {
-                    unreachable!()
-                };
-                let effective = if mode == "eval" {
-                    format!("__eval_result__ = ({})", source)
-                } else {
-                    source
-                };
-                let module = ferrython_parser::parse(&effective, &filename)
-                    .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
-                let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                let code = compiler
-                    .compile_module(&module)
-                    .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-                return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
-                    code,
-                ))));
-            }
-
-            // No stored source — convert AST objects directly to Rust AST
             match ferrython_stdlib::pyobj_ast_to_module(&args[0]) {
                 Ok(module) => {
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                     let code = compiler
                         .compile_module(&module)
-                        .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
+                        .map_err(|e| compile_ast_error_to_value_exc(&filename, e))?;
                     return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
                         code,
                     ))));
                 }
                 Err(_e) => {
+                    if let Some(message) = _e.strip_prefix("TypeError: ") {
+                        return Err(PyException::type_error(message));
+                    }
+                    if let Some(message) = _e.strip_prefix("ValueError: ") {
+                        return Err(PyException::value_error(message));
+                    }
                     // Fallback: try unparse → reparse
                     let source = ferrython_stdlib::ast_unparse_module(&args[0]);
                     let effective = if mode == "eval" {
@@ -2979,6 +2965,40 @@ impl VirtualMachine {
                 "compile() arg 1 must be a string, bytes, or AST object",
             ));
         };
+        if only_ast {
+            return match mode.as_str() {
+                "eval" => ferrython_parser::parse_expression(&source, &filename)
+                    .map(|expr| {
+                        let module = ferrython_ast::Module::Expression {
+                            body: Box::new(expr),
+                        };
+                        ferrython_stdlib::module_ast_to_pyobject(&module)
+                    })
+                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+                "single" => ferrython_parser::parse(&source, &filename)
+                    .map(|module| match module {
+                        ferrython_ast::Module::Module { body, .. } => {
+                            ferrython_stdlib::module_ast_to_pyobject(
+                                &ferrython_ast::Module::Interactive { body },
+                            )
+                        }
+                        ferrython_ast::Module::Interactive { body } => {
+                            ferrython_stdlib::module_ast_to_pyobject(
+                                &ferrython_ast::Module::Interactive { body },
+                            )
+                        }
+                        ferrython_ast::Module::Expression { body } => {
+                            ferrython_stdlib::module_ast_to_pyobject(
+                                &ferrython_ast::Module::Expression { body },
+                            )
+                        }
+                    })
+                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+                _ => ferrython_parser::parse(&source, &filename)
+                    .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module))
+                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+            };
+        }
         let effective_source = if mode == "eval" {
             format!("__eval_result__ = ({})", source)
         } else {
@@ -2986,6 +3006,16 @@ impl VirtualMachine {
         };
         let module = ferrython_parser::parse(&effective_source, &filename)
             .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
+        let module = if mode == "single" {
+            match module {
+                ferrython_ast::Module::Module { body, .. } => {
+                    ferrython_ast::Module::Interactive { body }
+                }
+                other => other,
+            }
+        } else {
+            module
+        };
         let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
         let code = compiler
             .compile_module(&module)
@@ -3404,12 +3434,35 @@ pub(crate) fn compile_error_to_syntax_exc(
         ),
         CompileError::NameError { message } => (message.clone(), None),
         CompileError::Internal(s) => (s.clone(), None),
+        CompileError::InvalidAst { message } => {
+            return build_syntax_exception(ExceptionKind::ValueError, message, filename, 1, 0);
+        }
     };
     let (lineno, offset) = match loc {
         Some(l) => (l.line as i64, (l.column as i64) + 1),
         None => (1, 0),
     };
     build_syntax_exception(ExceptionKind::SyntaxError, &msg, filename, lineno, offset)
+}
+
+pub(crate) fn compile_ast_error_to_value_exc(
+    filename: &str,
+    e: ferrython_compiler::CompileError,
+) -> PyException {
+    use ferrython_compiler::CompileError;
+    match &e {
+        CompileError::InvalidAssignTarget { .. } => build_syntax_exception(
+            ExceptionKind::ValueError,
+            "expression which can't be assigned to in Store context",
+            filename,
+            1,
+            0,
+        ),
+        CompileError::InvalidAst { message } => {
+            build_syntax_exception(ExceptionKind::ValueError, message, filename, 1, 0)
+        }
+        _ => compile_error_to_syntax_exc(filename, e),
+    }
 }
 
 fn build_syntax_exception(

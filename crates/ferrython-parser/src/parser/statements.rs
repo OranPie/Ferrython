@@ -77,6 +77,7 @@ impl Parser {
         if let Some(op) = self.try_parse_aug_assign_op() {
             let value = self.parse_test_list()?;
             self.expect_newline()?;
+            let loc = Self::with_end_location(loc, Self::expression_outer_location(&value));
             return Ok(Statement::new(
                 StatementKind::AugAssign {
                     target: Box::new(expr),
@@ -98,6 +99,11 @@ impl Parser {
                 None
             };
             self.expect_newline()?;
+            let end = value
+                .as_ref()
+                .map(|expr| Self::expression_outer_location(expr))
+                .unwrap_or_else(|| Self::expression_outer_location(&annotation));
+            let loc = Self::with_end_location(loc, end);
             return Ok(Statement::new(
                 StatementKind::AnnAssign {
                     target: Box::new(expr),
@@ -119,6 +125,7 @@ impl Parser {
             }
             let value = targets.pop().unwrap();
             self.expect_newline()?;
+            let loc = Self::with_end_location(loc, Self::expression_outer_location(&value));
             return Ok(Statement::new(
                 StatementKind::Assign {
                     targets,
@@ -131,6 +138,7 @@ impl Parser {
 
         // Expression statement
         self.expect_newline()?;
+        let loc = Self::expression_outer_location(&expr);
         Ok(Statement::new(
             StatementKind::Expr {
                 value: Box::new(expr),
@@ -155,6 +163,9 @@ impl Parser {
             orelse = self.parse_block()?;
         }
 
+        let end = Self::suite_end_location([body.as_slice(), orelse.as_slice()])
+            .unwrap_or_else(|| Self::expression_outer_location(&test));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::If {
                 test: Box::new(test),
@@ -181,6 +192,9 @@ impl Parser {
             orelse = self.parse_block()?;
         }
 
+        let end = Self::suite_end_location([body.as_slice(), orelse.as_slice()])
+            .unwrap_or_else(|| Self::expression_outer_location(&test));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::If {
                 test: Box::new(test),
@@ -204,6 +218,9 @@ impl Parser {
         } else {
             Vec::new()
         };
+        let end = Self::suite_end_location([body.as_slice(), orelse.as_slice()])
+            .unwrap_or_else(|| Self::expression_outer_location(&test));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::While {
                 test: Box::new(test),
@@ -229,6 +246,9 @@ impl Parser {
         } else {
             Vec::new()
         };
+        let end = Self::suite_end_location([body.as_slice(), orelse.as_slice()])
+            .unwrap_or_else(|| Self::expression_outer_location(&iter));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::For {
                 target: Box::new(target),
@@ -257,6 +277,14 @@ impl Parser {
         };
         self.expect(TokenKind::Colon)?;
         let body = self.parse_block()?;
+        let end = Self::last_statement_location(&body)
+            .or_else(|| {
+                returns
+                    .as_ref()
+                    .map(|expr| Self::expression_outer_location(expr))
+            })
+            .unwrap_or(loc);
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::FunctionDef {
                 name,
@@ -276,8 +304,9 @@ impl Parser {
         self.expect(TokenKind::Class)?;
         let name = self.expect_name()?;
         let (bases, keywords) = if self.check(TokenKind::LeftParen) {
+            let open_location = self.current_location();
             self.advance();
-            let (b, k) = self.parse_class_args()?;
+            let (b, k) = self.parse_class_args(open_location)?;
             self.expect(TokenKind::RightParen)?;
             (b, k)
         } else {
@@ -285,6 +314,11 @@ impl Parser {
         };
         self.expect(TokenKind::Colon)?;
         let body = self.parse_block()?;
+        let end = Self::last_statement_location(&body)
+            .or_else(|| keywords.last().map(|kw| kw.location))
+            .or_else(|| bases.last().map(Self::expression_outer_location))
+            .unwrap_or(loc);
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::ClassDef {
                 name,
@@ -306,6 +340,10 @@ impl Parser {
             None
         };
         self.expect_newline()?;
+        let loc = value
+            .as_ref()
+            .map(|expr| Self::with_end_location(loc, Self::expression_outer_location(expr)))
+            .unwrap_or(loc);
         Ok(Statement::new(StatementKind::Return { value }, loc))
     }
 
@@ -330,6 +368,11 @@ impl Parser {
             None
         };
         self.expect_newline()?;
+        let end = cause
+            .as_ref()
+            .map(|expr| Self::expression_outer_location(expr))
+            .unwrap_or_else(|| Self::expression_outer_location(&exc));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::Raise {
                 exc: Some(Box::new(exc)),
@@ -348,6 +391,10 @@ impl Parser {
             names.push(self.parse_dotted_as_name()?);
         }
         self.expect_newline()?;
+        let loc = names
+            .last()
+            .map(|alias| Self::with_end_location(loc, alias.location))
+            .unwrap_or(loc);
         Ok(Statement::new(StatementKind::Import { names }, loc))
     }
 
@@ -365,12 +412,16 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Import)?;
+        let mut end = loc;
         let names = if self.check(TokenKind::Star) {
+            let star_span = self.peek().span;
             self.advance();
+            let star_loc = Self::location_from_span(star_span);
+            end = star_loc;
             vec![Alias {
                 name: CompactString::from("*"),
                 asname: None,
-                location: self.current_location(),
+                location: star_loc,
             }]
         } else {
             let open_paren = self.check(TokenKind::LeftParen);
@@ -378,19 +429,24 @@ impl Parser {
                 self.advance();
             }
             let mut names = vec![self.parse_import_as_name()?];
+            end = names.last().map(|alias| alias.location).unwrap_or(end);
             while self.check(TokenKind::Comma) {
                 self.advance();
                 if open_paren && self.check(TokenKind::RightParen) {
                     break;
                 }
-                names.push(self.parse_import_as_name()?);
+                let alias = self.parse_import_as_name()?;
+                end = alias.location;
+                names.push(alias);
             }
             if open_paren {
-                self.expect(TokenKind::RightParen)?;
+                let rparen_span = self.expect(TokenKind::RightParen)?.span;
+                end = Self::location_from_span(rparen_span);
             }
             names
         };
         self.expect_newline()?;
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::ImportFrom {
                 module,
@@ -424,6 +480,12 @@ impl Parser {
         } else {
             Vec::new()
         };
+        let end = Self::last_statement_location(&finalbody)
+            .or_else(|| Self::last_statement_location(&orelse))
+            .or_else(|| handlers.last().map(|handler| handler.location))
+            .or_else(|| Self::last_statement_location(&body))
+            .unwrap_or(loc);
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::Try {
                 body,
@@ -459,6 +521,13 @@ impl Parser {
         };
         self.expect(TokenKind::Colon)?;
         let body = self.parse_block()?;
+        let end = Self::last_statement_location(&body)
+            .or_else(|| {
+                typ.as_ref()
+                    .map(|expr| Self::expression_outer_location(expr))
+            })
+            .unwrap_or(loc);
+        let loc = Self::with_end_location(loc, end);
         Ok(ExceptHandler {
             typ,
             name,
@@ -478,6 +547,17 @@ impl Parser {
         }
         self.expect(TokenKind::Colon)?;
         let body = self.parse_block()?;
+        let end = Self::last_statement_location(&body)
+            .or_else(|| {
+                items.last().map(|item| {
+                    item.optional_vars
+                        .as_ref()
+                        .map(|expr| Self::expression_outer_location(expr))
+                        .unwrap_or_else(|| Self::expression_outer_location(&item.context_expr))
+                })
+            })
+            .unwrap_or(loc);
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::With {
                 items,
@@ -514,6 +594,11 @@ impl Parser {
             None
         };
         self.expect_newline()?;
+        let end = msg
+            .as_ref()
+            .map(|expr| Self::expression_outer_location(expr))
+            .unwrap_or_else(|| Self::expression_outer_location(&test));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::Assert {
                 test: Box::new(test),
@@ -535,36 +620,47 @@ impl Parser {
             targets.push(self.parse_expr()?);
         }
         self.expect_newline()?;
+        let loc = targets
+            .last()
+            .map(|target| Self::with_end_location(loc, Self::expression_outer_location(target)))
+            .unwrap_or(loc);
         Ok(Statement::new(StatementKind::Delete { targets }, loc))
     }
 
     fn parse_global_stmt(&mut self) -> Result<Statement, ParseError> {
         let loc = self.current_location();
         self.expect(TokenKind::Global)?;
+        let mut last_span = self.peek().span;
         let mut names = vec![self.expect_name()?];
         while self.check(TokenKind::Comma) {
             self.advance();
+            last_span = self.peek().span;
             names.push(self.expect_name()?);
         }
         self.expect_newline()?;
+        let loc = Self::with_end_span(loc, last_span);
         Ok(Statement::new(StatementKind::Global { names }, loc))
     }
 
     fn parse_nonlocal_stmt(&mut self) -> Result<Statement, ParseError> {
         let loc = self.current_location();
         self.expect(TokenKind::Nonlocal)?;
+        let mut last_span = self.peek().span;
         let mut names = vec![self.expect_name()?];
         while self.check(TokenKind::Comma) {
             self.advance();
+            last_span = self.peek().span;
             names.push(self.expect_name()?);
         }
         self.expect_newline()?;
+        let loc = Self::with_end_span(loc, last_span);
         Ok(Statement::new(StatementKind::Nonlocal { names }, loc))
     }
 
     fn parse_async_stmt(&mut self) -> Result<Statement, ParseError> {
+        let async_loc = self.current_location();
         self.expect(TokenKind::Async)?;
-        match &self.peek().kind {
+        let mut stmt = match &self.peek().kind {
             TokenKind::Def => self.parse_function_def(true),
             TokenKind::For => self.parse_for_stmt(true),
             TokenKind::With => self.parse_with_stmt(true),
@@ -574,11 +670,12 @@ impl Parser {
                 ),
                 self.peek().span,
             )),
-        }
+        }?;
+        stmt.location = Self::with_end_location(async_loc, stmt.location);
+        Ok(stmt)
     }
 
     fn parse_decorated(&mut self) -> Result<Statement, ParseError> {
-        let loc = self.current_location();
         let mut decorators = Vec::new();
         while self.check(TokenKind::At) {
             self.advance();
@@ -588,8 +685,11 @@ impl Parser {
         let mut stmt = match &self.peek().kind {
             TokenKind::Def => self.parse_function_def(false)?,
             TokenKind::Async => {
+                let async_loc = self.current_location();
                 self.advance();
-                self.parse_function_def(true)?
+                let mut stmt = self.parse_function_def(true)?;
+                stmt.location = Self::with_end_location(async_loc, stmt.location);
+                stmt
             }
             TokenKind::Class => self.parse_class_def()?,
             _ => {
@@ -609,7 +709,6 @@ impl Parser {
             }
             _ => unreachable!(),
         }
-        stmt.location = loc;
         Ok(stmt)
     }
 
@@ -627,15 +726,24 @@ impl Parser {
 
     fn parse_dotted_as_name(&mut self) -> Result<Alias, ParseError> {
         let loc = self.current_location();
-        let name = self.parse_dotted_name()?;
+        let mut name = self.expect_name()?.to_string();
+        let mut end_span = self.tokens[self.pos.saturating_sub(1)].span;
+        while self.check(TokenKind::Dot) {
+            self.advance();
+            name.push('.');
+            end_span = self.peek().span;
+            name.push_str(self.expect_name()?.as_str());
+        }
         let asname = if self.check(TokenKind::As) {
             self.advance();
+            end_span = self.peek().span;
             Some(self.expect_name()?)
         } else {
             None
         };
+        let loc = Self::with_end_span(loc, end_span);
         Ok(Alias {
-            name,
+            name: CompactString::from(name),
             asname,
             location: loc,
         })
@@ -643,13 +751,16 @@ impl Parser {
 
     fn parse_import_as_name(&mut self) -> Result<Alias, ParseError> {
         let loc = self.current_location();
+        let mut end_span = self.peek().span;
         let name = self.expect_name()?;
         let asname = if self.check(TokenKind::As) {
             self.advance();
+            end_span = self.peek().span;
             Some(self.expect_name()?)
         } else {
             None
         };
+        let loc = Self::with_end_span(loc, end_span);
         Ok(Alias {
             name,
             asname,
@@ -717,6 +828,11 @@ impl Parser {
             self.advance();
         }
 
+        let end = cases
+            .last()
+            .and_then(|case| Self::last_statement_location(&case.body))
+            .unwrap_or_else(|| Self::expression_outer_location(&subject));
+        let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(
             StatementKind::Match {
                 subject: Box::new(subject),
@@ -830,15 +946,19 @@ impl Parser {
                 self.advance();
                 let lit_pat = self.parse_literal_pattern()?;
                 match lit_pat {
-                    Pattern::MatchLiteral { value } => Ok(Pattern::MatchLiteral {
-                        value: Expression::new(
-                            ExpressionKind::UnaryOp {
-                                op: UnaryOperator::USub,
-                                operand: Box::new(value),
-                            },
-                            loc,
-                        ),
-                    }),
+                    Pattern::MatchLiteral { value } => {
+                        let loc =
+                            Self::with_end_location(loc, Self::expression_outer_location(&value));
+                        Ok(Pattern::MatchLiteral {
+                            value: Expression::new(
+                                ExpressionKind::UnaryOp {
+                                    op: UnaryOperator::USub,
+                                    operand: Box::new(value),
+                                },
+                                loc,
+                            ),
+                        })
+                    }
                     _ => Err(self.unexpected_token("numeric literal")),
                 }
             }
@@ -932,8 +1052,10 @@ impl Parser {
             let mut expr = Expression::name(name, ExprContext::Load, loc);
             while self.check(TokenKind::Dot) {
                 self.advance();
+                let attr_span = self.peek().span;
                 let attr = self.expect_name()?;
-                let attr_loc = self.current_location();
+                let attr_loc =
+                    Self::with_end_span(Self::expression_outer_location(&expr), attr_span);
                 expr = Expression::new(
                     ExpressionKind::Attribute {
                         value: Box::new(expr),

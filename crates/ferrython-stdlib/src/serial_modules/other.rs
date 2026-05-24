@@ -2072,6 +2072,53 @@ fn pkl_stack_top_value(stack: &[PklStackItem]) -> PyResult<PyObjectRef> {
     }
 }
 
+fn ast_empty_fields_node_names(name: &str) -> bool {
+    matches!(
+        name,
+        "Load"
+            | "Store"
+            | "Del"
+            | "And"
+            | "Or"
+            | "Add"
+            | "Sub"
+            | "Mult"
+            | "MatMult"
+            | "Div"
+            | "Mod"
+            | "Pow"
+            | "LShift"
+            | "RShift"
+            | "BitOr"
+            | "BitXor"
+            | "BitAnd"
+            | "FloorDiv"
+            | "Invert"
+            | "Not"
+            | "UAdd"
+            | "USub"
+            | "Eq"
+            | "NotEq"
+            | "Lt"
+            | "LtE"
+            | "Gt"
+            | "GtE"
+            | "Is"
+            | "IsNot"
+            | "In"
+            | "NotIn"
+            | "Pass"
+            | "Break"
+            | "Continue"
+    )
+}
+
+fn maybe_add_ast_empty_fields(name: &str, attrs: &mut IndexMap<CompactString, PyObjectRef>) {
+    if ast_empty_fields_node_names(name) && !attrs.contains_key("_fields") {
+        attrs.insert(CompactString::from("_fields"), PyObject::tuple(vec![]));
+    }
+}
+
 fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectRef> {
     if let PklStackItem::Global(module, name) = callable {
         let arg_list = match &args.payload {
@@ -2304,6 +2351,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                                 attrs.insert(s.to_compact_string(), v.clone());
                             }
                         }
+                        maybe_add_ast_empty_fields(name, &mut attrs);
                         let cls = PyObject::class(
                             CompactString::from(name.as_str()),
                             vec![],

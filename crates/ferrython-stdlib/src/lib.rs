@@ -33,6 +33,7 @@ pub use import_modules::{
     take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest,
 };
 pub use introspection_modules::ast_unparse_module;
+pub use introspection_modules::module_ast_to_pyobject;
 pub use introspection_modules::pyobj_ast_to_module;
 pub use serial_modules::json_dumps_fn;
 pub use sys_modules::get_argv;

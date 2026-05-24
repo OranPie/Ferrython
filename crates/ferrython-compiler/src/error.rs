@@ -58,6 +58,9 @@ pub enum CompileError {
 
     #[error("internal compiler error: {0}")]
     Internal(String),
+
+    #[error("invalid AST: {message}")]
+    InvalidAst { message: String },
 }
 
 impl CompileError {

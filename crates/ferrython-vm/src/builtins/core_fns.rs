@@ -733,6 +733,68 @@ pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     Ok(PyObject::bool_val(is_instance_of(obj, cls)))
 }
 
+fn ast_constant_value(obj: &PyObjectRef) -> Option<Option<PyObjectRef>> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    let is_constant = match &inst.class.payload {
+        PyObjectPayload::Class(cd) => {
+            cd.name.as_str() == "Constant"
+                || cd.mro.iter().any(|base| {
+                    matches!(&base.payload, PyObjectPayload::Class(bcd) if bcd.name.as_str() == "Constant")
+                })
+        }
+        _ => false,
+    };
+    if !is_constant {
+        return None;
+    }
+    Some(inst.attrs.read().get("value").cloned())
+}
+
+fn ast_constant_matches_legacy(value: &PyObjectRef, legacy: &str) -> bool {
+    match legacy {
+        "Num" => matches!(
+            &value.payload,
+            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Complex { .. }
+        ),
+        "Str" => {
+            matches!(&value.payload, PyObjectPayload::Str(_))
+                || matches!(
+                    &value.payload,
+                    PyObjectPayload::Instance(inst)
+                        if inst
+                            .attrs
+                            .read()
+                            .get("__builtin_value__")
+                            .map(|v| matches!(&v.payload, PyObjectPayload::Str(_)))
+                            .unwrap_or(false)
+                )
+        }
+        "Bytes" => {
+            matches!(&value.payload, PyObjectPayload::Bytes(_))
+                || matches!(
+                    &value.payload,
+                    PyObjectPayload::Instance(inst)
+                        if inst
+                            .attrs
+                            .read()
+                            .get("__builtin_value__")
+                            .map(|v| matches!(&v.payload, PyObjectPayload::Bytes(_)))
+                            .unwrap_or(false)
+                )
+        }
+        "NameConstant" => {
+            matches!(
+                &value.payload,
+                PyObjectPayload::None | PyObjectPayload::Bool(_)
+            )
+        }
+        "Ellipsis" => matches!(&value.payload, PyObjectPayload::Ellipsis),
+        _ => false,
+    }
+}
+
 /// Check if obj is an instance of cls (including inheritance).
 pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
     match &cls.payload {
@@ -777,6 +839,17 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             false
         }
         PyObjectPayload::Class(target_cd) => {
+            if matches!(
+                target_cd.name.as_str(),
+                "Num" | "Str" | "Bytes" | "NameConstant" | "Ellipsis"
+            ) {
+                if let Some(value) = ast_constant_value(obj) {
+                    return value
+                        .as_ref()
+                        .map(|v| ast_constant_matches_legacy(v, target_cd.name.as_str()))
+                        .unwrap_or(false);
+                }
+            }
             // Check _abc_builtin_types registry (collections.abc uses this)
             let obj_type = obj.type_name();
             if let Some(registry) = target_cd.namespace.read().get("_abc_builtin_types") {

@@ -521,6 +521,17 @@ impl Compiler {
         ops: &[CompareOperator],
         comparators: &[Expression],
     ) -> Result<()> {
+        if comparators.is_empty() {
+            return Err(CompileError::InvalidAst {
+                message: "no comparators".to_string(),
+            });
+        }
+        if ops.len() != comparators.len() {
+            return Err(CompileError::InvalidAst {
+                message: "different number of comparators and operands".to_string(),
+            });
+        }
+
         self.compile_expression(left)?;
 
         if ops.len() == 1 {
@@ -1408,6 +1419,18 @@ impl Compiler {
             Constant::Str(s) => ConstantValue::Str(s.clone()),
             Constant::Bytes(b) => ConstantValue::Bytes(b.clone()),
             Constant::Ellipsis => ConstantValue::Ellipsis,
+            Constant::Tuple(items) => ConstantValue::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.constant_to_value(item))
+                    .collect(),
+            ),
+            Constant::FrozenSet(items) => ConstantValue::FrozenSet(
+                items
+                    .iter()
+                    .map(|item| self.constant_to_value(item))
+                    .collect(),
+            ),
         }
     }
 }

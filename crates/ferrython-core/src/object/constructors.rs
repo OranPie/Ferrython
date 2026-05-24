@@ -428,6 +428,11 @@ static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| {
         payload: PyObjectPayload::Bytes(Box::new(vec![])),
     })
 });
+static EMPTY_FROZENSET: LazyLock<PyObjectRef> = LazyLock::new(|| {
+    PyObjectRef::new_immortal(PyObject {
+        payload: PyObjectPayload::FrozenSet(Box::new(FrozenSetData::new(new_fx_hashkey_map()))),
+    })
+});
 
 // ── Single-character ASCII string cache (like CPython's unicode_latin1) ──
 // Pre-allocates all 128 ASCII single-char strings as immortal objects.
@@ -785,12 +790,11 @@ fn break_cycles(payload: &PyObjectPayload) {
 }
 
 /// Track object for GC cycle collection.
-/// Currently a no-op: GC never auto-triggers (notify_alloc return value is ignored),
-/// so tracking adds ~7ns overhead (Weak::new + Vec::push) with no benefit.
-/// Re-enable when GC auto-collection is implemented.
 #[inline(always)]
-fn track_object(_obj: &PyObjectRef) {
-    // unsafe { (*TRACKED_OBJECTS.0.get()).push(PyObjectRef::downgrade(obj)); }
+fn track_object(obj: &PyObjectRef) {
+    unsafe {
+        (*TRACKED_OBJECTS.0.get()).push(PyObjectRef::downgrade(obj));
+    }
 }
 
 // ── PyObject constructors ──
@@ -1212,6 +1216,9 @@ impl PyObject {
     pub fn frozenset<S: std::hash::BuildHasher>(
         items: IndexMap<HashableKey, PyObjectRef, S>,
     ) -> PyObjectRef {
+        if items.is_empty() {
+            return EMPTY_FROZENSET.clone();
+        }
         let fx: FxHashKeyMap = items.into_iter().collect();
         Self::wrap(PyObjectPayload::FrozenSet(Box::new(FrozenSetData::new(fx))))
     }
