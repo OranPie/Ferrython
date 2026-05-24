@@ -6,6 +6,57 @@ use super::helpers::{call_callable, partial_cmp_objects, unwrap_builtin_subclass
 use super::methods::{CompareOp, PyObjectMethods};
 use super::methods_attr::{lookup_in_class_mro, wrap_class_attr_for_instance};
 use super::payload::*;
+use compact_str::CompactString;
+use std::cell::RefCell;
+
+thread_local! {
+    static ACTIVE_CONTAINER_COMPARISONS: RefCell<Vec<ComparisonKey>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ComparisonKey {
+    left: usize,
+    right: usize,
+    op: CompareOp,
+}
+
+struct ContainerComparisonGuard {
+    key: ComparisonKey,
+}
+
+impl Drop for ContainerComparisonGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONTAINER_COMPARISONS.with(|active| {
+            let mut active = active.borrow_mut();
+            if let Some(pos) = active.iter().rposition(|key| *key == self.key) {
+                active.remove(pos);
+            }
+        });
+    }
+}
+
+fn enter_container_comparison(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    op: CompareOp,
+) -> PyResult<ContainerComparisonGuard> {
+    let mut left = PyObjectRef::as_ptr(a) as usize;
+    let mut right = PyObjectRef::as_ptr(b) as usize;
+    if right < left {
+        std::mem::swap(&mut left, &mut right);
+    }
+    let key = ComparisonKey { left, right, op };
+    ACTIVE_CONTAINER_COMPARISONS.with(|active| {
+        let mut active = active.borrow_mut();
+        if active.contains(&key) {
+            return Err(PyException::recursion_error(
+                "maximum recursion depth exceeded in comparison",
+            ));
+        }
+        active.push(key);
+        Ok(ContainerComparisonGuard { key })
+    })
+}
 
 fn compare_len_order(a_len: usize, b_len: usize, op: CompareOp) -> bool {
     match op {
@@ -81,6 +132,22 @@ fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
     }
 }
 
+fn is_recursive_container_pair(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    matches!(
+        (&a.payload, &b.payload),
+        (PyObjectPayload::List(_), PyObjectPayload::List(_))
+            | (PyObjectPayload::Tuple(_), PyObjectPayload::Tuple(_))
+            | (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_))
+            | (PyObjectPayload::DictItems(_), PyObjectPayload::DictItems(_))
+            | (
+                PyObjectPayload::MappingProxy(_),
+                PyObjectPayload::MappingProxy(_)
+            )
+            | (PyObjectPayload::Dict(_), PyObjectPayload::MappingProxy(_))
+            | (PyObjectPayload::MappingProxy(_), PyObjectPayload::Dict(_))
+    )
+}
+
 fn compare_sequence_items(
     a_items: &[PyObjectRef],
     b_items: &[PyObjectRef],
@@ -95,11 +162,13 @@ fn compare_sequence_items(
             continue;
         }
 
-        if let Some(ordering) = partial_cmp_objects(left, right) {
-            if ordering == std::cmp::Ordering::Equal {
-                continue;
+        if !is_recursive_container_pair(left, right) {
+            if let Some(ordering) = partial_cmp_objects(left, right) {
+                if ordering == std::cmp::Ordering::Equal {
+                    continue;
+                }
+                return Ok(PyObject::bool_val(compare_ordering(ordering, op)));
             }
-            return Ok(PyObject::bool_val(compare_ordering(ordering, op)));
         }
 
         let eq = left.compare(right, CompareOp::Eq)?.is_truthy();
@@ -119,6 +188,112 @@ fn compare_sequence_items(
     )))
 }
 
+fn compare_dict_value_equal(left: &PyObjectRef, right: &PyObjectRef) -> PyResult<bool> {
+    if PyObjectRef::ptr_eq(left, right) {
+        return Ok(true);
+    }
+    if !is_recursive_container_pair(left, right) {
+        if let Some(ordering) = partial_cmp_objects(left, right) {
+            return Ok(ordering == std::cmp::Ordering::Equal);
+        }
+    }
+    Ok(left.compare(right, CompareOp::Eq)?.is_truthy())
+}
+
+fn compare_dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> PyResult<bool> {
+    let od_key = crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
+    let a_is_od = a.contains_key(&od_key);
+    let b_is_od = b.contains_key(&od_key);
+    if a_is_od && b_is_od {
+        let a_items: Vec<_> = a
+            .iter()
+            .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
+            .collect();
+        let b_items: Vec<_> = b
+            .iter()
+            .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
+            .collect();
+        if a_items.len() != b_items.len() {
+            return Ok(false);
+        }
+        for ((ak, av), (bk, bv)) in a_items.iter().zip(b_items.iter()) {
+            if ak != bk || !compare_dict_value_equal(av, bv)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+
+    let a_effective: Vec<_> = a
+        .iter()
+        .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
+        .collect();
+    let b_effective: Vec<_> = b
+        .iter()
+        .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
+        .collect();
+    if a_effective.len() != b_effective.len() {
+        return Ok(false);
+    }
+    for (key, left) in &a_effective {
+        let Some(right) = b.get(*key) else {
+            return Ok(false);
+        };
+        if !compare_dict_value_equal(left, right)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn compare_dict_objects(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    a_map: &FxHashKeyMap,
+    b_map: &FxHashKeyMap,
+    op: CompareOp,
+) -> PyResult<PyObjectRef> {
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        return Err(set_order_type_error(a, b, op));
+    }
+    let _comparison_guard = enter_container_comparison(a, b, op)?;
+    let eq = compare_dict_maps_equal(a_map, b_map)?;
+    Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
+        eq
+    } else {
+        !eq
+    }))
+}
+
+fn compare_mapping_proxy_objects(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    op: CompareOp,
+) -> PyResult<PyObjectRef> {
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
+            let a_read = a_map.read();
+            let b_read = b_map.read();
+            compare_dict_objects(a, b, &a_read, &b_read, op)
+        }
+        (PyObjectPayload::Dict(a_map), PyObjectPayload::MappingProxy(b_map))
+        | (PyObjectPayload::MappingProxy(a_map), PyObjectPayload::Dict(b_map))
+        | (PyObjectPayload::MappingProxy(a_map), PyObjectPayload::MappingProxy(b_map)) => {
+            let a_read = a_map.read();
+            let b_read = b_map.read();
+            compare_dict_objects(a, b, &a_read, &b_read, op)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn compare_dict_item_values_equal(left: &PyObjectRef, right: &PyObjectRef) -> bool {
+    match compare_dict_value_equal(left, right) {
+        Ok(eq) => eq,
+        Err(_) => false,
+    }
+}
+
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
     // Unwrap builtin subclass instances for comparison
     let ua = unwrap_builtin_subclass(a);
@@ -128,12 +303,20 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
     }
     match (&a.payload, &b.payload) {
         (PyObjectPayload::Tuple(a_items), PyObjectPayload::Tuple(b_items)) => {
+            let _comparison_guard = enter_container_comparison(a, b, op)?;
             return compare_sequence_items(a_items, b_items, op);
         }
         (PyObjectPayload::List(a_items), PyObjectPayload::List(b_items)) => {
+            let _comparison_guard = enter_container_comparison(a, b, op)?;
             let a_snapshot = a_items.read().clone();
             let b_snapshot = b_items.read().clone();
             return compare_sequence_items(&a_snapshot, &b_snapshot, op);
+        }
+        (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_))
+        | (PyObjectPayload::Dict(_), PyObjectPayload::MappingProxy(_))
+        | (PyObjectPayload::MappingProxy(_), PyObjectPayload::Dict(_))
+        | (PyObjectPayload::MappingProxy(_), PyObjectPayload::MappingProxy(_)) => {
+            return compare_mapping_proxy_objects(a, b, op);
         }
         _ => {}
     }
@@ -175,6 +358,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             return Ok(PyObject::bool_val(result));
         }
         (PyObjectPayload::DictItems(a_map), PyObjectPayload::DictItems(b_map)) => {
+            let _comparison_guard = enter_container_comparison(a, b, op)?;
             let a_items: Vec<_> = a_map
                 .read()
                 .iter()
@@ -192,10 +376,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                     b_items.iter().any(|(other_key, other_value)| {
                         key == other_key
                             && (PyObjectRef::ptr_eq(value, other_value)
-                                || value
-                                    .compare(other_value, CompareOp::Eq)
-                                    .map(|r| r.is_truthy())
-                                    .unwrap_or(false))
+                                || compare_dict_item_values_equal(value, other_value))
                     })
                 });
             let result = match op {

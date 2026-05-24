@@ -1665,9 +1665,22 @@ fn deep_copy_with_memo(
         | PyObjectPayload::Bytes(_)
         | PyObjectPayload::FrozenSet(_) => Ok(obj.clone()),
         PyObjectPayload::Tuple(items) => {
-            let new_items: Result<Vec<_>, _> =
-                items.iter().map(|x| deep_copy_with_memo(x, memo)).collect();
-            let result = PyObject::tuple(new_items?);
+            let new_items: Vec<_> = items
+                .iter()
+                .map(|x| deep_copy_with_memo(x, memo))
+                .collect::<PyResult<Vec<_>>>()?;
+            if let Some(existing) = memo.get(&ptr) {
+                return Ok(existing.clone());
+            }
+            let result = if items
+                .iter()
+                .zip(new_items.iter())
+                .all(|(original, copied)| PyObjectRef::ptr_eq(original, copied))
+            {
+                obj.clone()
+            } else {
+                PyObject::tuple(new_items)
+            };
             memo.insert(ptr, result.clone());
             Ok(result)
         }
