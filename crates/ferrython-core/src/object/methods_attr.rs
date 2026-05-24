@@ -2060,7 +2060,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                         ExceptionKind::UnicodeError
                         | ExceptionKind::UnicodeDecodeError
-                        | ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
+                        | ExceptionKind::UnicodeEncodeError
+                        | ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::ValueError),
                         ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
                         ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
                         ExceptionKind::NotImplementedError
@@ -2080,6 +2081,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         | ExceptionKind::FutureWarning
                         | ExceptionKind::ImportWarning
                         | ExceptionKind::UnicodeWarning
+                        | ExceptionKind::EncodingWarning
                         | ExceptionKind::BytesWarning
                         | ExceptionKind::ResourceWarning
                         | ExceptionKind::PendingDeprecationWarning => Some(ExceptionKind::Warning),
@@ -2148,7 +2150,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                             ExceptionKind::UnicodeError
                             | ExceptionKind::UnicodeDecodeError
-                            | ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
+                            | ExceptionKind::UnicodeEncodeError
+                            | ExceptionKind::UnicodeTranslateError => ExceptionKind::ValueError,
                             ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
                             ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
                             ExceptionKind::NotImplementedError
@@ -2168,6 +2171,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             | ExceptionKind::FutureWarning
                             | ExceptionKind::ImportWarning
                             | ExceptionKind::UnicodeWarning
+                            | ExceptionKind::EncodingWarning
                             | ExceptionKind::BytesWarning
                             | ExceptionKind::ResourceWarning
                             | ExceptionKind::PendingDeprecationWarning => ExceptionKind::Warning,
@@ -2273,6 +2277,20 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                 }
                 "__class__" => Some(PyObject::exception_type(ei.kind)),
+                "__str__" => Some(PyObject::native_function("__str__", |args| {
+                    if args.is_empty() {
+                        return Ok(PyObject::str_val(CompactString::new("")));
+                    }
+                    Ok(PyObject::str_val(CompactString::from(
+                        args[0].py_to_string(),
+                    )))
+                })),
+                "__repr__" => Some(PyObject::native_function("__repr__", |args| {
+                    if args.is_empty() {
+                        return Ok(PyObject::str_val(CompactString::new("")));
+                    }
+                    Ok(PyObject::str_val(CompactString::from(args[0].repr())))
+                })),
                 "code" if ei.kind == ExceptionKind::SystemExit => {
                     // SystemExit.code: first arg or message
                     if !ei.args.is_empty() {

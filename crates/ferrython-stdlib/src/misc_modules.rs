@@ -1776,31 +1776,124 @@ pub fn create_future_module() -> PyObjectRef {
 // ── builtins module ──
 
 pub fn create_builtins_module() -> PyObjectRef {
-    make_module(
-        "builtins",
-        vec![
+    fn exception_types() -> Vec<(&'static str, PyObjectRef)> {
+        use ferrython_core::error::ExceptionKind;
+        [
+            ("BaseException", ExceptionKind::BaseException),
+            ("BaseExceptionGroup", ExceptionKind::BaseExceptionGroup),
+            ("GeneratorExit", ExceptionKind::GeneratorExit),
+            ("KeyboardInterrupt", ExceptionKind::KeyboardInterrupt),
+            ("SystemExit", ExceptionKind::SystemExit),
+            ("Exception", ExceptionKind::Exception),
+            ("ArithmeticError", ExceptionKind::ArithmeticError),
+            ("FloatingPointError", ExceptionKind::FloatingPointError),
+            ("OverflowError", ExceptionKind::OverflowError),
+            ("ZeroDivisionError", ExceptionKind::ZeroDivisionError),
+            ("AssertionError", ExceptionKind::AssertionError),
+            ("AttributeError", ExceptionKind::AttributeError),
+            ("BufferError", ExceptionKind::BufferError),
+            ("EOFError", ExceptionKind::EOFError),
+            ("ExceptionGroup", ExceptionKind::ExceptionGroup),
+            ("ImportError", ExceptionKind::ImportError),
+            ("ModuleNotFoundError", ExceptionKind::ModuleNotFoundError),
+            ("LookupError", ExceptionKind::LookupError),
+            ("IndexError", ExceptionKind::IndexError),
+            ("KeyError", ExceptionKind::KeyError),
+            ("MemoryError", ExceptionKind::MemoryError),
+            ("NameError", ExceptionKind::NameError),
+            ("UnboundLocalError", ExceptionKind::UnboundLocalError),
+            ("OSError", ExceptionKind::OSError),
+            ("IOError", ExceptionKind::OSError),
+            ("EnvironmentError", ExceptionKind::OSError),
+            ("BlockingIOError", ExceptionKind::BlockingIOError),
+            ("ChildProcessError", ExceptionKind::ChildProcessError),
+            ("ConnectionError", ExceptionKind::ConnectionError),
+            ("BrokenPipeError", ExceptionKind::BrokenPipeError),
             (
-                "__name__",
-                PyObject::str_val(CompactString::from("builtins")),
+                "ConnectionAbortedError",
+                ExceptionKind::ConnectionAbortedError,
             ),
             (
-                "__doc__",
-                PyObject::str_val(CompactString::from(
-                    "Built-in functions, exceptions, and other objects.",
-                )),
+                "ConnectionRefusedError",
+                ExceptionKind::ConnectionRefusedError,
             ),
+            ("ConnectionResetError", ExceptionKind::ConnectionResetError),
+            ("FileExistsError", ExceptionKind::FileExistsError),
+            ("FileNotFoundError", ExceptionKind::FileNotFoundError),
+            ("InterruptedError", ExceptionKind::InterruptedError),
+            ("IsADirectoryError", ExceptionKind::IsADirectoryError),
+            ("NotADirectoryError", ExceptionKind::NotADirectoryError),
+            ("PermissionError", ExceptionKind::PermissionError),
+            ("ProcessLookupError", ExceptionKind::ProcessLookupError),
+            ("TimeoutError", ExceptionKind::TimeoutError),
+            ("ReferenceError", ExceptionKind::ReferenceError),
+            ("RuntimeError", ExceptionKind::RuntimeError),
+            ("NotImplementedError", ExceptionKind::NotImplementedError),
+            ("RecursionError", ExceptionKind::RecursionError),
+            ("StopAsyncIteration", ExceptionKind::StopAsyncIteration),
+            ("StopIteration", ExceptionKind::StopIteration),
+            ("SyntaxError", ExceptionKind::SyntaxError),
+            ("IndentationError", ExceptionKind::IndentationError),
+            ("TabError", ExceptionKind::TabError),
+            ("SystemError", ExceptionKind::SystemError),
+            ("TypeError", ExceptionKind::TypeError),
+            ("ValueError", ExceptionKind::ValueError),
+            ("UnicodeError", ExceptionKind::UnicodeError),
+            ("UnicodeDecodeError", ExceptionKind::UnicodeDecodeError),
+            ("UnicodeEncodeError", ExceptionKind::UnicodeEncodeError),
             (
-                "print",
-                PyObject::builtin_function(CompactString::from("print")),
+                "UnicodeTranslateError",
+                ExceptionKind::UnicodeTranslateError,
             ),
+            ("Warning", ExceptionKind::Warning),
+            ("BytesWarning", ExceptionKind::BytesWarning),
+            ("DeprecationWarning", ExceptionKind::DeprecationWarning),
+            ("EncodingWarning", ExceptionKind::EncodingWarning),
+            ("FutureWarning", ExceptionKind::FutureWarning),
+            ("ImportWarning", ExceptionKind::ImportWarning),
             (
-                "len",
-                PyObject::builtin_function(CompactString::from("len")),
+                "PendingDeprecationWarning",
+                ExceptionKind::PendingDeprecationWarning,
             ),
-            (
-                "range",
-                PyObject::builtin_function(CompactString::from("range")),
-            ),
+            ("ResourceWarning", ExceptionKind::ResourceWarning),
+            ("RuntimeWarning", ExceptionKind::RuntimeWarning),
+            ("SyntaxWarning", ExceptionKind::SyntaxWarning),
+            ("UnicodeWarning", ExceptionKind::UnicodeWarning),
+            ("UserWarning", ExceptionKind::UserWarning),
+        ]
+        .into_iter()
+        .map(|(name, kind)| (name, PyObject::exception_type(kind)))
+        .collect()
+    }
+
+    let mut attrs = vec![
+        (
+            "__name__",
+            PyObject::str_val(CompactString::from("builtins")),
+        ),
+        (
+            "__doc__",
+            PyObject::str_val(CompactString::from(
+                "Built-in functions, exceptions, and other objects.",
+            )),
+        ),
+        (
+            "print",
+            PyObject::builtin_function(CompactString::from("print")),
+        ),
+        (
+            "len",
+            PyObject::builtin_function(CompactString::from("len")),
+        ),
+        (
+            "range",
+            PyObject::builtin_function(CompactString::from("range")),
+        ),
+    ];
+    attrs.extend(exception_types());
+
+    make_module("builtins", {
+        attrs.extend(vec![
             ("int", PyObject::builtin_type(CompactString::from("int"))),
             (
                 "float",
@@ -2118,8 +2211,9 @@ pub fn create_builtins_module() -> PyObjectRef {
             ("NotImplemented", PyObject::not_implemented()),
             ("Ellipsis", PyObject::ellipsis()),
             ("__debug__", PyObject::bool_val(true)),
-        ],
-    )
+        ]);
+        attrs
+    })
 }
 
 // ── contextvars module ──

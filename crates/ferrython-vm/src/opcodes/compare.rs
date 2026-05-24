@@ -597,6 +597,15 @@ impl VirtualMachine {
             8 => PyObject::bool_val(a.is_same(&b)),
             9 => PyObject::bool_val(!a.is_same(&b)),
             10 => {
+                let validate_handler = |handler: &PyObjectRef| -> Result<(), PyException> {
+                    match &handler.payload {
+                        PyObjectPayload::ExceptionType(_) => Ok(()),
+                        PyObjectPayload::Class(_) if Self::is_exception_class(handler) => Ok(()),
+                        _ => Err(PyException::type_error(
+                            "catching classes that do not inherit from BaseException is not allowed",
+                        )),
+                    }
+                };
                 let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {
                     // Case 1: Both are user-defined Class payloads
                     if let PyObjectPayload::Class(cls_a) = &a_item.payload {
@@ -662,8 +671,20 @@ impl VirtualMachine {
                     false
                 };
                 let matched = match &b.payload {
-                    PyObjectPayload::Tuple(items) => items.iter().any(|item| match_one(&a, item)),
-                    _ => match_one(&a, &b),
+                    PyObjectPayload::Tuple(items) => {
+                        let mut matched = false;
+                        for item in items.iter() {
+                            validate_handler(item)?;
+                            if match_one(&a, item) {
+                                matched = true;
+                            }
+                        }
+                        matched
+                    }
+                    _ => {
+                        validate_handler(&b)?;
+                        match_one(&a, &b)
+                    }
                 };
                 PyObject::bool_val(matched)
             }

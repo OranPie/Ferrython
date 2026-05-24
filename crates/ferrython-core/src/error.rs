@@ -47,6 +47,7 @@ pub enum ExceptionKind {
     UnboundLocalError,
     UnicodeDecodeError,
     UnicodeEncodeError,
+    UnicodeTranslateError,
     UnicodeError,
     ValueError,
     Warning,
@@ -69,6 +70,7 @@ pub enum ExceptionKind {
     FutureWarning,
     ImportWarning,
     UnicodeWarning,
+    EncodingWarning,
     BytesWarning,
     ResourceWarning,
     PendingDeprecationWarning,
@@ -152,6 +154,7 @@ impl ExceptionKind {
                     | ExceptionKind::UnicodeError
                     | ExceptionKind::UnicodeDecodeError
                     | ExceptionKind::UnicodeEncodeError
+                    | ExceptionKind::UnicodeTranslateError
                     | ExceptionKind::JSONDecodeError
             ),
             ExceptionKind::UnicodeError => matches!(
@@ -159,6 +162,7 @@ impl ExceptionKind {
                 ExceptionKind::UnicodeError
                     | ExceptionKind::UnicodeDecodeError
                     | ExceptionKind::UnicodeEncodeError
+                    | ExceptionKind::UnicodeTranslateError
             ),
             ExceptionKind::Warning => matches!(
                 self,
@@ -170,6 +174,7 @@ impl ExceptionKind {
                     | ExceptionKind::FutureWarning
                     | ExceptionKind::ImportWarning
                     | ExceptionKind::UnicodeWarning
+                    | ExceptionKind::EncodingWarning
                     | ExceptionKind::BytesWarning
                     | ExceptionKind::ResourceWarning
                     | ExceptionKind::PendingDeprecationWarning
@@ -253,6 +258,7 @@ impl ExceptionKind {
             "UnboundLocalError" => Some(Self::UnboundLocalError),
             "UnicodeDecodeError" => Some(Self::UnicodeDecodeError),
             "UnicodeEncodeError" => Some(Self::UnicodeEncodeError),
+            "UnicodeTranslateError" => Some(Self::UnicodeTranslateError),
             "UnicodeError" => Some(Self::UnicodeError),
             "ValueError" => Some(Self::ValueError),
             "Warning" => Some(Self::Warning),
@@ -273,6 +279,7 @@ impl ExceptionKind {
             "FutureWarning" => Some(Self::FutureWarning),
             "ImportWarning" => Some(Self::ImportWarning),
             "UnicodeWarning" => Some(Self::UnicodeWarning),
+            "EncodingWarning" => Some(Self::EncodingWarning),
             "BytesWarning" => Some(Self::BytesWarning),
             "ResourceWarning" => Some(Self::ResourceWarning),
             "PendingDeprecationWarning" => Some(Self::PendingDeprecationWarning),

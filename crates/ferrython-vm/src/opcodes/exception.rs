@@ -364,6 +364,11 @@ impl VirtualMachine {
                 }
                 PyObjectPayload::ExceptionType(kind) => PyException::new(*kind, ""),
                 PyObjectPayload::Instance(inst) => {
+                    if !Self::is_exception_class(&inst.class) {
+                        return PyException::type_error(
+                            "exceptions must derive from BaseException",
+                        );
+                    }
                     let kind = Self::find_exception_kind(&inst.class);
                     // Derive message from args (CPython: str(exc) uses args)
                     let msg = if let Some(a) = exc.get_attr("args") {
@@ -384,10 +389,15 @@ impl VirtualMachine {
                     PyException::with_original(kind, msg, exc.clone())
                 }
                 PyObjectPayload::Class(_) => {
+                    if !Self::is_exception_class(exc) {
+                        return PyException::type_error(
+                            "exceptions must derive from BaseException",
+                        );
+                    }
                     let kind = Self::find_exception_kind(exc);
                     PyException::new(kind, "")
                 }
-                _ => PyException::runtime_error(exc.py_to_string()),
+                _ => PyException::type_error("exceptions must derive from BaseException"),
             }
         };
         match argc {
@@ -404,6 +414,11 @@ impl VirtualMachine {
                 let exc = frame.pop();
                 // If raising a user-defined exception class, auto-instantiate to preserve class identity
                 if let PyObjectPayload::Class(cd) = &exc.payload {
+                    if !Self::is_exception_class(&exc) {
+                        return Err(PyException::type_error(
+                            "exceptions must derive from BaseException",
+                        ));
+                    }
                     let is_builtin_exc = cd
                         .namespace
                         .read()

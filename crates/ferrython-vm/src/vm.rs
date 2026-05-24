@@ -8623,23 +8623,31 @@ impl VirtualMachine {
                     let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
                     let len = frame.stack.len();
                     if len >= 2 {
-                        let a = sget!(frame, len - 2);
-                        let b = sget!(frame, len - 1);
-                        let fast_result = match (&a.payload, &b.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => match cmp_op {
-                                0 => Some(*x < *y),
-                                1 => Some(*x <= *y),
-                                2 => Some(*x == *y),
-                                3 => Some(*x != *y),
-                                4 => Some(*x > *y),
-                                5 => Some(*x >= *y),
-                                _ => None,
-                            },
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                match cmp_op {
+                        if cmp_op == 10 {
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                            match self.exec_compare_ops(cmp_instr) {
+                                Ok(result) => {
+                                    if result.is_none() {
+                                        let frame = self.call_stack.last_mut().unwrap();
+                                        let v = spop!(frame);
+                                        let is_false =
+                                            matches!(&v.payload, PyObjectPayload::Bool(false));
+                                        if is_false {
+                                            self.call_stack.last_mut().unwrap().ip = jump_target;
+                                        }
+                                    }
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        } else {
+                            let a = sget!(frame, len - 2);
+                            let b = sget!(frame, len - 1);
+                            let fast_result = match (&a.payload, &b.payload) {
+                                (
+                                    PyObjectPayload::Int(PyInt::Small(x)),
+                                    PyObjectPayload::Int(PyInt::Small(y)),
+                                ) => match cmp_op {
                                     0 => Some(*x < *y),
                                     1 => Some(*x <= *y),
                                     2 => Some(*x == *y),
@@ -8647,42 +8655,53 @@ impl VirtualMachine {
                                     4 => Some(*x > *y),
                                     5 => Some(*x >= *y),
                                     _ => None,
+                                },
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    match cmp_op {
+                                        0 => Some(*x < *y),
+                                        1 => Some(*x <= *y),
+                                        2 => Some(*x == *y),
+                                        3 => Some(*x != *y),
+                                        4 => Some(*x > *y),
+                                        5 => Some(*x >= *y),
+                                        _ => None,
+                                    }
                                 }
-                            }
-                            _ => None,
-                        };
-                        if let Some(is_true) = fast_result {
-                            // Pop both operands without intermediate Arc operations
-                            let len = frame.stack.len();
-                            unsafe {
-                                let _a = std::ptr::read(frame.stack.as_ptr().add(len - 1));
-                                let _b = std::ptr::read(frame.stack.as_ptr().add(len - 2));
-                                frame.stack.set_len(len - 2);
-                            }
-                            if !is_true {
-                                frame.ip = jump_target;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            // Fallback: execute CompareOp, then check result
-                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            let result = self.exec_compare_ops(cmp_instr)?;
-                            if result.is_none() {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                let v = spop!(frame);
-                                let is_false = match &v.payload {
-                                    PyObjectPayload::Bool(b) => !b,
-                                    PyObjectPayload::None => true,
-                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                    _ => !self.vm_is_truthy(&v)?,
-                                };
-                                if is_false {
-                                    let cs_len = self.call_stack.len();
-                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                        jump_target;
+                                _ => None,
+                            };
+                            if let Some(is_true) = fast_result {
+                                // Pop both operands without intermediate Arc operations
+                                let len = frame.stack.len();
+                                unsafe {
+                                    let _a = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                    let _b = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                    frame.stack.set_len(len - 2);
                                 }
+                                if !is_true {
+                                    frame.ip = jump_target;
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            } else {
+                                // Fallback: execute CompareOp, then check result
+                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                                let result = self.exec_compare_ops(cmp_instr)?;
+                                if result.is_none() {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let v = spop!(frame);
+                                    let is_false = match &v.payload {
+                                        PyObjectPayload::Bool(b) => !b,
+                                        PyObjectPayload::None => true,
+                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                        _ => !self.vm_is_truthy(&v)?,
+                                    };
+                                    if is_false {
+                                        let cs_len = self.call_stack.len();
+                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }
+                                            .ip = jump_target;
+                                    }
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
                         self.execute_one(instr)
@@ -10455,6 +10474,7 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
             ExceptionKind::UnicodeError
                 | ExceptionKind::UnicodeDecodeError
                 | ExceptionKind::UnicodeEncodeError
+                | ExceptionKind::UnicodeTranslateError
         ),
         ExceptionKind::ValueError => matches!(
             actual,
@@ -10462,6 +10482,7 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
                 | ExceptionKind::UnicodeError
                 | ExceptionKind::UnicodeDecodeError
                 | ExceptionKind::UnicodeEncodeError
+                | ExceptionKind::UnicodeTranslateError
                 | ExceptionKind::JSONDecodeError
         ),
         ExceptionKind::Warning => matches!(
@@ -10474,6 +10495,7 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
                 | ExceptionKind::FutureWarning
                 | ExceptionKind::ImportWarning
                 | ExceptionKind::UnicodeWarning
+                | ExceptionKind::EncodingWarning
                 | ExceptionKind::BytesWarning
                 | ExceptionKind::ResourceWarning
                 | ExceptionKind::PendingDeprecationWarning

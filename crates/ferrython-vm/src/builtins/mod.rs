@@ -171,6 +171,10 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("UnboundLocalError", ExceptionKind::UnboundLocalError),
         ("UnicodeDecodeError", ExceptionKind::UnicodeDecodeError),
         ("UnicodeEncodeError", ExceptionKind::UnicodeEncodeError),
+        (
+            "UnicodeTranslateError",
+            ExceptionKind::UnicodeTranslateError,
+        ),
         ("UnicodeError", ExceptionKind::UnicodeError),
         ("ValueError", ExceptionKind::ValueError),
         ("ZeroDivisionError", ExceptionKind::ZeroDivisionError),
@@ -204,6 +208,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("FutureWarning", ExceptionKind::FutureWarning),
         ("ImportWarning", ExceptionKind::ImportWarning),
         ("UnicodeWarning", ExceptionKind::UnicodeWarning),
+        ("EncodingWarning", ExceptionKind::EncodingWarning),
         ("BytesWarning", ExceptionKind::BytesWarning),
         ("ResourceWarning", ExceptionKind::ResourceWarning),
         (
