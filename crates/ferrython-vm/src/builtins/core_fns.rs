@@ -3028,6 +3028,12 @@ pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
                     PyObject::bool_val(true),
                 );
                 attrs.insert(CompactString::from("obj"), args[0].clone());
+                attrs.insert(
+                    CompactString::from("format"),
+                    PyObject::str_val(CompactString::from("B")),
+                );
+                attrs.insert(CompactString::from("ndim"), PyObject::int(1));
+                install_memoryview_cast_method(&inst);
             }
             Ok(inst)
         }
@@ -3045,6 +3051,12 @@ pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
                     PyObject::bool_val(false),
                 );
                 attrs.insert(CompactString::from("obj"), args[0].clone());
+                attrs.insert(
+                    CompactString::from("format"),
+                    PyObject::str_val(CompactString::from("B")),
+                );
+                attrs.insert(CompactString::from("ndim"), PyObject::int(1));
+                install_memoryview_cast_method(&inst);
             }
             Ok(inst)
         }
@@ -3052,5 +3064,53 @@ pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
             "memoryview: a bytes-like object is required, not '{}'",
             args[0].type_name()
         ))),
+    }
+}
+
+fn install_memoryview_cast_method(inst: &PyObjectRef) {
+    if let PyObjectPayload::Instance(ref data) = inst.payload {
+        let source = inst.clone();
+        data.attrs.write().insert(
+            CompactString::from("cast"),
+            PyObject::native_closure("memoryview.cast", move |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error(
+                        "cast() missing required argument 'format'",
+                    ));
+                }
+                let format = args[0].py_to_string();
+                let ndim = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+                    match &args[1].payload {
+                        PyObjectPayload::Tuple(items) => items.len() as i64,
+                        PyObjectPayload::List(items) => items.read().len() as i64,
+                        _ => 1,
+                    }
+                } else {
+                    1
+                };
+                let cls = PyObject::builtin_type(CompactString::from("memoryview"));
+                let view = PyObject::instance(cls);
+                if let PyObjectPayload::Instance(ref view_data) = view.payload {
+                    let base = source.get_attr("obj").unwrap_or_else(|| source.clone());
+                    let readonly = source
+                        .get_attr("__readonly__")
+                        .unwrap_or_else(|| PyObject::bool_val(true));
+                    let mut attrs = view_data.attrs.write();
+                    attrs.insert(
+                        CompactString::from("__memoryview__"),
+                        PyObject::bool_val(true),
+                    );
+                    attrs.insert(CompactString::from("__readonly__"), readonly);
+                    attrs.insert(CompactString::from("obj"), base);
+                    attrs.insert(
+                        CompactString::from("format"),
+                        PyObject::str_val(CompactString::from(format.as_str())),
+                    );
+                    attrs.insert(CompactString::from("ndim"), PyObject::int(ndim));
+                }
+                install_memoryview_cast_method(&view);
+                Ok(view)
+            }),
+        );
     }
 }

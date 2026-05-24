@@ -9,6 +9,62 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+type WarningFilterEntry = (String, String, String, String, i64);
+
+static WARNING_FILTERS: std::sync::LazyLock<RwLock<Vec<WarningFilterEntry>>> =
+    std::sync::LazyLock::new(|| {
+        RwLock::new(vec![(
+            "default".into(),
+            "".into(),
+            "Warning".into(),
+            "".into(),
+            0,
+        )])
+    });
+static WARNING_ONCE_SEEN: std::sync::LazyLock<RwLock<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| RwLock::new(std::collections::HashSet::new()));
+static WARNING_RECORDING: AtomicBool = AtomicBool::new(false);
+static WARNING_RECORD_LIST: std::sync::LazyLock<RwLock<Option<PyObjectRef>>> =
+    std::sync::LazyLock::new(|| RwLock::new(None));
+
+pub(crate) fn emit_deprecation_warning(message: &str) {
+    emit_warning("DeprecationWarning", message);
+}
+
+fn emit_warning(category: &str, message: &str) {
+    if WARNING_RECORDING.load(Ordering::Relaxed) {
+        let guard = WARNING_RECORD_LIST.read();
+        if let Some(ref list_obj) = *guard {
+            let cls = PyObject::class(
+                CompactString::from("WarningMessage"),
+                vec![],
+                IndexMap::new(),
+            );
+            let category_cls =
+                PyObject::class(CompactString::from(category), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(
+                CompactString::from("message"),
+                PyObject::str_val(CompactString::from(message)),
+            );
+            attrs.insert(CompactString::from("category"), category_cls);
+            attrs.insert(
+                CompactString::from("filename"),
+                PyObject::str_val(CompactString::from("<stdin>")),
+            );
+            attrs.insert(CompactString::from("lineno"), PyObject::int(1));
+            let warning_obj = PyObject::instance_with_attrs(cls, attrs);
+            if let PyObjectPayload::List(items) = &list_obj.payload {
+                items.write().push(warning_obj);
+            }
+        }
+    } else {
+        eprintln!("<stdin>:1: {}: {}", category, message);
+    }
+}
 
 fn clean_docstring(doc: &str) -> String {
     let lines: Vec<&str> = doc.lines().collect();
@@ -49,35 +105,12 @@ fn clean_docstring(doc: &str) -> String {
 // ── subprocess module (basic) ──
 
 pub fn create_warnings_module() -> PyObjectRef {
-    use parking_lot::RwLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    // Global filter list: Vec<(action, message_pattern, category, module_pattern, lineno)>
-    // Actions: "default", "always", "ignore", "error", "module", "once"
-    type FilterEntry = (String, String, String, String, i64);
-    static FILTERS: std::sync::LazyLock<RwLock<Vec<FilterEntry>>> =
-        std::sync::LazyLock::new(|| {
-            RwLock::new(vec![(
-                "default".into(),
-                "".into(),
-                "Warning".into(),
-                "".into(),
-                0,
-            )])
-        });
-    static ONCE_SEEN: std::sync::LazyLock<RwLock<std::collections::HashSet<String>>> =
-        std::sync::LazyLock::new(|| RwLock::new(std::collections::HashSet::new()));
-
-    static RECORDING: AtomicBool = AtomicBool::new(false);
-    static RECORD_LIST: std::sync::LazyLock<RwLock<Option<PyObjectRef>>> =
-        std::sync::LazyLock::new(|| RwLock::new(None));
-
     fn match_filter(
         _action: &str,
         msg: &str,
         cat: &str,
         module: &str,
-        filter: &FilterEntry,
+        filter: &WarningFilterEntry,
     ) -> bool {
         let (_, msg_pat, cat_pat, mod_pat, lineno) = filter;
         if !msg_pat.is_empty() && !msg.contains(msg_pat.as_str()) {
@@ -153,7 +186,7 @@ pub fn create_warnings_module() -> PyObjectRef {
 
         let module = "<stdin>";
         let action = {
-            let filters = FILTERS.read();
+            let filters = WARNING_FILTERS.read();
             let mut found = "default".to_string();
             for f in filters.iter() {
                 if match_filter(&f.0, &message, &category, module, f) {
@@ -174,7 +207,7 @@ pub fn create_warnings_module() -> PyObjectRef {
             }
             "once" => {
                 let key = format!("{}:{}:{}", message, category, module);
-                let mut seen = ONCE_SEEN.write();
+                let mut seen = WARNING_ONCE_SEEN.write();
                 if seen.contains(&key) {
                     return Ok(PyObject::none());
                 }
@@ -183,8 +216,8 @@ pub fn create_warnings_module() -> PyObjectRef {
             _ => {}
         }
 
-        if RECORDING.load(Ordering::Relaxed) {
-            let guard = RECORD_LIST.read();
+        if WARNING_RECORDING.load(Ordering::Relaxed) {
+            let guard = WARNING_RECORD_LIST.read();
             if let Some(ref list_obj) = *guard {
                 let cls = PyObject::class(
                     CompactString::from("WarningMessage"),
@@ -245,7 +278,7 @@ pub fn create_warnings_module() -> PyObjectRef {
         };
 
         let entry = (action, message, category, module, lineno);
-        let mut filters = FILTERS.write();
+        let mut filters = WARNING_FILTERS.write();
         if append {
             filters.push(entry);
         } else {
@@ -289,7 +322,7 @@ pub fn create_warnings_module() -> PyObjectRef {
             .unwrap_or(false);
 
         let entry = (action, String::new(), category, String::new(), lineno);
-        let mut filters = FILTERS.write();
+        let mut filters = WARNING_FILTERS.write();
         if append {
             filters.push(entry);
         } else {
@@ -300,10 +333,10 @@ pub fn create_warnings_module() -> PyObjectRef {
 
     // resetwarnings()
     let reset_fn = make_builtin(|_args: &[PyObjectRef]| {
-        let mut filters = FILTERS.write();
+        let mut filters = WARNING_FILTERS.write();
         filters.clear();
         filters.push(("default".into(), "".into(), "Warning".into(), "".into(), 0));
-        ONCE_SEEN.write().clear();
+        WARNING_ONCE_SEEN.write().clear();
         Ok(PyObject::none())
     });
 
@@ -332,7 +365,7 @@ pub fn create_warnings_module() -> PyObjectRef {
         attrs.insert(CompactString::from("_warnings"), warning_list.clone());
 
         // Save filter state for restore on __exit__
-        let saved_filters: Vec<FilterEntry> = FILTERS.read().clone();
+        let saved_filters: Vec<WarningFilterEntry> = WARNING_FILTERS.read().clone();
 
         if record {
             let wl = warning_list.clone();
@@ -342,8 +375,8 @@ pub fn create_warnings_module() -> PyObjectRef {
                 PyObject::native_closure(
                     "catch_warnings.__enter__",
                     move |_args: &[PyObjectRef]| {
-                        RECORDING.store(true, Ordering::Relaxed);
-                        *RECORD_LIST.write() = Some(enter_list.clone());
+                        WARNING_RECORDING.store(true, Ordering::Relaxed);
+                        *WARNING_RECORD_LIST.write() = Some(enter_list.clone());
                         Ok(wl.clone())
                     },
                 ),
@@ -360,10 +393,10 @@ pub fn create_warnings_module() -> PyObjectRef {
         attrs.insert(
             CompactString::from("__exit__"),
             PyObject::native_closure("catch_warnings.__exit__", move |_args: &[PyObjectRef]| {
-                RECORDING.store(false, Ordering::Relaxed);
-                *RECORD_LIST.write() = None;
+                WARNING_RECORDING.store(false, Ordering::Relaxed);
+                *WARNING_RECORD_LIST.write() = None;
                 // Restore previous filters
-                *FILTERS.write() = saved_filters.clone();
+                *WARNING_FILTERS.write() = saved_filters.clone();
                 Ok(PyObject::bool_val(false))
             }),
         );

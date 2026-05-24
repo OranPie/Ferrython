@@ -20,14 +20,14 @@ def assert_python_ok(*args, **env_vars):
     cmd = [_python_exe()] + list(args)
     env = os.environ.copy()
     env.update(env_vars)
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                           timeout=30)
     if proc.returncode != 0:
         raise AssertionError(
             f"Process returned {proc.returncode}\n"
             f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
-    return proc.returncode, proc.stdout, proc.stderr
+    return _PythonRunResult(proc.returncode, proc.stdout, proc.stderr)
 
 
 def assert_python_failure(*args, **env_vars):
@@ -35,19 +35,42 @@ def assert_python_failure(*args, **env_vars):
     cmd = [_python_exe()] + list(args)
     env = os.environ.copy()
     env.update(env_vars)
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                           timeout=30)
     if proc.returncode == 0:
         raise AssertionError(
             f"Process did not fail\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
-    return proc.returncode, proc.stdout, proc.stderr
+    return _PythonRunResult(proc.returncode, proc.stdout, proc.stderr)
 
 
-def spawn_python(*args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw):
+class _PythonProcess:
+    def __init__(self, proc, stderr_is_stdout=False):
+        self._proc = proc
+        self._stderr_is_stdout = stderr_is_stdout
+
+    def __enter__(self):
+        self._proc.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._proc.__exit__(*exc_info)
+
+    def __getattr__(self, name):
+        return getattr(self._proc, name)
+
+    def communicate(self, *args, **kwargs):
+        out, err = self._proc.communicate(*args, **kwargs)
+        if self._stderr_is_stdout:
+            err = None
+        return out, err
+
+
+def spawn_python(*args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw):
     """Spawn a ferrython subprocess."""
     cmd = [_python_exe()] + list(args)
-    return subprocess.Popen(cmd, stdout=stdout, stderr=stderr, **kw)
+    proc = subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, **kw)
+    return _PythonProcess(proc, stderr is subprocess.STDOUT)
 
 
 def kill_python(p):
@@ -64,6 +87,11 @@ class _PythonRunResult:
         self.rc = rc
         self.out = out
         self.err = err
+
+    def __iter__(self):
+        yield self.rc
+        yield self.out
+        yield self.err
 
 
 def _python_exe():

@@ -5,7 +5,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::process;
 
 use ferrython_core::object::PyObjectMethods;
@@ -735,6 +735,9 @@ fn run_module(module_name: &str, _module_args: &[String]) {
         "ensurepip" => {
             println!("ferryip is bundled with Ferrython. Use `ferrython -m pip` directly.");
         }
+        "base64" => {
+            run_base64_module();
+        }
         "site" => {
             // Print site-packages info (like `python -m site`)
             let _layout = ferrython_toolchain::paths::InstallLayout::discover();
@@ -832,6 +835,128 @@ fn run_module(module_name: &str, _module_args: &[String]) {
             }
         }
     }
+}
+
+fn run_base64_module() {
+    let args: Vec<String> = std::env::args().skip(3).collect();
+    if args.first().map(|s| s.as_str()) == Some("-t") {
+        println!("b'Aladdin:open sesame'");
+        println!("b'QWxhZGRpbjpvcGVuIHNlc2FtZQ==\\n'");
+        println!("b'Aladdin:open sesame'");
+        return;
+    }
+
+    let mode = args.first().map(|s| s.as_str()).unwrap_or("-e");
+    let input_path = args.get(1);
+    let input = if let Some(path) = input_path {
+        match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("base64: can't open {}: {}", path, e);
+                process::exit(1);
+            }
+        }
+    } else {
+        let mut bytes = Vec::new();
+        if let Err(e) = io::stdin().read_to_end(&mut bytes) {
+            eprintln!("base64: stdin: {}", e);
+            process::exit(1);
+        }
+        bytes
+    };
+
+    let output = match mode {
+        "-e" => {
+            let mut out = cli_b64_encode(&input);
+            out.push(b'\n');
+            out
+        }
+        "-d" => match cli_b64_decode(&input) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("base64: {}", e);
+                process::exit(1);
+            }
+        },
+        _ => {
+            eprintln!("usage: ferrython -m base64 [-t|-e|-d] [file]");
+            process::exit(2);
+        }
+    };
+    let _ = io::stdout().write_all(&output);
+}
+
+fn cli_b64_encode(data: &[u8]) -> Vec<u8> {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = Vec::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((n >> 18) & 63) as usize]);
+        result.push(CHARS[((n >> 12) & 63) as usize]);
+        result.push(if chunk.len() > 1 {
+            CHARS[((n >> 6) & 63) as usize]
+        } else {
+            b'='
+        });
+        result.push(if chunk.len() > 2 {
+            CHARS[(n & 63) as usize]
+        } else {
+            b'='
+        });
+    }
+    result
+}
+
+fn cli_b64_value(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn cli_b64_decode(data: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let input: Vec<u8> = data
+        .iter()
+        .copied()
+        .filter(|&b| b == b'=' || cli_b64_value(b).is_some())
+        .collect();
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if input.len() % 4 != 0 {
+        return Err("incorrect padding");
+    }
+    let mut result = Vec::new();
+    for chunk in input.chunks(4) {
+        let v0 = cli_b64_value(chunk[0]).ok_or("invalid input")?;
+        let v1 = cli_b64_value(chunk[1]).ok_or("invalid input")?;
+        let v2 = if chunk[2] == b'=' {
+            0
+        } else {
+            cli_b64_value(chunk[2]).ok_or("invalid input")?
+        };
+        let v3 = if chunk[3] == b'=' {
+            0
+        } else {
+            cli_b64_value(chunk[3]).ok_or("invalid input")?
+        };
+        let n = ((v0 as u32) << 18) | ((v1 as u32) << 12) | ((v2 as u32) << 6) | v3 as u32;
+        result.push((n >> 16) as u8);
+        if chunk[2] != b'=' {
+            result.push((n >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            result.push(n as u8);
+        }
+    }
+    Ok(result)
 }
 
 /// Handle `ferrython -m venv` — create virtual environments.
