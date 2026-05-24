@@ -8,6 +8,7 @@ use ferrython_core::object::{
 use ferrython_core::types::{hash_key_like_python, HashableKey};
 use indexmap::IndexMap;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 fn element_matches(item: &PyObjectRef, target: &PyObjectRef) -> bool {
@@ -2186,7 +2187,8 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         items
     };
 
-    let data = Rc::new(PyCell::new(items));
+    let initial_items = items.clone();
+    let data = Rc::new(PyCell::new(items.into_iter().collect::<VecDeque<_>>()));
 
     // Build instance methods that share the data list
     let mut cls_ns = IndexMap::new();
@@ -2201,10 +2203,10 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::type_error("append requires argument"));
             }
             let mut w = d.write();
-            w.push(args[0].clone());
+            w.push_back(args[0].clone());
             if let Some(m) = ml {
                 while w.len() > m {
-                    w.remove(0);
+                    w.pop_front();
                 }
             }
             Ok(PyObject::none())
@@ -2221,10 +2223,10 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::type_error("appendleft requires argument"));
             }
             let mut w = d.write();
-            w.insert(0, args[0].clone());
+            w.push_front(args[0].clone());
             if let Some(m) = ml {
                 while w.len() > m {
-                    w.pop();
+                    w.pop_back();
                 }
             }
             Ok(PyObject::none())
@@ -2237,7 +2239,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         CompactString::from("pop"),
         PyObject::native_closure("deque.pop", move |_: &[PyObjectRef]| {
             let mut w = d.write();
-            w.pop()
+            w.pop_back()
                 .ok_or_else(|| PyException::index_error("pop from an empty deque"))
         }),
     );
@@ -2251,7 +2253,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if w.is_empty() {
                 return Err(PyException::index_error("pop from an empty deque"));
             }
-            Ok(w.remove(0))
+            Ok(w.pop_front().unwrap())
         }),
     );
 
@@ -2269,7 +2271,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             w.extend(items);
             if let Some(m) = ml {
                 while w.len() > m {
-                    w.remove(0);
+                    w.pop_front();
                 }
             }
             Ok(PyObject::none())
@@ -2289,11 +2291,11 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let mut w = d.write();
             // CPython: appendleft each item in order — insert(0) naturally reverses
             for item in items.into_iter() {
-                w.insert(0, item);
+                w.push_front(item);
             }
             if let Some(m) = ml {
                 while w.len() > m {
-                    w.pop();
+                    w.pop_back();
                 }
             }
             Ok(PyObject::none())
@@ -2317,10 +2319,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             let n = ((n % len as i64) + len as i64) as usize % len;
             if n > 0 {
-                let split_point = len - n;
-                let mut rotated = w[split_point..].to_vec();
-                rotated.extend_from_slice(&w[..split_point]);
-                *w = rotated;
+                w.rotate_right(n);
             }
             Ok(PyObject::none())
         }),
@@ -2399,7 +2398,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     cls_ns.insert(
         CompactString::from("reverse"),
         PyObject::native_closure("deque.reverse", move |_: &[PyObjectRef]| {
-            d.write().reverse();
+            d.write().make_contiguous().reverse();
             Ok(PyObject::none())
         }),
     );
@@ -2410,7 +2409,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     cls_ns.insert(
         CompactString::from("copy"),
         PyObject::native_closure("deque.copy", move |_: &[PyObjectRef]| {
-            let items = d.read().clone();
+            let items: Vec<_> = d.read().iter().cloned().collect();
             let mut new_args = vec![PyObject::list(items)];
             if let Some(m) = ml2 {
                 new_args.push(PyObject::int(m as i64));
@@ -2515,7 +2514,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     cls_ns.insert(
         CompactString::from("__iter__"),
         PyObject::native_closure("deque.__iter__", move |_: &[PyObjectRef]| {
-            let snapshot = d.read().clone();
+            let snapshot: Vec<_> = d.read().iter().cloned().collect();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                 PyCell::new(ferrython_core::object::IteratorData::List {
                     items: snapshot,
@@ -2565,7 +2564,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if actual < 0 || actual >= len {
                 return Err(PyException::index_error("deque index out of range"));
             }
-            Ok(r[actual as usize].clone())
+            Ok(r.get(actual as usize).unwrap().clone())
         }),
     );
 
@@ -2575,10 +2574,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
         // Store a reference list for _data (closures share the backing Rc<PyCell> directly)
-        attrs.insert(
-            CompactString::from("_data"),
-            PyObject::list(data.read().clone()),
-        );
+        attrs.insert(CompactString::from("_data"), PyObject::list(initial_items));
         attrs.insert(
             CompactString::from("__maxlen__"),
             match maxlen {

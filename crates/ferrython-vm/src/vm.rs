@@ -353,6 +353,15 @@ fn is_interned_pop(obj: &PyObjectRef) -> bool {
 }
 
 #[inline(always)]
+fn fast_deque_native_closure_returns_none(name: &str, arg_count: usize) -> Option<bool> {
+    match (name, arg_count) {
+        ("deque.append", 1) | ("deque.appendleft", 1) => Some(true),
+        ("deque.pop", 0) | ("deque.popleft", 0) => Some(false),
+        _ => None,
+    }
+}
+
+#[inline(always)]
 fn fast_small_int_sequence_min_max(arg: &PyObjectRef, is_max: bool) -> Option<PyObjectRef> {
     let items: &[PyObjectRef] = match &arg.payload {
         PyObjectPayload::List(v) => unsafe { (&*v.data_ptr()).as_slice() },
@@ -4288,9 +4297,55 @@ impl VirtualMachine {
                         } else {
                             0
                         };
-                        // Skip all mini-interpreter fast paths when tracing/profiling is active
+                        let args_start = func_idx + 1;
                         let trace_active_now = ferrython_stdlib::is_trace_active()
                             || ferrython_stdlib::is_profile_active();
+                        // Bound deque methods are stored as NativeClosure objects in locals in
+                        // the CPython deque stress tests. These closures do not schedule VM
+                        // callbacks, so bypass the generic call_object frame/deferred-call path.
+                        if call_kind == 0 && !trace_active_now {
+                            if let PyObjectPayload::NativeClosure(nc) =
+                                &sget!(frame, func_idx).payload
+                            {
+                                if let Some(returns_none) = fast_deque_native_closure_returns_none(
+                                    nc.name.as_str(),
+                                    arg_count,
+                                ) {
+                                    let args: &[PyObjectRef] = if arg_count == 0 {
+                                        &[]
+                                    } else {
+                                        std::slice::from_ref(sget!(frame, args_start))
+                                    };
+                                    let result = (nc.func)(args);
+                                    unsafe {
+                                        let base = frame.stack.as_ptr();
+                                        for i in 0..=arg_count {
+                                            let _obj = std::ptr::read(base.add(func_idx + i));
+                                        }
+                                        frame.stack.set_len(func_idx);
+                                    }
+                                    match result {
+                                        Ok(result) => {
+                                            if returns_none {
+                                                chain_pop_none!(
+                                                    frame,
+                                                    instr_base,
+                                                    instr_count,
+                                                    profiling,
+                                                    self.profiler,
+                                                    instr.op
+                                                )
+                                            } else {
+                                                spush!(frame, result);
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                        }
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                        }
+                        // Skip all mini-interpreter fast paths when tracing/profiling is active
                         if call_kind == 3 && !trace_active_now {
                             // Trivial function: inline the return constant
                             let const_idx = if let PyObjectPayload::Function(pf) =
