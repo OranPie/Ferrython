@@ -204,7 +204,7 @@ fn ast_constant_alias_attr(inst: &InstanceData, name: &str) -> Option<PyObjectRe
 /// unwrap StaticMethod/ClassMethod, handle cached_property/lru_cache wrappers.
 /// Extracted to avoid duplicating this logic in fast-path and descriptor-protocol paths.
 #[inline]
-fn wrap_class_attr_for_instance(
+pub(super) fn wrap_class_attr_for_instance(
     obj: &PyObjectRef,
     inst: &InstanceData,
     attr_name: &str,

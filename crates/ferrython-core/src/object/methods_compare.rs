@@ -4,6 +4,7 @@ use crate::error::{PyException, PyResult};
 
 use super::helpers::{call_callable, partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::{CompareOp, PyObjectMethods};
+use super::methods_attr::{lookup_in_class_mro, wrap_class_attr_for_instance};
 use super::payload::*;
 
 fn compare_len_order(a_len: usize, b_len: usize, op: CompareOp) -> bool {
@@ -59,6 +60,25 @@ fn is_set_like(obj: &PyObjectRef) -> bool {
         obj.payload,
         PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
     )
+}
+
+fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        Some(inst.class.clone())
+    } else {
+        None
+    }
+}
+
+fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
+    if PyObjectRef::ptr_eq(child, parent) {
+        return false;
+    }
+    if let PyObjectPayload::Class(cd) = &child.payload {
+        cd.mro.iter().any(|base| PyObjectRef::ptr_eq(base, parent))
+    } else {
+        false
+    }
 }
 
 fn compare_sequence_items(
@@ -254,13 +274,12 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
     }
     let call_instance_dunder =
         |obj: &PyObjectRef, other: &PyObjectRef, name: &str| -> PyResult<Option<PyObjectRef>> {
-            if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
-                if let Some(method) = obj.get_attr(name) {
-                    if !matches!(&method.payload, PyObjectPayload::None) {
-                        let result = call_callable(&method, &[other.clone()])?;
-                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
-                            return Ok(Some(result));
-                        }
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(method) = lookup_in_class_mro(&inst.class, name) {
+                    let bound = wrap_class_attr_for_instance(obj, inst, name, method);
+                    let result = call_callable(&bound, &[other.clone()])?;
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
                     }
                 }
             }
@@ -269,49 +288,85 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
 
     if matches!(op, CompareOp::Eq | CompareOp::Ne) {
         if matches!(op, CompareOp::Ne) {
+            let right_is_subclass = match (instance_class(a), instance_class(b)) {
+                (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
+                _ => false,
+            };
+            if right_is_subclass {
+                if let Some(result) = call_instance_dunder(b, a, "__ne__")? {
+                    return Ok(result);
+                }
+            }
             if let Some(result) = call_instance_dunder(a, b, "__ne__")? {
                 return Ok(result);
             }
-            if let Some(result) = call_instance_dunder(b, a, "__ne__")? {
+            if right_is_subclass {
+                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
+                    return Ok(PyObject::bool_val(!result.is_truthy()));
+                }
+            }
+            if let Some(result) = call_instance_dunder(a, b, "__eq__")? {
+                return Ok(PyObject::bool_val(!result.is_truthy()));
+            }
+            if !right_is_subclass {
+                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
+                    return Ok(PyObject::bool_val(!result.is_truthy()));
+                }
+            }
+        } else {
+            let right_is_subclass = match (instance_class(a), instance_class(b)) {
+                (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
+                _ => false,
+            };
+            if right_is_subclass {
+                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
+                    return Ok(result);
+                }
+            }
+            if let Some(result) = call_instance_dunder(a, b, "__eq__")? {
                 return Ok(result);
             }
-        }
-        if let Some(result) = call_instance_dunder(a, b, "__eq__")? {
-            let eq = result.is_truthy();
-            return Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
-                eq
-            } else {
-                !eq
-            }));
-        }
-        if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
-            let eq = result.is_truthy();
-            return Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
-                eq
-            } else {
-                !eq
-            }));
+            if !right_is_subclass {
+                if let Some(result) = call_instance_dunder(b, a, "__eq__")? {
+                    return Ok(result);
+                }
+            }
         }
     }
 
     // Check for ordering dunder methods on instances (__lt__, __le__, __gt__, __ge__)
-    {
-        let dunder = match op {
-            CompareOp::Lt => "__lt__",
-            CompareOp::Le => "__le__",
-            CompareOp::Gt => "__gt__",
-            CompareOp::Ge => "__ge__",
-            CompareOp::Eq | CompareOp::Ne => "",
+    if matches!(
+        op,
+        CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge
+    ) {
+        let (dunder, rdunder) = match op {
+            CompareOp::Lt => ("__lt__", "__gt__"),
+            CompareOp::Le => ("__le__", "__ge__"),
+            CompareOp::Gt => ("__gt__", "__lt__"),
+            CompareOp::Ge => ("__ge__", "__le__"),
+            CompareOp::Eq | CompareOp::Ne => unreachable!(),
         };
-        if !dunder.is_empty() && matches!(&a.payload, PyObjectPayload::Instance(_)) {
-            if let Some(method) = a.get_attr(dunder) {
-                if !matches!(&method.payload, PyObjectPayload::None) {
-                    let result = call_callable(&method, &[b.clone()])?;
-                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
-                        return Ok(result);
-                    }
-                }
+        let right_is_subclass = match (instance_class(a), instance_class(b)) {
+            (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
+            _ => false,
+        };
+        if right_is_subclass {
+            if let Some(result) = call_instance_dunder(b, a, rdunder)? {
+                return Ok(result);
             }
+        }
+        if let Some(result) = call_instance_dunder(a, b, dunder)? {
+            return Ok(result);
+        }
+        if !right_is_subclass {
+            if let Some(result) = call_instance_dunder(b, a, rdunder)? {
+                return Ok(result);
+            }
+        }
+        if matches!(&a.payload, PyObjectPayload::Instance(_))
+            || matches!(&b.payload, PyObjectPayload::Instance(_))
+        {
+            return Err(set_order_type_error(a, b, op));
         }
     }
     // BoundMethod equality: equal if __func__ and __self__ are the same

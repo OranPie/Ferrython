@@ -9,6 +9,25 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::PyInt;
 
+fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        Some(inst.class.clone())
+    } else {
+        None
+    }
+}
+
+fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
+    if PyObjectRef::ptr_eq(child, parent) {
+        return false;
+    }
+    if let PyObjectPayload::Class(cd) = &child.payload {
+        cd.mro.iter().any(|base| PyObjectRef::ptr_eq(base, parent))
+    } else {
+        false
+    }
+}
+
 impl VirtualMachine {
     /// Derive a missing comparison from total_ordering root method
     fn derive_total_ordering(
@@ -219,24 +238,6 @@ impl VirtualMachine {
                 }
                 _ => {}
             }
-            if cmp == 3 {
-                if let Some(result) = call_instance_dunder(self, &a, &b, "__ne__")? {
-                    self.vm_push(result);
-                    return Ok(None);
-                }
-                if let Some(result) = call_instance_dunder(self, &b, &a, "__ne__")? {
-                    self.vm_push(result);
-                    return Ok(None);
-                }
-                if let Some(result) = call_instance_dunder(self, &a, &b, "__eq__")? {
-                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
-                    return Ok(None);
-                }
-                if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
-                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
-                    return Ok(None);
-                }
-            }
             let (dunder, rdunder) = match cmp {
                 0 => ("__lt__", "__gt__"),
                 1 => ("__le__", "__ge__"),
@@ -246,8 +247,47 @@ impl VirtualMachine {
                 5 => ("__ge__", "__le__"),
                 _ => unreachable!(),
             };
-            if cmp != 3 {
-                // Try a's dunder via MRO walk
+            let right_is_subclass = match (instance_class(&a), instance_class(&b)) {
+                (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
+                _ => false,
+            };
+            if cmp == 3 {
+                if right_is_subclass {
+                    if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
+                if let Some(result) = call_instance_dunder(self, &a, &b, dunder)? {
+                    self.vm_push(result);
+                    return Ok(None);
+                }
+
+                // object.__ne__ falls back through equality.  Do not let an
+                // unrelated right-hand __ne__ block a left-hand __eq__ result.
+                if right_is_subclass {
+                    if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
+                        self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                        return Ok(None);
+                    }
+                }
+                if let Some(result) = call_instance_dunder(self, &a, &b, "__eq__")? {
+                    self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                    return Ok(None);
+                }
+                if !right_is_subclass {
+                    if let Some(result) = call_instance_dunder(self, &b, &a, "__eq__")? {
+                        self.vm_push(PyObject::bool_val(!result.is_truthy()));
+                        return Ok(None);
+                    }
+                }
+            } else {
+                if right_is_subclass {
+                    if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
                 if let Some(result) = call_instance_dunder(self, &a, &b, dunder)? {
                     self.vm_push(result);
                     return Ok(None);
@@ -264,10 +304,11 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Try b's reflected dunder via MRO walk
-                if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
-                    self.vm_push(result);
-                    return Ok(None);
+                if !right_is_subclass {
+                    if let Some(result) = call_instance_dunder(self, &b, &a, rdunder)? {
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
                 }
             }
             // Dataclass auto-equality fallback
@@ -434,6 +475,31 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
+            }
+            if matches!(cmp, 2 | 3)
+                && (matches!(&a.payload, PyObjectPayload::Instance(_))
+                    || matches!(&b.payload, PyObjectPayload::Instance(_)))
+            {
+                let same = a.is_same(&b);
+                self.vm_push(PyObject::bool_val(if cmp == 2 { same } else { !same }));
+                return Ok(None);
+            }
+            if matches!(cmp, 0 | 1 | 4 | 5)
+                && (matches!(&a.payload, PyObjectPayload::Instance(_))
+                    || matches!(&b.payload, PyObjectPayload::Instance(_)))
+            {
+                return Err(PyException::type_error(format!(
+                    "'{}' not supported between instances of '{}' and '{}'",
+                    match cmp {
+                        0 => "<",
+                        1 => "<=",
+                        4 => ">",
+                        5 => ">=",
+                        _ => unreachable!(),
+                    },
+                    a.type_name(),
+                    b.type_name()
+                )));
             }
         }
         // 'in' / 'not in' with __contains__
