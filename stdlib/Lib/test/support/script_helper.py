@@ -93,6 +93,9 @@ class _PythonRunResult:
         yield self.out
         yield self.err
 
+    def __getitem__(self, index):
+        return (self.rc, self.out, self.err)[index]
+
 
 def _python_exe():
     env_exe = os.environ.get("FERRYTHON_EXECUTABLE")

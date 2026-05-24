@@ -708,7 +708,10 @@ fn make_stdio_object(name: &str, mode: &str, fileno: i64) -> PyObjectRef {
     );
     attrs.insert(CompactString::from("_fileno"), PyObject::int(fileno));
     attrs.insert(CompactString::from("newlines"), PyObject::none());
-    attrs.insert(CompactString::from("buffer"), PyObject::none());
+    attrs.insert(
+        CompactString::from("buffer"),
+        make_stdio_buffer_object(name, mode, fileno),
+    );
     attrs.insert(
         CompactString::from("write"),
         PyObject::native_function("write", stdio_write),
@@ -761,11 +764,83 @@ fn make_stdio_object(name: &str, mode: &str, fileno: i64) -> PyObjectRef {
     PyObject::module_with_attrs(CompactString::from("_io.TextIOWrapper"), attrs)
 }
 
+fn make_stdio_buffer_object(name: &str, mode: &str, fileno: i64) -> PyObjectRef {
+    let mut attrs = IndexMap::new();
+    attrs.insert(
+        CompactString::from("name"),
+        PyObject::str_val(CompactString::from(name)),
+    );
+    attrs.insert(
+        CompactString::from("mode"),
+        PyObject::str_val(CompactString::from(format!("{}b", mode))),
+    );
+    attrs.insert(CompactString::from("_fileno"), PyObject::int(fileno));
+    attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+    attrs.insert(
+        CompactString::from("write"),
+        PyObject::native_function("write", stdio_buffer_write),
+    );
+    attrs.insert(
+        CompactString::from("flush"),
+        PyObject::native_function("flush", stdio_flush),
+    );
+    attrs.insert(
+        CompactString::from("fileno"),
+        PyObject::native_function("fileno", stdio_fileno),
+    );
+    attrs.insert(
+        CompactString::from("isatty"),
+        PyObject::native_function("isatty", stdio_isatty),
+    );
+    attrs.insert(
+        CompactString::from("readable"),
+        PyObject::native_function("readable", stdio_readable),
+    );
+    attrs.insert(
+        CompactString::from("writable"),
+        PyObject::native_function("writable", stdio_writable),
+    );
+    attrs.insert(
+        CompactString::from("seekable"),
+        PyObject::native_function("seekable", stdio_seekable),
+    );
+    attrs.insert(
+        CompactString::from("_bind_methods"),
+        PyObject::bool_val(true),
+    );
+    PyObject::module_with_attrs(CompactString::from("_io.BufferedWriter"), attrs)
+}
+
 fn get_stdio_fd(args: &[PyObjectRef]) -> i64 {
     args.first()
         .and_then(|s| s.get_attr("_fileno"))
         .and_then(|v| v.to_int().ok())
         .unwrap_or(-1)
+}
+
+fn stdio_buffer_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let fd = get_stdio_fd(args);
+    let arg = if args.len() > 1 {
+        &args[1]
+    } else {
+        return Err(PyException::type_error("write() requires 1 argument"));
+    };
+    let bytes = match &arg.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
+        _ => {
+            return Err(PyException::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                arg.type_name()
+            )))
+        }
+    };
+    use std::io::Write;
+    if fd == 2 {
+        let _ = std::io::stderr().write_all(&bytes);
+    } else {
+        let _ = std::io::stdout().write_all(&bytes);
+    }
+    Ok(PyObject::int(bytes.len() as i64))
 }
 
 fn stdio_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

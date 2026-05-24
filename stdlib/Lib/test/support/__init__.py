@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 import warnings
 
@@ -551,10 +552,21 @@ def get_attribute(obj, name):
 
 
 def check__all__(testcase, module, name_of_module=None, extra=(), blacklist=()):
+    if name_of_module is None:
+        name_of_module = (module.__name__,)
+    elif isinstance(name_of_module, str):
+        name_of_module = (name_of_module,)
+
     exported = set(getattr(module, "__all__", ()))
     expected = set(extra)
     for name in dir(module):
         if name.startswith("_") or name in blacklist:
+            continue
+        obj = getattr(module, name)
+        obj_module = getattr(obj, "__module__", None)
+        if type(obj).__name__ == "module" or isinstance(obj, types.ModuleType) or (
+            obj_module is not None and obj_module not in name_of_module
+        ):
             continue
         expected.add(name)
     missing = expected - exported
