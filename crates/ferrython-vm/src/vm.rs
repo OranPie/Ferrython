@@ -672,11 +672,32 @@ impl VirtualMachine {
         code: Rc<CodeObject>,
         globals: SharedGlobals,
     ) -> PyResult<PyObjectRef> {
+        self.execute_with_globals_and_locals(code, globals, None)
+    }
+
+    pub(crate) fn execute_with_globals_and_locals(
+        &mut self,
+        code: Rc<CodeObject>,
+        globals: SharedGlobals,
+        exec_locals: Option<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
+        self.execute_with_globals_and_locals_obj(code, globals, exec_locals, None)
+    }
+
+    pub(crate) fn execute_with_globals_and_locals_obj(
+        &mut self,
+        code: Rc<CodeObject>,
+        globals: SharedGlobals,
+        exec_locals: Option<PyObjectRef>,
+        exec_globals: Option<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
         // Store live globals reference for sys._getframe() fallback
         ferrython_stdlib::set_current_globals(Some(globals.clone()));
         let stack_depth = self.call_stack.len();
-        let frame = Frame::new(code, globals.clone(), self.builtins.clone());
+        let mut frame = Frame::new(code, globals.clone(), self.builtins.clone());
+        frame.exec_locals = exec_locals;
+        frame.exec_globals = exec_globals;
         self.call_stack.push(frame);
         let result = self.run_frame();
         // Clean up call stack: pop back to the expected depth.
@@ -8507,7 +8528,7 @@ impl VirtualMachine {
                 Opcode::LoadName => {
                     let idx = instr.arg as usize;
                     let ver = crate::frame::globals_version();
-                    if frame.global_cache_version == ver {
+                    if frame.exec_locals.is_none() && frame.global_cache_version == ver {
                         if let Some(ref cache) = frame.global_cache {
                             if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
                                 spush!(frame, v.clone());
@@ -8519,7 +8540,9 @@ impl VirtualMachine {
                 }
                 // Inline StoreName for module scope (hot in module-level loops)
                 Opcode::StoreName => {
-                    if frame.scope_kind == crate::frame::ScopeKind::Module {
+                    if frame.scope_kind == crate::frame::ScopeKind::Module
+                        && frame.exec_locals.is_none()
+                    {
                         let idx = instr.arg as usize;
                         let value = spop!(frame);
                         // If StoreGlobal in called functions bumped globals_version, our

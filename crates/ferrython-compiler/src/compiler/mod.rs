@@ -26,6 +26,15 @@ pub(super) struct LoopContext {
     pub(super) break_labels: Vec<Label>,
     /// True for `for` loops (iterator on stack needs PopTop on break).
     pub(super) is_for_loop: bool,
+    /// Number of active cleanup contexts outside this loop.
+    pub(super) cleanup_depth: usize,
+}
+
+/// Cleanup that must run before a `break` or `continue` can leave the current block.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CleanupContext {
+    With,
+    FinallyBody,
 }
 
 /// Compile state for a single scope (module, function, class, comprehension).
@@ -34,6 +43,8 @@ pub(super) struct CompileUnit {
     pub(super) scope: Scope,
     /// Stack of active loops for break/continue resolution.
     pub(super) loop_stack: Vec<LoopContext>,
+    /// Stack of active cleanup contexts in this scope.
+    pub(super) cleanup_stack: Vec<CleanupContext>,
     /// Whether this scope is a function body.
     pub(super) is_function: bool,
     /// Qualname prefix for nested scopes.
@@ -77,6 +88,7 @@ impl CompileUnit {
             code,
             scope,
             loop_stack: Vec::new(),
+            cleanup_stack: Vec::new(),
             is_function,
             qualname_prefix,
             child_scope_idx: 0,
@@ -379,6 +391,9 @@ impl Compiler {
 
         match module {
             Module::Module { body, .. } | Module::Interactive { body } => {
+                if let Some(first) = body.first() {
+                    self.current_unit_mut().code.first_line_number = first.location.line;
+                }
                 // Emit SetupAnnotations if the module has any annotation assignments
                 if Self::has_annotations(body) {
                     self.emit_op(Opcode::SetupAnnotations);

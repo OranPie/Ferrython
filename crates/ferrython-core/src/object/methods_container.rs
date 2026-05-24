@@ -267,6 +267,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
 }
 
 pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.read().contains_key("__memoryview__") {
+            if let Some(base) = inst.attrs.read().get("obj").cloned() {
+                return py_get_item(&base, key);
+            }
+        }
+    }
     // Check for slice key first
     if let PyObjectPayload::Slice(sd) = &key.payload {
         return get_slice_impl(obj, &sd.start, &sd.stop, &sd.step);

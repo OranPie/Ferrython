@@ -2108,6 +2108,195 @@ pub fn create_dis_module() -> PyObjectRef {
         }
     }
 
+    fn constant_to_pyobject(c: &ConstantValue) -> PyObjectRef {
+        match c {
+            ConstantValue::None => PyObject::none(),
+            ConstantValue::Bool(b) => PyObject::bool_val(*b),
+            ConstantValue::Integer(n) => PyObject::int(*n),
+            ConstantValue::BigInteger(n) => PyObject::big_int(n.as_ref().clone()),
+            ConstantValue::Float(f) => PyObject::float(*f),
+            ConstantValue::Complex { real, imag } => PyObject::complex(*real, *imag),
+            ConstantValue::Str(s) => PyObject::str_val(s.clone()),
+            ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
+            ConstantValue::Ellipsis => PyObject::ellipsis(),
+            ConstantValue::Code(co) => {
+                PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::clone(co)))
+            }
+            ConstantValue::Tuple(items) => {
+                PyObject::tuple(items.iter().map(constant_to_pyobject).collect())
+            }
+            ConstantValue::FrozenSet(items) => {
+                let mut set = new_fx_hashkey_map();
+                for item in items {
+                    let obj = constant_to_pyobject(item);
+                    if let Ok(key) = obj.to_hashable_key() {
+                        set.insert(key, obj);
+                    }
+                }
+                PyObject::frozenset(set)
+            }
+        }
+    }
+
+    fn opcode_display_name(op: Opcode) -> CompactString {
+        let raw = format!("{:?}", op);
+        let mut out = String::with_capacity(raw.len() + 8);
+        for (i, ch) in raw.chars().enumerate() {
+            if i > 0 && ch.is_ascii_uppercase() {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_uppercase());
+        }
+        CompactString::from(out)
+    }
+
+    fn instruction_argval(
+        code: &ferrython_bytecode::CodeObject,
+        op: Opcode,
+        arg: u32,
+    ) -> PyObjectRef {
+        match op {
+            Opcode::LoadConst => code
+                .constants
+                .get(arg as usize)
+                .map(constant_to_pyobject)
+                .unwrap_or_else(PyObject::none),
+            Opcode::LoadName
+            | Opcode::StoreName
+            | Opcode::DeleteName
+            | Opcode::LoadGlobal
+            | Opcode::StoreGlobal
+            | Opcode::DeleteGlobal
+            | Opcode::LoadAttr
+            | Opcode::StoreAttr
+            | Opcode::DeleteAttr
+            | Opcode::ImportName
+            | Opcode::ImportFrom => code
+                .names
+                .get(arg as usize)
+                .map(|n| PyObject::str_val(n.clone()))
+                .unwrap_or_else(PyObject::none),
+            Opcode::LoadFast | Opcode::StoreFast | Opcode::DeleteFast => code
+                .varnames
+                .get(arg as usize)
+                .map(|n| PyObject::str_val(n.clone()))
+                .unwrap_or_else(PyObject::none),
+            Opcode::LoadDeref | Opcode::StoreDeref | Opcode::DeleteDeref | Opcode::LoadClosure => {
+                let idx = arg as usize;
+                let ncells = code.cellvars.len();
+                if idx < ncells {
+                    code.cellvars
+                        .get(idx)
+                        .map(|n| PyObject::str_val(n.clone()))
+                        .unwrap_or_else(PyObject::none)
+                } else {
+                    code.freevars
+                        .get(idx - ncells)
+                        .map(|n| PyObject::str_val(n.clone()))
+                        .unwrap_or_else(PyObject::none)
+                }
+            }
+            Opcode::CompareOp => {
+                let op_name = match arg {
+                    0 => "<",
+                    1 => "<=",
+                    2 => "==",
+                    3 => "!=",
+                    4 => ">",
+                    5 => ">=",
+                    6 => "in",
+                    7 => "not in",
+                    8 => "is",
+                    9 => "is not",
+                    10 => "exception match",
+                    _ => "?",
+                };
+                PyObject::str_val(CompactString::from(op_name))
+            }
+            Opcode::JumpAbsolute
+            | Opcode::JumpForward
+            | Opcode::PopJumpIfTrue
+            | Opcode::PopJumpIfFalse
+            | Opcode::JumpIfTrueOrPop
+            | Opcode::JumpIfFalseOrPop
+            | Opcode::SetupExcept
+            | Opcode::SetupFinally
+            | Opcode::ForIter => PyObject::int((arg * 2) as i64),
+            _ if op.has_arg() => PyObject::int(arg as i64),
+            _ => PyObject::none(),
+        }
+    }
+
+    fn push_instruction(
+        code: &ferrython_bytecode::CodeObject,
+        out: &mut Vec<PyObjectRef>,
+        offset: &mut usize,
+        op: Opcode,
+        arg: u32,
+    ) {
+        let inst_cls = PyObject::class(CompactString::from("Instruction"), vec![], IndexMap::new());
+        let inst = PyObject::instance(inst_cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut attrs = d.attrs.write();
+            attrs.insert(
+                CompactString::from("opname"),
+                PyObject::str_val(opcode_display_name(op)),
+            );
+            attrs.insert(CompactString::from("opcode"), PyObject::int(op as i64));
+            attrs.insert(
+                CompactString::from("arg"),
+                if op.has_arg() {
+                    PyObject::int(arg as i64)
+                } else {
+                    PyObject::none()
+                },
+            );
+            attrs.insert(
+                CompactString::from("argval"),
+                instruction_argval(code, op, arg),
+            );
+            attrs.insert(CompactString::from("offset"), PyObject::int(*offset as i64));
+            attrs.insert(CompactString::from("starts_line"), PyObject::none());
+            attrs.insert(
+                CompactString::from("is_jump_target"),
+                PyObject::bool_val(false),
+            );
+        }
+        out.push(inst);
+        *offset += 2;
+    }
+
+    fn instruction_list(code: &ferrython_bytecode::CodeObject) -> Vec<PyObjectRef> {
+        let mut instructions = Vec::new();
+        let mut offset = 0usize;
+        for instr in &code.instructions {
+            match instr.op {
+                Opcode::LoadConstReturnValue => {
+                    push_instruction(
+                        code,
+                        &mut instructions,
+                        &mut offset,
+                        Opcode::LoadConst,
+                        instr.arg,
+                    );
+                    push_instruction(code, &mut instructions, &mut offset, Opcode::ReturnValue, 0);
+                }
+                Opcode::LoadFastReturnValue => {
+                    push_instruction(
+                        code,
+                        &mut instructions,
+                        &mut offset,
+                        Opcode::LoadFast,
+                        instr.arg,
+                    );
+                    push_instruction(code, &mut instructions, &mut offset, Opcode::ReturnValue, 0);
+                }
+                _ => push_instruction(code, &mut instructions, &mut offset, instr.op, instr.arg),
+            }
+        }
+        instructions
+    }
+
     // code_info(x) — return formatted information about a code object
     fn dis_code_info(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() {
@@ -2166,7 +2355,7 @@ pub fn create_dis_module() -> PyObjectRef {
         PyObject::class(CompactString::from("Instruction"), vec![], ns)
     };
 
-    // Bytecode(x) — iterable of Instruction objects
+    // Bytecode(x) / get_instructions(x) — iterable of Instruction objects
     let bytecode_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
             return Err(PyException::type_error("Bytecode() requires argument"));
@@ -2176,37 +2365,7 @@ pub fn create_dis_module() -> PyObjectRef {
             PyObjectPayload::Code(c) => std::rc::Rc::clone(c),
             _ => return Err(PyException::type_error("don't know how to disassemble")),
         };
-        let mut instructions = Vec::new();
-        for (i, instr) in code.instructions.iter().enumerate() {
-            let opname = format!("{:?}", instr.op);
-            let arg_desc = format_dis_arg(&code, instr.op, instr.arg);
-            let inst_cls =
-                PyObject::class(CompactString::from("Instruction"), vec![], IndexMap::new());
-            let inst = PyObject::instance(inst_cls);
-            if let PyObjectPayload::Instance(ref d) = inst.payload {
-                let mut attrs = d.attrs.write();
-                attrs.insert(
-                    CompactString::from("opcode"),
-                    PyObject::int(instr.op as i64),
-                );
-                attrs.insert(
-                    CompactString::from("opname"),
-                    PyObject::str_val(CompactString::from(&opname)),
-                );
-                attrs.insert(CompactString::from("arg"), PyObject::int(instr.arg as i64));
-                attrs.insert(
-                    CompactString::from("argval"),
-                    PyObject::str_val(CompactString::from(&arg_desc)),
-                );
-                attrs.insert(CompactString::from("offset"), PyObject::int((i * 2) as i64));
-                attrs.insert(
-                    CompactString::from("is_jump_target"),
-                    PyObject::bool_val(false),
-                );
-            }
-            instructions.push(inst);
-        }
-        Ok(PyObject::list(instructions))
+        Ok(PyObject::list(instruction_list(&code)))
     });
 
     // show_code(x) — print code_info to stdout
@@ -2223,7 +2382,8 @@ pub fn create_dis_module() -> PyObjectRef {
             ("disassemble", make_builtin(dis_dis)),
             ("code_info", make_builtin(dis_code_info)),
             ("show_code", show_code_fn),
-            ("Bytecode", bytecode_fn),
+            ("Bytecode", bytecode_fn.clone()),
+            ("get_instructions", bytecode_fn),
             ("Instruction", instruction_cls),
         ],
     )

@@ -1,7 +1,7 @@
 //! Argument parsing methods for the Parser.
 
 use crate::error::{ParseError, ParseErrorKind};
-use crate::token::TokenKind;
+use crate::token::{Span, TokenKind};
 use ferrython_ast::*;
 
 use super::Parser;
@@ -17,6 +17,7 @@ impl Parser {
 
         let mut seen_star = false;
         let mut _seen_slash = false;
+        let mut seen_default = false;
 
         loop {
             if self.check(TokenKind::RightParen) || self.check(TokenKind::Colon) {
@@ -86,6 +87,18 @@ impl Parser {
                 } else {
                     None
                 };
+                if !seen_star {
+                    if default.is_some() {
+                        seen_default = true;
+                    } else if seen_default {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidSyntax(
+                                "non-default argument follows default argument".into(),
+                            ),
+                            Self::span_from_location(location),
+                        ));
+                    }
+                }
                 let arg = Arg {
                     arg: name,
                     annotation,
@@ -109,7 +122,42 @@ impl Parser {
             self.advance();
         }
 
+        Self::validate_unique_arguments(&args)?;
         Ok(args)
+    }
+
+    pub(super) fn validate_unique_arguments(args: &Arguments) -> Result<(), ParseError> {
+        let mut seen = Vec::new();
+        for arg in args
+            .posonlyargs
+            .iter()
+            .chain(args.args.iter())
+            .chain(args.vararg.iter())
+            .chain(args.kwonlyargs.iter())
+            .chain(args.kwarg.iter())
+        {
+            let name = arg.arg.as_str();
+            if seen.iter().any(|existing| *existing == name) {
+                return Err(ParseError::new(
+                    ParseErrorKind::InvalidSyntax(format!(
+                        "duplicate argument '{}' in function definition",
+                        name
+                    )),
+                    Self::span_from_location(arg.location),
+                ));
+            }
+            seen.push(name);
+        }
+        Ok(())
+    }
+
+    pub(super) fn span_from_location(location: SourceLocation) -> Span {
+        Span::new(
+            location.line,
+            location.column,
+            location.end_line.unwrap_or(location.line),
+            location.end_column.unwrap_or(location.column),
+        )
     }
 
     fn try_parse_annotation(&mut self) -> Result<Option<Box<Expression>>, ParseError> {

@@ -263,7 +263,11 @@ fn builtin_type_create(
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("id", args, 1)?;
-    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+    let ptr = if let PyObjectPayload::Code(code) = &args[0].payload {
+        std::rc::Rc::as_ptr(code) as usize
+    } else {
+        PyObjectRef::as_ptr(&args[0]) as usize
+    };
     Ok(PyObject::int(ptr as i64))
 }
 

@@ -5,7 +5,7 @@ use ferrython_ast::*;
 use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Opcode};
 
 use super::expressions::body_contains_yield;
-use super::{CompileUnit, Compiler, LoopContext, Result};
+use super::{CleanupContext, CompileUnit, Compiler, LoopContext, Result};
 use crate::error::CompileError;
 use crate::symbol_table::Scope;
 
@@ -111,13 +111,14 @@ impl Compiler {
             }
 
             StatementKind::Break => {
-                if self.current_unit().loop_stack.is_empty() {
+                let Some(loop_ctx) = self.current_unit().loop_stack.last().cloned() else {
                     return Err(CompileError::BreakOutsideLoop {
                         location: stmt.location,
                     });
-                }
+                };
+                self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
                 // For `for` loops, pop the iterator and close generators
-                if self.current_unit().loop_stack.last().unwrap().is_for_loop {
+                if loop_ctx.is_for_loop {
                     self.emit_op(Opcode::EndForLoop);
                 }
                 let label = self.emit_jump(Opcode::JumpAbsolute);
@@ -130,18 +131,13 @@ impl Compiler {
             }
 
             StatementKind::Continue => {
-                let loop_ctx = self.current_unit().loop_stack.last();
-                match loop_ctx {
-                    Some(ctx) => {
-                        let target = ctx.continue_target;
-                        self.emit_arg(Opcode::JumpAbsolute, target);
-                    }
-                    None => {
-                        return Err(CompileError::ContinueOutsideLoop {
-                            location: stmt.location,
-                        });
-                    }
-                }
+                let Some(loop_ctx) = self.current_unit().loop_stack.last().cloned() else {
+                    return Err(CompileError::ContinueOutsideLoop {
+                        location: stmt.location,
+                    });
+                };
+                self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
+                self.emit_arg(Opcode::JumpAbsolute, loop_ctx.continue_target);
             }
 
             StatementKind::If { test, body, orelse } => {
@@ -275,6 +271,28 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_loop_control_cleanups(&mut self, cleanup_depth: usize) {
+        let cleanups: Vec<CleanupContext> = self.current_unit().cleanup_stack[cleanup_depth..]
+            .iter()
+            .rev()
+            .copied()
+            .collect();
+        for cleanup in cleanups {
+            match cleanup {
+                CleanupContext::With => {
+                    self.emit_op(Opcode::PopBlock);
+                    self.emit_op(Opcode::BeginFinally);
+                    self.emit_op(Opcode::WithCleanupStart);
+                    self.emit_op(Opcode::WithCleanupFinish);
+                    self.emit_op(Opcode::EndFinally);
+                }
+                CleanupContext::FinallyBody => {
+                    self.emit_op(Opcode::EndFinally);
+                }
+            }
+        }
+    }
+
     // ── control flow compilation ────────────────────────────────────
 
     pub(super) fn compile_if(
@@ -310,10 +328,12 @@ impl Compiler {
         self.compile_expression(test)?;
         let done_label = self.emit_jump(Opcode::PopJumpIfFalse);
 
+        let cleanup_depth = self.current_unit().cleanup_stack.len();
         self.current_unit_mut().loop_stack.push(LoopContext {
             continue_target: loop_start,
             break_labels: Vec::new(),
             is_for_loop: false,
+            cleanup_depth,
         });
 
         self.compile_body(body)?;
@@ -353,10 +373,12 @@ impl Compiler {
         // Store the iteration value
         self.compile_store_target(target)?;
 
+        let cleanup_depth = self.current_unit().cleanup_stack.len();
         self.current_unit_mut().loop_stack.push(LoopContext {
             continue_target: loop_start,
             break_labels: Vec::new(),
             is_for_loop: true,
+            cleanup_depth,
         });
 
         self.compile_body(body)?;
@@ -508,6 +530,7 @@ impl Compiler {
                 {
                     // Ensure docstring is the first constant in the code object
                     let unit = self.current_unit_mut();
+                    unit.code.docstring = Some(doc.clone());
                     let doc_const = ConstantValue::Str(doc.clone());
                     if unit.code.constants.is_empty() || unit.code.constants[0] != doc_const {
                         unit.code.constants.insert(0, doc_const);
@@ -1043,7 +1066,11 @@ impl Compiler {
             if let Some(label) = finally_label {
                 self.patch_jump_here(label);
             }
+            self.current_unit_mut()
+                .cleanup_stack
+                .push(CleanupContext::FinallyBody);
             self.compile_body(finalbody)?;
+            self.current_unit_mut().cleanup_stack.pop();
             self.emit_op(Opcode::EndFinally);
         }
 
@@ -1170,7 +1197,11 @@ impl Compiler {
             if let Some(label) = finally_label {
                 self.patch_jump_here(label);
             }
+            self.current_unit_mut()
+                .cleanup_stack
+                .push(CleanupContext::FinallyBody);
             self.compile_body(finalbody)?;
+            self.current_unit_mut().cleanup_stack.pop();
             self.emit_op(Opcode::EndFinally);
         }
 
@@ -1229,7 +1260,11 @@ impl Compiler {
         }
 
         // Compile inner withs or body
+        self.current_unit_mut()
+            .cleanup_stack
+            .push(CleanupContext::With);
         self.compile_with_item(items, idx + 1, body)?;
+        self.current_unit_mut().cleanup_stack.pop();
 
         // Normal exit
         self.emit_op(Opcode::PopBlock);
@@ -1273,10 +1308,12 @@ impl Compiler {
         // Pop exception handler before body
         self.emit_op(Opcode::PopBlock);
 
+        let cleanup_depth = self.current_unit().cleanup_stack.len();
         self.current_unit_mut().loop_stack.push(LoopContext {
             continue_target: loop_start,
             break_labels: Vec::new(),
             is_for_loop: true,
+            cleanup_depth,
         });
 
         // Compile body
@@ -1348,7 +1385,11 @@ impl Compiler {
         }
 
         // Compile inner withs or body
+        self.current_unit_mut()
+            .cleanup_stack
+            .push(CleanupContext::With);
         self.compile_async_with_item(items, idx + 1, body)?;
+        self.current_unit_mut().cleanup_stack.pop();
 
         // Normal exit: pop block, then run cleanup
         self.emit_op(Opcode::PopBlock);
@@ -1371,6 +1412,12 @@ impl Compiler {
     ) -> Result<()> {
         match &target.node {
             ExpressionKind::Name { id, .. } => {
+                if id.as_str() == "__debug__" {
+                    return Err(CompileError::syntax(
+                        "cannot assign to __debug__",
+                        target.location,
+                    ));
+                }
                 self.load_name(id);
                 self.compile_expression(value)?;
                 self.emit_inplace_op(op);
@@ -1434,6 +1481,12 @@ impl Compiler {
     pub(super) fn compile_store_target(&mut self, target: &Expression) -> Result<()> {
         match &target.node {
             ExpressionKind::Name { id, .. } => {
+                if id.as_str() == "__debug__" {
+                    return Err(CompileError::syntax(
+                        "cannot assign to __debug__",
+                        target.location,
+                    ));
+                }
                 self.store_name(id);
             }
             ExpressionKind::Attribute { value, attr, .. } => {

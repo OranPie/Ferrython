@@ -2572,6 +2572,9 @@ impl VirtualMachine {
                         }
                         "globals" => {
                             if let Some(frame) = self.call_stack.last() {
+                                if let Some(globals_obj) = &frame.exec_globals {
+                                    return Ok(globals_obj.clone());
+                                }
                                 let globals_arc = frame.globals.clone();
                                 return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(
                                     globals_arc,
@@ -2581,6 +2584,14 @@ impl VirtualMachine {
                         }
                         "locals" => {
                             if let Some(frame) = self.call_stack.last() {
+                                if let Some(locals) = &frame.exec_locals {
+                                    return Ok(locals.clone());
+                                }
+                                if matches!(frame.scope_kind, ScopeKind::Module) {
+                                    if let Some(globals_obj) = &frame.exec_globals {
+                                        return Ok(globals_obj.clone());
+                                    }
+                                }
                                 let mut map = IndexMap::new();
                                 for (i, name) in frame.code.varnames.iter().enumerate() {
                                     if let Some(Some(val)) = frame.locals.get(i) {
@@ -3554,6 +3565,9 @@ impl VirtualMachine {
                         // Return an InstanceDict that shares the frame's globals Arc.
                         // This means mutations via globals()['key'] = value propagate directly.
                         if let Some(frame) = self.call_stack.last() {
+                            if let Some(globals_obj) = &frame.exec_globals {
+                                return Ok(globals_obj.clone());
+                            }
                             let globals_arc = frame.globals.clone();
                             return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
                         }
@@ -3561,6 +3575,14 @@ impl VirtualMachine {
                     }
                     "locals" => {
                         if let Some(frame) = self.call_stack.last() {
+                            if let Some(locals) = &frame.exec_locals {
+                                return Ok(locals.clone());
+                            }
+                            if matches!(frame.scope_kind, ScopeKind::Module) {
+                                if let Some(globals_obj) = &frame.exec_globals {
+                                    return Ok(globals_obj.clone());
+                                }
+                            }
                             let mut map = IndexMap::new();
                             // Include function-scope locals (varnames → locals array)
                             for (i, name) in frame.code.varnames.iter().enumerate() {
@@ -4839,6 +4861,21 @@ impl VirtualMachine {
                     }
                     "dir" => {
                         if args.is_empty() {
+                            if let Some(locals) =
+                                self.call_stack.last().and_then(|f| f.exec_locals.clone())
+                            {
+                                let mut names: Vec<String> = self
+                                    .exec_locals_keys(&locals)?
+                                    .into_iter()
+                                    .map(|key| key.py_to_string())
+                                    .collect();
+                                names.sort();
+                                let items = names
+                                    .into_iter()
+                                    .map(|n| PyObject::str_val(CompactString::from(n)))
+                                    .collect();
+                                return Ok(PyObject::list(items));
+                            }
                             // dir() with no args: return sorted local variable names
                             let locals = self.collect_locals_dict()?;
                             if let PyObjectPayload::Dict(map) = &locals.payload {

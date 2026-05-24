@@ -53,6 +53,9 @@ pub fn optimize(code: &mut CodeObject) {
 
     // Final cleanup: remove NOP instructions and fix jump targets
     remove_nops(code);
+    if eliminate_redundant_jumps(code) {
+        remove_nops(code);
+    }
 
     // Superinstruction fusion (after NOPs are removed, after jump targets are final).
     // Only runs when superinstructions are enabled (default). Disabled in compat mode
@@ -395,6 +398,20 @@ fn eliminate_safe_try_blocks(code: &mut CodeObject) -> bool {
     changed
 }
 
+/// Remove jumps whose target is the immediately following instruction.
+fn eliminate_redundant_jumps(code: &mut CodeObject) -> bool {
+    let mut changed = false;
+    for (i, instr) in code.instructions.iter_mut().enumerate() {
+        if matches!(instr.op, Opcode::JumpAbsolute | Opcode::JumpForward)
+            && instr.arg as usize == i + 1
+        {
+            *instr = Instruction::simple(Opcode::Nop);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Returns true if the opcode cannot raise an exception (is "safe" in a try body).
 fn is_safe_opcode(op: Opcode) -> bool {
     matches!(
@@ -649,13 +666,19 @@ fn fold_neg(a: &ConstantValue) -> Option<ConstantValue> {
     match a {
         ConstantValue::Integer(x) => x.checked_neg().map(ConstantValue::Integer),
         ConstantValue::Float(x) => Some(ConstantValue::Float(-x)),
+        ConstantValue::Complex { real, imag } => Some(ConstantValue::Complex {
+            real: -*real,
+            imag: -*imag,
+        }),
         _ => None,
     }
 }
 
 fn fold_pos(a: &ConstantValue) -> Option<ConstantValue> {
     match a {
-        ConstantValue::Integer(_) | ConstantValue::Float(_) => Some(a.clone()),
+        ConstantValue::Integer(_) | ConstantValue::Float(_) | ConstantValue::Complex { .. } => {
+            Some(a.clone())
+        }
         _ => None,
     }
 }
@@ -1476,22 +1499,87 @@ fn fuse_superinstructions(code: &mut CodeObject) {
     code.instructions.truncate(write);
 }
 
-/// Compute max stack depth by simulating stack effects through the bytecode.
-/// Walks instructions linearly, tracking depth via `Opcode::stack_effect()`,
-/// and records the maximum. For branched code this is conservative (may overestimate).
+/// Compute max stack depth by propagating stack depths through bytecode control flow.
 fn compute_max_stack_size(code: &mut CodeObject) {
-    let mut depth: i32 = 0;
-    let mut max_depth: i32 = 0;
-    for instr in &code.instructions {
-        depth += instr.op.stack_effect(instr.arg);
-        if depth > max_depth {
-            max_depth = depth;
-        }
-        if depth < 0 {
-            depth = 0;
-        } // safety: branches may converge at different depths
+    let n = code.instructions.len();
+    if n == 0 {
+        code.max_stack_size = 1;
+        return;
     }
-    // Small margin for exception-handler entry (+3 values pushed: type/value/traceback)
-    // and for any other stack effects not captured by the linear simulation.
-    code.max_stack_size = (max_depth as u32).saturating_add(8);
+
+    let mut incoming: Vec<Option<i32>> = vec![None; n];
+    let mut work = std::collections::VecDeque::new();
+    incoming[0] = Some(0);
+    work.push_back(0usize);
+    let mut max_depth = 0i32;
+    let cap = (n as i32).saturating_mul(4).max(64);
+
+    while let Some(i) = work.pop_front() {
+        let depth = incoming[i].unwrap_or(0).clamp(0, cap);
+        max_depth = max_depth.max(depth);
+        let instr = code.instructions[i];
+
+        let mut enqueue = |target: usize, depth: i32| {
+            if target >= n {
+                return;
+            }
+            let depth = depth.clamp(0, cap);
+            if incoming[target].map_or(true, |old| depth > old) {
+                incoming[target] = Some(depth);
+                work.push_back(target);
+            }
+        };
+
+        match instr.op {
+            Opcode::ReturnValue | Opcode::RaiseVarargs => {}
+            Opcode::LoadConstReturnValue | Opcode::LoadFastReturnValue => {
+                max_depth = max_depth.max(depth + 1);
+            }
+            Opcode::JumpAbsolute | Opcode::JumpForward => enqueue(instr.arg as usize, depth),
+            Opcode::StoreFastJumpAbsolute => {
+                let target = (instr.arg & 0xFFFF) as usize;
+                enqueue(target, depth + instr.op.stack_effect(instr.arg));
+            }
+            Opcode::PopTopJumpAbsolute => enqueue(instr.arg as usize, depth - 1),
+            Opcode::PopBlockJump => enqueue(instr.arg as usize, depth),
+            Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue => {
+                let after = depth - 1;
+                enqueue(i + 1, after);
+                enqueue(instr.arg as usize, after);
+            }
+            Opcode::JumpIfFalseOrPop | Opcode::JumpIfTrueOrPop => {
+                enqueue(instr.arg as usize, depth);
+                enqueue(i + 1, depth - 1);
+            }
+            Opcode::ForIter => {
+                enqueue(i + 1, depth + 1);
+                enqueue(instr.arg as usize, depth - 1);
+            }
+            Opcode::ForIterStoreFast => {
+                let target = (instr.arg >> 16) as usize;
+                enqueue(i + 1, depth);
+                enqueue(target, depth - 1);
+            }
+            Opcode::CompareOpPopJumpIfFalse => {
+                let target = (instr.arg & 0x00FF_FFFF) as usize;
+                let after = depth - 2;
+                enqueue(i + 1, after);
+                enqueue(target, after);
+            }
+            Opcode::LoadFastCompareConstJump | Opcode::LoadFastLoadFastCompareJump => {
+                let target = (instr.arg & 0xFFF) as usize;
+                enqueue(i + 1, depth);
+                enqueue(target, depth);
+            }
+            Opcode::SetupFinally
+            | Opcode::SetupExcept
+            | Opcode::SetupWith
+            | Opcode::SetupAsyncWith => {
+                enqueue(i + 1, depth + instr.op.stack_effect(instr.arg));
+            }
+            _ => enqueue(i + 1, depth + instr.op.stack_effect(instr.arg)),
+        }
+    }
+
+    code.max_stack_size = max_depth.max(1) as u32;
 }

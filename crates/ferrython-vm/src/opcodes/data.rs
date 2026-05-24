@@ -82,11 +82,20 @@ impl VirtualMachine {
             match instr.op {
                 Opcode::LoadName => {
                     let idx = instr.arg as usize;
-                    let name = &frame.code.names[idx];
-                    match frame.load_name(name) {
+                    let name = frame.code.names[idx].clone();
+                    let exec_locals = frame.exec_locals.clone();
+                    if let Some(locals) = exec_locals {
+                        if let Some(v) = self.exec_locals_get(&locals, name.as_str())? {
+                            self.vm_frame().push(v);
+                            return Ok(None);
+                        }
+                    }
+                    let frame = self.vm_frame();
+                    match frame.load_name(name.as_str()) {
                         Some(v) => {
                             // Populate global cache so inline fast path can hit next time
-                            if frame.scope_kind == ScopeKind::Module {
+                            if frame.scope_kind == ScopeKind::Module && frame.exec_locals.is_none()
+                            {
                                 let ver = crate::frame::globals_version();
                                 if frame.global_cache_version != ver && frame.global_cache.is_some()
                                 {
@@ -117,6 +126,11 @@ impl VirtualMachine {
                     let idx = instr.arg as usize;
                     let name = frame.code.names[idx].clone();
                     let value = frame.pop();
+                    let exec_locals = frame.exec_locals.clone();
+                    if let Some(locals) = exec_locals {
+                        self.exec_locals_set(&locals, name.as_str(), value)?;
+                        return Ok(None);
+                    }
                     match frame.scope_kind {
                         ScopeKind::Module => {
                             if frame.global_cache.is_some() {

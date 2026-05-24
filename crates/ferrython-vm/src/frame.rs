@@ -171,6 +171,12 @@ pub struct Frame {
     /// When set, STORE_NAME in class scope also writes to this dict so that
     /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
     pub prepare_dict: Option<PyObjectRef>,
+    /// Original locals mapping passed to exec(code, globals, locals).
+    /// Used for general mappings that are not real dict objects.
+    pub exec_locals: Option<PyObjectRef>,
+    /// Original globals mapping passed to exec(code, globals, locals).
+    /// Used by globals() to preserve the user-visible mapping object.
+    pub exec_globals: Option<PyObjectRef>,
     /// Keeps the function object alive when borrowed_env is set for non-recursive calls.
     /// The function's Arc fields (code, globals, constant_cache) are borrowed without
     /// cloning — this field ensures they remain valid until the frame is recycled.
@@ -282,6 +288,8 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX, // force miss on first access
             prepare_dict: None,
+            exec_locals: None,
+            exec_globals: None,
             borrowed_env: false,
             discard_return: false,
             held_func: None,
@@ -341,6 +349,8 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX,
             prepare_dict: None,
+            exec_locals: None,
+            exec_globals: None,
             borrowed_env: false,
             discard_return: false,
             held_func: None,
@@ -408,6 +418,8 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX,
             prepare_dict: None,
+            exec_locals: None,
+            exec_globals: None,
             borrowed_env: false,
             discard_return: false,
             held_func: None,
@@ -459,6 +471,8 @@ impl Frame {
             global_cache: std::ptr::read(&parent.global_cache),
             global_cache_version: parent.global_cache_version,
             prepare_dict: None,
+            exec_locals: None,
+            exec_globals: None,
             borrowed_env: true,
             discard_return: false,
             held_func: None,
@@ -509,6 +523,8 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX,
             prepare_dict: None,
+            exec_locals: None,
+            exec_globals: None,
             borrowed_env: true,
             discard_return: false,
             held_func: Some(func_obj),

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
+const INT_MAX_STR_DIGITS_THRESHOLD: i64 = 640;
 
 /// Fast atomic flags indicating whether trace/profile functions are installed.
 /// The VM reads these instead of doing thread-local RefCell access per frame.
@@ -348,6 +349,8 @@ pub fn create_sys_module() -> PyObjectRef {
         ("__stderr__", make_stdio_object("<stderr>", "w", 2)),
         ("getrecursionlimit", make_builtin(sys_getrecursionlimit)),
         ("setrecursionlimit", make_builtin(sys_setrecursionlimit)),
+        ("get_int_max_str_digits", make_builtin(sys_get_int_max_str_digits)),
+        ("set_int_max_str_digits", make_builtin(sys_set_int_max_str_digits)),
         ("exit", make_builtin(sys_exit)),
         ("getsizeof", make_builtin(sys_getsizeof)),
         ("getrefcount", make_builtin(|args| {
@@ -600,6 +603,23 @@ fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::value_error("recursion limit must be positive"));
     }
     RECURSION_LIMIT.store(limit, Ordering::Relaxed);
+    Ok(PyObject::none())
+}
+fn sys_get_int_max_str_digits(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::int(ferrython_bytecode::get_int_max_str_digits()))
+}
+fn sys_set_int_max_str_digits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.set_int_max_str_digits", args, 1)?;
+    let limit = args[0]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("an integer is required"))?;
+    if limit != 0 && limit < INT_MAX_STR_DIGITS_THRESHOLD {
+        return Err(PyException::value_error(format!(
+            "maxdigits must be 0 or larger than {}",
+            INT_MAX_STR_DIGITS_THRESHOLD
+        )));
+    }
+    ferrython_bytecode::set_int_max_str_digits(limit);
     Ok(PyObject::none())
 }
 fn sys_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1038,6 +1058,20 @@ pub fn create_os_module() -> PyObjectRef {
                             })
                             .collect();
                         Ok(PyObject::list(items))
+                    }),
+                );
+                attrs.insert(
+                    CompactString::from("copy"),
+                    PyObject::native_closure("copy", move |_| {
+                        let pairs: Vec<(PyObjectRef, PyObjectRef)> = std::env::vars()
+                            .map(|(k, v)| {
+                                (
+                                    PyObject::str_val(CompactString::from(k)),
+                                    PyObject::str_val(CompactString::from(v)),
+                                )
+                            })
+                            .collect();
+                        Ok(PyObject::dict_from_pairs(pairs))
                     }),
                 );
                 attrs.insert(

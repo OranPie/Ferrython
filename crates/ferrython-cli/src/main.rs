@@ -108,7 +108,11 @@ impl PipelineError {
         match self {
             Self::Parse(e) => {
                 eprintln!("  File \"{}\"", filename);
-                eprintln!("SyntaxError: {}", e);
+                if e.to_string().contains('\0') {
+                    eprintln!("SyntaxError: source code string cannot contain null bytes");
+                } else {
+                    eprintln!("SyntaxError: {}", e);
+                }
             }
             Self::Compile(e) => {
                 eprintln!("  File \"{}\", compilation error", filename);
@@ -119,6 +123,12 @@ impl PipelineError {
             }
         }
     }
+}
+
+fn read_source_file(filename: &str) -> Result<String, io::Error> {
+    let bytes = fs::read(filename)?;
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Non-UTF-8 code starting with"))
 }
 
 fn main() {
@@ -469,7 +479,7 @@ fn main_inner() {
     if let Some(parent) = std::path::Path::new(filename).parent() {
         ferrython_import::prepend_search_path(parent.to_path_buf());
     }
-    match fs::read_to_string(filename) {
+    match read_source_file(filename) {
         Ok(source) => {
             run_string_with_opts(&source, filename, skip_first_line);
             if inspect_after {
@@ -477,7 +487,11 @@ fn main_inner() {
             }
         }
         Err(e) => {
-            eprintln!("ferrython: can't open file '{}': {}", filename, e);
+            if e.kind() == io::ErrorKind::InvalidData {
+                eprintln!("SyntaxError: Non-UTF-8 code starting with");
+            } else {
+                eprintln!("ferrython: can't open file '{}': {}", filename, e);
+            }
             process::exit(2);
         }
     }

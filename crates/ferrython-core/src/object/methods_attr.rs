@@ -11,6 +11,25 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 use super::payload::*;
 
+fn code_object_co_code(code: &ferrython_bytecode::CodeObject) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(code.instructions.len() * 2);
+    for instruction in &code.instructions {
+        let mut ext_args = Vec::new();
+        let mut remaining = instruction.arg >> 8;
+        while remaining > 0 {
+            ext_args.push((remaining & 0xff) as u8);
+            remaining >>= 8;
+        }
+        for arg in ext_args.iter().rev() {
+            bytes.push(ferrython_bytecode::Opcode::ExtendedArg as u8);
+            bytes.push(*arg);
+        }
+        bytes.push(instruction.op as u8);
+        bytes.push((instruction.arg & 0xff) as u8);
+    }
+    bytes
+}
+
 /// Walk a class and its base classes (MRO) to find an attribute.
 /// Uses pre-computed vtable for O(1) lookup, falling back to cache+MRO.
 pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
@@ -2369,10 +2388,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     if let Some(doc) = f.attrs.read().get("__doc__").cloned() {
                         return Some(doc);
                     }
-                    // Extract docstring from first constant if it's a string
-                    if let Some(ferrython_bytecode::ConstantValue::Str(s)) =
-                        f.code.constants.first()
-                    {
+                    if let Some(s) = &f.code.docstring {
                         Some(PyObject::str_val(s.clone()))
                     } else {
                         Some(PyObject::none())
@@ -3556,6 +3572,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             "co_nlocals" => Some(PyObject::int(code.num_locals as i64)),
             "co_stacksize" => Some(PyObject::int(code.max_stack_size as i64)),
             "co_flags" => Some(PyObject::int(code.flags.bits() as i64)),
+            "co_code" => Some(PyObject::bytes(code_object_co_code(code))),
+            "co_lnotab" => Some(PyObject::bytes(Vec::new())),
             "co_varnames" => Some(PyObject::tuple(
                 code.varnames
                     .iter()
@@ -3599,8 +3617,15 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         ConstantValue::Tuple(items) => {
                             PyObject::tuple(items.iter().map(|i| cv_to_obj(i)).collect())
                         }
-                        ConstantValue::FrozenSet(_) => {
-                            PyObject::str_val(CompactString::from("<frozenset>"))
+                        ConstantValue::FrozenSet(items) => {
+                            let mut set = crate::object::new_fx_hashkey_map();
+                            for item in items {
+                                let obj = cv_to_obj(item);
+                                if let Ok(key) = obj.to_hashable_key() {
+                                    set.insert(key, obj);
+                                }
+                            }
+                            PyObject::frozenset(set)
                         }
                     }
                 }

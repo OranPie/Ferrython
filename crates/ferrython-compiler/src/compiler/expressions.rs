@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_ast::*;
-use ferrython_bytecode::{CodeFlags, ConstantValue, Opcode};
+use ferrython_bytecode::{get_int_max_str_digits, CodeFlags, ConstantValue, Opcode};
 
 use super::{Compiler, Result};
 use crate::error::CompileError;
@@ -11,6 +11,8 @@ impl Compiler {
     // ── expression compilation ──────────────────────────────────────
 
     pub(super) fn compile_expression(&mut self, expr: &Expression) -> Result<()> {
+        self.validate_int_literal_limit(expr)?;
+
         // Constant folding: evaluate constant expressions at compile time
         if let Some(folded) = self.try_fold_constant(expr) {
             let idx = self.add_const(folded);
@@ -26,6 +28,10 @@ impl Compiler {
             }
 
             ExpressionKind::Name { id, ctx } => match ctx {
+                ExprContext::Load if id.as_str() == "__debug__" => {
+                    let idx = self.add_const(ConstantValue::Bool(true));
+                    self.emit_arg(Opcode::LoadConst, idx);
+                }
                 ExprContext::Load => self.load_name(id),
                 ExprContext::Store => self.store_name(id),
                 ExprContext::Del => self.delete_name(id),
@@ -536,14 +542,14 @@ impl Compiler {
 
         if ops.len() == 1 {
             // Simple comparison: left op right
-            self.compile_expression(&comparators[0])?;
+            self.compile_compare_operand(ops[0], &comparators[0])?;
             let cmp_arg = compare_op_arg(ops[0]);
             self.emit_arg(Opcode::CompareOp, cmp_arg);
         } else {
             // Chained: a < b < c → (a < b) and (b < c)
             let mut cleanup_labels = Vec::new();
             for (i, (op, comp)) in ops.iter().zip(comparators.iter()).enumerate() {
-                self.compile_expression(comp)?;
+                self.compile_compare_operand(*op, comp)?;
                 if i < ops.len() - 1 {
                     // Need to keep the intermediate value
                     self.emit_op(Opcode::DupTop);
@@ -575,6 +581,29 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn compile_compare_operand(&mut self, op: CompareOperator, operand: &Expression) -> Result<()> {
+        if matches!(op, CompareOperator::In | CompareOperator::NotIn) {
+            if let Some(value) = self.constant_set_literal_to_frozenset(operand) {
+                let idx = self.add_const(value);
+                self.emit_arg(Opcode::LoadConst, idx);
+                return Ok(());
+            }
+        }
+        self.compile_expression(operand)
+    }
+
+    fn constant_set_literal_to_frozenset(&self, expr: &Expression) -> Option<ConstantValue> {
+        if let ExpressionKind::Set { elts } = &expr.node {
+            let items = elts
+                .iter()
+                .map(|elt| self.try_fold_constant(elt))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ConstantValue::FrozenSet(items))
+        } else {
+            None
+        }
     }
 
     // ── function call ───────────────────────────────────────────────
@@ -1225,6 +1254,17 @@ impl Compiler {
     /// Returns Some(value) if folded, None if not foldable.
     fn try_fold_constant(&self, expr: &Expression) -> Option<ConstantValue> {
         match &expr.node {
+            ExpressionKind::Constant { value } => Some(self.constant_to_value(value)),
+            ExpressionKind::Tuple {
+                elts,
+                ctx: ExprContext::Load,
+            } => {
+                let items = elts
+                    .iter()
+                    .map(|elt| self.try_fold_constant(elt))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(ConstantValue::Tuple(items))
+            }
             ExpressionKind::UnaryOp { op, operand } => {
                 let c = Self::extract_constant(operand)?;
                 Self::fold_unary(*op, &c)
@@ -1251,6 +1291,10 @@ impl Compiler {
                     match value {
                         Constant::Int(BigInt::Small(i)) => Some(Constant::Int(BigInt::Small(-i))),
                         Constant::Float(f) => Some(Constant::Float(-f)),
+                        Constant::Complex { real, imag } => Some(Constant::Complex {
+                            real: -*real,
+                            imag: -*imag,
+                        }),
                         _ => None,
                     }
                 } else {
@@ -1267,10 +1311,22 @@ impl Compiler {
                 Some(ConstantValue::Integer(-i))
             }
             (UnaryOperator::USub, Constant::Float(f)) => Some(ConstantValue::Float(-f)),
+            (UnaryOperator::USub, Constant::Complex { real, imag }) => {
+                Some(ConstantValue::Complex {
+                    real: -*real,
+                    imag: -*imag,
+                })
+            }
             (UnaryOperator::UAdd, Constant::Int(BigInt::Small(i))) => {
                 Some(ConstantValue::Integer(*i))
             }
             (UnaryOperator::UAdd, Constant::Float(f)) => Some(ConstantValue::Float(*f)),
+            (UnaryOperator::UAdd, Constant::Complex { real, imag }) => {
+                Some(ConstantValue::Complex {
+                    real: *real,
+                    imag: *imag,
+                })
+            }
             (UnaryOperator::Not, Constant::Bool(b)) => Some(ConstantValue::Bool(!b)),
             (UnaryOperator::Invert, Constant::Int(BigInt::Small(i))) => {
                 Some(ConstantValue::Integer(!i))
@@ -1404,6 +1460,33 @@ impl Compiler {
     }
 
     // ── constant conversion ─────────────────────────────────────────
+
+    fn validate_int_literal_limit(&self, expr: &Expression) -> Result<()> {
+        let ExpressionKind::Constant {
+            value: Constant::Int(value),
+        } = &expr.node
+        else {
+            return Ok(());
+        };
+        let limit = get_int_max_str_digits();
+        if limit <= 0 {
+            return Ok(());
+        }
+        let digits = match value {
+            BigInt::Small(i) => i.to_string().trim_start_matches('-').len(),
+            BigInt::Big(i) => i.to_str_radix(10).trim_start_matches('-').len(),
+        };
+        if digits as i64 > limit {
+            return Err(CompileError::syntax(
+                format!(
+                    "Exceeds the limit ({} digits) for integer string conversion: value has {} digits; Consider hexadecimal for huge integer literals",
+                    limit, digits
+                ),
+                expr.location,
+            ));
+        }
+        Ok(())
+    }
 
     pub(super) fn constant_to_value(&self, constant: &Constant) -> ConstantValue {
         match constant {

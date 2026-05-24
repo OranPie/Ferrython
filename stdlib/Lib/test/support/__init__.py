@@ -584,7 +584,17 @@ def collision_stats(nbins, nballs):
 
 @contextlib.contextmanager
 def adjust_int_max_str_digits(max_digits):
-    yield
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    set_limit = getattr(sys, "set_int_max_str_digits", None)
+    if get_limit is None or set_limit is None:
+        yield
+        return
+    old_limit = get_limit()
+    set_limit(max_digits)
+    try:
+        yield
+    finally:
+        set_limit(old_limit)
 
 
 @contextlib.contextmanager

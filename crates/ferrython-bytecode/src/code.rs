@@ -4,6 +4,17 @@ use crate::opcode::Instruction;
 use bitflags::bitflags;
 use compact_str::CompactString;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+static INT_MAX_STR_DIGITS: AtomicI64 = AtomicI64::new(4300);
+
+pub fn get_int_max_str_digits() -> i64 {
+    INT_MAX_STR_DIGITS.load(Ordering::Relaxed)
+}
+
+pub fn set_int_max_str_digits(limit: i64) {
+    INT_MAX_STR_DIGITS.store(limit, Ordering::Relaxed);
+}
 
 /// A constant value stored in the code object's constant pool.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +97,9 @@ pub struct CodeObject {
     pub qualname: CompactString,
     /// First line number in source.
     pub first_line_number: u32,
+    /// Function docstring, if the code object was compiled from a function
+    /// definition whose first statement is a string literal.
+    pub docstring: Option<CompactString>,
     /// Line number table (instruction index → source line).
     pub line_number_table: Vec<(u32, u32)>,
     /// Code flags.
@@ -117,6 +131,7 @@ impl CodeObject {
             qualname: name.clone(),
             name,
             first_line_number: 1,
+            docstring: None,
             line_number_table: Vec::new(),
             flags: CodeFlags::OPTIMIZED | CodeFlags::NEWLOCALS,
             arg_count: 0,
@@ -129,6 +144,11 @@ impl CodeObject {
 
     /// Add a constant and return its index.
     pub fn add_const(&mut self, value: ConstantValue) -> u32 {
+        if matches!(value, ConstantValue::Code(_)) {
+            let idx = self.constants.len() as u32;
+            self.constants.push(value);
+            return idx;
+        }
         // Check if constant already exists (use bit-exact comparison for floats
         // to distinguish 0.0 from -0.0, which are == in IEEE 754 but semantically distinct)
         for (i, c) in self.constants.iter().enumerate() {

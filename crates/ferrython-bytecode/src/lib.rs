@@ -3,5 +3,7 @@
 pub mod code;
 pub mod opcode;
 
-pub use code::{CodeFlags, CodeObject, ConstantValue};
+pub use code::{
+    get_int_max_str_digits, set_int_max_str_digits, CodeFlags, CodeObject, ConstantValue,
+};
 pub use opcode::{Instruction, Opcode};

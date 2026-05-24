@@ -17,7 +17,7 @@ def _interpreter_requires_environment():
 
 def assert_python_ok(*args, **env_vars):
     """Run ferrython with *args* and assert exit code 0."""
-    cmd = [sys.executable] + list(args)
+    cmd = [_python_exe()] + list(args)
     env = os.environ.copy()
     env.update(env_vars)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
@@ -32,7 +32,7 @@ def assert_python_ok(*args, **env_vars):
 
 def assert_python_failure(*args, **env_vars):
     """Run ferrython with *args* and assert non-zero exit code."""
-    cmd = [sys.executable] + list(args)
+    cmd = [_python_exe()] + list(args)
     env = os.environ.copy()
     env.update(env_vars)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
@@ -46,7 +46,7 @@ def assert_python_failure(*args, **env_vars):
 
 def spawn_python(*args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw):
     """Spawn a ferrython subprocess."""
-    cmd = [sys.executable] + list(args)
+    cmd = [_python_exe()] + list(args)
     return subprocess.Popen(cmd, stdout=stdout, stderr=stderr, **kw)
 
 
@@ -57,6 +57,36 @@ def kill_python(p):
     p.stdout.close() if p.stdout else None
     p.wait()
     return data
+
+
+class _PythonRunResult:
+    def __init__(self, rc, out, err):
+        self.rc = rc
+        self.out = out
+        self.err = err
+
+
+def _python_exe():
+    env_exe = os.environ.get("FERRYTHON_EXECUTABLE")
+    if env_exe:
+        return env_exe
+    if os.path.isabs(sys.executable) and os.path.exists(sys.executable):
+        return sys.executable
+    workspace_exe = os.path.join(os.getcwd(), "target", "debug", "ferrython")
+    if os.path.exists(workspace_exe):
+        return workspace_exe
+    return sys.executable
+
+
+def run_python_until_end(*args, **env_vars):
+    """Run ferrython and return a CPython-like completed-process tuple."""
+    cmd = [_python_exe()] + list(args)
+    env = os.environ.copy()
+    env.update(env_vars)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          env=env, timeout=30)
+    result = _PythonRunResult(proc.returncode, proc.stdout, proc.stderr)
+    return result, cmd
 
 
 def make_script(script_dir, script_basename, source, omit_suffix=False):

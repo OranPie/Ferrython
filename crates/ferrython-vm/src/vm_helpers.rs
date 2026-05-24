@@ -4,6 +4,7 @@ use crate::builtins;
 use crate::frame::{Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
+use ferrython_ast::{Module as AstModule, Statement, StatementKind};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, FxAttrMap, GeneratorState, IteratorData, PyCell, PyObject, PyObjectMethods,
@@ -22,6 +23,254 @@ struct GenFramePool(std::cell::UnsafeCell<Vec<*mut Frame>>);
 unsafe impl Sync for GenFramePool {}
 
 static GEN_FRAME_POOL: GenFramePool = GenFramePool(std::cell::UnsafeCell::new(Vec::new()));
+
+fn validate_single_input(module: &AstModule, filename: &str) -> PyResult<()> {
+    let body = match module {
+        AstModule::Module { body, .. } | AstModule::Interactive { body } => body,
+        AstModule::Expression { .. } => return Ok(()),
+    };
+    let Some(first) = body.first() else {
+        return Ok(());
+    };
+    let first_line = first.location.line;
+    if body.iter().any(|stmt| stmt.location.line != first_line) {
+        return Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            "multiple statements found while compiling a single statement",
+            filename,
+            first_line as i64,
+            first.location.column as i64 + 1,
+        ));
+    }
+    if is_single_line_compound_statement(first) {
+        return Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            "invalid syntax",
+            filename,
+            first_line as i64,
+            first.location.column as i64 + 1,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ast_compile_mode(module: &AstModule, mode: &str) -> PyResult<()> {
+    let ok = matches!(
+        (module, mode),
+        (AstModule::Module { .. }, "exec")
+            | (AstModule::Interactive { .. }, "single")
+            | (AstModule::Expression { .. }, "eval")
+    );
+    if ok {
+        Ok(())
+    } else {
+        Err(PyException::type_error(
+            "expected AST matching compile mode".to_string(),
+        ))
+    }
+}
+
+fn compile_filename_arg(obj: &PyObjectRef) -> PyResult<String> {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => {
+            if s.as_str().contains('\0') {
+                return Err(PyException::value_error(
+                    "source code string cannot contain null bytes",
+                ));
+            }
+            Ok(s.as_str().to_owned())
+        }
+        PyObjectPayload::Bytes(bytes) | PyObjectPayload::ByteArray(bytes) => {
+            std::str::from_utf8(bytes)
+                .map(|s| s.to_string())
+                .map_err(|_| {
+                    PyException::value_error("source code string cannot contain null bytes")
+                })
+        }
+        PyObjectPayload::Instance(_) if obj.get_attr("__memoryview__").is_some() => {
+            if let Some(base) = obj.get_attr("obj") {
+                match &base.payload {
+                    PyObjectPayload::Bytes(bytes) | PyObjectPayload::ByteArray(bytes) => {
+                        return std::str::from_utf8(bytes)
+                            .map(|s| s.to_string())
+                            .map_err(|_| {
+                                PyException::value_error(
+                                    "source code string cannot contain null bytes",
+                                )
+                            });
+                    }
+                    _ => {}
+                }
+            }
+            Ok(obj.py_to_string())
+        }
+        PyObjectPayload::List(_) => Err(PyException::type_error(
+            "compile() arg 2 must be a string, bytes or os.PathLike object",
+        )),
+        _ => Ok(obj.py_to_string()),
+    }
+}
+
+fn compile_filename_warns(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::ByteArray(_))
+        || matches!(&obj.payload, PyObjectPayload::Instance(_))
+            && obj.get_attr("__memoryview__").is_some()
+}
+
+fn source_arg_to_string(
+    obj: &PyObjectRef,
+    filename: &str,
+    type_error_message: &str,
+) -> PyResult<String> {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => {
+            if s.as_str().contains('\0') {
+                return Err(PyException::value_error(
+                    "source code string cannot contain null bytes",
+                ));
+            }
+            Ok(s.as_str().to_owned())
+        }
+        PyObjectPayload::Bytes(bytes) | PyObjectPayload::ByteArray(bytes) => {
+            decode_source_bytes(bytes, filename)
+        }
+        PyObjectPayload::Instance(_) if obj.get_attr("__memoryview__").is_some() => {
+            if let Some(base) = obj.get_attr("obj") {
+                if let PyObjectPayload::Bytes(bytes) | PyObjectPayload::ByteArray(bytes) =
+                    &base.payload
+                {
+                    return decode_source_bytes(bytes, filename);
+                }
+            }
+            Err(PyException::type_error(type_error_message))
+        }
+        _ => Err(PyException::type_error(type_error_message)),
+    }
+}
+
+fn decode_source_bytes(bytes: &[u8], filename: &str) -> PyResult<String> {
+    if bytes.contains(&0) {
+        return Err(PyException::value_error(
+            "source code string cannot contain null bytes",
+        ));
+    }
+    let encoding = source_encoding(bytes);
+    match encoding.as_str() {
+        "utf-8" | "utf8" => std::str::from_utf8(bytes)
+            .map(|s| s.to_string())
+            .map_err(|_| {
+                build_syntax_exception(
+                    ExceptionKind::SyntaxError,
+                    "invalid or missing encoding declaration",
+                    filename,
+                    1,
+                    0,
+                )
+            }),
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+            Ok(bytes.iter().map(|b| char::from(*b)).collect())
+        }
+        "iso-8859-15" | "iso8859-15" | "iso_8859_15" | "latin-9" | "latin9" => {
+            Ok(bytes.iter().map(|b| decode_iso_8859_15_byte(*b)).collect())
+        }
+        _ => Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            &format!("unknown encoding: {}", encoding),
+            filename,
+            0,
+            0,
+        )),
+    }
+}
+
+fn source_encoding(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("");
+    if let Some(encoding) = coding_cookie(first) {
+        return normalize_encoding(&encoding);
+    }
+    let first_prefix = first.trim_start_matches('\u{feff}').trim_start();
+    if first_prefix.is_empty() || first_prefix.starts_with('#') {
+        if let Some(second) = lines.next() {
+            if let Some(encoding) = coding_cookie(second) {
+                return normalize_encoding(&encoding);
+            }
+        }
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return "utf-8".to_string();
+    }
+    "utf-8".to_string()
+}
+
+fn coding_cookie(line: &str) -> Option<String> {
+    let line = line.trim_start();
+    if !(line.starts_with('#') || line.starts_with("\u{feff}#")) {
+        return None;
+    }
+    let marker = "coding";
+    let idx = line.find(marker)?;
+    let mut rest = &line[idx + marker.len()..];
+    rest = rest.trim_start();
+    if rest.starts_with(':') || rest.starts_with('=') {
+        rest = &rest[1..];
+    } else {
+        return None;
+    }
+    rest = rest.trim_start();
+    let end = rest
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.'))
+        .unwrap_or(rest.len());
+    if end == 0 {
+        None
+    } else {
+        Some(rest[..end].to_string())
+    }
+}
+
+fn normalize_encoding(encoding: &str) -> String {
+    encoding
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .replace('.', "-")
+}
+
+fn decode_iso_8859_15_byte(byte: u8) -> char {
+    match byte {
+        0xA4 => '\u{20AC}',
+        0xA6 => '\u{0160}',
+        0xA8 => '\u{0161}',
+        0xB4 => '\u{017D}',
+        0xB8 => '\u{017E}',
+        0xBC => '\u{0152}',
+        0xBD => '\u{0153}',
+        0xBE => '\u{0178}',
+        _ => char::from(byte),
+    }
+}
+
+fn is_single_line_compound_statement(stmt: &Statement) -> bool {
+    match &stmt.node {
+        StatementKind::FunctionDef { body, .. }
+        | StatementKind::ClassDef { body, .. }
+        | StatementKind::For { body, .. }
+        | StatementKind::While { body, .. }
+        | StatementKind::If { body, .. }
+        | StatementKind::With { body, .. } => {
+            let Some(child) = body.first() else {
+                return false;
+            };
+            child.location.line == stmt.location.line
+        }
+        StatementKind::Try { body, .. } => body
+            .first()
+            .map(|child| child.location.line == stmt.location.line)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
 
 /// Get a heap buffer sized for Frame — from pool or fresh allocation.
 #[inline(always)]
@@ -60,6 +309,26 @@ pub(crate) fn drop_generator_frame(ptr: *mut u8) {
 }
 
 impl VirtualMachine {
+    fn warn_compile_filename_deprecated(&mut self) -> PyResult<()> {
+        let warnings = self.import_module_simple("warnings", 0)?;
+        let warn = warnings.get_attr("warn").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'warn'")
+        })?;
+        let category = warnings.get_attr("DeprecationWarning").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'DeprecationWarning'")
+        })?;
+        self.call_object(
+            warn,
+            vec![
+                PyObject::str_val(CompactString::from(
+                    "path should be string, bytes, or os.PathLike, not bytearray",
+                )),
+                category,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Install thread-local __hash__ and __eq__ dispatch callbacks for HashableKey.
     /// Called once at VM creation so all set/dict operations can resolve custom hashing.
     pub(crate) fn install_hash_eq_dispatch(&mut self) {
@@ -2562,15 +2831,15 @@ impl VirtualMachine {
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
             Rc::clone(co)
         } else {
-            let code_str = args[0].as_str().ok_or_else(|| {
-                PyException::type_error("exec() arg 1 must be a string or code object")
-            })?;
-            let module = ferrython_parser::parse(code_str, "<string>")
+            let code_str = source_arg_to_string(
+                &args[0],
+                "<string>",
+                "exec() arg 1 must be a string, bytes or code object",
+            )?;
+            let module = ferrython_parser::parse(&code_str, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
-            let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
             Rc::new(
-                compiler
-                    .compile_module(&module)
+                ferrython_compiler::compile(&module, "<string>")
                     .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?,
             )
         };
@@ -2585,62 +2854,54 @@ impl VirtualMachine {
                     None
                 };
                 if let Some(ld) = locals_dict {
-                    // Merge locals into a copy, execute, then write back
-                    let mut new_globals = shared_globals.read().clone();
-                    let original_global_keys: Vec<CompactString> =
-                        new_globals.keys().cloned().collect();
-                    Self::merge_dict_into_attrmap(ld, &mut new_globals);
-                    let exec_shared = Rc::new(PyCell::new(new_globals));
-                    self.execute_with_globals(code, exec_shared.clone())?;
-                    let results = exec_shared.read();
-                    // Write back globals
-                    let mut gm = shared_globals.write();
-                    for (k, v) in results.iter() {
-                        if original_global_keys.contains(k) {
-                            gm.insert(k.clone(), v.clone());
-                        }
-                    }
-                    drop(gm);
-                    // Write back locals
-                    Self::write_back_locals(ld, &results, &original_global_keys);
+                    self.execute_with_globals_and_locals_obj(
+                        code,
+                        shared_globals.clone(),
+                        Some(ld.clone()),
+                        Some(args[1].clone()),
+                    )?;
                 } else {
-                    self.execute_with_globals(code, shared_globals.clone())?;
+                    self.execute_with_globals_and_locals_obj(
+                        code,
+                        shared_globals.clone(),
+                        None,
+                        Some(args[1].clone()),
+                    )?;
                 }
             } else if let PyObjectPayload::Dict(ref map) = args[1].payload {
                 self.ensure_exec_builtins_in_dict(map);
-                let mut new_globals = FxAttrMap::default();
-                let m = map.read();
-                for (k, v) in m.iter() {
-                    let key_str = match k {
-                        HashableKey::Str(s) => s.to_compact_string(),
-                        _ => CompactString::from(format!("{:?}", k)),
-                    };
-                    new_globals.insert(key_str, v.clone());
-                }
-                drop(m);
-                // Merge locals dict into globals for execution scope
-                // Track original global keys so we can separate results later
-                let original_global_keys: Vec<CompactString> =
-                    new_globals.keys().cloned().collect();
+                let shared = Rc::new(PyCell::new(
+                    map.read()
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            if let HashableKey::Str(s) = k {
+                                Some((s.to_compact_string(), v.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                ));
+                let exec_locals = if args.len() >= 3 {
+                    Some(args[2].clone())
+                } else {
+                    None
+                };
+                self.execute_with_globals_and_locals_obj(
+                    code,
+                    shared.clone(),
+                    exec_locals,
+                    Some(args[1].clone()),
+                )?;
                 if args.len() >= 3 {
-                    Self::merge_dict_into_attrmap(&args[2], &mut new_globals);
-                }
-                let shared = Rc::new(PyCell::new(new_globals));
-                self.execute_with_globals(code, shared.clone())?;
-                let results = shared.read();
-                if args.len() >= 3 {
-                    // Separate globals/locals: only write back original global keys to globals,
-                    // and all new/modified keys to locals
+                    let results = shared.read();
                     let mut gm = map.write();
                     for (k, v) in results.iter() {
-                        if original_global_keys.contains(k) {
-                            gm.insert(HashableKey::str_key(k.clone()), v.clone());
-                        }
+                        gm.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
-                    drop(gm);
-                    Self::write_back_locals(&args[2], &results, &original_global_keys);
                 } else {
                     // No separate locals — write everything back to globals
+                    let results = shared.read();
                     let mut m = map.write();
                     for (k, v) in results.iter() {
                         m.insert(HashableKey::str_key(k.clone()), v.clone());
@@ -2677,6 +2938,140 @@ impl VirtualMachine {
         }
         if let Some(builtins_mod) = self.builtins_module() {
             globals.write().insert(key, builtins_mod);
+        }
+    }
+
+    pub(crate) fn exec_locals_get(
+        &mut self,
+        locals_obj: &PyObjectRef,
+        name: &str,
+    ) -> PyResult<Option<PyObjectRef>> {
+        let key = PyObject::str_val(CompactString::from(name));
+        match &locals_obj.payload {
+            PyObjectPayload::Dict(map) => Ok(map
+                .read()
+                .get(&HashableKey::str_key(CompactString::from(name)))
+                .cloned()),
+            PyObjectPayload::InstanceDict(map) => Ok(map.read().get(name).cloned()),
+            PyObjectPayload::Instance(inst) => {
+                if let Some(ref ds) = inst.dict_storage {
+                    if Self::class_has_user_override(&inst.class, "__getitem__") {
+                        let Some(getitem) = locals_obj.get_attr("__getitem__") else {
+                            return Err(PyException::type_error("exec() locals must be a mapping"));
+                        };
+                        return match self.call_object(getitem, vec![key]) {
+                            Ok(value) => Ok(Some(value)),
+                            Err(e) if e.kind == ExceptionKind::KeyError => Ok(None),
+                            Err(e) => Err(e),
+                        };
+                    }
+                    let hk = self.vm_to_hashable_key(&key)?;
+                    Ok(ds.read().get(&hk).cloned())
+                } else {
+                    let Some(getitem) = locals_obj.get_attr("__getitem__") else {
+                        return Err(PyException::type_error("exec() locals must be a mapping"));
+                    };
+                    match self.call_object(getitem, vec![key]) {
+                        Ok(value) => Ok(Some(value)),
+                        Err(e) if e.kind == ExceptionKind::KeyError => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            _ => {
+                let Some(getitem) = locals_obj.get_attr("__getitem__") else {
+                    return Err(PyException::type_error("exec() locals must be a mapping"));
+                };
+                match self.call_object(getitem, vec![key]) {
+                    Ok(value) => Ok(Some(value)),
+                    Err(e) if e.kind == ExceptionKind::KeyError => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
+    pub(crate) fn exec_locals_set(
+        &mut self,
+        locals_obj: &PyObjectRef,
+        name: &str,
+        value: PyObjectRef,
+    ) -> PyResult<()> {
+        match &locals_obj.payload {
+            PyObjectPayload::Dict(map) => {
+                map.write()
+                    .insert(HashableKey::str_key(CompactString::from(name)), value);
+                Ok(())
+            }
+            PyObjectPayload::InstanceDict(map) => {
+                map.write().insert(CompactString::from(name), value);
+                Ok(())
+            }
+            PyObjectPayload::Instance(inst) => {
+                let key = PyObject::str_val(CompactString::from(name));
+                if let Some(ref ds) = inst.dict_storage {
+                    if Self::class_has_user_override(&inst.class, "__setitem__") {
+                        let Some(setitem) = locals_obj.get_attr("__setitem__") else {
+                            return Err(PyException::type_error("exec() locals must be a mapping"));
+                        };
+                        self.call_object(setitem, vec![key, value])?;
+                        return Ok(());
+                    }
+                    let hk = self.vm_to_hashable_key(&key)?;
+                    ds.write().insert(hk, value);
+                    Ok(())
+                } else {
+                    let Some(setitem) = locals_obj.get_attr("__setitem__") else {
+                        return Err(PyException::type_error("exec() locals must be a mapping"));
+                    };
+                    self.call_object(setitem, vec![key, value])?;
+                    Ok(())
+                }
+            }
+            _ => {
+                let Some(setitem) = locals_obj.get_attr("__setitem__") else {
+                    return Err(PyException::type_error("exec() locals must be a mapping"));
+                };
+                let key = PyObject::str_val(CompactString::from(name));
+                self.call_object(setitem, vec![key, value])?;
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn exec_locals_keys(
+        &mut self,
+        locals_obj: &PyObjectRef,
+    ) -> PyResult<Vec<PyObjectRef>> {
+        match &locals_obj.payload {
+            PyObjectPayload::Dict(map) => Ok(map.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::InstanceDict(map) => Ok(map
+                .read()
+                .keys()
+                .map(|k| PyObject::str_val(k.clone()))
+                .collect()),
+            PyObjectPayload::Instance(inst) => {
+                if let Some(ref ds) = inst.dict_storage {
+                    if let Some(keys_method) = locals_obj.get_attr("keys") {
+                        let keys_obj = self.call_object(keys_method, vec![])?;
+                        return self.collect_iterable(&keys_obj);
+                    }
+                    Ok(ds.read().keys().map(|k| k.to_object()).collect())
+                } else {
+                    let Some(keys_method) = locals_obj.get_attr("keys") else {
+                        return Err(PyException::type_error("exec() locals must be a mapping"));
+                    };
+                    let keys_obj = self.call_object(keys_method, vec![])?;
+                    self.collect_iterable(&keys_obj)
+                }
+            }
+            _ => {
+                let Some(keys_method) = locals_obj.get_attr("keys") else {
+                    return Err(PyException::type_error("exec() locals must be a mapping"));
+                };
+                let keys_obj = self.call_object(keys_method, vec![])?;
+                self.collect_iterable(&keys_obj)
+            }
         }
     }
 
@@ -2730,16 +3125,16 @@ impl VirtualMachine {
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
             Rc::clone(co)
         } else {
-            let code_str = args[0].as_str().ok_or_else(|| {
-                PyException::type_error("eval() arg 1 must be a string, bytes or code object")
-            })?;
+            let code_str = source_arg_to_string(
+                &args[0],
+                "<string>",
+                "eval() arg 1 must be a string, bytes or code object",
+            )?;
             let wrapped = format!("__eval_result__ = ({})", code_str);
             let module = ferrython_parser::parse(&wrapped, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
-            let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
             Rc::new(
-                compiler
-                    .compile_module(&module)
+                ferrython_compiler::compile(&module, "<string>")
                     .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?,
             )
         };
@@ -2896,7 +3291,10 @@ impl VirtualMachine {
                 "compile() requires at least 3 arguments",
             ));
         }
-        let filename = args[1].py_to_string();
+        let filename = compile_filename_arg(&args[1])?;
+        if compile_filename_warns(&args[1]) {
+            self.warn_compile_filename_deprecated()?;
+        }
         let mode = args[2].py_to_string();
         let flags = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
             args[3].as_int().unwrap_or(0)
@@ -2916,15 +3314,15 @@ impl VirtualMachine {
         };
         let only_ast = (flags & 1024) != 0;
 
-        // Check if the argument is an AST object (Instance), not a string
-        let is_ast_obj = matches!(&args[0].payload, PyObjectPayload::Instance(_));
+        // Check if the argument is an AST object (Instance), not a string or bytes-like source.
+        let is_ast_obj = matches!(&args[0].payload, PyObjectPayload::Instance(_))
+            && args[0].get_attr("__memoryview__").is_none();
 
         if is_ast_obj {
             match ferrython_stdlib::pyobj_ast_to_module(&args[0]) {
                 Ok(module) => {
-                    let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                    let code = compiler
-                        .compile_module(&module)
+                    validate_ast_compile_mode(&module, &mode)?;
+                    let code = ferrython_compiler::compile(&module, &filename)
                         .map_err(|e| compile_ast_error_to_value_exc(&filename, e))?;
                     return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
                         code,
@@ -2937,34 +3335,17 @@ impl VirtualMachine {
                     if let Some(message) = _e.strip_prefix("ValueError: ") {
                         return Err(PyException::value_error(message));
                     }
-                    // Fallback: try unparse → reparse
-                    let source = ferrython_stdlib::ast_unparse_module(&args[0]);
-                    let effective = if mode == "eval" {
-                        format!("__eval_result__ = ({})", source)
-                    } else {
-                        source
-                    };
-                    let module = ferrython_parser::parse(&effective, &filename)
-                        .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
-                    let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-                    let code = compiler
-                        .compile_module(&module)
-                        .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
-                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
-                        code,
-                    ))));
+                    return Err(PyException::type_error(_e));
                 }
             }
         }
 
-        // String source code
-        let source = if let Some(s) = args[0].as_str() {
-            s.to_string()
-        } else {
-            return Err(PyException::type_error(
-                "compile() arg 1 must be a string, bytes, or AST object",
-            ));
-        };
+        // String or bytes source code
+        let source = source_arg_to_string(
+            &args[0],
+            &filename,
+            "compile() arg 1 must be a string, bytes, or AST object",
+        )?;
         if only_ast {
             return match mode.as_str() {
                 "eval" => ferrython_parser::parse_expression(&source, &filename)
@@ -2975,8 +3356,11 @@ impl VirtualMachine {
                         ferrython_stdlib::module_ast_to_pyobject(&module)
                     })
                     .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
-                "single" => ferrython_parser::parse(&source, &filename)
-                    .map(|module| match module {
+                "single" => {
+                    let module = ferrython_parser::parse(&source, &filename)
+                        .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
+                    validate_single_input(&module, &filename)?;
+                    Ok(match module {
                         ferrython_ast::Module::Module { body, .. } => {
                             ferrython_stdlib::module_ast_to_pyobject(
                                 &ferrython_ast::Module::Interactive { body },
@@ -2993,7 +3377,7 @@ impl VirtualMachine {
                             )
                         }
                     })
-                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+                }
                 _ => ferrython_parser::parse(&source, &filename)
                     .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module))
                     .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
@@ -3007,6 +3391,7 @@ impl VirtualMachine {
         let module = ferrython_parser::parse(&effective_source, &filename)
             .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
         let module = if mode == "single" {
+            validate_single_input(&module, &filename)?;
             match module {
                 ferrython_ast::Module::Module { body, .. } => {
                     ferrython_ast::Module::Interactive { body }
@@ -3016,9 +3401,7 @@ impl VirtualMachine {
         } else {
             module
         };
-        let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
-        let code = compiler
-            .compile_module(&module)
+        let code = ferrython_compiler::compile(&module, &filename)
             .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
         Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
             code,

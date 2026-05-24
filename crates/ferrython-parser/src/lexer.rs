@@ -267,6 +267,9 @@ impl<'src> Lexer<'src> {
         // Decimal int or float
         let mut num_str = String::new();
         self.collect_digits(&mut num_str);
+        let leading_zero_decimal = num_str.len() > 1
+            && num_str.starts_with('0')
+            && num_str.chars().any(|ch| matches!(ch, '1'..='9'));
 
         let is_float = !self.is_at_end()
             && (self.peek_char() == '.'
@@ -299,7 +302,26 @@ impl<'src> Lexer<'src> {
                     self.advance();
                 }
                 self.collect_digits(&mut num_str);
+                if num_str.ends_with('e') || num_str.ends_with("e+") || num_str.ends_with("e-") {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidNumber(num_str),
+                        self.span_from(start),
+                    ));
+                }
                 return self.make_float_or_complex(num_str, start);
+            } else if next_after_e.is_none()
+                || matches!(
+                    next_after_e,
+                    Some(')' | ']' | '}' | ',' | ':' | ';' | '\n' | '\r')
+                )
+            {
+                let mut invalid = num_str;
+                invalid.push(self.peek_char());
+                self.advance();
+                return Err(ParseError::new(
+                    ParseErrorKind::InvalidNumber(invalid),
+                    self.span_from(start),
+                ));
             }
         }
 
@@ -314,6 +336,12 @@ impl<'src> Lexer<'src> {
             return Ok(Token::new(TokenKind::Complex(val), self.span_from(start)));
         }
 
+        if leading_zero_decimal {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidNumber(num_str),
+                self.span_from(start),
+            ));
+        }
         self.make_int_token(num_str, 10, start)
     }
 
@@ -322,9 +350,15 @@ impl<'src> Lexer<'src> {
         self.advance(); // x/X
         let mut s = String::new();
         self.collect_hex_digits(&mut s);
-        if s.is_empty() {
+        if s.is_empty()
+            || (!self.is_at_end()
+                && matches!(
+                    self.peek_char(),
+                    '.' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+                ))
+        {
             return Err(ParseError::new(
-                ParseErrorKind::InvalidNumber("empty hex literal".into()),
+                ParseErrorKind::InvalidNumber("invalid hex literal".into()),
                 self.span_from(start),
             ));
         }
@@ -350,6 +384,18 @@ impl<'src> Lexer<'src> {
             s.push(c);
             self.advance();
         }
+        if s.is_empty()
+            || (!self.is_at_end()
+                && matches!(
+                    self.peek_char(),
+                    '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+                ))
+        {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidNumber("invalid octal literal".into()),
+                self.span_from(start),
+            ));
+        }
         self.make_int_token(s, 8, start)
     }
 
@@ -365,6 +411,18 @@ impl<'src> Lexer<'src> {
                 s.push(c);
             }
             self.advance();
+        }
+        if s.is_empty()
+            || (!self.is_at_end()
+                && matches!(
+                    self.peek_char(),
+                    '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+                ))
+        {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidNumber("invalid binary literal".into()),
+                self.span_from(start),
+            ));
         }
         self.make_int_token(s, 2, start)
     }

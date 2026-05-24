@@ -1438,6 +1438,7 @@ impl Parser {
     fn parse_lambda_params(&mut self) -> Result<Arguments, ParseError> {
         let mut args = Arguments::empty();
         let mut seen_star = false;
+        let mut seen_default = false;
 
         loop {
             if self.check(TokenKind::Colon) {
@@ -1482,6 +1483,18 @@ impl Parser {
                 } else {
                     None
                 };
+                if !seen_star {
+                    if default.is_some() {
+                        seen_default = true;
+                    } else if seen_default {
+                        return Err(ParseError::new(
+                            ParseErrorKind::InvalidSyntax(
+                                "non-default argument follows default argument".into(),
+                            ),
+                            Self::span_from_location(location),
+                        ));
+                    }
+                }
                 let arg = Arg {
                     arg: name,
                     annotation: None,
@@ -1504,6 +1517,7 @@ impl Parser {
             }
             self.advance();
         }
+        Self::validate_unique_arguments(&args)?;
         Ok(args)
     }
 

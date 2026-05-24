@@ -390,6 +390,9 @@ impl Parser {
             self.advance();
             names.push(self.parse_dotted_as_name()?);
         }
+        if !self.check_newline_or_eof() {
+            return Err(self.unexpected_token("newline"));
+        }
         self.expect_newline()?;
         let loc = names
             .last()
@@ -445,6 +448,9 @@ impl Parser {
             }
             names
         };
+        if !self.check_newline_or_eof() {
+            return Err(self.unexpected_token("newline"));
+        }
         self.expect_newline()?;
         let loc = Self::with_end_location(loc, end);
         Ok(Statement::new(

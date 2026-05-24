@@ -5,6 +5,7 @@ use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
+use ferrython_bytecode::{CodeObject, ConstantValue};
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -111,6 +112,44 @@ pub fn consume_bytearray_export(obj: &PyObjectRef) -> bool {
         .lock()
         .map(|mut exports| exports.remove(&key))
         .unwrap_or(false)
+}
+
+fn code_objects_equal(a: &CodeObject, b: &CodeObject) -> bool {
+    a.instructions == b.instructions
+        && code_constant_values_equal(&a.constants, &b.constants)
+        && a.names == b.names
+        && a.varnames == b.varnames
+        && a.freevars == b.freevars
+        && a.cellvars == b.cellvars
+        && a.name == b.name
+        && a.qualname == b.qualname
+        && a.first_line_number == b.first_line_number
+        && a.docstring == b.docstring
+        && a.line_number_table == b.line_number_table
+        && a.flags == b.flags
+        && a.arg_count == b.arg_count
+        && a.posonlyarg_count == b.posonlyarg_count
+        && a.kwonlyarg_count == b.kwonlyarg_count
+        && a.num_locals == b.num_locals
+        && a.max_stack_size == b.max_stack_size
+}
+
+fn code_constant_values_equal(a: &[ConstantValue], b: &[ConstantValue]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(left, right)| code_constant_value_equal(left, right))
+}
+
+fn code_constant_value_equal(a: &ConstantValue, b: &ConstantValue) -> bool {
+    match (a, b) {
+        (ConstantValue::Code(a), ConstantValue::Code(b)) => code_objects_equal(a, b),
+        (ConstantValue::Tuple(a), ConstantValue::Tuple(b))
+        | (ConstantValue::FrozenSet(a), ConstantValue::FrozenSet(b)) => {
+            code_constant_values_equal(a, b)
+        }
+        _ => a.bit_exact_eq(b),
+    }
 }
 
 /// Call any Python callable (NativeFunction, NativeClosure, Function, BoundMethod, etc.)
@@ -452,6 +491,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::NativeClosure(a), PyObjectPayload::NativeClosure(b)) => {
             if a.name == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::Code(a), PyObjectPayload::Code(b)) => {
+            if code_objects_equal(a, b) {
                 Some(std::cmp::Ordering::Equal)
             } else {
                 None
