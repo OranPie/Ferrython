@@ -1481,6 +1481,16 @@ pub(super) fn resolve_slice(
         (0, len)
     };
 
+    let normalize = |index: i64| {
+        if index < 0 {
+            (len + index).max(if step_val < 0 { -1 } else { 0 })
+        } else if step_val < 0 {
+            index.min(len - 1)
+        } else {
+            index.min(len)
+        }
+    };
+
     let start_val = start
         .as_ref()
         .and_then(|s| {
@@ -1491,13 +1501,7 @@ pub(super) fn resolve_slice(
             }
         })
         .and_then(|s| s.as_int())
-        .map(|i| {
-            if i < 0 {
-                (len + i).max(if step_val < 0 { -1 } else { 0 })
-            } else {
-                i.min(len)
-            }
-        })
+        .map(normalize)
         .unwrap_or(default_start);
 
     let stop_val = stop
@@ -1510,13 +1514,7 @@ pub(super) fn resolve_slice(
             }
         })
         .and_then(|s| s.as_int())
-        .map(|i| {
-            if i < 0 {
-                (len + i).max(if step_val < 0 { -1 } else { 0 })
-            } else {
-                i.min(len)
-            }
-        })
+        .map(normalize)
         .unwrap_or(default_stop);
 
     (start_val, stop_val, step_val)
@@ -1558,6 +1556,8 @@ fn resolve_slice_i128(
     let normalize = |index: i128| {
         if index < 0 {
             (len + index).max(if step_val < 0 { -1 } else { 0 })
+        } else if step_val < 0 {
+            index.min(len - 1)
         } else {
             index.min(len)
         }
@@ -1608,12 +1608,18 @@ pub(super) fn get_slice_impl(
             if step > 0 {
                 while i < e && i < len {
                     result.push(items[i as usize].clone());
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             } else if step < 0 {
-                while i > e && i >= 0 {
+                while i > e && i >= 0 && i < len {
                     result.push(items[i as usize].clone());
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             }
             Ok(PyObject::list(result))
@@ -1626,12 +1632,18 @@ pub(super) fn get_slice_impl(
             if step > 0 {
                 while i < e && i < len {
                     result.push(items[i as usize].clone());
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             } else if step < 0 {
-                while i > e && i >= 0 {
+                while i > e && i >= 0 && i < len {
                     result.push(items[i as usize].clone());
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             }
             Ok(PyObject::tuple(result))
@@ -1645,12 +1657,18 @@ pub(super) fn get_slice_impl(
             if step > 0 {
                 while i < ev && i < len {
                     result.push(chars[i as usize]);
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             } else if step < 0 {
-                while i > ev && i >= 0 {
+                while i > ev && i >= 0 && i < len {
                     result.push(chars[i as usize]);
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             }
             Ok(PyObject::str_val(CompactString::from(result)))
@@ -1663,12 +1681,18 @@ pub(super) fn get_slice_impl(
             if step > 0 {
                 while i < ev && i < len {
                     result.push(b[i as usize]);
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             } else if step < 0 {
-                while i > ev && i >= 0 {
+                while i > ev && i >= 0 && i < len {
                     result.push(b[i as usize]);
-                    i += step;
+                    let Some(next) = i.checked_add(step) else {
+                        break;
+                    };
+                    i = next;
                 }
             }
             Ok(PyObject::bytes(result))

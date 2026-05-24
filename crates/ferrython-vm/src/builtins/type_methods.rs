@@ -13,6 +13,91 @@ use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+fn bytes_search_bounds(
+    len: usize,
+    args: &[PyObjectRef],
+    method: &str,
+) -> PyResult<(usize, usize, bool)> {
+    if args.len() > 3 {
+        return Err(PyException::type_error(format!(
+            "{}() takes at most 3 arguments ({} given)",
+            method,
+            args.len()
+        )));
+    }
+    let len_i = len as i64;
+    let raw_start = if args.len() > 1 && !matches!(args[1].payload, PyObjectPayload::None) {
+        Some(args[1].to_int()?)
+    } else {
+        None
+    };
+    let raw_stop = if args.len() > 2 && !matches!(args[2].payload, PyObjectPayload::None) {
+        Some(args[2].to_int()?)
+    } else {
+        None
+    };
+    let normalize = |idx: i64| -> usize {
+        let bounded = if idx < 0 {
+            (len_i + idx).max(0)
+        } else {
+            idx.min(len_i)
+        };
+        bounded as usize
+    };
+    let start = raw_start.map(normalize).unwrap_or(0);
+    let stop = raw_stop.map(normalize).unwrap_or(len);
+    let start_beyond = raw_start.is_some_and(|idx| idx > len_i);
+    Ok((start, stop, start_beyond))
+}
+
+fn bytes_search_subslice<'a>(
+    b: &'a [u8],
+    args: &[PyObjectRef],
+    method: &str,
+) -> PyResult<(usize, &'a [u8], bool)> {
+    let (start, stop, start_beyond) = bytes_search_bounds(b.len(), args, method)?;
+    let empty_match = !start_beyond && start <= stop;
+    if start < stop {
+        Ok((start, &b[start..stop], empty_match))
+    } else {
+        Ok((start, &b[0..0], empty_match))
+    }
+}
+
+fn bytes_int_arg(obj: &PyObjectRef) -> PyResult<Option<u8>> {
+    let value = match &obj.payload {
+        PyObjectPayload::Int(n) => n
+            .to_i64()
+            .ok_or_else(|| PyException::value_error("byte must be in range(0, 256)"))?,
+        _ => {
+            let Some(value) = obj.as_int() else {
+                return Ok(None);
+            };
+            value
+        }
+    };
+    if !(0..=255).contains(&value) {
+        return Err(PyException::value_error("byte must be in range(0, 256)"));
+    }
+    Ok(Some(value as u8))
+}
+
+fn bytes_find_slice(haystack: &[u8], needle: &[u8], empty_match: bool) -> Option<usize> {
+    if needle.is_empty() {
+        empty_match.then_some(0)
+    } else {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+}
+
+fn bytes_rfind_slice(haystack: &[u8], needle: &[u8], empty_match: bool) -> Option<usize> {
+    if needle.is_empty() {
+        empty_match.then_some(haystack.len())
+    } else {
+        haystack.windows(needle.len()).rposition(|w| w == needle)
+    }
+}
+
 fn collect_hash_entries(arg: &PyObjectRef) -> PyResult<Vec<(HashableKey, PyObjectRef)>> {
     match &arg.payload {
         PyObjectPayload::Dict(items) => {
@@ -2562,31 +2647,33 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 return Err(PyException::type_error("count requires an argument"));
             }
+            let (_, slice, empty_match) = bytes_search_subslice(b, args, "count")?;
+            if let Some(byte) = bytes_int_arg(&args[0])? {
+                return Ok(PyObject::int(
+                    slice.iter().filter(|&&x| x == byte).count() as i64
+                ));
+            }
             match &args[0].payload {
-                PyObjectPayload::Int(n) => {
-                    let byte = n.to_i64().unwrap_or(-1);
-                    if byte < 0 || byte > 255 {
-                        return Ok(PyObject::int(0));
-                    }
-                    Ok(PyObject::int(
-                        b.iter().filter(|&&x| x == byte as u8).count() as i64,
-                    ))
-                }
                 PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) => {
                     if needle.is_empty() {
-                        return Ok(PyObject::int(b.len() as i64 + 1));
-                    }
-                    let mut count = 0i64;
-                    let mut start = 0;
-                    while start + needle.len() <= b.len() {
-                        if &b[start..start + needle.len()] == needle.as_slice() {
-                            count += 1;
-                            start += needle.len();
+                        Ok(PyObject::int(if empty_match {
+                            slice.len() as i64 + 1
                         } else {
-                            start += 1;
+                            0
+                        }))
+                    } else {
+                        let mut count = 0i64;
+                        let mut start = 0;
+                        while start + needle.len() <= slice.len() {
+                            if &slice[start..start + needle.len()] == needle.as_slice() {
+                                count += 1;
+                                start += needle.len();
+                            } else {
+                                start += 1;
+                            }
                         }
+                        Ok(PyObject::int(count))
                     }
-                    Ok(PyObject::int(count))
                 }
                 _ => Err(PyException::type_error("a bytes-like object is required")),
             }
@@ -2595,17 +2682,18 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 return Err(PyException::type_error("find requires an argument"));
             }
+            let (base, slice, empty_match) = bytes_search_subslice(b, args, "find")?;
             if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
                 &args[0].payload
             {
-                let pos = b.windows(needle.len()).position(|w| w == needle.as_slice());
-                Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
-            } else if let Some(n) = args[0].as_int() {
-                let byte = n as u8;
+                let pos = bytes_find_slice(slice, needle.as_slice(), empty_match);
+                Ok(PyObject::int(pos.map(|p| (base + p) as i64).unwrap_or(-1)))
+            } else if let Some(byte) = bytes_int_arg(&args[0])? {
                 Ok(PyObject::int(
-                    b.iter()
+                    slice
+                        .iter()
                         .position(|&x| x == byte)
-                        .map(|p| p as i64)
+                        .map(|p| (base + p) as i64)
                         .unwrap_or(-1),
                 ))
             } else {
@@ -2619,7 +2707,12 @@ pub(super) fn call_bytes_method(
             if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) =
                 &args[0].payload
             {
-                Ok(PyObject::bool_val(b.starts_with(prefix)))
+                let (_, slice, empty_match) = bytes_search_subslice(b, args, "startswith")?;
+                Ok(PyObject::bool_val(if prefix.is_empty() {
+                    empty_match
+                } else {
+                    slice.starts_with(prefix)
+                }))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
@@ -2631,7 +2724,12 @@ pub(super) fn call_bytes_method(
             if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) =
                 &args[0].payload
             {
-                Ok(PyObject::bool_val(b.ends_with(suffix)))
+                let (_, slice, empty_match) = bytes_search_subslice(b, args, "endswith")?;
+                Ok(PyObject::bool_val(if suffix.is_empty() {
+                    empty_match
+                } else {
+                    slice.ends_with(suffix)
+                }))
             } else {
                 Err(PyException::type_error("a bytes-like object is required"))
             }
@@ -2665,6 +2763,9 @@ pub(super) fn call_bytes_method(
             } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) =
                 &args[0].payload
             {
+                if sep.is_empty() {
+                    return Err(PyException::value_error("empty separator"));
+                }
                 let mut parts = Vec::new();
                 let mut start = 0;
                 while start <= b.len() {
@@ -2901,19 +3002,18 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 return Err(PyException::type_error("rfind requires an argument"));
             }
+            let (base, slice, empty_match) = bytes_search_subslice(b, args, "rfind")?;
             if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
                 &args[0].payload
             {
-                let pos = b
-                    .windows(needle.len())
-                    .rposition(|w| w == needle.as_slice());
-                Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
-            } else if let Some(n) = args[0].as_int() {
-                let byte = n as u8;
+                let pos = bytes_rfind_slice(slice, needle.as_slice(), empty_match);
+                Ok(PyObject::int(pos.map(|p| (base + p) as i64).unwrap_or(-1)))
+            } else if let Some(byte) = bytes_int_arg(&args[0])? {
                 Ok(PyObject::int(
-                    b.iter()
+                    slice
+                        .iter()
                         .rposition(|&x| x == byte)
-                        .map(|p| p as i64)
+                        .map(|p| (base + p) as i64)
                         .unwrap_or(-1),
                 ))
             } else {
@@ -2924,40 +3024,19 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 return Err(PyException::type_error("index requires an argument"));
             }
-            let start = if args.len() > 1 {
-                args[1].to_int().unwrap_or(0).max(0) as usize
-            } else {
-                0
-            };
-            let stop = if args.len() > 2 {
-                args[2]
-                    .to_int()
-                    .unwrap_or(b.len() as i64)
-                    .min(b.len() as i64)
-                    .max(0) as usize
-            } else {
-                b.len()
-            };
-            let slice = if start < b.len() && start < stop {
-                &b[start..stop.min(b.len())]
-            } else {
-                &b[0..0]
-            };
-            if let Some(val) = args[0].as_int() {
+            let (base, slice, empty_match) = bytes_search_subslice(b, args, "index")?;
+            if let Some(byte_val) = bytes_int_arg(&args[0])? {
                 // int arg: search for single byte value
-                let byte_val = val as u8;
                 match slice.iter().position(|&x| x == byte_val) {
-                    Some(p) => Ok(PyObject::int((start + p) as i64)),
+                    Some(p) => Ok(PyObject::int((base + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
             } else if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
                 &args[0].payload
             {
-                let pos = slice
-                    .windows(needle.len())
-                    .position(|w| w == needle.as_slice());
+                let pos = bytes_find_slice(slice, needle.as_slice(), empty_match);
                 match pos {
-                    Some(p) => Ok(PyObject::int((start + p) as i64)),
+                    Some(p) => Ok(PyObject::int((base + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
             } else {
@@ -2970,18 +3049,24 @@ pub(super) fn call_bytes_method(
             if args.is_empty() {
                 return Err(PyException::type_error("rindex requires an argument"));
             }
+            let (base, slice, empty_match) = bytes_search_subslice(b, args, "rindex")?;
             if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) =
                 &args[0].payload
             {
-                let pos = b
-                    .windows(needle.len())
-                    .rposition(|w| w == needle.as_slice());
+                let pos = bytes_rfind_slice(slice, needle.as_slice(), empty_match);
                 match pos {
-                    Some(p) => Ok(PyObject::int(p as i64)),
+                    Some(p) => Ok(PyObject::int((base + p) as i64)),
+                    None => Err(PyException::value_error("subsection not found")),
+                }
+            } else if let Some(byte) = bytes_int_arg(&args[0])? {
+                match slice.iter().rposition(|&x| x == byte) {
+                    Some(p) => Ok(PyObject::int((base + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
             } else {
-                Err(PyException::type_error("a bytes-like object is required"))
+                Err(PyException::type_error(
+                    "a bytes-like object or int is required",
+                ))
             }
         }
         "zfill" => {
@@ -3027,7 +3112,10 @@ pub(super) fn call_bytes_method(
             }
             if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload
             {
-                if let Some(pos) = b.windows(sep.len()).position(|w| w == sep.as_slice()) {
+                if sep.is_empty() {
+                    return Err(PyException::value_error("empty separator"));
+                }
+                if let Some(pos) = bytes_find_slice(b, sep.as_slice(), true) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
                         PyObject::bytes((**sep).clone()),
@@ -3050,7 +3138,10 @@ pub(super) fn call_bytes_method(
             }
             if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload
             {
-                if let Some(pos) = b.windows(sep.len()).rposition(|w| w == sep.as_slice()) {
+                if sep.is_empty() {
+                    return Err(PyException::value_error("empty separator"));
+                }
+                if let Some(pos) = bytes_rfind_slice(b, sep.as_slice(), true) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
                         PyObject::bytes((**sep).clone()),
