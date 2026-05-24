@@ -2,9 +2,10 @@
 
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
-use crate::types::{take_pending_eq_error, FrozenSetKeyData, HashableKey};
+use crate::types::{take_pending_eq_error, FrozenSetKeyData, HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use num_traits::ToPrimitive;
 use std::rc::Rc;
 
 use super::helpers::*;
@@ -192,12 +193,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             )))
         }
         PyObjectPayload::Range(rd) => {
-            if rd.step > 0 && rd.start < rd.stop {
-                Ok(((rd.stop - rd.start + rd.step - 1) / rd.step) as usize)
-            } else if rd.step < 0 && rd.start > rd.stop {
-                Ok(((rd.start - rd.stop - rd.step - 1) / (-rd.step)) as usize)
+            let len = range_len_i128(rd.start, rd.stop, rd.step);
+            if len > isize::MAX as i128 {
+                Err(PyException::overflow_error(
+                    "Python int too large to convert to C ssize_t",
+                ))
             } else {
-                Ok(0)
+                Ok(len as usize)
             }
         }
         PyObjectPayload::Iterator(iter_data) => {
@@ -208,12 +210,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     stop,
                     step,
                 } => {
-                    if *step > 0 && *current < *stop {
-                        Ok(((stop - current + step - 1) / step) as usize)
-                    } else if *step < 0 && *current > *stop {
-                        Ok(((current - stop - step - 1) / (-step)) as usize)
+                    let len = range_len_i128(*current, *stop, *step);
+                    if len > isize::MAX as i128 {
+                        Err(PyException::overflow_error(
+                            "Python int too large to convert to C ssize_t",
+                        ))
                     } else {
-                        Ok(0)
+                        Ok(len as usize)
                     }
                 }
                 IteratorData::List { items, index } => Ok(items.len() - index),
@@ -225,13 +228,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             }
         }
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            if ri.step > 0 && cur < ri.stop {
-                Ok(((ri.stop - cur + ri.step - 1) / ri.step) as usize)
-            } else if ri.step < 0 && cur > ri.stop {
-                Ok(((cur - ri.stop - ri.step - 1) / (-ri.step)) as usize)
+            let len = range_len_i128(ri.current.get(), ri.stop, ri.step);
+            if len > isize::MAX as i128 {
+                Err(PyException::overflow_error(
+                    "Python int too large to convert to C ssize_t",
+                ))
             } else {
-                Ok(0)
+                Ok(len as usize)
             }
         }
         PyObjectPayload::VecIter(data) => {
@@ -372,19 +375,31 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
         }
         PyObjectPayload::Range(rd) => {
-            let idx = key.to_int()?;
-            let len = if rd.step > 0 && rd.start < rd.stop {
-                (rd.stop - rd.start + rd.step - 1) / rd.step
-            } else if rd.step < 0 && rd.start > rd.stop {
-                (rd.start - rd.stop - rd.step - 1) / (-rd.step)
-            } else {
-                0
+            let idx = match &key.payload {
+                PyObjectPayload::Int(PyInt::Small(n)) => *n as i128,
+                PyObjectPayload::Int(PyInt::Big(n)) => n
+                    .to_i128()
+                    .ok_or_else(|| PyException::overflow_error("int too large"))?,
+                PyObjectPayload::Bool(b) => {
+                    if *b {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                _ => key.to_int()? as i128,
             };
+            let len = range_len_i128(rd.start, rd.stop, rd.step);
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
                 return Err(PyException::index_error("range object index out of range"));
             }
-            Ok(PyObject::int(rd.start + actual * rd.step))
+            let value = rd.start as i128 + actual * rd.step as i128;
+            if let Ok(value) = i64::try_from(value) {
+                Ok(PyObject::int(value))
+            } else {
+                Ok(PyObject::big_int(value.into()))
+            }
         }
         PyObjectPayload::Instance(inst) => {
             if let Some(method) = instance_special_method(obj, "__getitem__") {
@@ -538,10 +553,14 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
         }
         PyObjectPayload::Range(rd) => {
             if let Some(val) = item.as_int() {
+                let val = val as i128;
+                let start = rd.start as i128;
+                let stop = rd.stop as i128;
+                let step = rd.step as i128;
                 if rd.step > 0 {
-                    Ok(val >= rd.start && val < rd.stop && (val - rd.start) % rd.step == 0)
+                    Ok(val >= start && val < stop && (val - start) % step == 0)
                 } else {
-                    Ok(val <= rd.start && val > rd.stop && (rd.start - val) % (-rd.step) == 0)
+                    Ok(val <= start && val > stop && (start - val) % (-step) == 0)
                 }
             } else {
                 Ok(false)
@@ -556,10 +575,14 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     step,
                 } => {
                     if let Some(val) = item.as_int() {
-                        if *step > 0 {
-                            Ok(val >= *current && val < *stop && (val - current) % step == 0)
+                        let val = val as i128;
+                        let current = *current as i128;
+                        let stop = *stop as i128;
+                        let step = *step as i128;
+                        if step > 0 {
+                            Ok(val >= current && val < stop && (val - current) % step == 0)
                         } else {
-                            Ok(val <= *current && val > *stop && (current - val) % (-step) == 0)
+                            Ok(val <= current && val > stop && (current - val) % (-step) == 0)
                         }
                     } else {
                         Ok(false)
@@ -579,11 +602,14 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
         }
         PyObjectPayload::RangeIter(ri) => {
             if let Some(val) = item.as_int() {
-                let cur = ri.current.get();
+                let val = val as i128;
+                let cur = ri.current.get() as i128;
+                let stop = ri.stop as i128;
+                let step = ri.step as i128;
                 if ri.step > 0 {
-                    Ok(val >= cur && val < ri.stop && (val - cur) % ri.step == 0)
+                    Ok(val >= cur && val < stop && (val - cur) % step == 0)
                 } else {
-                    Ok(val <= cur && val > ri.stop && (cur - val) % (-ri.step) == 0)
+                    Ok(val <= cur && val > stop && (cur - val) % (-step) == 0)
                 }
             } else {
                 Ok(false)

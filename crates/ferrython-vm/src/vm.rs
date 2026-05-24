@@ -191,7 +191,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     alloc_tuple_box_empty, has_descriptor_get, is_hidden_dict_key, lookup_in_class_mro,
     new_fx_hashkey_map, FxAttrMap, IteratorData, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, StrRepr, SyncI64, SyncUsize, CLASS_FLAG_HAS_DESCRIPTORS,
+    PyObjectPayload, PyObjectRef, StrRepr, SyncUsize, CLASS_FLAG_HAS_DESCRIPTORS,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
@@ -4976,14 +4976,7 @@ impl VirtualMachine {
                                             unsafe {
                                                 frame.stack.set_len(func_idx);
                                             }
-                                            let iter = PyObject::wrap(PyObjectPayload::RangeIter(
-                                                Box::new(ferrython_core::object::RangeIterData {
-                                                    current: SyncI64::new(0),
-                                                    stop,
-                                                    step: 1,
-                                                }),
-                                            ));
-                                            spush!(frame, iter);
+                                            spush!(frame, PyObject::range(0, stop, 1));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
                                             self.execute_one(instr)
@@ -5948,14 +5941,7 @@ impl VirtualMachine {
                                         {
                                             let _ = spop!(frame);
                                         }
-                                        let iter = PyObject::wrap(PyObjectPayload::RangeIter(
-                                            Box::new(ferrython_core::object::RangeIterData {
-                                                current: SyncI64::new(0),
-                                                stop,
-                                                step: 1,
-                                            }),
-                                        ));
-                                        spush!(frame, iter);
+                                        spush!(frame, PyObject::range(0, stop, 1));
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());

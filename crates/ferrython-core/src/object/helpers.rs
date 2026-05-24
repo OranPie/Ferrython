@@ -7,6 +7,7 @@ use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use ferrython_bytecode::{CodeObject, ConstantValue};
 use indexmap::IndexMap;
+use num_traits::ToPrimitive;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
@@ -896,7 +897,10 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
     }
 }
 
-pub(crate) fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
+    let start = start as i128;
+    let stop = stop as i128;
+    let step = step as i128;
     if step > 0 && start < stop {
         (stop - start + step - 1) / step
     } else if step < 0 && start > stop {
@@ -904,6 +908,10 @@ pub(crate) fn range_len(start: i64, stop: i64, step: i64) -> i64 {
     } else {
         0
     }
+}
+
+pub(crate) fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+    range_len_i128(start, stop, step).min(i64::MAX as i128) as i64
 }
 
 pub(super) fn float_to_str(f: f64) -> String {
@@ -1514,6 +1522,76 @@ pub(super) fn resolve_slice(
     (start_val, stop_val, step_val)
 }
 
+fn slice_index_i128(obj: &PyObjectRef) -> Option<i128> {
+    match &obj.payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(*n as i128),
+        PyObjectPayload::Int(PyInt::Big(n)) => n.to_i128(),
+        PyObjectPayload::Bool(b) => Some(if *b { 1 } else { 0 }),
+        _ => obj.as_int().map(|n| n as i128),
+    }
+}
+
+fn resolve_slice_i128(
+    start: &Option<PyObjectRef>,
+    stop: &Option<PyObjectRef>,
+    step: &Option<PyObjectRef>,
+    len: i128,
+) -> (i128, i128, i128) {
+    let step_val = step
+        .as_ref()
+        .and_then(|s| {
+            if matches!(s.payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(s)
+            }
+        })
+        .and_then(slice_index_i128)
+        .unwrap_or(1);
+
+    let (default_start, default_stop) = if step_val < 0 {
+        (len - 1, -len - 1)
+    } else {
+        (0, len)
+    };
+
+    let normalize = |index: i128| {
+        if index < 0 {
+            (len + index).max(if step_val < 0 { -1 } else { 0 })
+        } else {
+            index.min(len)
+        }
+    };
+
+    let start_val = start
+        .as_ref()
+        .and_then(|s| {
+            if matches!(s.payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(s)
+            }
+        })
+        .and_then(slice_index_i128)
+        .map(normalize)
+        .unwrap_or(default_start);
+
+    let stop_val = stop
+        .as_ref()
+        .and_then(|s| {
+            if matches!(s.payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(s)
+            }
+        })
+        .and_then(slice_index_i128)
+        .map(normalize)
+        .unwrap_or(default_stop);
+
+    (start_val, stop_val, step_val)
+}
+
 pub(super) fn get_slice_impl(
     obj: &PyObjectRef,
     start: &Option<PyObjectRef>,
@@ -1596,25 +1674,28 @@ pub(super) fn get_slice_impl(
             Ok(PyObject::bytes(result))
         }
         PyObjectPayload::Range(rd) => {
-            let len = if rd.step > 0 && rd.start < rd.stop {
-                (rd.stop - rd.start + rd.step - 1) / rd.step
-            } else if rd.step < 0 && rd.start > rd.stop {
-                (rd.start - rd.stop - rd.step - 1) / (-rd.step)
-            } else {
-                0
-            };
-            let (sv, ev, slice_step) = resolve_slice(start, stop, step, len);
-            let _new_step = rd.step * slice_step;
+            let len = range_len_i128(rd.start, rd.stop, rd.step);
+            let (sv, ev, slice_step) = resolve_slice_i128(start, stop, step, len);
             let mut result = Vec::new();
             let mut i = sv;
             if slice_step > 0 {
                 while i < ev && i < len {
-                    result.push(PyObject::int(rd.start + i * rd.step));
+                    let value = rd.start as i128 + i * rd.step as i128;
+                    if let Ok(value) = i64::try_from(value) {
+                        result.push(PyObject::int(value));
+                    } else {
+                        result.push(PyObject::big_int(value.into()));
+                    }
                     i += slice_step;
                 }
             } else if slice_step < 0 {
                 while i > ev && i >= 0 {
-                    result.push(PyObject::int(rd.start + i * rd.step));
+                    let value = rd.start as i128 + i * rd.step as i128;
+                    if let Ok(value) = i64::try_from(value) {
+                        result.push(PyObject::int(value));
+                    } else {
+                        result.push(PyObject::big_int(value.into()));
+                    }
                     i += slice_step;
                 }
             }

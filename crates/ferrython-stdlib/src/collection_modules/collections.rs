@@ -2,8 +2,8 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::call_callable;
 use ferrython_core::object::{
-    make_builtin, make_module, new_fx_hashkey_map, CompareOp, FxBuildHasher, PyCell, PyObject,
-    PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
+    make_builtin, make_module, new_fx_hashkey_map, BuiltinFn, CompareOp, FxBuildHasher, PyCell,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
 };
 use ferrython_core::types::{hash_key_like_python, HashableKey};
 use indexmap::IndexMap;
@@ -60,6 +60,10 @@ fn is_valid_identifier(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c == '_' || c.is_alphanumeric())
+}
+
+fn native_method(class_name: &str, method_name: &str, f: BuiltinFn) -> PyObjectRef {
+    PyObject::native_function(&format!("{class_name}.{method_name}"), f)
 }
 
 fn normalize_namedtuple_field_names(
@@ -3039,7 +3043,7 @@ fn make_user_dict_class() -> PyObjectRef {
     let mut ns = IndexMap::new();
     ns.insert(
         CompactString::from("__init__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__init__", |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("UserDict.__init__ requires self"));
             }
@@ -3067,7 +3071,7 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__getitem__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__getitem__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected key"));
             }
@@ -3077,7 +3081,7 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__setitem__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__setitem__", |args| {
             if args.len() < 3 {
                 return Err(PyException::type_error("expected key and value"));
             }
@@ -3091,7 +3095,7 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__delitem__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__delitem__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected key"));
             }
@@ -3107,14 +3111,14 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__len__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__len__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::int(data.py_len()? as i64))
         }),
     );
     ns.insert(
         CompactString::from("__contains__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__contains__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected key"));
             }
@@ -3129,21 +3133,21 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__repr__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__repr__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::str_val(CompactString::from(data.py_to_string())))
         }),
     );
     ns.insert(
         CompactString::from("__iter__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__iter__", |args| {
             let data = get_user_data(&args[0], "data")?;
             data.get_iter()
         }),
     );
     ns.insert(
         CompactString::from("__eq__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__eq__", |args| {
             if args.len() < 2 {
                 return Ok(PyObject::bool_val(false));
             }
@@ -3177,14 +3181,14 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__bool__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__bool__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::bool_val(data.py_len()? > 0))
         }),
     );
     ns.insert(
         CompactString::from("__or__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__or__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected other"));
             }
@@ -3210,11 +3214,11 @@ fn make_user_dict_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__copy__"),
-        make_builtin(copy_userdict_instance),
+        native_method("UserDict", "__copy__", copy_userdict_instance),
     );
     ns.insert(
         CompactString::from("__ior__"),
-        make_builtin(|args| {
+        native_method("UserDict", "__ior__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected other"));
             }
@@ -3397,7 +3401,7 @@ fn make_user_list_class() -> PyObjectRef {
     let mut ns = IndexMap::new();
     ns.insert(
         CompactString::from("__init__"),
-        make_builtin(|args| {
+        native_method("UserList", "__init__", |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("UserList.__init__ requires self"));
             }
@@ -3419,7 +3423,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__getitem__"),
-        make_builtin(|args| {
+        native_method("UserList", "__getitem__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected index"));
             }
@@ -3429,7 +3433,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__setitem__"),
-        make_builtin(|args| {
+        native_method("UserList", "__setitem__", |args| {
             if args.len() < 3 {
                 return Err(PyException::type_error("expected index and value"));
             }
@@ -3456,14 +3460,14 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__len__"),
-        make_builtin(|args| {
+        native_method("UserList", "__len__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::int(data.py_len()? as i64))
         }),
     );
     ns.insert(
         CompactString::from("__contains__"),
-        make_builtin(|args| {
+        native_method("UserList", "__contains__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected item"));
             }
@@ -3481,21 +3485,21 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__repr__"),
-        make_builtin(|args| {
+        native_method("UserList", "__repr__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::str_val(CompactString::from(data.py_to_string())))
         }),
     );
     ns.insert(
         CompactString::from("__iter__"),
-        make_builtin(|args| {
+        native_method("UserList", "__iter__", |args| {
             let data = get_user_data(&args[0], "data")?;
             data.get_iter()
         }),
     );
     ns.insert(
         CompactString::from("__delitem__"),
-        make_builtin(|args| {
+        native_method("UserList", "__delitem__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected index"));
             }
@@ -3524,7 +3528,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__add__"),
-        make_builtin(|args| {
+        native_method("UserList", "__add__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected other"));
             }
@@ -3541,7 +3545,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__iadd__"),
-        make_builtin(|args| {
+        native_method("UserList", "__iadd__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected other"));
             }
@@ -3559,7 +3563,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__mul__"),
-        make_builtin(|args| {
+        native_method("UserList", "__mul__", |args| {
             if args.len() < 2 {
                 return Err(PyException::type_error("expected int"));
             }
@@ -3575,11 +3579,11 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__copy__"),
-        make_builtin(copy_userlist_instance),
+        native_method("UserList", "__copy__", copy_userlist_instance),
     );
     ns.insert(
         CompactString::from("__eq__"),
-        make_builtin(|args| {
+        native_method("UserList", "__eq__", |args| {
             if args.len() < 2 {
                 return Ok(PyObject::bool_val(false));
             }
@@ -3610,7 +3614,7 @@ fn make_user_list_class() -> PyObjectRef {
     );
     ns.insert(
         CompactString::from("__bool__"),
-        make_builtin(|args| {
+        native_method("UserList", "__bool__", |args| {
             let data = get_user_data(&args[0], "data")?;
             Ok(PyObject::bool_val(data.py_len()? > 0))
         }),
