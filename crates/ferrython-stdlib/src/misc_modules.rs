@@ -4,8 +4,8 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     call_callable, check_args, check_args_min, make_builtin, make_module, new_fx_hashkey_map,
-    ClassData, FxAttrMap, FxHashKeyMap, InstanceData, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    repr_enter, repr_leave, ClassData, FxAttrMap, FxHashKeyMap, InstanceData, PyCell, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -1354,6 +1354,10 @@ fn dataclass_apply(
                 CompactString::from("__repr__"),
                 PyObject::native_closure("__repr__", move |args: &[PyObjectRef]| {
                     check_args("__repr__", args, 1)?;
+                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+                    if !repr_enter(ptr) {
+                        return Ok(PyObject::str_val(CompactString::from("...")));
+                    }
                     let cls_name = if let PyObjectPayload::Class(cd) = &cls_ref.payload {
                         cd.name.clone()
                     } else {
@@ -1371,11 +1375,13 @@ fn dataclass_apply(
                             parts.push(format!("{}={}", f, val_repr));
                         }
                     }
-                    Ok(PyObject::str_val(CompactString::from(format!(
+                    let rendered = PyObject::str_val(CompactString::from(format!(
                         "{}({})",
                         cls_name,
                         parts.join(", ")
-                    ))))
+                    )));
+                    repr_leave(ptr);
+                    Ok(rendered)
                 }),
             );
         }
