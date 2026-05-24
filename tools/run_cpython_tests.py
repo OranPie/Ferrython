@@ -11,7 +11,7 @@ Usage:
     If no TEST is given, all tests in tests/cpython/ are run.
 
 Options:
-    -v, --verbose    Verbose test output (pass 2 to unittest runner)
+    -v, --verbose    Show every module in the final summary
     -q, --quiet      Minimal output
     -f, --failfast   Stop on first failure
     --list           List available tests and exit
@@ -26,6 +26,7 @@ import argparse
 import importlib.util
 import os
 import sys
+import time
 import unittest
 
 
@@ -78,24 +79,218 @@ def _load_test_module(test_dir, name):
 # Running tests
 # ---------------------------------------------------------------------------
 
-def _run_one(test_dir, name, verbosity, failfast):
-    """Load and run a single test module.  Returns (passed, failed, errors, skipped)."""
+class ModuleReport:
+    def __init__(self, name, total, passed, failed, errors, skipped, elapsed,
+                 failures=None, error_details=None, expected_failures=None,
+                 unexpected_successes=None, load_error=None):
+        self.name = name
+        self.total = total
+        self.passed = passed
+        self.failed = failed
+        self.errors = errors
+        self.skipped = skipped
+        self.elapsed = elapsed
+        self.failures = failures or []
+        self.error_details = error_details or []
+        self.expected_failures = expected_failures or []
+        self.unexpected_successes = unexpected_successes or []
+        self.load_error = load_error
+
+    def ok(self):
+        return (self.failed == 0 and self.errors == 0 and
+                len(self.unexpected_successes) == 0 and self.load_error is None)
+
+
+class StatusPrinter:
+    def __init__(self, stream, enabled=True, detail=False):
+        self.stream = stream
+        self.enabled = enabled
+        self.detail = detail
+        self._last_len = 0
+
+    def update(self, text):
+        if not self.enabled:
+            return
+        if len(text) > 140:
+            text = text[:137] + "..."
+        padding = " " * max(0, self._last_len - len(text))
+        self.stream.write("\r" + text + padding)
+        self.stream.flush()
+        self._last_len = len(text)
+
+    def clear(self):
+        if not self.enabled or self._last_len == 0:
+            return
+        self.stream.write("\r" + (" " * self._last_len) + "\r")
+        self.stream.flush()
+        self._last_len = 0
+
+    def finish(self, text):
+        if not self.enabled:
+            return
+        self.clear()
+        self.stream.write(text + "\n")
+        self.stream.flush()
+
+
+def _supports_live_status(stream):
+    if "FERRYTHON_TEST_STATUS" in os.environ:
+        return os.environ.get("FERRYTHON_TEST_STATUS") != "0"
+    try:
+        return os.isatty(stream.fileno())
+    except Exception:
+        pass
+    try:
+        return stream.isatty()
+    except Exception:
+        return False
+
+
+def _test_name(test):
+    try:
+        return test.id()
+    except Exception:
+        return str(test)
+
+
+class ProgressResult(unittest.TestResult):
+    def __init__(self, module_name, module_index, module_count, module_total,
+                 failfast, status):
+        super().__init__()
+        self.module_name = module_name
+        self.module_index = module_index
+        self.module_count = module_count
+        self.module_total = module_total
+        self.failfast = failfast
+        self.status = status
+        self.passed = 0
+
+    def _show_current(self, test):
+        if self.status.detail:
+            current = self.testsRun
+            total = self.module_total
+            self.status.update(
+                "[%d/%d] %s  test %d/%d: %s" %
+                (self.module_index, self.module_count, self.module_name,
+                 current, total, _test_name(test))
+            )
+        else:
+            self.status.update(
+                "[%d/%d] %s  %d/%d" %
+                (self.module_index, self.module_count,
+                 self.module_name, self.testsRun, self.module_total)
+            )
+
+    def _stop_if_failfast(self):
+        if self.failfast:
+            self.stop()
+
+    def startTest(self, test):
+        super().startTest(test)
+        self._show_current(test)
+
+    def addSuccess(self, test):
+        self.passed += 1
+        super().addSuccess(test)
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self._stop_if_failfast()
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        self._stop_if_failfast()
+
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test)
+        self._stop_if_failfast()
+
+
+def _count(items):
+    try:
+        return len(items)
+    except Exception:
+        return 0
+
+
+def _make_load_error_report(name, exc, elapsed=0.0):
+    return ModuleReport(
+        name=name,
+        total=0,
+        passed=0,
+        failed=0,
+        errors=1,
+        skipped=0,
+        elapsed=elapsed,
+        load_error=str(exc),
+    )
+
+
+def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, live_status):
+    """Load and run a single test module."""
     name = _normalise_name(name)
+    start = time.monotonic()
     try:
         mod = _load_test_module(test_dir, name)
     except FileNotFoundError as exc:
-        print(f"  MISSING  {name}: {exc}")
-        return 0, 0, 1, 0
+        return _make_load_error_report(name, exc, time.monotonic() - start)
     except Exception as exc:
-        print(f"  LOAD-ERR {name}: {exc}")
-        return 0, 0, 1, 0
+        return _make_load_error_report(name, exc, time.monotonic() - start)
 
     loader = unittest.TestLoader()
-    suite = loader.loadTestsFromModule(mod)
-    runner = unittest.TextTestRunner(verbosity=verbosity, failfast=failfast)
-    result = runner.run(suite)
-    passed = result.testsRun - len(result.failures) - len(result.errors) - len(result.skipped)
-    return passed, len(result.failures), len(result.errors), len(result.skipped)
+    try:
+        suite = loader.loadTestsFromModule(mod)
+        total = suite.countTestCases()
+    except Exception as exc:
+        return _make_load_error_report(name, exc, time.monotonic() - start)
+
+    status = StatusPrinter(
+        sys.stderr, enabled=(verbosity > 0 and live_status),
+        detail=(live_status and verbosity > 0))
+    if verbosity > 0:
+        status.update("LOADING [%d/%d] %-34s tests=%d" %
+                      (module_index, module_count, name, total))
+
+    result = ProgressResult(
+        name, module_index, module_count, total, failfast=failfast, status=status)
+    result.startTestRun()
+    try:
+        suite.run(result)
+    finally:
+        result.stopTestRun()
+
+    elapsed = time.monotonic() - start
+    failed = _count(getattr(result, "failures", []))
+    errors = _count(getattr(result, "errors", []))
+    skipped = _count(getattr(result, "skipped", []))
+    expected = getattr(result, "expectedFailures", [])
+    unexpected = getattr(result, "unexpectedSuccesses", [])
+
+    # Some unittest implementations do not route all success-like outcomes
+    # through addSuccess(), so keep the final aggregate internally consistent.
+    passed = result.testsRun - failed - errors - skipped - _count(expected) - _count(unexpected)
+
+    report = ModuleReport(
+        name=name,
+        total=result.testsRun,
+        passed=passed,
+        failed=failed,
+        errors=errors,
+        skipped=skipped,
+        elapsed=elapsed,
+        failures=getattr(result, "failures", []),
+        error_details=getattr(result, "errors", []),
+        expected_failures=expected,
+        unexpected_successes=unexpected,
+    )
+    if verbosity > 0:
+        line = "DONE    [%d/%d] %s" % (
+            module_index, module_count, _format_module_line(report))
+        if live_status:
+            status.finish(line)
+        else:
+            print(line)
+    return report
 
 
 def _list_tests(test_dir):
@@ -104,6 +299,89 @@ def _list_tests(test_dir):
         for f in os.listdir(test_dir)
         if f.startswith("test_") and f.endswith(".py")
     )
+
+
+def _status_label(report):
+    if report.ok():
+        return "OK"
+    if report.load_error is not None:
+        return "LOAD-ERR"
+    if report.errors:
+        return "ERROR"
+    if report.failed:
+        return "FAIL"
+    return "UNEXPECTED"
+
+
+def _format_module_line(report):
+    return ("%-8s %-34s run=%-4d pass=%-4d fail=%-3d err=%-3d skip=%-3d %.2fs" %
+            (_status_label(report), report.name, report.total, report.passed,
+             report.failed, report.errors, report.skipped, report.elapsed))
+
+
+def _problem_text(problem):
+    if isinstance(problem, tuple) and len(problem) >= 2:
+        test, detail = problem[0], problem[1]
+        name = _test_name(test)
+        if isinstance(detail, tuple) and len(detail) >= 2:
+            exc_type, exc = detail[0], detail[1]
+            exc_name = getattr(exc_type, "__name__", str(exc_type))
+            return name, "%s: %s" % (exc_name, exc)
+        return name, str(detail)
+    return str(problem), ""
+
+
+def _print_problem_block(label, module_name, name, detail):
+    print("  %s %s :: %s" % (label, module_name, name))
+    if detail:
+        lines = str(detail).splitlines()
+        shown = lines[:12]
+        for line in shown:
+            print("    " + line)
+        if len(lines) > len(shown):
+            print("    ... %d more lines" % (len(lines) - len(shown)))
+
+
+def _print_final_details(reports, verbosity):
+    bad = [report for report in reports if not report.ok()]
+    passed_modules = [report for report in reports if report.ok()]
+
+    print()
+    print("Module Results")
+    print("-" * 62)
+    if bad:
+        for report in bad:
+            print("  " + _format_module_line(report))
+    else:
+        print("  No failing modules")
+
+    if verbosity > 1:
+        print()
+        print("All Modules")
+        print("-" * 62)
+        for report in reports:
+            print("  " + _format_module_line(report))
+    elif passed_modules:
+        print("  Passing modules: %d kept compact (use --verbose to list all)" %
+              len(passed_modules))
+
+    if not bad:
+        return
+
+    print()
+    print("Problem Details")
+    print("-" * 62)
+    for report in bad:
+        if report.load_error is not None:
+            _print_problem_block("LOAD-ERR", report.name, "<load>", report.load_error)
+        for problem in report.failures:
+            name, detail = _problem_text(problem)
+            _print_problem_block("FAIL", report.name, name, detail)
+        for problem in report.error_details:
+            name, detail = _problem_text(problem)
+            _print_problem_block("ERROR", report.name, name, detail)
+        for test in report.unexpected_successes:
+            _print_problem_block("UNEXPECTED-SUCCESS", report.name, _test_name(test), "")
 
 
 def _run_all(names, verbosity, failfast):
@@ -116,20 +394,23 @@ def _run_all(names, verbosity, failfast):
 
     total_passed = total_failed = total_errors = total_skipped = 0
     bad_tests = []
+    reports = []
+    total_modules = len(names)
+    live_status = _supports_live_status(sys.stderr)
 
-    for name in names:
+    for index, name in enumerate(names, 1):
         norm = _normalise_name(name)
-        if verbosity > 0:
-            sep = "=" * 62
-            print(f"\n{sep}\nRunning: {norm}\n{sep}")
+        report = _run_one(
+            test_dir, norm, verbosity, failfast,
+            module_index=index, module_count=total_modules,
+            live_status=live_status)
+        reports.append(report)
+        total_passed  += report.passed
+        total_failed  += report.failed
+        total_errors  += report.errors
+        total_skipped += report.skipped
 
-        p, f, e, s = _run_one(test_dir, norm, verbosity, failfast)
-        total_passed  += p
-        total_failed  += f
-        total_errors  += e
-        total_skipped += s
-
-        if f or e:
+        if not report.ok():
             bad_tests.append(norm)
             if failfast:
                 break
@@ -143,11 +424,8 @@ def _run_all(names, verbosity, failfast):
     print(f"  Errors  : {total_errors}")
     print(f"  Skipped : {total_skipped}")
     print(f"  Total   : {total_passed + total_failed + total_errors + total_skipped}")
-    if bad_tests:
-        print()
-        print("Failed modules:")
-        for t in bad_tests:
-            print(f"  - {t}")
+    print(f"  Modules : {len(reports)} / {total_modules}")
+    _print_final_details(reports, verbosity)
     print()
     return 1 if bad_tests else 0
 
@@ -165,7 +443,7 @@ def main():
     parser.add_argument("tests", nargs="*", metavar="TEST",
                         help="test name(s) to run (default: all)")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="verbose test output")
+                        help="show every module in the final summary")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="minimal output")
     parser.add_argument("-f", "--failfast", action="store_true",
