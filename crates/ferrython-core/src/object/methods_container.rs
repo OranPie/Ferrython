@@ -5,7 +5,7 @@ use crate::intern::intern_or_new;
 use crate::types::{take_pending_eq_error, FrozenSetKeyData, HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use num_traits::ToPrimitive;
+use num_bigint::Sign;
 use std::rc::Rc;
 
 use super::helpers::*;
@@ -284,7 +284,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
     match &obj.payload {
         PyObjectPayload::List(items) => {
             let items = items.read();
-            let idx = key.to_int()?;
+            let idx = index_to_i64(key).map_err(|e| {
+                if e.kind == crate::error::ExceptionKind::OverflowError {
+                    PyException::index_error(e.message)
+                } else {
+                    e
+                }
+            })?;
             let len = items.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
@@ -293,7 +299,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             Ok(items[actual as usize].clone())
         }
         PyObjectPayload::Tuple(items) => {
-            let idx = key.to_int()?;
+            let idx = index_to_i64(key).map_err(|e| {
+                if e.kind == crate::error::ExceptionKind::OverflowError {
+                    PyException::index_error(e.message)
+                } else {
+                    e
+                }
+            })?;
             let len = items.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
@@ -345,7 +357,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             Err(PyException::key_error(key.repr()))
         }
         PyObjectPayload::Str(s) => {
-            let idx = key.to_int()?;
+            let idx = index_to_i64(key).map_err(|e| {
+                if e.kind == crate::error::ExceptionKind::OverflowError {
+                    PyException::index_error(e.message)
+                } else {
+                    e
+                }
+            })?;
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
@@ -357,7 +375,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             )))
         }
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
-            let idx = key.to_int()?;
+            let idx = index_to_i64(key).map_err(|e| {
+                if e.kind == crate::error::ExceptionKind::OverflowError {
+                    PyException::index_error(e.message)
+                } else {
+                    e
+                }
+            })?;
             let len = b.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
@@ -375,19 +399,10 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
         }
         PyObjectPayload::Range(rd) => {
-            let idx = match &key.payload {
-                PyObjectPayload::Int(PyInt::Small(n)) => *n as i128,
-                PyObjectPayload::Int(PyInt::Big(n)) => n
-                    .to_i128()
-                    .ok_or_else(|| PyException::overflow_error("int too large"))?,
-                PyObjectPayload::Bool(b) => {
-                    if *b {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                _ => key.to_int()? as i128,
+            let idx = match key.to_index()? {
+                PyInt::Small(n) => n as i128,
+                PyInt::Big(n) if n.sign() == Sign::Minus => i128::MIN,
+                PyInt::Big(_) => i128::MAX,
             };
             let len = range_len_i128(rd.start, rd.stop, rd.step);
             let actual = if idx < 0 { len + idx } else { idx };

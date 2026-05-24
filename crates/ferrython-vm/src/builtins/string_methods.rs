@@ -3,8 +3,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    alloc_list_box_empty, check_args_min, checked_repeat_len, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    alloc_list_box_empty, check_args_min, checked_repeat_len, index_to_i64, index_to_usize_repeat,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -1363,15 +1363,13 @@ pub(crate) fn call_str_method(
         }
         "__mul__" | "__rmul__" => {
             check_args_min("str.__mul__", &args, 1)?;
-            let n = args[0].as_int().unwrap_or(0);
-            checked_repeat_len(s.len(), n.max(0) as usize, "str repeat")?;
-            Ok(PyObject::str_val(CompactString::from(
-                s.repeat(n.max(0) as usize),
-            )))
+            let n = index_to_usize_repeat(&args[0])?;
+            checked_repeat_len(s.len(), n, "str repeat")?;
+            Ok(PyObject::str_val(CompactString::from(s.repeat(n))))
         }
         "__getitem__" => {
             check_args_min("str.__getitem__", &args, 1)?;
-            let idx = args[0].as_int().unwrap_or(0);
+            let idx = index_to_i64(&args[0])?;
             let chars: Vec<char> = s.chars().collect();
             let real_idx = if idx < 0 {
                 (chars.len() as i64 + idx) as usize

@@ -6,7 +6,7 @@ use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    index_to_i64, lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -714,18 +714,8 @@ impl VirtualMachine {
     ) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::BinarySubscr => {
-                let raw_key = self.vm_pop();
+                let key = self.vm_pop();
                 let obj = self.vm_pop();
-                // Resolve __index__ on the key if it's an Instance with __index__
-                let key = if matches!(&raw_key.payload, PyObjectPayload::Instance(_)) {
-                    if let Some(r) = self.try_call_dunder(&raw_key, "__index__", vec![])? {
-                        r
-                    } else {
-                        raw_key
-                    }
-                } else {
-                    raw_key
-                };
                 // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(cls, int)
                 if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                     if let Some(cgi) = obj.get_attr("__class_getitem__") {
@@ -1032,7 +1022,7 @@ impl VirtualMachine {
                                 }
                             }
                         } else {
-                            let idx = key.to_int()?;
+                            let idx = index_to_i64(&key)?;
                             let mut w = items.write();
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
@@ -1162,7 +1152,7 @@ impl VirtualMachine {
                                 }
                             }
                         } else {
-                            let idx = key.to_int()?;
+                            let idx = index_to_i64(&key)?;
                             let byte_val = value.to_int()? as u8;
                             let len = bytes.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
@@ -1275,7 +1265,7 @@ impl VirtualMachine {
                                 }
                             }
                         } else {
-                            let idx = key.to_int()?;
+                            let idx = index_to_i64(&key)?;
                             let mut w = items.write();
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };

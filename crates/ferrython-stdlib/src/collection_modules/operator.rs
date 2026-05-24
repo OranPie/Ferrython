@@ -1,9 +1,11 @@
+use crate::introspection_modules::emit_deprecation_warning;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::PyInt;
 
 // ── operator module ──
 
@@ -34,6 +36,49 @@ fn call_inplace_dunder(
         return Ok(Some(result));
     }
     call_dunder(obj, fallback_name, &[arg.clone()])
+}
+
+fn builtin_index_value(obj: &PyObjectRef) -> Option<PyInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => Some(n.clone()),
+        PyObjectPayload::Bool(b) => Some(PyInt::Small(if *b { 1 } else { 0 })),
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .and_then(builtin_index_value),
+        _ => None,
+    }
+}
+
+fn object_index_result(result: PyObjectRef) -> PyResult<PyObjectRef> {
+    match &result.payload {
+        PyObjectPayload::Int(n) => Ok(n.to_object()),
+        PyObjectPayload::Bool(b) => {
+            emit_deprecation_warning(
+                "__index__ returned non-int (type bool). The ability to return an instance of a strict subclass of int is deprecated.",
+            );
+            Ok(PyObject::int(if *b { 1 } else { 0 }))
+        }
+        PyObjectPayload::Instance(inst) => {
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                if let Some(index) = builtin_index_value(&value) {
+                    emit_deprecation_warning(
+                        "__index__ returned non-int (type int). The ability to return an instance of a strict subclass of int is deprecated.",
+                    );
+                    return Ok(index.to_object());
+                }
+            }
+            Err(PyException::type_error(format!(
+                "__index__ returned non-int (type {})",
+                result.type_name()
+            )))
+        }
+        _ => Err(PyException::type_error(format!(
+            "__index__ returned non-int (type {})",
+            result.type_name()
+        ))),
+    }
 }
 
 pub fn create_operator_module() -> PyObjectRef {
@@ -495,7 +540,16 @@ pub fn create_operator_module() -> PyObjectRef {
                 "index",
                 make_builtin(|args| {
                     check_args("index", args, 1)?;
-                    args[0].to_int().map(PyObject::int)
+                    if let Some(index) = builtin_index_value(&args[0]) {
+                        return Ok(index.to_object());
+                    }
+                    if let Some(result) = call_dunder(&args[0], "__index__", &[])? {
+                        return object_index_result(result);
+                    }
+                    Err(PyException::type_error(format!(
+                        "'{}' object cannot be interpreted as an integer",
+                        args[0].type_name()
+                    )))
                 }),
             ),
             (

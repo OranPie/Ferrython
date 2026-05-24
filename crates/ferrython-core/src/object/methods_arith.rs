@@ -433,7 +433,7 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::Str(s), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::Str(s)) => {
-            let count = n.to_i64().unwrap_or(0).max(0) as usize;
+            let count = index_to_usize_repeat(&n.to_object())?;
             checked_repeat_len(s.len(), count, "str repeat")?;
             Ok(PyObject::str_val(CompactString::from(s.repeat(count))))
         }
@@ -445,7 +445,7 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::List(items), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {
-            let count = n.to_i64().unwrap_or(0).max(0) as usize;
+            let count = index_to_usize_repeat(&n.to_object())?;
             let read = items.read();
             let size = checked_repeat_len(read.len(), count, "list repeat")?;
             let mut result = Vec::with_capacity(size);
@@ -467,7 +467,7 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::Tuple(items), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::Tuple(items)) => {
-            let count = n.to_i64().unwrap_or(0).max(0) as usize;
+            let count = index_to_usize_repeat(&n.to_object())?;
             let size = checked_repeat_len(items.len(), count, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..count {
@@ -487,7 +487,7 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::Bytes(b), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::Bytes(b)) => {
-            let count = n.to_i64().unwrap_or(0).max(0) as usize;
+            let count = index_to_usize_repeat(&n.to_object())?;
             let size = checked_repeat_len(b.len(), count, "bytes repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..count {
@@ -507,11 +507,74 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::ByteArray(b), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::ByteArray(b)) => {
-            let count = n.to_i64().unwrap_or(0).max(0) as usize;
+            let count = index_to_usize_repeat(&n.to_object())?;
             let size = checked_repeat_len(b.len(), count, "bytearray repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..count {
                 result.extend(b.iter());
+            }
+            Ok(PyObject::bytearray(result))
+        }
+        (PyObjectPayload::Str(s), _) | (_, PyObjectPayload::Str(s)) => {
+            let count = index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::Str(_)) {
+                b
+            } else {
+                a
+            })?;
+            checked_repeat_len(s.len(), count, "str repeat")?;
+            Ok(PyObject::str_val(CompactString::from(s.repeat(count))))
+        }
+        (PyObjectPayload::List(items), _) | (_, PyObjectPayload::List(items)) => {
+            let count = index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::List(_)) {
+                b
+            } else {
+                a
+            })?;
+            let read = items.read();
+            let size = checked_repeat_len(read.len(), count, "list repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..count {
+                result.extend(read.iter().cloned());
+            }
+            Ok(PyObject::list(result))
+        }
+        (PyObjectPayload::Tuple(items), _) | (_, PyObjectPayload::Tuple(items)) => {
+            let count = index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+                b
+            } else {
+                a
+            })?;
+            let size = checked_repeat_len(items.len(), count, "tuple repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..count {
+                result.extend(items.iter().cloned());
+            }
+            Ok(PyObject::tuple(result))
+        }
+        (PyObjectPayload::Bytes(bytes), _) | (_, PyObjectPayload::Bytes(bytes)) => {
+            let count = index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::Bytes(_)) {
+                b
+            } else {
+                a
+            })?;
+            let size = checked_repeat_len(bytes.len(), count, "bytes repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..count {
+                result.extend(bytes.iter());
+            }
+            Ok(PyObject::bytes(result))
+        }
+        (PyObjectPayload::ByteArray(bytes), _) | (_, PyObjectPayload::ByteArray(bytes)) => {
+            let count =
+                index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::ByteArray(_)) {
+                    b
+                } else {
+                    a
+                })?;
+            let size = checked_repeat_len(bytes.len(), count, "bytearray repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..count {
+                result.extend(bytes.iter());
             }
             Ok(PyObject::bytearray(result))
         }

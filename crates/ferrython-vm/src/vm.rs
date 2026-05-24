@@ -7221,6 +7221,7 @@ impl VirtualMachine {
                                                     }
                                                     PyObjectPayload::List(items) => {
                                                         crate::builtins::call_list_method(
+                                                            &receiver,
                                                             items,
                                                             n,
                                                             &[a0],
@@ -7289,6 +7290,7 @@ impl VirtualMachine {
                                                     }
                                                     PyObjectPayload::List(items) => {
                                                         crate::builtins::call_list_method(
+                                                            &receiver,
                                                             items,
                                                             n,
                                                             &[a0, a1],
@@ -7394,6 +7396,7 @@ impl VirtualMachine {
                                                         }
                                                         PyObjectPayload::List(items) => {
                                                             crate::builtins::call_list_method(
+                                                                &receiver,
                                                                 items,
                                                                 n,
                                                                 &[],

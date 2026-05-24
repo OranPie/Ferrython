@@ -2,7 +2,9 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::helpers::{consume_bytearray_export, is_hidden_dict_key};
+use ferrython_core::object::helpers::{
+    consume_bytearray_export, index_to_i64, index_to_usize_repeat, is_hidden_dict_key,
+};
 use ferrython_core::object::IteratorData;
 use ferrython_core::object::{
     check_args_min, checked_repeat_len, new_fx_hashkey_flatmap, new_fx_hashkey_map, CompareOp,
@@ -209,6 +211,7 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
 }
 
 pub(crate) fn call_list_method(
+    receiver: &PyObjectRef,
     items: &PyCell<Vec<PyObjectRef>>,
     method: &str,
     args: &[PyObjectRef],
@@ -279,7 +282,7 @@ pub(crate) fn call_list_method(
         }
         "insert" => {
             check_args_min("insert", args, 2)?;
-            let idx = args[0].to_int()?;
+            let idx = index_to_i64(&args[0])?;
             let mut w = items.write();
             let len = w.len() as i64;
             let actual = if idx < 0 {
@@ -298,7 +301,7 @@ pub(crate) fn call_list_method(
             if args.is_empty() {
                 Ok(w.pop().unwrap())
             } else {
-                let idx = args[0].to_int()?;
+                let idx = index_to_i64(&args[0])?;
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
@@ -454,7 +457,7 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::list(result))
             } else {
-                let idx = args[0].to_int()?;
+                let idx = index_to_i64(&args[0])?;
                 let r = items.read();
                 let len = r.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -556,7 +559,7 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::none())
             } else {
-                let idx = args[0].to_int()?;
+                let idx = index_to_i64(&args[0])?;
                 let mut w = items.write();
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -624,7 +627,7 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::none())
             } else {
-                let idx = args[0].to_int()?;
+                let idx = index_to_i64(&args[0])?;
                 let mut w = items.write();
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -646,7 +649,7 @@ pub(crate) fn call_list_method(
         }
         "__mul__" | "__rmul__" => {
             check_args_min("__mul__", args, 1)?;
-            let n = args[0].to_int()?.max(0) as usize;
+            let n = index_to_usize_repeat(&args[0])?;
             let base = items.read().clone();
             let size = checked_repeat_len(base.len(), n, "list repeat")?;
             let mut result = Vec::with_capacity(size);
@@ -659,11 +662,11 @@ pub(crate) fn call_list_method(
             check_args_min("__iadd__", args, 1)?;
             let other = args[0].to_list()?;
             items.write().extend(other);
-            Ok(PyObject::none())
+            Ok(receiver.clone())
         }
         "__imul__" => {
             check_args_min("__imul__", args, 1)?;
-            let n = args[0].to_int()?.max(0) as usize;
+            let n = index_to_usize_repeat(&args[0])?;
             let mut w = items.write();
             let base = w.clone();
             checked_repeat_len(base.len(), n, "list repeat")?;
@@ -671,7 +674,7 @@ pub(crate) fn call_list_method(
             for _ in 0..n {
                 w.extend_from_slice(&base);
             }
-            Ok(PyObject::none())
+            Ok(receiver.clone())
         }
         "__reversed__" => {
             let mut snapshot = items.read().clone();
@@ -1200,6 +1203,62 @@ pub(crate) fn call_dict_method(
     }
 }
 
+fn range_len_i128_local(start: i64, stop: i64, step: i64) -> i128 {
+    let start = start as i128;
+    let stop = stop as i128;
+    let step = step as i128;
+    if step > 0 && start < stop {
+        (stop - start + step - 1) / step
+    } else if step < 0 && start > stop {
+        (start - stop - step - 1) / (-step)
+    } else {
+        0
+    }
+}
+
+pub(crate) fn call_range_method(
+    receiver: &PyObjectRef,
+    rd: &ferrython_core::object::RangeData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    match method {
+        "__len__" => Ok(PyObject::int(
+            range_len_i128_local(rd.start, rd.stop, rd.step).min(i64::MAX as i128) as i64,
+        )),
+        "__iter__" => receiver.get_iter(),
+        "__contains__" => {
+            check_args_min("range.__contains__", args, 1)?;
+            Ok(PyObject::bool_val(receiver.contains(&args[0])?))
+        }
+        "__getitem__" => {
+            check_args_min("range.__getitem__", args, 1)?;
+            receiver.get_item(&args[0])
+        }
+        "count" => {
+            check_args_min("range.count", args, 1)?;
+            Ok(PyObject::int(if receiver.contains(&args[0])? {
+                1
+            } else {
+                0
+            }))
+        }
+        "index" => {
+            check_args_min("range.index", args, 1)?;
+            let val = args[0].to_int().unwrap_or(i64::MIN);
+            let in_range = receiver.contains(&args[0])?;
+            if in_range {
+                return Ok(PyObject::int((val - rd.start) / rd.step));
+            }
+            Err(PyException::value_error(format!("{} is not in range", val)))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'range' object has no attribute '{}'",
+            method
+        ))),
+    }
+}
+
 pub(crate) fn call_tuple_method(
     items: &[PyObjectRef],
     method: &str,
@@ -1242,7 +1301,7 @@ pub(crate) fn call_tuple_method(
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;
-            let idx = args[0].to_int()?;
+            let idx = index_to_i64(&args[0])?;
             let len = items.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {
@@ -1264,7 +1323,7 @@ pub(crate) fn call_tuple_method(
         }
         "__mul__" | "__rmul__" => {
             check_args_min("__mul__", args, 1)?;
-            let n = args[0].to_int()?.max(0) as usize;
+            let n = index_to_usize_repeat(&args[0])?;
             let size = checked_repeat_len(items.len(), n, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..n {
@@ -2155,6 +2214,65 @@ pub(super) fn call_int_method(
     }
 }
 
+pub(super) fn call_bool_method(
+    value: bool,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    match method {
+        "__repr__" | "__str__" => Ok(PyObject::str_val(CompactString::from(if value {
+            "True"
+        } else {
+            "False"
+        }))),
+        "__format__"
+            if args
+                .first()
+                .and_then(|arg| arg.as_str())
+                .unwrap_or("")
+                .is_empty() =>
+        {
+            Ok(PyObject::str_val(CompactString::from(if value {
+                "True"
+            } else {
+                "False"
+            })))
+        }
+        "__bool__" => Ok(PyObject::bool_val(value)),
+        "__index__" | "__int__" | "__trunc__" | "__ceil__" | "__floor__" => {
+            Ok(PyObject::int(if value { 1 } else { 0 }))
+        }
+        "__and__"
+            if matches!(
+                args.first().map(|arg| &arg.payload),
+                Some(PyObjectPayload::Bool(_))
+            ) =>
+        {
+            let rhs = matches!(args[0].payload, PyObjectPayload::Bool(true));
+            Ok(PyObject::bool_val(value & rhs))
+        }
+        "__or__"
+            if matches!(
+                args.first().map(|arg| &arg.payload),
+                Some(PyObjectPayload::Bool(_))
+            ) =>
+        {
+            let rhs = matches!(args[0].payload, PyObjectPayload::Bool(true));
+            Ok(PyObject::bool_val(value | rhs))
+        }
+        "__xor__"
+            if matches!(
+                args.first().map(|arg| &arg.payload),
+                Some(PyObjectPayload::Bool(_))
+            ) =>
+        {
+            let rhs = matches!(args[0].payload, PyObjectPayload::Bool(true));
+            Ok(PyObject::bool_val(value ^ rhs))
+        }
+        _ => call_int_method(&PyObject::int(if value { 1 } else { 0 }), method, args),
+    }
+}
+
 pub(super) fn call_float_method(
     f: f64,
     method: &str,
@@ -2463,6 +2581,26 @@ pub(super) fn call_bytes_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
+        "__getitem__" => {
+            check_args_min("bytes.__getitem__", args, 1)?;
+            let idx = index_to_i64(&args[0])?;
+            let len = b.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("index out of range"));
+            }
+            Ok(PyObject::int(b[actual as usize] as i64))
+        }
+        "__mul__" | "__rmul__" => {
+            check_args_min("bytes.__mul__", args, 1)?;
+            let n = index_to_usize_repeat(&args[0])?;
+            let size = checked_repeat_len(b.len(), n, "bytes repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..n {
+                result.extend_from_slice(b);
+            }
+            Ok(PyObject::bytes(result))
+        }
         "decode" => {
             let encoding = if !args.is_empty() {
                 args[0].py_to_string().to_lowercase()
@@ -3347,6 +3485,16 @@ pub(super) fn call_bytearray_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
+        "__mul__" | "__rmul__" => {
+            check_args_min("bytearray.__mul__", args, 1)?;
+            let n = index_to_usize_repeat(&args[0])?;
+            let size = checked_repeat_len(b.len(), n, "bytearray repeat")?;
+            let mut result = Vec::with_capacity(size);
+            for _ in 0..n {
+                result.extend_from_slice(b);
+            }
+            Ok(PyObject::bytearray(result))
+        }
         "append" => {
             if args.is_empty() {
                 return Err(PyException::type_error(
@@ -3426,7 +3574,7 @@ pub(super) fn call_bytearray_method(
                     "insert() takes exactly 2 arguments",
                 ));
             }
-            let idx = args[0].to_int()?;
+            let idx = index_to_i64(&args[0])?;
             let byte_val = args[1].to_int()? as u8;
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
@@ -3470,7 +3618,7 @@ pub(super) fn call_bytearray_method(
                     "__setitem__() takes exactly 2 arguments",
                 ));
             }
-            let idx = args[0].to_int()?;
+            let idx = index_to_i64(&args[0])?;
             let byte_val = args[1].to_int()? as u8;
             let len = b.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };

@@ -1,7 +1,7 @@
 //! PyObjectMethods trait — thin dispatch to sub-modules.
 
 use crate::error::PyResult;
-use crate::types::HashableKey;
+use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 
 use super::payload::PyObjectRef;
@@ -17,6 +17,7 @@ pub trait PyObjectMethods {
     fn repr(&self) -> String;
     fn to_list(&self) -> PyResult<Vec<PyObjectRef>>;
     fn to_int(&self) -> PyResult<i64>;
+    fn to_index(&self) -> PyResult<PyInt>;
     fn to_float(&self) -> PyResult<f64>;
     fn as_int(&self) -> Option<i64>;
     fn as_str(&self) -> Option<&str>;
@@ -81,6 +82,9 @@ impl PyObjectMethods for PyObjectRef {
     }
     fn to_int(&self) -> PyResult<i64> {
         super::methods_type::py_to_int(self)
+    }
+    fn to_index(&self) -> PyResult<PyInt> {
+        super::methods_type::py_to_index(self)
     }
     fn to_float(&self) -> PyResult<f64> {
         super::methods_type::py_to_float(self)

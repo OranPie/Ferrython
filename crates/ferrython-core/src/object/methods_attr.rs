@@ -1285,61 +1285,25 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             "slice.indices() requires a length argument",
                         ));
                     }
-                    let length = args[0].to_int().map_err(|_| {
+                    let length = index_to_i64(&args[0]).map_err(|_| {
                         crate::error::PyException::type_error("length must be an integer")
-                    })? as i64;
+                    })?;
                     if length < 0 {
                         return Err(crate::error::PyException::value_error(
                             "length should not be negative",
                         ));
                     }
-                    let step_val = match &s_step {
-                        Some(s) => s.to_int().unwrap_or(1) as i64,
-                        None => 1,
-                    };
-                    if step_val == 0 {
-                        return Err(crate::error::PyException::value_error(
-                            "slice step cannot be zero",
-                        ));
-                    }
-                    let start_val = match &s_start {
-                        Some(s) => {
-                            let v = s.to_int().unwrap_or(0) as i64;
-                            if v < 0 {
-                                (v + length).max(if step_val < 0 { -1 } else { 0 })
-                            } else {
-                                v.min(length)
-                            }
-                        }
-                        None => {
-                            if step_val < 0 {
-                                length - 1
-                            } else {
-                                0
-                            }
-                        }
-                    };
-                    let stop_val = match &s_stop {
-                        Some(s) => {
-                            let v = s.to_int().unwrap_or(0) as i64;
-                            if v < 0 {
-                                (v + length).max(if step_val < 0 { -1 } else { 0 })
-                            } else {
-                                v.min(length)
-                            }
-                        }
-                        None => {
-                            if step_val < 0 {
-                                -1
-                            } else {
-                                length
-                            }
-                        }
+                    let (start_val, stop_val, step_val) =
+                        resolve_slice_i128(&s_start, &s_stop, &s_step, length as i128)?;
+                    let int_obj = |value: i128| {
+                        i64::try_from(value)
+                            .map(PyObject::int)
+                            .unwrap_or_else(|_| PyObject::big_int(value.into()))
                     };
                     Ok(PyObject::tuple(vec![
-                        PyObject::int(start_val),
-                        PyObject::int(stop_val),
-                        PyObject::int(step_val),
+                        int_obj(start_val),
+                        int_obj(stop_val),
+                        int_obj(step_val),
                     ]))
                 }))
             }
@@ -2627,6 +2591,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     ),
                 }))
             }
+            "__getitem__" => Some(PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(
+                    obj.clone(),
+                    CompactString::from(name),
+                )),
+            })),
             _ => None,
         },
         PyObjectPayload::Str(_) => {
@@ -2744,6 +2714,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__str__"
                     | "__add__"
                     | "__mul__"
+                    | "__rmul__"
                     | "__iadd__"
                     | "__imul__"
                     | "__reversed__"
@@ -2829,6 +2800,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__str__"
                     | "__add__"
                     | "__mul__"
+                    | "__rmul__"
                     | "__bool__"
                     | "__sizeof__"
             ) {
@@ -2996,6 +2968,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__str__"
                     | "__add__"
                     | "__mul__"
+                    | "__rmul__"
                     | "__bool__"
                     | "__hash__"
                     | "__sizeof__"

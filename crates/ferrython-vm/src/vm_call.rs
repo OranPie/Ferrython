@@ -5294,6 +5294,7 @@ impl VirtualMachine {
                     | PyObjectPayload::Int(_)
                     | PyObjectPayload::Float(_)
                     | PyObjectPayload::Bool(_)
+                    | PyObjectPayload::Range(_)
                     | PyObjectPayload::Bytes(_)
                     | PyObjectPayload::ByteArray(_)
                     | PyObjectPayload::FrozenSet(_)

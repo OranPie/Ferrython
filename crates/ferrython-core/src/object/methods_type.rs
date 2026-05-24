@@ -1,7 +1,7 @@
 //! Type introspection & conversion methods.
 
 use crate::error::{PyException, PyResult};
-use crate::types::HashableKey;
+use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 
@@ -949,6 +949,45 @@ pub(super) fn py_to_int(obj: &PyObjectRef) -> PyResult<i64> {
         }
         _ => Err(PyException::type_error(format!(
             "int() argument must be a string or number, not '{}'",
+            obj.type_name()
+        ))),
+    }
+}
+
+pub(super) fn py_to_index(obj: &PyObjectRef) -> PyResult<PyInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => Ok(n.clone()),
+        PyObjectPayload::Bool(b) => Ok(PyInt::Small(if *b { 1 } else { 0 })),
+        PyObjectPayload::Instance(inst) => {
+            if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return value.to_index();
+            }
+            if let Some(method) = obj.get_attr("__index__") {
+                let result = call_callable(&method, &[])?;
+                if let PyObjectPayload::Instance(result_inst) = &result.payload {
+                    if let Some(value) = result_inst.attrs.read().get("__builtin_value__").cloned()
+                    {
+                        if matches!(value.payload, PyObjectPayload::Int(_)) {
+                            return value.to_index();
+                        }
+                    }
+                }
+                return match &result.payload {
+                    PyObjectPayload::Int(n) => Ok(n.clone()),
+                    PyObjectPayload::Bool(b) => Ok(PyInt::Small(if *b { 1 } else { 0 })),
+                    _ => Err(PyException::type_error(format!(
+                        "__index__ returned non-int (type {})",
+                        result.type_name()
+                    ))),
+                };
+            }
+            Err(PyException::type_error(format!(
+                "'{}' object cannot be interpreted as an integer",
+                obj.type_name()
+            )))
+        }
+        _ => Err(PyException::type_error(format!(
+            "'{}' object cannot be interpreted as an integer",
             obj.type_name()
         ))),
     }
