@@ -10,6 +10,13 @@ use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+fn element_matches(item: &PyObjectRef, target: &PyObjectRef) -> bool {
+    PyObjectRef::ptr_eq(item, target)
+        || item
+            .compare(target, CompareOp::Eq)
+            .map_or(false, |v| v.is_truthy())
+}
+
 fn is_python_keyword(name: &str) -> bool {
     matches!(
         name,
@@ -2341,11 +2348,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let r = d.read();
             let c = r
                 .iter()
-                .filter(|item| {
-                    item.compare(target, CompareOp::Eq)
-                        .map(|v| v.is_truthy())
-                        .unwrap_or(false)
-                })
+                .filter(|item| element_matches(item, target))
                 .count();
             Ok(PyObject::int(c as i64))
         }),
@@ -2362,11 +2365,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let target = &args[0];
             let r = d.read();
             for (i, item) in r.iter().enumerate() {
-                if item
-                    .compare(target, CompareOp::Eq)
-                    .map(|v| v.is_truthy())
-                    .unwrap_or(false)
-                {
+                if element_matches(item, target) {
                     return Ok(PyObject::int(i as i64));
                 }
             }
@@ -2384,11 +2383,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             let target = &args[0];
             let mut w = d.write();
-            let pos = w.iter().position(|item| {
-                item.compare(target, CompareOp::Eq)
-                    .map(|v| v.is_truthy())
-                    .unwrap_or(false)
-            });
+            let pos = w.iter().position(|item| element_matches(item, target));
             match pos {
                 Some(i) => {
                     w.remove(i);
@@ -2439,6 +2434,58 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         CompactString::from("__bool__"),
         PyObject::native_closure("deque.__bool__", move |_: &[PyObjectRef]| {
             Ok(PyObject::bool_val(!d.read().is_empty()))
+        }),
+    );
+
+    let d = data.clone();
+    cls_ns.insert(
+        CompactString::from("__eq__"),
+        PyObject::native_closure("deque.__eq__", move |args: &[PyObjectRef]| {
+            let other = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                args.first().cloned().unwrap_or_else(PyObject::none)
+            };
+            if other.get_attr("__deque__").is_none() {
+                return Ok(PyObject::not_implemented());
+            }
+            let other_items = other.to_list()?;
+            let items = d.read();
+            if items.len() != other_items.len() {
+                return Ok(PyObject::bool_val(false));
+            }
+            Ok(PyObject::bool_val(
+                items
+                    .iter()
+                    .zip(other_items.iter())
+                    .all(|(left, right)| element_matches(left, right)),
+            ))
+        }),
+    );
+
+    let d = data.clone();
+    cls_ns.insert(
+        CompactString::from("__ne__"),
+        PyObject::native_closure("deque.__ne__", move |args: &[PyObjectRef]| {
+            let other = if args.len() >= 2 {
+                args[1].clone()
+            } else {
+                args.first().cloned().unwrap_or_else(PyObject::none)
+            };
+            if other.get_attr("__deque__").is_none() {
+                return Ok(PyObject::not_implemented());
+            }
+            let other_items = other.to_list()?;
+            let items = d.read();
+            if items.len() != other_items.len() {
+                return Ok(PyObject::bool_val(true));
+            }
+            Ok(PyObject::bool_val(
+                !items
+                    .iter()
+                    .zip(other_items.iter())
+                    .all(|(left, right)| element_matches(left, right)),
+            ))
         }),
     );
 
@@ -2493,11 +2540,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             };
             let r = d.read();
             for item in r.iter() {
-                if item
-                    .compare(target, CompareOp::Eq)
-                    .map(|v| v.is_truthy())
-                    .unwrap_or(false)
-                {
+                if element_matches(item, target) {
                     return Ok(PyObject::bool_val(true));
                 }
             }
