@@ -4808,6 +4808,79 @@ impl VirtualMachine {
                                 }
                             } // close the mini-interpreter else (normal frame creation path)
                         } else {
+                            if !trace_active_now {
+                                if let PyObjectPayload::Instance(inst) =
+                                    &sget!(frame, func_idx).payload
+                                {
+                                    let call_method =
+                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                            let vt = unsafe { &*cd.method_vtable.data_ptr() };
+                                            if !vt.is_empty() {
+                                                vt.get("__call__").cloned()
+                                            } else {
+                                                unsafe { &*cd.namespace.data_ptr() }
+                                                    .get("__call__")
+                                                    .cloned()
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                    if let Some(call_method) = call_method {
+                                        if let PyObjectPayload::Function(pf) = &call_method.payload
+                                        {
+                                            if pf.code.arg_count as usize == arg_count + 1
+                                                && pf.code.kwonlyarg_count == 0
+                                                && !pf.code.flags.contains(CodeFlags::VARARGS)
+                                                && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
+                                                && !pf.code.flags.contains(CodeFlags::GENERATOR)
+                                                && !pf.code.flags.contains(CodeFlags::COROUTINE)
+                                            {
+                                                let mut new_frame = Frame::new_from_pool(
+                                                    Rc::clone(&pf.code),
+                                                    pf.globals.clone(),
+                                                    self.builtins.clone(),
+                                                    Rc::clone(&pf.constant_cache),
+                                                    &mut self.frame_pool,
+                                                );
+                                                new_frame.scope_kind =
+                                                    crate::frame::ScopeKind::Function;
+                                                unsafe {
+                                                    let base = frame.stack.as_ptr();
+                                                    new_frame.locals[0] =
+                                                        Some(std::ptr::read(base.add(func_idx)));
+                                                    for i in 0..arg_count {
+                                                        new_frame.locals[i + 1] =
+                                                            Some(std::ptr::read(
+                                                                base.add(args_start + i),
+                                                            ));
+                                                    }
+                                                    frame.stack.set_len(func_idx);
+                                                }
+                                                self.call_stack.push(new_frame);
+                                                rederive_frame!(
+                                                    self,
+                                                    frame_ptr,
+                                                    instr_base,
+                                                    instr_count
+                                                );
+                                                if self.call_stack.len()
+                                                    > ferrython_stdlib::get_recursion_limit()
+                                                        as usize
+                                                {
+                                                    if let Some(frame) = self.call_stack.pop() {
+                                                        frame.recycle(&mut self.frame_pool);
+                                                    }
+                                                    return Err(PyException::recursion_error(
+                                                        "maximum recursion depth exceeded",
+                                                    ));
+                                                } else {
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             // ── Inline Class instantiation for simple classes ──
                             // Avoids execute_one + 2 Vec allocs + double call_object dispatch
                             if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {

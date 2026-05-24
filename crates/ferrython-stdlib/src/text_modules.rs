@@ -9,10 +9,38 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
 use super::fs_modules::glob_match;
+
+thread_local! {
+    static RE_REGEX_CACHE: RefCell<Vec<(String, i64, regex::Regex)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn cached_build_regex(pattern: &str, flags: i64) -> Result<regex::Regex, PyException> {
+    RE_REGEX_CACHE.with(|cache| {
+        {
+            let cache_ref = cache.borrow();
+            if let Some((_, _, compiled)) =
+                cache_ref.iter().find(|(cached_pattern, cached_flags, _)| {
+                    cached_pattern == pattern && *cached_flags == flags
+                })
+            {
+                return Ok(compiled.clone());
+            }
+        }
+
+        let compiled = build_regex(pattern, flags)?;
+        let mut cache_ref = cache.borrow_mut();
+        if cache_ref.len() >= 64 {
+            cache_ref.remove(0);
+        }
+        cache_ref.push((pattern.to_string(), flags, compiled.clone()));
+        Ok(compiled)
+    })
+}
 
 pub fn create_string_module() -> PyObjectRef {
     make_module("string", vec![
@@ -4260,11 +4288,10 @@ fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             _ => Ok(PyObject::none()),
         }
     } else {
-        let re = build_regex(&anchored, engine_flags)?;
+        let re = cached_build_regex(&anchored, engine_flags)?;
         match re.find(&text) {
             Some(m) => {
-                let orig_re = build_regex(&pattern, engine_flags)?;
-                let result = make_match_object(m, &text, &orig_re, subject_is_bytes);
+                let result = make_match_object(m, &text, &re, subject_is_bytes);
                 attach_bytearray_source(&result, &args[1]);
                 Ok(result)
             }

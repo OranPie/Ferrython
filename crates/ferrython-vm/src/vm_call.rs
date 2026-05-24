@@ -12,7 +12,8 @@ use ferrython_core::object::{
     get_builtin_base_type_name, guard_eager_allocation, has_descriptor_get, is_data_descriptor,
     lookup_in_class_mro, new_fx_hashkey_flatmap, new_fx_hashkey_map, AsyncGenAction, CompareOp,
     FxHashKeyMap, IteratorData, PartialData, PropertyData, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR,
+    CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{HashableKey, PyFunction, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
@@ -5220,6 +5221,17 @@ impl VirtualMachine {
                         let attr_name = args[1].py_to_string();
                         let value = args[2].clone();
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if inst.class_flags
+                                & (CLASS_FLAG_HAS_SETATTR
+                                    | CLASS_FLAG_HAS_DESCRIPTORS
+                                    | CLASS_FLAG_HAS_SLOTS)
+                                == 0
+                            {
+                                inst.attrs
+                                    .write()
+                                    .insert(CompactString::from(attr_name.as_str()), value);
+                                return Ok(PyObject::none());
+                            }
                             if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
                                 if let PyObjectPayload::Property(pd) = &desc.payload {
                                     if let Some(setter) = pd.fset.as_ref() {
