@@ -776,20 +776,38 @@ pub(crate) fn call_dict_method(
     owner: Option<PyObjectRef>,
 ) -> PyResult<PyObjectRef> {
     match method {
-        "keys" => Ok(PyObject::wrap(PyObjectPayload::DictKeys {
-            map: map.clone(),
-            owner,
-        })),
-        "values" => Ok(PyObject::wrap(PyObjectPayload::DictValues {
-            map: map.clone(),
-            owner,
-        })),
-        "items" => Ok(PyObject::wrap(PyObjectPayload::DictItems {
-            map: map.clone(),
-            owner,
-        })),
+        "keys" => {
+            if !args.is_empty() {
+                return Err(PyException::type_error("keys() takes no arguments"));
+            }
+            Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                map: map.clone(),
+                owner,
+            }))
+        }
+        "values" => {
+            if !args.is_empty() {
+                return Err(PyException::type_error("values() takes no arguments"));
+            }
+            Ok(PyObject::wrap(PyObjectPayload::DictValues {
+                map: map.clone(),
+                owner,
+            }))
+        }
+        "items" => {
+            if !args.is_empty() {
+                return Err(PyException::type_error("items() takes no arguments"));
+            }
+            Ok(PyObject::wrap(PyObjectPayload::DictItems {
+                map: map.clone(),
+                owner,
+            }))
+        }
         "get" => {
             check_args_min("get", args, 1)?;
+            if args.len() > 2 {
+                return Err(PyException::type_error("get expected at most 2 arguments"));
+            }
             let key = args[0].to_hashable_key()?;
             let default = if args.len() >= 2 {
                 args[1].clone()

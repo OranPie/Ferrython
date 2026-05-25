@@ -1741,6 +1741,9 @@ pub fn create_weakref_module() -> PyObjectRef {
                     if args.is_empty() {
                         return Err(PyException::type_error("get() requires a key"));
                     }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error("get expected at most 2 arguments"));
+                    }
                     let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
                     Ok(weak_value_get_alive(&get_method_storage, &args[0])?.unwrap_or(default))
                 }),
@@ -1749,7 +1752,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let keys_storage = storage.clone();
             attrs.insert(
                 CompactString::from("keys"),
-                PyObject::native_closure("WeakValueDictionary.keys", move |_| {
+                PyObject::native_closure("WeakValueDictionary.keys", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("keys() takes no arguments"));
+                    }
                     let keys = weak_value_items(&keys_storage)
                         .into_iter()
                         .map(|(k, _)| k)
@@ -1773,7 +1779,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let values_storage = storage.clone();
             attrs.insert(
                 CompactString::from("values"),
-                PyObject::native_closure("WeakValueDictionary.values", move |_| {
+                PyObject::native_closure("WeakValueDictionary.values", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("values() takes no arguments"));
+                    }
                     let vals = weak_value_items(&values_storage)
                         .into_iter()
                         .map(|(_, v)| v)
@@ -1785,7 +1794,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let items_storage = storage.clone();
             attrs.insert(
                 CompactString::from("items"),
-                PyObject::native_closure("WeakValueDictionary.items", move |_| {
+                PyObject::native_closure("WeakValueDictionary.items", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("items() takes no arguments"));
+                    }
                     let items = weak_value_items(&items_storage)
                         .into_iter()
                         .map(|(k, v)| PyObject::tuple(vec![k, v]))
@@ -2062,6 +2074,9 @@ pub fn create_weakref_module() -> PyObjectRef {
                     if args.is_empty() {
                         return Err(PyException::type_error("get() requires a key"));
                     }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error("get expected at most 2 arguments"));
+                    }
                     let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
                     Ok(weak_key_get_alive(&get_method_storage, &args[0], true)?.unwrap_or(default))
                 }),
@@ -2070,7 +2085,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let keys_storage = storage.clone();
             attrs.insert(
                 CompactString::from("keys"),
-                PyObject::native_closure("WeakKeyDictionary.keys", move |_| {
+                PyObject::native_closure("WeakKeyDictionary.keys", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("keys() takes no arguments"));
+                    }
                     let keys = weak_key_items(&keys_storage)
                         .into_iter()
                         .map(|(k, _)| k)
@@ -2094,7 +2112,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let values_storage = storage.clone();
             attrs.insert(
                 CompactString::from("values"),
-                PyObject::native_closure("WeakKeyDictionary.values", move |_| {
+                PyObject::native_closure("WeakKeyDictionary.values", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("values() takes no arguments"));
+                    }
                     let vals = weak_key_items(&values_storage)
                         .into_iter()
                         .map(|(_, v)| v)
@@ -2106,7 +2127,10 @@ pub fn create_weakref_module() -> PyObjectRef {
             let items_storage = storage.clone();
             attrs.insert(
                 CompactString::from("items"),
-                PyObject::native_closure("WeakKeyDictionary.items", move |_| {
+                PyObject::native_closure("WeakKeyDictionary.items", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("items() takes no arguments"));
+                    }
                     let items = weak_key_items(&items_storage)
                         .into_iter()
                         .map(|(k, v)| PyObject::tuple(vec![k, v]))
