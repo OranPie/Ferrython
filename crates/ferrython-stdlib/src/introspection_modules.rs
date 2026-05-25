@@ -105,6 +105,17 @@ fn clean_docstring(doc: &str) -> String {
 // ── subprocess module (basic) ──
 
 pub fn create_warnings_module() -> PyObjectRef {
+    fn warnings_recorder(storage: PyObjectRef) -> PyObjectRef {
+        let cls = PyObject::class(
+            CompactString::from("_WarningsRecorder"),
+            vec![PyObject::builtin_type_by_name("list")],
+            IndexMap::new(),
+        );
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("__builtin_value__"), storage);
+        PyObject::instance_with_attrs(cls, attrs)
+    }
+
     fn match_filter(
         _action: &str,
         msg: &str,
@@ -361,14 +372,25 @@ pub fn create_warnings_module() -> PyObjectRef {
         );
         let mut attrs = IndexMap::new();
         let warning_list = PyObject::list(vec![]);
+        let warning_recorder = if record {
+            Some(warnings_recorder(warning_list.clone()))
+        } else {
+            None
+        };
         attrs.insert(CompactString::from("_record"), PyObject::bool_val(record));
-        attrs.insert(CompactString::from("_warnings"), warning_list.clone());
+        attrs.insert(
+            CompactString::from("_warnings"),
+            warning_recorder
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| warning_list.clone()),
+        );
 
         // Save filter state for restore on __exit__
         let saved_filters: Vec<WarningFilterEntry> = WARNING_FILTERS.read().clone();
 
         if record {
-            let wl = warning_list.clone();
+            let wl = warning_recorder.unwrap_or_else(|| warning_list.clone());
             let enter_list = warning_list.clone();
             attrs.insert(
                 CompactString::from("__enter__"),

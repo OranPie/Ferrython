@@ -84,6 +84,9 @@ def resetwarnings():
 
 # ── catch_warnings context manager ──
 
+class _WarningsRecorder(list):
+    pass
+
 class catch_warnings:
     def __init__(self, record=False):
         self._record = record
@@ -93,7 +96,7 @@ class catch_warnings:
     def __enter__(self):
         self._saved_filters = _filters[:]
         if self._record:
-            self._log = []
+            self._log = _WarningsRecorder()
             return self._log
         return None
 
