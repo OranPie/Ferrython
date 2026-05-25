@@ -1671,8 +1671,11 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         }
         PyObjectPayload::Set(m) => {
             let items: Vec<PyObjectRef> = m.read().values().cloned().collect();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                PyCell::new(IteratorData::List { items, index: 0 }),
+            Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
+                ferrython_core::object::VecIterData {
+                    items,
+                    index: SyncUsize::new(0),
+                },
             ))))
         }
         PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
@@ -2033,7 +2036,27 @@ pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_next(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("next", args, 1)?;
-    match iter_advance(&args[0])? {
+    let advanced = match iter_advance(&args[0]) {
+        Ok(value) => value,
+        Err(err)
+            if err.kind == ExceptionKind::TypeError
+                && matches!(&args[0].payload, PyObjectPayload::Iterator(_)) =>
+        {
+            let next_method = args[0].get_attr("__next__").ok_or_else(|| {
+                PyException::type_error(format!(
+                    "'{}' object is not an iterator",
+                    args[0].type_name()
+                ))
+            })?;
+            match ferrython_core::object::helpers::call_callable(&next_method, &[]) {
+                Ok(value) => return Ok(value),
+                Err(err) if err.kind == ExceptionKind::StopIteration => None,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(err) => return Err(err),
+    };
+    match advanced {
         Some((_new_iter, value)) => Ok(value),
         None => {
             if args.len() > 1 {

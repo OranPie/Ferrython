@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T19:15:17+08:00
+Last updated: 2026-05-25T19:45:03+08:00
 
 ## 已提交成果
 
@@ -15,6 +15,14 @@ Last updated: 2026-05-25T19:15:17+08:00
   - 为 builtin-value subclass 的 `iter()` / `reversed()` 迭代器保活 owner，避免迭代期间底层对象被提前释放。
 
 ## 本轮修复成果
+
+- 2026-05-25 追加：
+  - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
+  - `__setstate__` 负 state clamp 到 0，越界 state clamp 到耗尽位置，已耗尽 iterator 保持 sink-state。
+  - 旧序列协议 iterator 在接近 `sys.maxsize` 时抛 `OverflowError: iter index too large`，避免 index wrap。
+  - `next()` 对 VM lazy iterator fallback 到 VM 级推进，直接 `next(iter(seq_protocol_obj))` 不再被 core-only path 拒绝。
+  - VM `iter(set)` 改回 `VecIter` 快照迭代，避免 set iterator 错误继承 list iterator 的 `__setstate__`。
+  - `tools/run_cpython_tests.py` 支持 dotted 单例选择器，如 `test_iter.TestCase.test_iter_neg_setstate`，便于单项探测。
 
 - 类创建补齐 `__module__`，用于 pickle 全局类定位。
 - pickle 用户实例反序列化优先复用模块/当前 globals 中已有类，避免重建空类丢失方法。
@@ -36,7 +44,7 @@ Last updated: 2026-05-25T19:15:17+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 40.71s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 29.63s`
 - 本轮 focused 通过：
   - `test_iter.TestCase.test_iter_class_for`
   - `test_iter.TestCase.test_seq_class_for`
@@ -52,25 +60,37 @@ Last updated: 2026-05-25T19:15:17+08:00
   - `test_operator.PyOperatorTestCase.test_indexOf`
   - `test_operator.COperatorTestCase.test_countOf`
   - `test_operator.COperatorTestCase.test_indexOf`
+  - `test_iter.TestCase.test_iter_neg_setstate`
+  - `test_iter.TestCase.test_iter_overflow` (skip=1, CPython-only)
+  - `test_iter.TestCase.test_sinkstate_sequence`
+  - `test_iter.TestCase.test_sinkstate_list`
+  - `test_iter.TestCase.test_sinkstate_dict`
+- 本轮 smoke 通过：
+  - `hasattr(iter({1:2}), "__setstate__") == False`
+  - `hasattr(iter({1,2}), "__setstate__") == False`
+  - `hasattr(iter([1]), "__setstate__") == True`
+  - `hasattr(iter((1,)), "__setstate__") == True`
+  - 旧序列 iterator `__setstate__(sys.maxsize - 2)` 后第三次 `next()` 抛 `OverflowError`
 - `test_iter` 单项扫描当前已推进到：
   - 通过 `test_sinkstate_yield`
   - 通过 `test_sinkstate_range`
   - 通过 `test_sinkstate_enumerate`
   - 通过 `test_3720`
   - 通过 `test_extending_list_with_iterator_does_not_segfault`
-  - 通过 `test_iter_overflow`
-  - 下一个失败：`test_iter_neg_setstate`
+  - 通过 `test_iter_overflow` (skip)
+  - 通过 `test_iter_neg_setstate`
+  - 下一个候选：继续从 `test_free_after_iterating` / `test_error_iter` 后续扫描
 
 ## 当前工作树
 
-- 本轮代码修复涉及 iterator / pickle / operator / core conversion 路径。
+- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_iter.TestCase.test_iter_neg_setstate`
-  - 当前错误：`'iterator' object has no attribute '__setstate__'`
-  - 方向：补齐基础 iterator `__setstate__` 边界语义，尤其负 state 处理。
+- 继续扫描 `test_iter` 后续 case。
+  - 起点：`test_free_after_iterating` / `test_error_iter` 附近。
+  - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 - 后续仍需继续单项扫描 `test_iter`，确认是否还有 stack overflow 或长耗时 case。
 
 ## 已关闭候选
@@ -87,6 +107,8 @@ Last updated: 2026-05-25T19:15:17+08:00
   - 修复：callable sentinel iterator 增加耗尽状态。
 - `test_iter.TestCase.test_sinkstate_dict`
   - 修复：VM/core conversion 支持 dict-backed `RefIter` 收集并推进 state。
+- `test_iter.TestCase.test_iter_neg_setstate`
+  - 修复：基础 iterator `__setstate__` 支持负 state 归零，并保留耗尽 sink-state。
 
 ## 修复原则
 
@@ -100,8 +122,8 @@ Last updated: 2026-05-25T19:15:17+08:00
 
 ## 后续修复队列
 
-1. 修复 `test_iter.TestCase.test_iter_neg_setstate`。
-2. 继续按 case 扫描 `test_iter`，找出后续失败或 stack overflow 的真实触发用例。
+1. 继续按 case 扫描 `test_iter`，找出后续失败或 stack overflow 的真实触发用例。
+2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

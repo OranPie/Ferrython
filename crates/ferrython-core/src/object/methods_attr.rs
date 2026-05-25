@@ -74,6 +74,28 @@ fn code_object_co_code(code: &ferrython_bytecode::CodeObject) -> Vec<u8> {
     bytes
 }
 
+fn iterator_supports_setstate(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Iterator(iter_data) => {
+            let data = iter_data.read();
+            matches!(
+                &*data,
+                IteratorData::List { .. }
+                    | IteratorData::Tuple { .. }
+                    | IteratorData::Str { .. }
+                    | IteratorData::SeqIter { .. }
+            )
+        }
+        PyObjectPayload::RefIter { source, .. } => {
+            matches!(
+                &source.payload,
+                PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)
+            )
+        }
+        _ => false,
+    }
+}
+
 /// Walk a class and its base classes (MRO) to find an attribute.
 /// Uses pre-computed vtable for O(1) lookup, falling back to cache+MRO.
 pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
@@ -3942,6 +3964,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::RefIter { .. } => match name {
             "__next__" | "__iter__" | "__length_hint__" => Some(PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(
+                    obj.clone(),
+                    CompactString::from(name),
+                )),
+            })),
+            "__setstate__" if iterator_supports_setstate(obj) => Some(PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(
                     obj.clone(),
                     CompactString::from(name),

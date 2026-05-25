@@ -2658,6 +2658,10 @@ impl VirtualMachine {
                 }
                 let src = obj.clone();
                 let idx = *index;
+                if idx >= isize::MAX as i64 {
+                    drop(data);
+                    return Err(PyException::overflow_error("iter index too large"));
+                }
                 drop(data);
                 let getitem = match src.get_attr("__getitem__") {
                     Some(f) => f,
@@ -2673,7 +2677,7 @@ impl VirtualMachine {
                     Ok(val) => {
                         let mut d = iter_data_arc.write();
                         if let IteratorData::SeqIter { index, .. } = &mut *d {
-                            *index = idx.wrapping_add(1);
+                            *index = idx + 1;
                         }
                         Ok(Some(val))
                     }

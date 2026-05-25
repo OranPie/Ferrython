@@ -57,6 +57,14 @@ def _normalise_name(name):
     return name
 
 
+def _split_name_and_selector(name):
+    name = name.removesuffix(".py")
+    if "." in name:
+        module_name, selector = name.split(".", 1)
+        return _normalise_name(module_name), selector
+    return _normalise_name(name), None
+
+
 def _load_test_module(test_dir, name):
     """Load *name* as a Python module from *test_dir*."""
     name = _normalise_name(name)
@@ -226,7 +234,22 @@ def _make_load_error_report(name, exc, elapsed=0.0):
     )
 
 
-def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, live_status):
+def _flatten_suite(suite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from _flatten_suite(test)
+        else:
+            yield test
+
+
+def _filter_suite(suite, selector):
+    if selector is None:
+        return suite
+    selected = [test for test in _flatten_suite(suite) if _test_name(test).endswith(selector)]
+    return unittest.TestSuite(selected)
+
+
+def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, live_status, selector=None):
     """Load and run a single test module."""
     name = _normalise_name(name)
     start = time.monotonic()
@@ -240,7 +263,10 @@ def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, li
     loader = unittest.TestLoader()
     try:
         suite = loader.loadTestsFromModule(mod)
+        suite = _filter_suite(suite, selector)
         total = suite.countTestCases()
+        if selector is not None and total == 0:
+            raise ValueError("no tests matched selector: %s" % selector)
     except Exception as exc:
         return _make_load_error_report(name, exc, time.monotonic() - start)
 
@@ -399,11 +425,11 @@ def _run_all(names, verbosity, failfast):
     live_status = _supports_live_status(sys.stderr)
 
     for index, name in enumerate(names, 1):
-        norm = _normalise_name(name)
+        norm, selector = _split_name_and_selector(name)
         report = _run_one(
             test_dir, norm, verbosity, failfast,
             module_index=index, module_count=total_modules,
-            live_status=live_status)
+            live_status=live_status, selector=selector)
         reports.append(report)
         total_passed  += report.passed
         total_failed  += report.failed
