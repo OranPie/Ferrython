@@ -2667,8 +2667,13 @@ impl VirtualMachine {
                     Some(f) => f,
                     None => {
                         let mut d = iter_data_arc.write();
-                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d {
+                        if let IteratorData::SeqIter { obj, exhausted, .. } = &mut *d {
                             *exhausted = true;
+                            let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                            drop(d);
+                            drop(old_source);
+                        } else {
+                            drop(d);
                         }
                         return Ok(None);
                     }
@@ -2686,8 +2691,13 @@ impl VirtualMachine {
                             || e.kind == ExceptionKind::IndexError =>
                     {
                         let mut d = iter_data_arc.write();
-                        if let IteratorData::SeqIter { exhausted, .. } = &mut *d {
+                        if let IteratorData::SeqIter { obj, exhausted, .. } = &mut *d {
                             *exhausted = true;
+                            let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                            drop(d);
+                            drop(old_source);
+                        } else {
+                            drop(d);
                         }
                         Ok(None)
                     }
