@@ -496,6 +496,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 ei.message.as_str().to_owned()
             }
         }
+        PyObjectPayload::BoundMethod { receiver, method } => bound_method_repr(receiver, method),
         PyObjectPayload::DictKeys(map) => {
             let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
             if !repr_enter(ptr) {
@@ -545,6 +546,56 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
     }
 }
 
+fn instance_class_name(obj: &PyObjectRef) -> Option<String> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+            return Some(cd.name.to_string());
+        }
+    }
+    None
+}
+
+fn bound_method_name(receiver: &PyObjectRef, method: &PyObjectRef) -> String {
+    match &method.payload {
+        PyObjectPayload::Function(func) => {
+            let qualname = func.qualname.as_str();
+            if qualname.contains('.') {
+                qualname.to_string()
+            } else if let Some(class_name) = instance_class_name(receiver) {
+                format!("{}.{}", class_name, func.name)
+            } else {
+                func.name.to_string()
+            }
+        }
+        PyObjectPayload::NativeFunction(func) => func.name.to_string(),
+        PyObjectPayload::NativeClosure(func) => func.name.to_string(),
+        PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
+            name.to_string()
+        }
+        PyObjectPayload::BoundMethod { method, .. } => bound_method_name(receiver, method),
+        _ => method.type_name().to_string(),
+    }
+}
+
+fn bound_method_receiver_repr(receiver: &PyObjectRef) -> String {
+    if let Some(repr_fn) = receiver.get_attr("__repr__") {
+        if !matches!(&repr_fn.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
+            if let Ok(result) = call_callable(&repr_fn, &[]) {
+                return result.py_to_string();
+            }
+        }
+    }
+    receiver.repr()
+}
+
+fn bound_method_repr(receiver: &PyObjectRef, method: &PyObjectRef) -> String {
+    format!(
+        "<bound method {} of {}>",
+        bound_method_name(receiver, method),
+        bound_method_receiver_repr(receiver)
+    )
+}
+
 pub(super) fn py_repr(obj: &PyObjectRef) -> String {
     match &obj.payload {
         PyObjectPayload::Str(s) => {
@@ -585,6 +636,7 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 format!("{}({})", ei.kind, args.join(", "))
             }
         }
+        PyObjectPayload::BoundMethod { receiver, method } => bound_method_repr(receiver, method),
         PyObjectPayload::Instance(inst) => {
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {

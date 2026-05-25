@@ -162,14 +162,24 @@ impl FileState {
             // "w" or "a" mode: create/truncate file on disk immediately
             if mode.contains('w') {
                 let _ = std::fs::write(path, "");
+                (String::new(), Vec::new())
             } else if mode.contains('a') {
-                // Append mode: create if not exists
+                // Append mode: create if not exists and keep existing content visible.
                 let _ = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path);
+                if is_binary {
+                    (String::new(), std::fs::read(path).unwrap_or_default())
+                } else {
+                    (
+                        std::fs::read_to_string(path).unwrap_or_default(),
+                        Vec::new(),
+                    )
+                }
+            } else {
+                (String::new(), Vec::new())
             }
-            (String::new(), Vec::new())
         };
         Ok(Self {
             content,
@@ -297,6 +307,19 @@ pub(super) fn file_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         let text = args[1].py_to_string();
         let len = text.len();
+        if s.mode.contains('a') {
+            s.content.push_str(&text);
+            s.position = s.content.len();
+        } else {
+            let start = s.position.min(s.content.len());
+            let end = (start + len).min(s.content.len());
+            if start == s.content.len() {
+                s.content.push_str(&text);
+            } else {
+                s.content.replace_range(start..end, &text);
+            }
+            s.position = start + len;
+        }
         s.write_buf.push_str(&text);
         Ok(PyObject::int(len as i64))
     }
@@ -316,7 +339,21 @@ pub(super) fn file_writelines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let items = args[1].to_list()?;
     for item in items.iter() {
-        s.write_buf.push_str(&item.py_to_string());
+        let text = item.py_to_string();
+        if s.mode.contains('a') {
+            s.content.push_str(&text);
+            s.position = s.content.len();
+        } else {
+            let start = s.position.min(s.content.len());
+            let end = (start + text.len()).min(s.content.len());
+            if start == s.content.len() {
+                s.content.push_str(&text);
+            } else {
+                s.content.replace_range(start..end, &text);
+            }
+            s.position = start + text.len();
+        }
+        s.write_buf.push_str(&text);
     }
     Ok(PyObject::none())
 }
@@ -340,15 +377,8 @@ pub(super) fn file_close(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 s.binary_write_buf.clear();
             }
         } else if !s.write_buf.is_empty() {
-            if s.mode.contains('a') {
-                let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
-                content.push_str(&s.write_buf);
-                std::fs::write(&s.path, &content)
-                    .map_err(|e| PyException::os_error(format!("{}", e)))?;
-            } else {
-                std::fs::write(&s.path, &s.write_buf)
-                    .map_err(|e| PyException::os_error(format!("{}", e)))?;
-            }
+            std::fs::write(&s.path, &s.content)
+                .map_err(|e| PyException::os_error(format!("{}", e)))?;
             s.write_buf.clear();
         }
         s.closed = true;
@@ -437,15 +467,7 @@ pub(super) fn file_flush(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             s.binary_write_buf.clear();
         }
     } else if !s.write_buf.is_empty() {
-        if s.mode.contains('a') {
-            let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
-            content.push_str(&s.write_buf);
-            std::fs::write(&s.path, &content)
-                .map_err(|e| PyException::os_error(format!("{}", e)))?;
-        } else {
-            std::fs::write(&s.path, &s.write_buf)
-                .map_err(|e| PyException::os_error(format!("{}", e)))?;
-        }
+        std::fs::write(&s.path, &s.content).map_err(|e| PyException::os_error(format!("{}", e)))?;
         s.write_buf.clear();
     }
     Ok(PyObject::none())

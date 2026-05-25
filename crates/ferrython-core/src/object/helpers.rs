@@ -257,6 +257,7 @@ fn eager_allocation_error(context: &str, requested: usize) -> PyException {
 pub fn is_hidden_dict_key(k: &HashableKey) -> bool {
     matches!(k, HashableKey::Str(s) if
         s.as_str() == "__defaultdict_factory__"
+        || s.as_str() == "__defaultdict_kwargs__"
         || s.as_str() == "__counter__"
         || s.as_str() == "__ordered_dict__"
         || s.as_str() == "__move_to_end_fn__"

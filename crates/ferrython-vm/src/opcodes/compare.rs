@@ -17,6 +17,10 @@ fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
     }
 }
 
+fn has_dict_storage(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(inst) if inst.dict_storage.is_some())
+}
+
 fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
     if PyObjectRef::ptr_eq(child, parent) {
         return false;
@@ -316,6 +320,20 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
+            }
+            if matches!(cmp, 2 | 3)
+                && ((has_dict_storage(&a) && matches!(&b.payload, PyObjectPayload::Dict(_)))
+                    || (matches!(&a.payload, PyObjectPayload::Dict(_)) && has_dict_storage(&b))
+                    || (has_dict_storage(&a) && has_dict_storage(&b)))
+            {
+                let cmp_op = if cmp == 2 {
+                    CompareOp::Eq
+                } else {
+                    CompareOp::Ne
+                };
+                let result = a.compare(&b, cmp_op)?;
+                self.vm_push(result);
+                return Ok(None);
             }
             // Dataclass auto-equality fallback
             if cmp == 2 || cmp == 3 {

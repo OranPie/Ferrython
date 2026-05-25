@@ -10,7 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::collection_modules::{
-    create_operator_module, namedtuple_rebuild_field, namedtuple_rebuild_instance,
+    create_collections_module, create_operator_module, namedtuple_rebuild_field,
+    namedtuple_rebuild_instance,
 };
 use crate::text_modules::create_re_module;
 
@@ -1975,6 +1976,10 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
+                pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
+                return Ok(());
+            }
             let (class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
             // Serialize as dict via GLOBAL + REDUCE pattern:
             // c__main__\nClassName\n( {state_dict} tR
@@ -2214,6 +2219,129 @@ fn pickle_extract_instance(
     Ok((class_name, data_pairs))
 }
 
+fn defaultdict_pickle_parts(
+    inst: &ferrython_core::object::InstanceData,
+) -> Option<(PyObjectRef, Vec<(HashableKey, PyObjectRef)>)> {
+    let class_name = match &inst.class.payload {
+        PyObjectPayload::Class(cd) => cd.name.as_str(),
+        _ => return None,
+    };
+    if class_name != "defaultdict" {
+        return None;
+    }
+    let storage = inst.dict_storage.as_ref()?;
+    let factory = inst
+        .attrs
+        .read()
+        .get("default_factory")
+        .cloned()
+        .unwrap_or_else(PyObject::none);
+    let mut items = Vec::new();
+    for (k, v) in storage.read().iter() {
+        if !ferrython_core::object::is_hidden_dict_key(k) {
+            items.push((k.clone(), v.clone()));
+        }
+    }
+    Some((factory, items))
+}
+
+fn pickle_serialize_builtin_factory_p0(factory: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
+    match &factory.payload {
+        PyObjectPayload::None => {
+            let mut nested_memo = 0;
+            pickle_serialize_p0(factory, buf, &mut nested_memo)
+        }
+        PyObjectPayload::BuiltinType(name)
+            if matches!(
+                name.as_str(),
+                "int" | "float" | "str" | "list" | "dict" | "set" | "tuple" | "bool"
+            ) =>
+        {
+            let marker = PyObject::str_val(CompactString::from(format!(
+                "__ferrython_builtin_type__:{}",
+                name.as_str()
+            )));
+            let mut nested_memo = 0;
+            pickle_serialize_p0(&marker, buf, &mut nested_memo)
+        }
+        _ => Err(PyException::runtime_error(format!(
+            "PicklingError: can't pickle object of type {}",
+            factory.type_name()
+        ))),
+    }
+}
+
+fn pickle_serialize_builtin_factory_p2(factory: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
+    match &factory.payload {
+        PyObjectPayload::None => {
+            let mut nested_memo = 0;
+            pickle_serialize_p2(factory, buf, &mut nested_memo)
+        }
+        PyObjectPayload::BuiltinType(name)
+            if matches!(
+                name.as_str(),
+                "int" | "float" | "str" | "list" | "dict" | "set" | "tuple" | "bool"
+            ) =>
+        {
+            let marker = PyObject::str_val(CompactString::from(format!(
+                "__ferrython_builtin_type__:{}",
+                name.as_str()
+            )));
+            let mut nested_memo = 0;
+            pickle_serialize_p2(&marker, buf, &mut nested_memo)
+        }
+        _ => Err(PyException::runtime_error(format!(
+            "PicklingError: can't pickle object of type {}",
+            factory.type_name()
+        ))),
+    }
+}
+
+fn pickle_serialize_defaultdict_p0(
+    factory: &PyObjectRef,
+    items: &[(HashableKey, PyObjectRef)],
+    buf: &mut Vec<u8>,
+    memo: &mut u32,
+) -> PyResult<()> {
+    buf.extend_from_slice(b"ccollections\ndefaultdict\n(");
+    pickle_serialize_builtin_factory_p0(factory, buf)?;
+    buf.extend_from_slice(b"(d");
+    let id = *memo;
+    *memo += 1;
+    buf.extend_from_slice(format!("p{}\n", id).as_bytes());
+    for (k, v) in items {
+        pickle_serialize_p0(&hashable_key_to_pyobj(k), buf, memo)?;
+        pickle_serialize_p0(v, buf, memo)?;
+        buf.push(b's');
+    }
+    buf.extend_from_slice(b"tR");
+    Ok(())
+}
+
+fn pickle_serialize_defaultdict_p2(
+    factory: &PyObjectRef,
+    items: &[(HashableKey, PyObjectRef)],
+    buf: &mut Vec<u8>,
+    memo: &mut u32,
+) -> PyResult<()> {
+    buf.push(b'c');
+    buf.extend_from_slice(b"collections\ndefaultdict\n");
+    buf.push(b'(');
+    pickle_serialize_builtin_factory_p2(factory, buf)?;
+    buf.push(b'}');
+    p2_emit_put(buf, memo);
+    if !items.is_empty() {
+        buf.push(b'(');
+        for (k, v) in items {
+            pickle_serialize_p2(&hashable_key_to_pyobj(k), buf, memo)?;
+            pickle_serialize_p2(v, buf, memo)?;
+        }
+        buf.push(b'u');
+    }
+    buf.extend_from_slice(b"tR");
+    Ok(())
+}
+
 // ── Protocol 2 (binary) serialization ──
 
 fn p2_emit_put(buf: &mut Vec<u8>, memo: &mut u32) {
@@ -2338,6 +2466,10 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
+                pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;
+                return Ok(());
+            }
             let (class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
             // c__main__\nClassName\n( {state_dict} t R
             buf.extend_from_slice(b"c__main__\n");
@@ -2786,6 +2918,52 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         index: SyncUsize::new(0),
                     },
                 ))))
+            }
+            (
+                "__builtin__" | "builtins",
+                "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool",
+            ) => Ok(PyObject::builtin_type(CompactString::from(name.as_str()))),
+            ("collections", "defaultdict") | ("__main__", "defaultdict") => {
+                let collections = create_collections_module();
+                let cls = collections.get_attr("defaultdict").ok_or_else(|| {
+                    PyException::runtime_error("UnpicklingError: missing collections.defaultdict")
+                })?;
+                let result = PyObject::instance(cls);
+                let raw_factory = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let factory = if let PyObjectPayload::Str(s) = &raw_factory.payload {
+                    if let Some(name) = s.as_str().strip_prefix("__ferrython_builtin_type__:") {
+                        PyObject::builtin_type(CompactString::from(name))
+                    } else {
+                        raw_factory.clone()
+                    }
+                } else {
+                    raw_factory.clone()
+                };
+                if let PyObjectPayload::Instance(inst) = &result.payload {
+                    if !matches!(&factory.payload, PyObjectPayload::None) {
+                        if let Some(dst) = inst.dict_storage.as_ref() {
+                            dst.write().insert(
+                                HashableKey::str_key(CompactString::from(
+                                    "__defaultdict_factory__",
+                                )),
+                                factory.clone(),
+                            );
+                        }
+                    }
+                    inst.attrs
+                        .write()
+                        .insert(CompactString::from("default_factory"), factory);
+                    if let Some(data) = arg_list.get(1) {
+                        if let PyObjectPayload::Dict(map) = &data.payload {
+                            if let Some(dst) = inst.dict_storage.as_ref() {
+                                for (k, v) in map.read().iter() {
+                                    dst.write().insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(result)
             }
             ("operator", "attrgetter" | "itemgetter" | "methodcaller") => {
                 let module = create_operator_module();

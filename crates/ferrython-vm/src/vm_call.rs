@@ -3770,11 +3770,21 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::NativeClosure(nc) => {
                         let mut counter_kw_marker = false;
+                        let mut defaultdict_kw_marker = false;
                         let mut adjusted_kwargs = kwargs;
                         if !adjusted_kwargs.is_empty() && nc.name.as_str().starts_with("Counter.") {
                             counter_kw_marker = true;
                             adjusted_kwargs.push((
                                 CompactString::from("__counter_kwargs__"),
+                                PyObject::bool_val(true),
+                            ));
+                        }
+                        if !adjusted_kwargs.is_empty()
+                            && nc.name.as_str().starts_with("defaultdict.")
+                        {
+                            defaultdict_kw_marker = true;
+                            adjusted_kwargs.push((
+                                CompactString::from("__defaultdict_kwargs__"),
                                 PyObject::bool_val(true),
                             ));
                         }
@@ -3787,6 +3797,14 @@ impl VirtualMachine {
                             if counter_kw_marker {
                                 kw_map.insert(
                                     HashableKey::str_key(CompactString::from("__counter_kwargs__")),
+                                    PyObject::bool_val(true),
+                                );
+                            }
+                            if defaultdict_kw_marker {
+                                kw_map.insert(
+                                    HashableKey::str_key(CompactString::from(
+                                        "__defaultdict_kwargs__",
+                                    )),
                                     PyObject::bool_val(true),
                                 );
                             }

@@ -265,6 +265,14 @@ fn compare_dict_objects(
     }))
 }
 
+fn instance_dict_storage(obj: &PyObjectRef) -> Option<&std::rc::Rc<PyCell<FxHashKeyMap>>> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        inst.dict_storage.as_ref()
+    } else {
+        None
+    }
+}
+
 fn compare_mapping_proxy_objects(
     a: &PyObjectRef,
     b: &PyObjectRef,
@@ -317,6 +325,31 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         | (PyObjectPayload::MappingProxy(_), PyObjectPayload::Dict(_))
         | (PyObjectPayload::MappingProxy(_), PyObjectPayload::MappingProxy(_)) => {
             return compare_mapping_proxy_objects(a, b, op);
+        }
+        (PyObjectPayload::Instance(_), PyObjectPayload::Dict(b_map))
+            if instance_dict_storage(a).is_some() =>
+        {
+            let a_storage = instance_dict_storage(a).unwrap();
+            let a_read = a_storage.read();
+            let b_read = b_map.read();
+            return compare_dict_objects(a, b, &a_read, &b_read, op);
+        }
+        (PyObjectPayload::Dict(a_map), PyObjectPayload::Instance(_))
+            if instance_dict_storage(b).is_some() =>
+        {
+            let b_storage = instance_dict_storage(b).unwrap();
+            let a_read = a_map.read();
+            let b_read = b_storage.read();
+            return compare_dict_objects(a, b, &a_read, &b_read, op);
+        }
+        (PyObjectPayload::Instance(_), PyObjectPayload::Instance(_))
+            if instance_dict_storage(a).is_some() && instance_dict_storage(b).is_some() =>
+        {
+            let a_storage = instance_dict_storage(a).unwrap();
+            let b_storage = instance_dict_storage(b).unwrap();
+            let a_read = a_storage.read();
+            let b_read = b_storage.read();
+            return compare_dict_objects(a, b, &a_read, &b_read, op);
         }
         _ => {}
     }
