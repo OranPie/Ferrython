@@ -71,7 +71,17 @@ impl Parser {
 
     fn parse_expression_or_assignment(&mut self) -> Result<Statement, ParseError> {
         let loc = self.current_location();
-        let expr = self.parse_test_list_star_expr()?;
+        let starts_with_py2_candidate = matches!(&self.peek().kind, TokenKind::Name(name) if name.as_str() == "print" || name.as_str() == "exec");
+        let expr = match self.parse_test_list_star_expr() {
+            Ok(expr) => expr,
+            Err(err) if starts_with_py2_candidate => {
+                return Err(ParseError::new(
+                    ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                    err.span,
+                ));
+            }
+            Err(err) => return Err(err),
+        };
 
         // Check for augmented assignment
         if let Some(op) = self.try_parse_aug_assign_op() {
@@ -138,6 +148,14 @@ impl Parser {
 
         // Expression statement
         if !self.check_newline_or_eof() {
+            let py2_candidate_has_invalid_expr = self.is_py2_missing_parens_candidate(&expr)
+                && self.py2_print_candidate_is_invalid_expression();
+            if py2_candidate_has_invalid_expr {
+                return Err(ParseError::new(
+                    ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                    self.peek().span,
+                ));
+            }
             if let Some(message) = self.py2_missing_parens_hint(&expr) {
                 return Err(ParseError::new(
                     ParseErrorKind::SyntaxErrorMessage(message),
@@ -159,10 +177,17 @@ impl Parser {
         ))
     }
 
+    fn is_py2_missing_parens_candidate(&self, expr: &Expression) -> bool {
+        matches!(&expr.node, ExpressionKind::Name { id, .. } if id.as_str() == "print" || id.as_str() == "exec")
+    }
+
     fn py2_missing_parens_hint(&self, expr: &Expression) -> Option<String> {
         let ExpressionKind::Name { id, .. } = &expr.node else {
             return None;
         };
+        if self.py2_print_candidate_is_invalid_expression() {
+            return None;
+        }
         match id.as_str() {
             "print" => {
                 let (args, soft_space) = self.py2_print_suggestion_args();
@@ -179,6 +204,15 @@ impl Parser {
             "exec" => Some("Missing parentheses in call to 'exec'".to_string()),
             _ => None,
         }
+    }
+
+    fn py2_print_candidate_is_invalid_expression(&self) -> bool {
+        let mut parser = Parser {
+            tokens: self.tokens.clone(),
+            pos: self.pos,
+            _filename: self._filename.clone(),
+        };
+        parser.parse_test_list_star_expr().is_err()
     }
 
     fn py2_print_suggestion_args(&self) -> (String, bool) {
