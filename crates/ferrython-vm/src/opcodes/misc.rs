@@ -32,6 +32,17 @@ impl VirtualMachine {
                     .push(PyObject::builtin_function(intern_or_new("__build_class__")));
             }
             Opcode::SetupAnnotations => {
+                let exec_locals = self.vm_frame().exec_locals.clone();
+                if let Some(locals) = exec_locals {
+                    if self.exec_locals_get(&locals, "__annotations__")?.is_none() {
+                        self.exec_locals_set(
+                            &locals,
+                            "__annotations__",
+                            PyObject::dict(new_fx_hashkey_map()),
+                        )?;
+                    }
+                    return Ok(None);
+                }
                 let frame = self.vm_frame();
                 // In function scope, __annotations__ may be a fast local (varname).
                 // Check if it's registered as a varname and use fast locals.
