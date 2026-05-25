@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T07:37:28+08:00
+Last updated: 2026-05-26T07:50:05+08:00
 
 ## 已提交成果
 
@@ -47,6 +47,7 @@ Last updated: 2026-05-26T07:37:28+08:00
   - `WeakKeyDictionary(dict_with_custom_hash_keys)` 保留原 key 对象 identity，不再因 native 层重新 hash 或 kwargs marker 探测误判导致容器为空。
   - `HashableKey` 增加原对象取回辅助；VM 的 custom key `__eq__` 分发遇到 `NotImplemented` 时按未处理返回，不再把 `NotImplemented` 当 truthy 导致 key 与无关对象误相等。
   - 普通 dict 与 weakdict 的 `keys()` / `values()` / `items()` / `get()` 增加 CPython 风格多余参数校验，关闭 weakdict mapping protocol 中对应 TypeError 失败。
+  - `weakref.finalize` 支持真实 kwargs 打包、deprecated `obj=` / `func=` keyword 形态告警、`peek()` / `detach()` 返回 kwargs dict，以及手动调用后 disarm；关闭 `FinalizeTestCase.test_arg_errors`。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -100,9 +101,15 @@ Last updated: 2026-05-26T07:37:28+08:00
     - `run=4 pass=4 fail=0 err=0 skip=0`
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakKeyDictionaryTestCase.test_items test_weakref.WeakKeyDictionaryTestCase.test_keys test_weakref.WeakKeyDictionaryTestCase.test_values test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_items test_weakref.WeakValueDictionaryTestCase.test_keys test_weakref.WeakValueDictionaryTestCase.test_values`
     - `run=8 pass=8 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.FinalizeTestCase.test_arg_errors`
+    - `run=1 pass=1 fail=0 err=0 skip=0`
+  - finalize/weakdict regression:
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
   - smoke: `WeakKeyDictionary({custom_hash_object: value})` 后 `list(keys)`、`contains`、`get` 均保留同一 key identity。
   - smoke: custom key `__eq__` 返回 `NotImplemented` 时，`'__weakdict_kwargs__' in {custom_key: value}` 为 `False`。
   - smoke: `dict.keys(None)` / `dict.values(None)` / `dict.items(None)` / `dict.get(1, 2, 3)` 均抛 `TypeError`。
+  - smoke: `weakref.finalize(a, func=f, y=3)` 触发 `DeprecationWarning`，`peek()` 返回 `(a, f, (), {'y': 3})`，第一次调用返回回调结果，第二次返回 `None`。
 - 本轮 focused 通过：
   - `test_iter.TestCase.test_iter_class_for`
   - `test_iter.TestCase.test_seq_class_for`
@@ -186,12 +193,12 @@ Last updated: 2026-05-26T07:37:28+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 dict/weakdict mapping 方法参数校验。
+- 当前待提交代码修复涉及 weakref.finalize kwargs/状态兼容。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过。下一步优先继续扫描 weakref/deque 小批候选或转向运行速度热点候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors` 已关闭。下一步优先继续扫描 weakref finalize 自动 GC 回调、weakref ref/proxy 或 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。

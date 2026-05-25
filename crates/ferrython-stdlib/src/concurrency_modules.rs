@@ -8,6 +8,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1488,6 +1489,78 @@ pub fn create_weakref_module() -> PyObjectRef {
         )
     }
 
+    fn finalize_kwargs_marker_key() -> HashableKey {
+        HashableKey::str_key(CompactString::from("__finalize_kwargs__"))
+    }
+
+    fn extract_marked_kwargs(
+        args: &[PyObjectRef],
+        marker: HashableKey,
+    ) -> (Vec<PyObjectRef>, IndexMap<HashableKey, PyObjectRef>) {
+        let Some((last, rest)) = args.split_last() else {
+            return (Vec::new(), IndexMap::new());
+        };
+        let PyObjectPayload::Dict(map) = &last.payload else {
+            return (args.to_vec(), IndexMap::new());
+        };
+        let map = map.read();
+        if !map.contains_key(&marker) {
+            return (args.to_vec(), IndexMap::new());
+        }
+        let kwargs = map
+            .iter()
+            .filter(|(key, _)| *key != &marker)
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        (rest.to_vec(), kwargs)
+    }
+
+    fn kwargs_without_keys(
+        kwargs: &IndexMap<HashableKey, PyObjectRef>,
+        names: &[&str],
+    ) -> IndexMap<HashableKey, PyObjectRef> {
+        kwargs
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(key, HashableKey::Str(s) if names.iter().any(|name| s.as_str() == *name))
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    fn kwargs_to_call_pairs(
+        kwargs: &IndexMap<HashableKey, PyObjectRef>,
+    ) -> PyResult<Vec<(CompactString, PyObjectRef)>> {
+        let mut pairs = Vec::with_capacity(kwargs.len());
+        for (key, value) in kwargs {
+            let HashableKey::Str(name) = key else {
+                return Err(PyException::type_error("keywords must be strings"));
+            };
+            pairs.push((CompactString::from(name.as_str()), value.clone()));
+        }
+        Ok(pairs)
+    }
+
+    fn warn_finalize_keyword_form() -> PyResult<()> {
+        if let Some(warnings) = crate::load_module("warnings") {
+            if let (Some(warn_fn), Some(dep_cls)) = (
+                warnings.get_attr("warn"),
+                warnings.get_attr("DeprecationWarning"),
+            ) {
+                call_callable(
+                    &warn_fn,
+                    &[
+                        PyObject::str_val(CompactString::from(
+                            "Passing obj or func as keyword arguments to weakref.finalize is deprecated",
+                        )),
+                        dep_cls,
+                    ],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn weak_mapping_eq(left: &[(PyObjectRef, PyObjectRef)], other: &PyObjectRef) -> PyResult<bool> {
         if let Some(items_fn) = other.get_attr("items") {
             let other_items = ferrython_core::object::call_callable(&items_fn, &[])?;
@@ -2558,16 +2631,46 @@ pub fn create_weakref_module() -> PyObjectRef {
             (
                 "finalize",
                 PyObject::native_closure("finalize", |args: &[PyObjectRef]| {
-                    if args.len() < 2 {
-                        return Err(PyException::type_error("finalize requires obj and func"));
-                    }
-                    let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
-                    let func = args[1].clone();
-                    let extra = if args.len() > 2 {
-                        args[2..].to_vec()
+                    let marker = finalize_kwargs_marker_key();
+                    let (pos_args, kwargs) = extract_marked_kwargs(args, marker);
+                    let (obj, func, extra_start, call_kwargs) = if pos_args.len() >= 2 {
+                        (pos_args[0].clone(), pos_args[1].clone(), 2, kwargs)
                     } else {
-                        vec![]
+                        warn_finalize_keyword_form()?;
+                        let obj = if !pos_args.is_empty() {
+                            Some(pos_args[0].clone())
+                        } else {
+                            kwargs
+                                .get(&HashableKey::str_key(CompactString::from("obj")))
+                                .cloned()
+                        };
+                        let func = kwargs
+                            .get(&HashableKey::str_key(CompactString::from("func")))
+                            .cloned();
+                        let Some(obj) = obj else {
+                            return Err(PyException::type_error("finalize requires obj and func"));
+                        };
+                        let Some(func) = func else {
+                            return Err(PyException::type_error("finalize requires obj and func"));
+                        };
+                        (
+                            obj,
+                            func,
+                            pos_args.len(),
+                            kwargs_without_keys(
+                                &kwargs,
+                                if pos_args.is_empty() {
+                                    &["obj", "func"]
+                                } else {
+                                    &["func"]
+                                },
+                            ),
+                        )
                     };
+                    let weak: PyWeakRef = PyObjectRef::downgrade(&obj);
+                    let extra = pos_args[extra_start..].to_vec();
+                    let kwargs_obj = PyObject::dict(call_kwargs.clone());
+                    let kwargs_for_call = kwargs_to_call_pairs(&call_kwargs)?;
 
                     let cls =
                         PyObject::class(CompactString::from("finalize"), vec![], IndexMap::new());
@@ -2575,25 +2678,38 @@ pub fn create_weakref_module() -> PyObjectRef {
                     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                         let mut attrs = inst_data.attrs.write();
 
-                        // alive — True if the weak ref is still valid (simplified: always True while ref exists)
+                        let alive_state = Rc::new(Cell::new(true));
+
+                        // alive — True if the finalizer is still armed.
                         attrs.insert(CompactString::from("alive"), PyObject::bool_val(true));
 
                         attrs.insert(CompactString::from("_func"), func.clone());
                         attrs.insert(CompactString::from("_args"), PyObject::tuple(extra.clone()));
+                        attrs.insert(CompactString::from("_kwargs"), kwargs_obj.clone());
 
                         // detach() — disarm the finalizer, return (obj, func, args, kwargs) or None
                         let w_det = weak.clone();
                         let f_det = func.clone();
                         let e_det = extra.clone();
+                        let k_det = kwargs_obj.clone();
+                        let alive_det = alive_state.clone();
+                        let attrs_det = inst_data.attrs.clone();
                         attrs.insert(
                             CompactString::from("detach"),
                             PyObject::native_closure("finalize.detach", move |_| {
+                                if !alive_det.replace(false) {
+                                    return Ok(PyObject::none());
+                                }
+                                attrs_det.write().insert(
+                                    CompactString::from("alive"),
+                                    PyObject::bool_val(false),
+                                );
                                 match w_det.upgrade() {
                                     Some(obj) => Ok(PyObject::tuple(vec![
                                         obj,
                                         f_det.clone(),
                                         PyObject::tuple(e_det.clone()),
-                                        PyObject::none(), // kwargs placeholder
+                                        k_det.clone(),
                                     ])),
                                     None => Ok(PyObject::none()),
                                 }
@@ -2604,15 +2720,20 @@ pub fn create_weakref_module() -> PyObjectRef {
                         let w_peek = weak.clone();
                         let f_peek = func.clone();
                         let e_peek = extra.clone();
+                        let k_peek = kwargs_obj.clone();
+                        let alive_peek = alive_state.clone();
                         attrs.insert(
                             CompactString::from("peek"),
                             PyObject::native_closure("finalize.peek", move |_| {
+                                if !alive_peek.get() {
+                                    return Ok(PyObject::none());
+                                }
                                 match w_peek.upgrade() {
                                     Some(obj) => Ok(PyObject::tuple(vec![
                                         obj,
                                         f_peek.clone(),
                                         PyObject::tuple(e_peek.clone()),
-                                        PyObject::none(),
+                                        k_peek.clone(),
                                     ])),
                                     None => Ok(PyObject::none()),
                                 }
@@ -2623,22 +2744,32 @@ pub fn create_weakref_module() -> PyObjectRef {
                         let _w_call = weak;
                         let f_call = func;
                         let e_call = extra;
+                        let k_call = kwargs_for_call;
+                        let alive_call = alive_state.clone();
+                        let attrs_call = inst_data.attrs.clone();
                         attrs.insert(
                             CompactString::from("__call__"),
                             PyObject::native_closure("finalize.__call__", move |_| {
+                                if !alive_call.replace(false) {
+                                    return Ok(PyObject::none());
+                                }
+                                attrs_call.write().insert(
+                                    CompactString::from("alive"),
+                                    PyObject::bool_val(false),
+                                );
                                 // Invoke callback with stored args (best-effort for native closures)
                                 match &f_call.payload {
-                                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&e_call),
-                                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&e_call),
-                                    _ => {
-                                        // For Python-defined functions, we'd need VM access.
-                                        // Use deferred call mechanism.
-                                        ferrython_core::error::request_vm_call(
-                                            f_call.clone(),
-                                            e_call.clone(),
-                                        );
-                                        Ok(PyObject::none())
+                                    PyObjectPayload::NativeFunction(nf) if k_call.is_empty() => {
+                                        (nf.func)(&e_call)
                                     }
+                                    PyObjectPayload::NativeClosure(nc) if k_call.is_empty() => {
+                                        (nc.func)(&e_call)
+                                    }
+                                    _ => ferrython_core::object::call_callable_kw(
+                                        &f_call,
+                                        &e_call,
+                                        k_call.clone(),
+                                    ),
                                 }
                             }),
                         );
