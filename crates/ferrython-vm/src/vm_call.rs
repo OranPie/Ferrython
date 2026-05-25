@@ -3773,6 +3773,17 @@ impl VirtualMachine {
                             }
                             return (nf_data.func)(&all);
                         }
+                        if nf_data.name.as_str() == "WeakValueDictionary"
+                            || nf_data.name.as_str() == "WeakKeyDictionary"
+                        {
+                            let instance = (nf_data.func)(&pos_args)?;
+                            if !kwargs.is_empty() {
+                                if let Some(update) = instance.get_attr("update") {
+                                    self.call_object_kw(update, vec![], kwargs)?;
+                                }
+                            }
+                            return Ok(instance);
+                        }
                         if nf_data.name.as_str() == "functools.partial" {
                             // functools.partial(func, *args, **kwargs)
                             if pos_args.is_empty() {
@@ -4091,6 +4102,7 @@ impl VirtualMachine {
                     PyObjectPayload::NativeClosure(nc) => {
                         let mut counter_kw_marker = false;
                         let mut defaultdict_kw_marker = false;
+                        let mut weakdict_kw_marker = false;
                         let mut adjusted_kwargs = kwargs;
                         if !adjusted_kwargs.is_empty() && nc.name.as_str().starts_with("Counter.") {
                             counter_kw_marker = true;
@@ -4105,6 +4117,16 @@ impl VirtualMachine {
                             defaultdict_kw_marker = true;
                             adjusted_kwargs.push((
                                 CompactString::from("__defaultdict_kwargs__"),
+                                PyObject::bool_val(true),
+                            ));
+                        }
+                        if !adjusted_kwargs.is_empty()
+                            && (nc.name.as_str() == "WeakValueDictionary.update"
+                                || nc.name.as_str() == "WeakKeyDictionary.update")
+                        {
+                            weakdict_kw_marker = true;
+                            adjusted_kwargs.push((
+                                CompactString::from("__weakdict_kwargs__"),
                                 PyObject::bool_val(true),
                             ));
                         }
@@ -4124,6 +4146,14 @@ impl VirtualMachine {
                                 kw_map.insert(
                                     HashableKey::str_key(CompactString::from(
                                         "__defaultdict_kwargs__",
+                                    )),
+                                    PyObject::bool_val(true),
+                                );
+                            }
+                            if weakdict_kw_marker {
+                                kw_map.insert(
+                                    HashableKey::str_key(CompactString::from(
+                                        "__weakdict_kwargs__",
                                     )),
                                     PyObject::bool_val(true),
                                 );

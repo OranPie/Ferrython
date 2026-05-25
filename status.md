@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T23:53:20+08:00
+Last updated: 2026-05-26T07:26:53+08:00
 
 ## 已提交成果
 
@@ -40,6 +40,12 @@ Last updated: 2026-05-25T23:53:20+08:00
   - 保持 exhausted sink-state，重复 `next()` 不再重新访问源对象。
 
 ## 本轮修复成果
+
+- 2026-05-26 追加：
+  - `WeakValueDictionary` / `WeakKeyDictionary` 补齐 mapping 构造、`update`、`setdefault`、`pop`、`popitem`、`clear`、`copy`、`keys`、`values`、`items`、`__iter__`、`__bool__`、repr 和 weakref helper 基础语义。
+  - weakdict constructor 支持 mapping / iterable-of-pairs / kwargs，类级 `Weak*Dictionary.__init__` / `update` 描述符可以按 CPython 方式校验 self 并分派到实例方法。
+  - `WeakKeyDictionary(dict_with_custom_hash_keys)` 保留原 key 对象 identity，不再因 native 层重新 hash 或 kwargs marker 探测误判导致容器为空。
+  - `HashableKey` 增加原对象取回辅助；VM 的 custom key `__eq__` 分发遇到 `NotImplemented` 时按未处理返回，不再把 `NotImplemented` 当 truthy 导致 key 与无关对象误相等。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -85,7 +91,14 @@ Last updated: 2026-05-25T23:53:20+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 26s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 48.42s`
+- weakdict focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_valued_dict_popitem test_weakref.MappingTestCase.test_weak_keyed_dict_popitem test_weakref.MappingTestCase.test_weak_valued_dict_setdefault test_weakref.MappingTestCase.test_weak_keyed_dict_setdefault test_weakref.MappingTestCase.test_weak_valued_dict_update test_weakref.MappingTestCase.test_weak_keyed_dict_update test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_weak_keyed_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_weak_valued_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_misc test_weakref.MappingTestCase.test_weak_keyed_delitem test_weakref.MappingTestCase.test_weak_valued_delitem test_weakref.MappingTestCase.test_weak_keyed_bad_delitem test_weakref.MappingTestCase.test_make_weak_valued_dict_repr test_weakref.MappingTestCase.test_make_weak_keyed_dict_repr test_weakref.MappingTestCase.test_weak_keyed_iters test_weakref.MappingTestCase.test_weak_valued_iters`
+    - `run=18 pass=18 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_copy_weakkeydict test_copy.TestCopy.test_copy_weakvaluedict test_copy.TestCopy.test_deepcopy_weakkeydict test_copy.TestCopy.test_deepcopy_weakvaluedict`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - smoke: `WeakKeyDictionary({custom_hash_object: value})` 后 `list(keys)`、`contains`、`get` 均保留同一 key identity。
+  - smoke: custom key `__eq__` 返回 `NotImplemented` 时，`'__weakdict_kwargs__' in {custom_key: value}` 为 `False`。
 - 本轮 focused 通过：
   - `test_iter.TestCase.test_iter_class_for`
   - `test_iter.TestCase.test_seq_class_for`
@@ -169,12 +182,12 @@ Last updated: 2026-05-25T23:53:20+08:00
 
 ## 当前工作树
 
-- 本轮代码修复涉及 weakdict copy/deepcopy、WeakValueDictionary key identity、VM 当前帧快照保活、cycle GC candidate refinement，以及 copy protocol weakdict 专用路径。
+- 当前待提交代码修复涉及 weakdict mapping API、weakdict kwargs/类级方法兼容、HashableKey 原对象辅助，以及 VM custom key `NotImplemented` 相等语义。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；下一步优先继续扫描 weakref/deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过。下一步优先继续扫描 weakref/deque 小批候选或转向运行速度热点候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。

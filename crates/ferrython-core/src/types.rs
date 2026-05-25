@@ -679,6 +679,16 @@ impl HashableKey {
         }
     }
 
+    #[inline]
+    pub fn original_object(&self) -> Option<PyObjectRef> {
+        match self {
+            HashableKey::Identity(_, obj) | HashableKey::Custom { object: obj, .. } => {
+                Some(obj.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Return a u64 hash for deterministic ordering (used by frozenset key sorting).
     #[inline]
     pub fn hash_key(&self) -> u64 {

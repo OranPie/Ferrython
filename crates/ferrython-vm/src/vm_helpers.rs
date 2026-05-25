@@ -337,6 +337,9 @@ impl VirtualMachine {
             let vm = unsafe { &mut *vm_ptr };
             if let Some(eq_method) = a.get_attr("__eq__") {
                 let result = vm.call_object(eq_method, vec![b.clone()])?;
+                if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                    return Ok(None);
+                }
                 return Ok(Some(result.is_truthy()));
             }
             Ok(None)

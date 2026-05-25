@@ -243,6 +243,62 @@ fn native_function_binds_to_class(class: &PyObjectRef, attr_name: &str, native_n
     false
 }
 
+fn weakdict_class_attr(native_name: &str, attr_name: &str) -> Option<PyObjectRef> {
+    if !matches!(native_name, "WeakValueDictionary" | "WeakKeyDictionary") {
+        return None;
+    }
+    match attr_name {
+        "__init__" | "update" => {
+            let owner_name = native_name.to_string();
+            let method_name = attr_name.to_string();
+            let qualname = format!("{}.{}", owner_name, method_name);
+            let message = format!(
+                "{}() missing 1 required positional argument: 'self'",
+                qualname
+            );
+            Some(PyObject::native_closure(&qualname, move |args| {
+                if args.is_empty() {
+                    Err(PyException::type_error(message.clone()))
+                } else if args[0]
+                    .get_attr(match owner_name.as_str() {
+                        "WeakValueDictionary" => "__weakvaluedict__",
+                        "WeakKeyDictionary" => "__weakkeydict__",
+                        _ => "",
+                    })
+                    .is_none()
+                {
+                    Err(PyException::type_error(format!(
+                        "descriptor '{}' for '{}' objects does not apply to '{}'",
+                        method_name,
+                        owner_name,
+                        args[0].type_name()
+                    )))
+                } else if method_name == "__init__" {
+                    if let Some(clear) = args[0].get_attr("clear") {
+                        call_callable(&clear, &[])?;
+                    }
+                    if args.len() > 1 {
+                        if let Some(update) = args[0].get_attr("update") {
+                            call_callable(&update, &args[1..])?;
+                        }
+                    }
+                    Ok(PyObject::none())
+                } else if let Some(method) = args[0].get_attr(&method_name) {
+                    call_callable(&method, &args[1..])
+                } else {
+                    Err(PyException::type_error(format!(
+                        "descriptor '{}' for '{}' objects does not apply to '{}'",
+                        method_name,
+                        owner_name,
+                        args[0].type_name()
+                    )))
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
 #[inline]
 fn ast_constant_alias_attr(inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
     if !matches!(name, "n" | "s" | "kind") {
@@ -2766,6 +2822,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     Some(PyObject::str_val(CompactString::from("heapq")))
                 } else if name.starts_with("_heapq.") {
                     Some(PyObject::str_val(CompactString::from("_heapq")))
+                } else if matches!(name, "WeakValueDictionary" | "WeakKeyDictionary") {
+                    Some(PyObject::str_val(CompactString::from("weakref")))
                 } else {
                     Some(PyObject::str_val(CompactString::from("builtins")))
                 }
@@ -2795,7 +2853,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }))
                 }))
             }
-            _ => None,
+            _ => weakdict_class_attr(nf.name.as_str(), name),
         },
         PyObjectPayload::BuiltinFunction(fname) => match name {
             "__name__" | "__qualname__" => Some(PyObject::str_val((**fname).clone())),

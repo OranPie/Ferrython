@@ -1,10 +1,10 @@
 //! Concurrency stdlib modules (threading, weakref, gc, _thread)
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args_min, make_builtin, make_module, CompareOp, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, PyWeakRef,
+    call_callable, check_args_min, make_builtin, make_module, CompareOp, FxHashKeyMap, PyCell,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, PyWeakRef, SyncUsize, VecIterData,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1255,6 +1255,239 @@ pub fn create_weakref_module() -> PyObjectRef {
             .collect()
     }
 
+    fn weak_iter(items: Vec<PyObjectRef>) -> PyObjectRef {
+        PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData {
+            items,
+            index: SyncUsize::new(0),
+        })))
+    }
+
+    fn weak_mapping_items(obj: &PyObjectRef) -> PyResult<Vec<(PyObjectRef, PyObjectRef)>> {
+        match &obj.payload {
+            PyObjectPayload::Dict(map) => {
+                return Ok(map
+                    .read()
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.original_object().unwrap_or_else(|| k.to_object()),
+                            v.clone(),
+                        )
+                    })
+                    .collect())
+            }
+            PyObjectPayload::Instance(inst) => {
+                if let Some(storage) = inst.dict_storage.as_ref() {
+                    return Ok(storage
+                        .read()
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.original_object().unwrap_or_else(|| k.to_object()),
+                                v.clone(),
+                            )
+                        })
+                        .collect());
+                }
+                if let Some(items_fn) = obj.get_attr("items") {
+                    let items = call_callable(&items_fn, &[])?;
+                    return items
+                        .to_list()?
+                        .into_iter()
+                        .map(|item| {
+                            let pair = item.to_list()?;
+                            if pair.len() != 2 {
+                                return Err(PyException::value_error(
+                                    "dictionary update sequence element has length other than 2",
+                                ));
+                            }
+                            Ok((pair[0].clone(), pair[1].clone()))
+                        })
+                        .collect();
+                }
+                if let Some(keys_fn) = obj.get_attr("keys") {
+                    let keys = call_callable(&keys_fn, &[])?;
+                    let mut items = Vec::new();
+                    for key in keys.to_list()? {
+                        let value = obj.get_item(&key)?;
+                        items.push((key, value));
+                    }
+                    return Ok(items);
+                }
+            }
+            _ => {}
+        }
+        obj.to_list()?
+            .into_iter()
+            .map(|item| {
+                let pair = item.to_list()?;
+                if pair.len() != 2 {
+                    return Err(PyException::value_error(
+                        "dictionary update sequence element has length other than 2",
+                    ));
+                }
+                Ok((pair[0].clone(), pair[1].clone()))
+            })
+            .collect()
+    }
+
+    fn weak_key_update_from_dict_storage(
+        storage: &WeakKeyStorage,
+        source: &Rc<PyCell<FxHashKeyMap>>,
+    ) -> PyResult<()> {
+        for (key, value) in source.read().iter() {
+            weak_key_set(
+                storage,
+                key.original_object().unwrap_or_else(|| key.to_object()),
+                value.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn weak_ref_object(target: &PyObjectRef) -> PyObjectRef {
+        let weak = PyObjectRef::downgrade(target);
+        let cls = PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            attrs.insert(
+                CompactString::from("__weakref_ref__"),
+                PyObject::bool_val(true),
+            );
+            let w_call = weak.clone();
+            attrs.insert(
+                CompactString::from("__call__"),
+                PyObject::native_closure("weakref.__call__", move |_| Ok(upgrade_or_none(&w_call))),
+            );
+            let w_repr = weak.clone();
+            attrs.insert(
+                CompactString::from("__repr__"),
+                PyObject::native_closure("weakref.__repr__", move |_| {
+                    if w_repr.upgrade().is_some() {
+                        Ok(PyObject::str_val(CompactString::from("<weakref (alive)>")))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from("<weakref (dead)>")))
+                    }
+                }),
+            );
+        }
+        inst
+    }
+
+    fn weak_value_set(
+        storage: &WeakValueStorage,
+        key_obj: PyObjectRef,
+        value: PyObjectRef,
+    ) -> PyResult<()> {
+        let key = key_obj.to_hashable_key()?;
+        let weak = PyObjectRef::downgrade(&value);
+        storage.write().insert(key, (key_obj, weak));
+        Ok(())
+    }
+
+    fn weak_value_get_alive(
+        storage: &WeakValueStorage,
+        key_obj: &PyObjectRef,
+    ) -> PyResult<Option<PyObjectRef>> {
+        let key = key_obj.to_hashable_key()?;
+        let mut store = storage.write();
+        match store.get(&key).map(|(_, weak)| weak.upgrade()) {
+            Some(Some(obj)) => Ok(Some(obj)),
+            Some(None) => {
+                store.shift_remove(&key);
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn weak_key_require_weakable(key: &PyObjectRef) -> PyResult<()> {
+        match &key.payload {
+            PyObjectPayload::Int(_)
+            | PyObjectPayload::Bool(_)
+            | PyObjectPayload::Float(_)
+            | PyObjectPayload::Complex { .. }
+            | PyObjectPayload::Str(_)
+            | PyObjectPayload::Bytes(_)
+            | PyObjectPayload::ByteArray(_)
+            | PyObjectPayload::Tuple(_)
+            | PyObjectPayload::List(_)
+            | PyObjectPayload::Dict(_)
+            | PyObjectPayload::Set(_)
+            | PyObjectPayload::FrozenSet(_) => Err(PyException::type_error(format!(
+                "cannot create weak reference to '{}' object",
+                key.type_name()
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    fn weak_key_set(
+        storage: &WeakKeyStorage,
+        key: PyObjectRef,
+        value: PyObjectRef,
+    ) -> PyResult<()> {
+        weak_key_require_weakable(&key)?;
+        let ptr = PyObjectRef::as_ptr(&key) as usize;
+        let weak = PyObjectRef::downgrade(&key);
+        storage.write().insert(ptr, (weak, value));
+        Ok(())
+    }
+
+    fn weak_key_get_alive(
+        storage: &WeakKeyStorage,
+        key: &PyObjectRef,
+        strict: bool,
+    ) -> PyResult<Option<PyObjectRef>> {
+        if strict {
+            weak_key_require_weakable(key)?;
+        }
+        let ptr = PyObjectRef::as_ptr(key) as usize;
+        let mut store = storage.write();
+        match store
+            .get(&ptr)
+            .map(|(weak, val)| (weak.upgrade().is_some(), val.clone()))
+        {
+            Some((true, val)) => Ok(Some(val)),
+            Some((false, _)) => {
+                store.shift_remove(&ptr);
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn py_default_key_error(key: &PyObjectRef) -> PyException {
+        PyException::new(ExceptionKind::KeyError, key.repr())
+    }
+
+    fn weak_kwargs_marker_key() -> HashableKey {
+        HashableKey::str_key(CompactString::from("__weakdict_kwargs__"))
+    }
+
+    fn weak_kwargs_items(obj: &PyObjectRef) -> Option<Vec<(PyObjectRef, PyObjectRef)>> {
+        let PyObjectPayload::Dict(map) = &obj.payload else {
+            return None;
+        };
+        let marker = weak_kwargs_marker_key();
+        let map = map.read();
+        if !map.contains_key(&marker) {
+            return None;
+        }
+        Some(
+            map.iter()
+                .filter(|(k, _)| *k != &marker)
+                .map(|(k, v)| {
+                    (
+                        k.original_object().unwrap_or_else(|| k.to_object()),
+                        v.clone(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn weak_mapping_eq(left: &[(PyObjectRef, PyObjectRef)], other: &PyObjectRef) -> PyResult<bool> {
         if let Some(items_fn) = other.get_attr("items") {
             let other_items = ferrython_core::object::call_callable(&items_fn, &[])?;
@@ -1287,6 +1520,722 @@ pub fn create_weakref_module() -> PyObjectRef {
         } else {
             Ok(false)
         }
+    }
+
+    fn weak_value_update_args(storage: &WeakValueStorage, args: &[PyObjectRef]) -> PyResult<()> {
+        let (source, kwargs) = match args {
+            [] => (None, None),
+            [only] => {
+                if let Some(items) = weak_kwargs_items(only) {
+                    (None, Some(items))
+                } else {
+                    (Some(only), None)
+                }
+            }
+            [source, kwargs] => match weak_kwargs_items(kwargs) {
+                Some(items) => (Some(source), Some(items)),
+                None => {
+                    return Err(PyException::type_error(
+                        "WeakValueDictionary expected at most 1 argument",
+                    ))
+                }
+            },
+            _ => {
+                return Err(PyException::type_error(
+                    "WeakValueDictionary expected at most 1 argument",
+                ))
+            }
+        };
+        if let Some(source) = source {
+            for (key, value) in weak_mapping_items(source)? {
+                weak_value_set(storage, key, value)?;
+            }
+        }
+        if let Some(items) = kwargs {
+            for (key, value) in items {
+                weak_value_set(storage, key, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn weak_key_update_args(storage: &WeakKeyStorage, args: &[PyObjectRef]) -> PyResult<()> {
+        let (source, kwargs) = match args {
+            [] => (None, None),
+            [only] => {
+                if let Some(items) = weak_kwargs_items(only) {
+                    (None, Some(items))
+                } else {
+                    (Some(only), None)
+                }
+            }
+            [source, kwargs] => match weak_kwargs_items(kwargs) {
+                Some(items) => (Some(source), Some(items)),
+                None => {
+                    return Err(PyException::type_error(
+                        "WeakKeyDictionary expected at most 1 argument",
+                    ))
+                }
+            },
+            _ => {
+                return Err(PyException::type_error(
+                    "WeakKeyDictionary expected at most 1 argument",
+                ))
+            }
+        };
+        if let Some(source) = source {
+            match &source.payload {
+                PyObjectPayload::Dict(map) => weak_key_update_from_dict_storage(storage, map)?,
+                PyObjectPayload::Instance(inst) => {
+                    if let Some(map) = inst.dict_storage.as_ref() {
+                        weak_key_update_from_dict_storage(storage, map)?;
+                    } else {
+                        for (key, value) in weak_mapping_items(source)? {
+                            weak_key_set(storage, key, value)?;
+                        }
+                    }
+                }
+                _ => {
+                    for (key, value) in weak_mapping_items(source)? {
+                        weak_key_set(storage, key, value)?;
+                    }
+                }
+            }
+        }
+        if let Some(items) = kwargs {
+            for (key, value) in items {
+                weak_key_set(storage, key, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn build_weak_value_dictionary(storage: WeakValueStorage) -> PyObjectRef {
+        let mut class_ns = IndexMap::new();
+        let eq_storage = storage.clone();
+        class_ns.insert(
+            CompactString::from("__eq__"),
+            PyObject::native_closure("WeakValueDictionary.__eq__", move |args| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("__eq__ requires an argument"));
+                }
+                let items = weak_value_items(&eq_storage);
+                Ok(PyObject::bool_val(weak_mapping_eq(&items, &args[1])?))
+            }),
+        );
+        let ne_storage = storage.clone();
+        class_ns.insert(
+            CompactString::from("__ne__"),
+            PyObject::native_closure("WeakValueDictionary.__ne__", move |args| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("__ne__ requires an argument"));
+                }
+                let items = weak_value_items(&ne_storage);
+                Ok(PyObject::bool_val(!weak_mapping_eq(&items, &args[1])?))
+            }),
+        );
+        class_ns.insert(
+            CompactString::from("__repr__"),
+            PyObject::native_closure("WeakValueDictionary.__repr__", move |args| {
+                let ptr = args
+                    .first()
+                    .map(|obj| PyObjectRef::as_ptr(obj) as usize)
+                    .unwrap_or(0);
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "<WeakValueDictionary at 0x{:x}>",
+                    ptr
+                ))))
+            }),
+        );
+        let cls = PyObject::class(CompactString::from("WeakValueDictionary"), vec![], class_ns);
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            attrs.insert(
+                CompactString::from("__weakvaluedict__"),
+                PyObject::bool_val(true),
+            );
+
+            let set_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__setitem__"),
+                PyObject::native_closure("WeakValueDictionary.__setitem__", move |args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error(
+                            "__setitem__ requires key and value",
+                        ));
+                    }
+                    weak_value_set(&set_storage, args[0].clone(), args[1].clone())?;
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let get_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__getitem__"),
+                PyObject::native_closure("WeakValueDictionary.__getitem__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__getitem__ requires a key"));
+                    }
+                    match weak_value_get_alive(&get_storage, &args[0])? {
+                        Some(obj) => Ok(obj),
+                        None => Err(py_default_key_error(&args[0])),
+                    }
+                }),
+            );
+
+            let del_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__delitem__"),
+                PyObject::native_closure("WeakValueDictionary.__delitem__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__delitem__ requires a key"));
+                    }
+                    let key = args[0].to_hashable_key()?;
+                    let mut store = del_storage.write();
+                    if store.shift_remove(&key).is_some() {
+                        Ok(PyObject::none())
+                    } else {
+                        Err(py_default_key_error(&args[0]))
+                    }
+                }),
+            );
+
+            let contains_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__contains__"),
+                PyObject::native_closure("WeakValueDictionary.__contains__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__contains__ requires a key"));
+                    }
+                    Ok(PyObject::bool_val(
+                        weak_value_get_alive(&contains_storage, &args[0])?.is_some(),
+                    ))
+                }),
+            );
+
+            let len_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__len__"),
+                PyObject::native_closure("WeakValueDictionary.__len__", move |_| {
+                    let mut store = len_storage.write();
+                    store.retain(|_, (_, w)| w.upgrade().is_some());
+                    Ok(PyObject::int(store.len() as i64))
+                }),
+            );
+
+            let bool_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__bool__"),
+                PyObject::native_closure("WeakValueDictionary.__bool__", move |_| {
+                    let mut store = bool_storage.write();
+                    store.retain(|_, (_, w)| w.upgrade().is_some());
+                    Ok(PyObject::bool_val(!store.is_empty()))
+                }),
+            );
+
+            let get_method_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("get"),
+                PyObject::native_closure("WeakValueDictionary.get", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("get() requires a key"));
+                    }
+                    let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    Ok(weak_value_get_alive(&get_method_storage, &args[0])?.unwrap_or(default))
+                }),
+            );
+
+            let keys_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("keys"),
+                PyObject::native_closure("WeakValueDictionary.keys", move |_| {
+                    let keys = weak_value_items(&keys_storage)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    Ok(weak_iter(keys))
+                }),
+            );
+
+            let iter_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__iter__"),
+                PyObject::native_closure("WeakValueDictionary.__iter__", move |_| {
+                    let keys = weak_value_items(&iter_storage)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    Ok(weak_iter(keys))
+                }),
+            );
+
+            let values_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("values"),
+                PyObject::native_closure("WeakValueDictionary.values", move |_| {
+                    let vals = weak_value_items(&values_storage)
+                        .into_iter()
+                        .map(|(_, v)| v)
+                        .collect();
+                    Ok(weak_iter(vals))
+                }),
+            );
+
+            let items_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("items"),
+                PyObject::native_closure("WeakValueDictionary.items", move |_| {
+                    let items = weak_value_items(&items_storage)
+                        .into_iter()
+                        .map(|(k, v)| PyObject::tuple(vec![k, v]))
+                        .collect();
+                    Ok(weak_iter(items))
+                }),
+            );
+
+            let update_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("update"),
+                PyObject::native_closure("WeakValueDictionary.update", move |args| {
+                    weak_value_update_args(&update_storage, args)?;
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let setdefault_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("setdefault"),
+                PyObject::native_closure("WeakValueDictionary.setdefault", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("setdefault() requires a key"));
+                    }
+                    if let Some(existing) = weak_value_get_alive(&setdefault_storage, &args[0])? {
+                        return Ok(existing);
+                    }
+                    let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    weak_value_set(&setdefault_storage, args[0].clone(), default.clone())?;
+                    Ok(default)
+                }),
+            );
+
+            let pop_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("pop"),
+                PyObject::native_closure("WeakValueDictionary.pop", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("pop() requires a key"));
+                    }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error("pop expected at most 2 arguments"));
+                    }
+                    let key = args[0].to_hashable_key()?;
+                    let mut store = pop_storage.write();
+                    let state = store.get(&key).map(|(_, w)| w.upgrade());
+                    match state {
+                        Some(Some(value)) => {
+                            store.shift_remove(&key);
+                            Ok(value)
+                        }
+                        Some(None) => {
+                            store.shift_remove(&key);
+                            args.get(1)
+                                .cloned()
+                                .ok_or_else(|| py_default_key_error(&args[0]))
+                        }
+                        None => args
+                            .get(1)
+                            .cloned()
+                            .ok_or_else(|| py_default_key_error(&args[0])),
+                    }
+                }),
+            );
+
+            let popitem_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("popitem"),
+                PyObject::native_closure("WeakValueDictionary.popitem", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("popitem() takes no arguments"));
+                    }
+                    let mut store = popitem_storage.write();
+                    store.retain(|_, (_, w)| w.upgrade().is_some());
+                    let item = store.iter().next().and_then(|(key, (orig, weak))| {
+                        weak.upgrade().map(|v| (key.clone(), orig.clone(), v))
+                    });
+                    if let Some((key, orig, value)) = item {
+                        store.shift_remove(&key);
+                        Ok(PyObject::tuple(vec![orig, value]))
+                    } else {
+                        Err(PyException::key_error("dictionary is empty"))
+                    }
+                }),
+            );
+
+            let clear_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("clear"),
+                PyObject::native_closure("WeakValueDictionary.clear", move |_| {
+                    clear_storage.write().clear();
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let copy_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("copy"),
+                PyObject::native_closure("WeakValueDictionary.copy", move |_| {
+                    let new_storage: WeakValueStorage = Rc::new(PyCell::new(IndexMap::new()));
+                    for (key, value) in weak_value_items(&copy_storage) {
+                        weak_value_set(&new_storage, key, value)?;
+                    }
+                    Ok(build_weak_value_dictionary(new_storage))
+                }),
+            );
+
+            let refs_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("valuerefs"),
+                PyObject::native_closure("WeakValueDictionary.valuerefs", move |_| {
+                    let refs = weak_value_items(&refs_storage)
+                        .into_iter()
+                        .map(|(_, v)| weak_ref_object(&v))
+                        .collect();
+                    Ok(PyObject::list(refs))
+                }),
+            );
+
+            let iter_refs_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("itervaluerefs"),
+                PyObject::native_closure("WeakValueDictionary.itervaluerefs", move |_| {
+                    let refs = weak_value_items(&iter_refs_storage)
+                        .into_iter()
+                        .map(|(_, v)| weak_ref_object(&v))
+                        .collect();
+                    Ok(weak_iter(refs))
+                }),
+            );
+        }
+        inst
+    }
+
+    fn make_weak_value_dictionary(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let storage: WeakValueStorage = Rc::new(PyCell::new(IndexMap::new()));
+        let inst = build_weak_value_dictionary(storage.clone());
+        weak_value_update_args(&storage, args)?;
+        Ok(inst)
+    }
+
+    fn build_weak_key_dictionary(storage: WeakKeyStorage) -> PyObjectRef {
+        let mut class_ns = IndexMap::new();
+        let eq_storage = storage.clone();
+        class_ns.insert(
+            CompactString::from("__eq__"),
+            PyObject::native_closure("WeakKeyDictionary.__eq__", move |args| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("__eq__ requires an argument"));
+                }
+                let items = weak_key_items(&eq_storage);
+                Ok(PyObject::bool_val(weak_mapping_eq(&items, &args[1])?))
+            }),
+        );
+        let ne_storage = storage.clone();
+        class_ns.insert(
+            CompactString::from("__ne__"),
+            PyObject::native_closure("WeakKeyDictionary.__ne__", move |args| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("__ne__ requires an argument"));
+                }
+                let items = weak_key_items(&ne_storage);
+                Ok(PyObject::bool_val(!weak_mapping_eq(&items, &args[1])?))
+            }),
+        );
+        class_ns.insert(
+            CompactString::from("__repr__"),
+            PyObject::native_closure("WeakKeyDictionary.__repr__", move |args| {
+                let ptr = args
+                    .first()
+                    .map(|obj| PyObjectRef::as_ptr(obj) as usize)
+                    .unwrap_or(0);
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "<WeakKeyDictionary at 0x{:x}>",
+                    ptr
+                ))))
+            }),
+        );
+        let cls = PyObject::class(CompactString::from("WeakKeyDictionary"), vec![], class_ns);
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            attrs.insert(
+                CompactString::from("__weakkeydict__"),
+                PyObject::bool_val(true),
+            );
+
+            let set_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__setitem__"),
+                PyObject::native_closure("WeakKeyDictionary.__setitem__", move |args| {
+                    if args.len() < 2 {
+                        return Err(PyException::type_error(
+                            "__setitem__ requires key and value",
+                        ));
+                    }
+                    weak_key_set(&set_storage, args[0].clone(), args[1].clone())?;
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let get_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__getitem__"),
+                PyObject::native_closure("WeakKeyDictionary.__getitem__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__getitem__ requires a key"));
+                    }
+                    match weak_key_get_alive(&get_storage, &args[0], true)? {
+                        Some(val) => Ok(val),
+                        None => Err(py_default_key_error(&args[0])),
+                    }
+                }),
+            );
+
+            let len_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__len__"),
+                PyObject::native_closure("WeakKeyDictionary.__len__", move |_| {
+                    let mut store = len_storage.write();
+                    store.retain(|_, (w, _)| w.upgrade().is_some());
+                    Ok(PyObject::int(store.len() as i64))
+                }),
+            );
+
+            let bool_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__bool__"),
+                PyObject::native_closure("WeakKeyDictionary.__bool__", move |_| {
+                    let mut store = bool_storage.write();
+                    store.retain(|_, (w, _)| w.upgrade().is_some());
+                    Ok(PyObject::bool_val(!store.is_empty()))
+                }),
+            );
+
+            let contains_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__contains__"),
+                PyObject::native_closure("WeakKeyDictionary.__contains__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__contains__ requires a key"));
+                    }
+                    if weak_key_require_weakable(&args[0]).is_err() {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                    Ok(PyObject::bool_val(
+                        weak_key_get_alive(&contains_storage, &args[0], false)?.is_some(),
+                    ))
+                }),
+            );
+
+            let del_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__delitem__"),
+                PyObject::native_closure("WeakKeyDictionary.__delitem__", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("__delitem__ requires a key"));
+                    }
+                    weak_key_require_weakable(&args[0])?;
+                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+                    let mut store = del_storage.write();
+                    match store.shift_remove(&ptr) {
+                        Some((weak, _)) if weak.upgrade().is_some() => Ok(PyObject::none()),
+                        Some(_) => Err(py_default_key_error(&args[0])),
+                        None => Err(py_default_key_error(&args[0])),
+                    }
+                }),
+            );
+
+            let get_method_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("get"),
+                PyObject::native_closure("WeakKeyDictionary.get", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("get() requires a key"));
+                    }
+                    let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    Ok(weak_key_get_alive(&get_method_storage, &args[0], true)?.unwrap_or(default))
+                }),
+            );
+
+            let keys_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("keys"),
+                PyObject::native_closure("WeakKeyDictionary.keys", move |_| {
+                    let keys = weak_key_items(&keys_storage)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    Ok(weak_iter(keys))
+                }),
+            );
+
+            let iter_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("__iter__"),
+                PyObject::native_closure("WeakKeyDictionary.__iter__", move |_| {
+                    let keys = weak_key_items(&iter_storage)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    Ok(weak_iter(keys))
+                }),
+            );
+
+            let values_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("values"),
+                PyObject::native_closure("WeakKeyDictionary.values", move |_| {
+                    let vals = weak_key_items(&values_storage)
+                        .into_iter()
+                        .map(|(_, v)| v)
+                        .collect();
+                    Ok(weak_iter(vals))
+                }),
+            );
+
+            let items_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("items"),
+                PyObject::native_closure("WeakKeyDictionary.items", move |_| {
+                    let items = weak_key_items(&items_storage)
+                        .into_iter()
+                        .map(|(k, v)| PyObject::tuple(vec![k, v]))
+                        .collect();
+                    Ok(weak_iter(items))
+                }),
+            );
+
+            let update_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("update"),
+                PyObject::native_closure("WeakKeyDictionary.update", move |args| {
+                    weak_key_update_args(&update_storage, args)?;
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let setdefault_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("setdefault"),
+                PyObject::native_closure("WeakKeyDictionary.setdefault", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("setdefault() requires a key"));
+                    }
+                    if let Some(existing) = weak_key_get_alive(&setdefault_storage, &args[0], true)?
+                    {
+                        return Ok(existing);
+                    }
+                    let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    weak_key_set(&setdefault_storage, args[0].clone(), default.clone())?;
+                    Ok(default)
+                }),
+            );
+
+            let pop_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("pop"),
+                PyObject::native_closure("WeakKeyDictionary.pop", move |args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("pop() requires a key"));
+                    }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error("pop expected at most 2 arguments"));
+                    }
+                    weak_key_require_weakable(&args[0])?;
+                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+                    let mut store = pop_storage.write();
+                    match store.get(&ptr) {
+                        Some((weak, val)) if weak.upgrade().is_some() => {
+                            let value = val.clone();
+                            store.shift_remove(&ptr);
+                            Ok(value)
+                        }
+                        Some(_) => {
+                            store.shift_remove(&ptr);
+                            args.get(1)
+                                .cloned()
+                                .ok_or_else(|| py_default_key_error(&args[0]))
+                        }
+                        None => args
+                            .get(1)
+                            .cloned()
+                            .ok_or_else(|| py_default_key_error(&args[0])),
+                    }
+                }),
+            );
+
+            let popitem_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("popitem"),
+                PyObject::native_closure("WeakKeyDictionary.popitem", move |args| {
+                    if !args.is_empty() {
+                        return Err(PyException::type_error("popitem() takes no arguments"));
+                    }
+                    let mut store = popitem_storage.write();
+                    store.retain(|_, (w, _)| w.upgrade().is_some());
+                    let item = store.iter().next().and_then(|(ptr, (weak, val))| {
+                        weak.upgrade().map(|k| (*ptr, k, val.clone()))
+                    });
+                    if let Some((ptr, key, value)) = item {
+                        store.shift_remove(&ptr);
+                        Ok(PyObject::tuple(vec![key, value]))
+                    } else {
+                        Err(PyException::key_error("dictionary is empty"))
+                    }
+                }),
+            );
+
+            let clear_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("clear"),
+                PyObject::native_closure("WeakKeyDictionary.clear", move |_| {
+                    clear_storage.write().clear();
+                    Ok(PyObject::none())
+                }),
+            );
+
+            let copy_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("copy"),
+                PyObject::native_closure("WeakKeyDictionary.copy", move |_| {
+                    let new_storage: WeakKeyStorage = Rc::new(PyCell::new(IndexMap::new()));
+                    for (key, value) in weak_key_items(&copy_storage) {
+                        weak_key_set(&new_storage, key, value)?;
+                    }
+                    Ok(build_weak_key_dictionary(new_storage))
+                }),
+            );
+
+            let refs_storage = storage.clone();
+            attrs.insert(
+                CompactString::from("keyrefs"),
+                PyObject::native_closure("WeakKeyDictionary.keyrefs", move |_| {
+                    let refs = weak_key_items(&refs_storage)
+                        .into_iter()
+                        .map(|(k, _)| weak_ref_object(&k))
+                        .collect();
+                    Ok(PyObject::list(refs))
+                }),
+            );
+        }
+        inst
+    }
+
+    fn make_weak_key_dictionary(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let storage: WeakKeyStorage = Rc::new(PyCell::new(IndexMap::new()));
+        let inst = build_weak_key_dictionary(storage.clone());
+        weak_key_update_args(&storage, args)?;
+        Ok(inst)
     }
 
     make_module(
@@ -1472,424 +2421,13 @@ pub fn create_weakref_module() -> PyObjectRef {
             // Dict where values are weak references; dead entries are auto-pruned.
             (
                 "WeakValueDictionary",
-                make_builtin(|_| {
-                    let storage: WeakValueStorage = Rc::new(PyCell::new(IndexMap::new()));
-
-                    let mut class_ns = IndexMap::new();
-                    let eq_storage = storage.clone();
-                    class_ns.insert(
-                        CompactString::from("__eq__"),
-                        PyObject::native_closure("WeakValueDictionary.__eq__", move |args| {
-                            if args.len() < 2 {
-                                return Err(PyException::type_error("__eq__ requires an argument"));
-                            }
-                            let items = weak_value_items(&eq_storage);
-                            Ok(PyObject::bool_val(weak_mapping_eq(&items, &args[1])?))
-                        }),
-                    );
-                    let ne_storage = storage.clone();
-                    class_ns.insert(
-                        CompactString::from("__ne__"),
-                        PyObject::native_closure("WeakValueDictionary.__ne__", move |args| {
-                            if args.len() < 2 {
-                                return Err(PyException::type_error("__ne__ requires an argument"));
-                            }
-                            let items = weak_value_items(&ne_storage);
-                            Ok(PyObject::bool_val(!weak_mapping_eq(&items, &args[1])?))
-                        }),
-                    );
-                    let cls = PyObject::class(
-                        CompactString::from("WeakValueDictionary"),
-                        vec![],
-                        class_ns,
-                    );
-                    let inst = PyObject::instance(cls);
-                    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
-                        let mut attrs = inst_data.attrs.write();
-                        attrs.insert(
-                            CompactString::from("__weakvaluedict__"),
-                            PyObject::bool_val(true),
-                        );
-
-                        // __setitem__(key, value)
-                        let s1 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__setitem__"),
-                            PyObject::native_closure(
-                                "WeakValueDictionary.__setitem__",
-                                move |args| {
-                                    if args.len() < 2 {
-                                        return Err(PyException::type_error(
-                                            "__setitem__ requires key and value",
-                                        ));
-                                    }
-                                    let key = args[0].to_hashable_key()?;
-                                    let weak = PyObjectRef::downgrade(&args[1]);
-                                    s1.write().insert(key, (args[0].clone(), weak));
-                                    Ok(PyObject::none())
-                                },
-                            ),
-                        );
-
-                        // __getitem__(key)
-                        let s2 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__getitem__"),
-                            PyObject::native_closure(
-                                "WeakValueDictionary.__getitem__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__getitem__ requires a key",
-                                        ));
-                                    }
-                                    let key = args[0].to_hashable_key()?;
-                                    let mut store = s2.write();
-                                    match store.get(&key) {
-                                        Some((_, weak)) => match weak.upgrade() {
-                                            Some(obj) => Ok(obj),
-                                            None => {
-                                                store.shift_remove(&key);
-                                                Err(PyException::key_error(args[0].py_to_string()))
-                                            }
-                                        },
-                                        None => Err(PyException::key_error(args[0].py_to_string())),
-                                    }
-                                },
-                            ),
-                        );
-
-                        // __delitem__(key)
-                        let s3 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__delitem__"),
-                            PyObject::native_closure(
-                                "WeakValueDictionary.__delitem__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__delitem__ requires a key",
-                                        ));
-                                    }
-                                    let key = args[0].to_hashable_key()?;
-                                    let mut store = s3.write();
-                                    if store.shift_remove(&key).is_some() {
-                                        Ok(PyObject::none())
-                                    } else {
-                                        Err(PyException::key_error(args[0].py_to_string()))
-                                    }
-                                },
-                            ),
-                        );
-
-                        // __contains__(key)
-                        let s4 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__contains__"),
-                            PyObject::native_closure(
-                                "WeakValueDictionary.__contains__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__contains__ requires a key",
-                                        ));
-                                    }
-                                    let key = args[0].to_hashable_key()?;
-                                    let mut store = s4.write();
-                                    match store.get(&key) {
-                                        Some((_, weak)) => {
-                                            if weak.upgrade().is_some() {
-                                                Ok(PyObject::bool_val(true))
-                                            } else {
-                                                store.shift_remove(&key);
-                                                Ok(PyObject::bool_val(false))
-                                            }
-                                        }
-                                        None => Ok(PyObject::bool_val(false)),
-                                    }
-                                },
-                            ),
-                        );
-
-                        // __len__()
-                        let s5 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__len__"),
-                            PyObject::native_closure("WeakValueDictionary.__len__", move |_| {
-                                let mut store = s5.write();
-                                store.retain(|_, (_, w)| w.upgrade().is_some());
-                                Ok(PyObject::int(store.len() as i64))
-                            }),
-                        );
-
-                        // get(key, default=None)
-                        let s_get = storage.clone();
-                        attrs.insert(
-                            CompactString::from("get"),
-                            PyObject::native_closure("WeakValueDictionary.get", move |args| {
-                                if args.is_empty() {
-                                    return Err(PyException::type_error("get() requires a key"));
-                                }
-                                let key = args[0].to_hashable_key()?;
-                                let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-                                let mut store = s_get.write();
-                                match store.get(&key) {
-                                    Some((_, weak)) => match weak.upgrade() {
-                                        Some(obj) => Ok(obj),
-                                        None => {
-                                            store.shift_remove(&key);
-                                            Ok(default)
-                                        }
-                                    },
-                                    None => Ok(default),
-                                }
-                            }),
-                        );
-
-                        // keys()
-                        let s6 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("keys"),
-                            PyObject::native_closure("WeakValueDictionary.keys", move |_| {
-                                let keys: Vec<PyObjectRef> =
-                                    weak_value_items(&s6).into_iter().map(|(k, _)| k).collect();
-                                Ok(PyObject::list(keys))
-                            }),
-                        );
-
-                        // values()
-                        let s7 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("values"),
-                            PyObject::native_closure("WeakValueDictionary.values", move |_| {
-                                let vals: Vec<PyObjectRef> =
-                                    weak_value_items(&s7).into_iter().map(|(_, v)| v).collect();
-                                Ok(PyObject::list(vals))
-                            }),
-                        );
-
-                        // items()
-                        let s8 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("items"),
-                            PyObject::native_closure("WeakValueDictionary.items", move |_| {
-                                let items: Vec<PyObjectRef> = weak_value_items(&s8)
-                                    .into_iter()
-                                    .map(|(k, v)| PyObject::tuple(vec![k, v]))
-                                    .collect();
-                                Ok(PyObject::list(items))
-                            }),
-                        );
-                    }
-                    Ok(inst)
-                }),
+                PyObject::native_function("WeakValueDictionary", make_weak_value_dictionary),
             ),
             // ── WeakKeyDictionary() ──
             // Dict where keys are weak references; dead entries are auto-pruned.
             (
                 "WeakKeyDictionary",
-                make_builtin(|_| {
-                    // Store (PyWeakRef, value) keyed by raw pointer (usize)
-                    let storage: WeakKeyStorage = Rc::new(PyCell::new(IndexMap::new()));
-
-                    let mut class_ns = IndexMap::new();
-                    let eq_storage = storage.clone();
-                    class_ns.insert(
-                        CompactString::from("__eq__"),
-                        PyObject::native_closure("WeakKeyDictionary.__eq__", move |args| {
-                            if args.len() < 2 {
-                                return Err(PyException::type_error("__eq__ requires an argument"));
-                            }
-                            let items = weak_key_items(&eq_storage);
-                            Ok(PyObject::bool_val(weak_mapping_eq(&items, &args[1])?))
-                        }),
-                    );
-                    let ne_storage = storage.clone();
-                    class_ns.insert(
-                        CompactString::from("__ne__"),
-                        PyObject::native_closure("WeakKeyDictionary.__ne__", move |args| {
-                            if args.len() < 2 {
-                                return Err(PyException::type_error("__ne__ requires an argument"));
-                            }
-                            let items = weak_key_items(&ne_storage);
-                            Ok(PyObject::bool_val(!weak_mapping_eq(&items, &args[1])?))
-                        }),
-                    );
-                    let cls =
-                        PyObject::class(CompactString::from("WeakKeyDictionary"), vec![], class_ns);
-                    let inst = PyObject::instance(cls);
-                    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
-                        let mut attrs = inst_data.attrs.write();
-                        attrs.insert(
-                            CompactString::from("__weakkeydict__"),
-                            PyObject::bool_val(true),
-                        );
-
-                        let s1 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__setitem__"),
-                            PyObject::native_closure(
-                                "WeakKeyDictionary.__setitem__",
-                                move |args| {
-                                    if args.len() < 2 {
-                                        return Err(PyException::type_error(
-                                            "__setitem__ requires key and value",
-                                        ));
-                                    }
-                                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
-                                    let weak = PyObjectRef::downgrade(&args[0]);
-                                    s1.write().insert(ptr, (weak, args[1].clone()));
-                                    Ok(PyObject::none())
-                                },
-                            ),
-                        );
-
-                        let s2 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__getitem__"),
-                            PyObject::native_closure(
-                                "WeakKeyDictionary.__getitem__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__getitem__ requires a key",
-                                        ));
-                                    }
-                                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
-                                    let mut store = s2.write();
-                                    match store.get(&ptr) {
-                                        Some((weak, val)) => {
-                                            if weak.upgrade().is_some() {
-                                                Ok(val.clone())
-                                            } else {
-                                                store.shift_remove(&ptr);
-                                                Err(PyException::key_error("dead weak key"))
-                                            }
-                                        }
-                                        None => Err(PyException::key_error("key not found")),
-                                    }
-                                },
-                            ),
-                        );
-
-                        let s3 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__len__"),
-                            PyObject::native_closure("WeakKeyDictionary.__len__", move |_| {
-                                let mut store = s3.write();
-                                store.retain(|_, (w, _)| w.upgrade().is_some());
-                                Ok(PyObject::int(store.len() as i64))
-                            }),
-                        );
-
-                        let s4 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__contains__"),
-                            PyObject::native_closure(
-                                "WeakKeyDictionary.__contains__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__contains__ requires a key",
-                                        ));
-                                    }
-                                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
-                                    let mut store = s4.write();
-                                    match store.get(&ptr) {
-                                        Some((weak, _)) => {
-                                            if weak.upgrade().is_some() {
-                                                Ok(PyObject::bool_val(true))
-                                            } else {
-                                                store.shift_remove(&ptr);
-                                                Ok(PyObject::bool_val(false))
-                                            }
-                                        }
-                                        None => Ok(PyObject::bool_val(false)),
-                                    }
-                                },
-                            ),
-                        );
-
-                        let s5 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("__delitem__"),
-                            PyObject::native_closure(
-                                "WeakKeyDictionary.__delitem__",
-                                move |args| {
-                                    if args.is_empty() {
-                                        return Err(PyException::type_error(
-                                            "__delitem__ requires a key",
-                                        ));
-                                    }
-                                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
-                                    let mut store = s5.write();
-                                    if store.shift_remove(&ptr).is_some() {
-                                        Ok(PyObject::none())
-                                    } else {
-                                        Err(PyException::key_error("key not found"))
-                                    }
-                                },
-                            ),
-                        );
-
-                        let s6 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("get"),
-                            PyObject::native_closure("WeakKeyDictionary.get", move |args| {
-                                if args.is_empty() {
-                                    return Err(PyException::type_error("get() requires a key"));
-                                }
-                                let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-                                let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
-                                let mut store = s6.write();
-                                match store.get(&ptr) {
-                                    Some((weak, val)) => {
-                                        if weak.upgrade().is_some() {
-                                            Ok(val.clone())
-                                        } else {
-                                            store.shift_remove(&ptr);
-                                            Ok(default)
-                                        }
-                                    }
-                                    None => Ok(default),
-                                }
-                            }),
-                        );
-
-                        let s7 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("keys"),
-                            PyObject::native_closure("WeakKeyDictionary.keys", move |_| {
-                                let keys: Vec<PyObjectRef> =
-                                    weak_key_items(&s7).into_iter().map(|(k, _)| k).collect();
-                                Ok(PyObject::list(keys))
-                            }),
-                        );
-
-                        let s8 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("values"),
-                            PyObject::native_closure("WeakKeyDictionary.values", move |_| {
-                                let vals: Vec<PyObjectRef> =
-                                    weak_key_items(&s8).into_iter().map(|(_, v)| v).collect();
-                                Ok(PyObject::list(vals))
-                            }),
-                        );
-
-                        let s9 = storage.clone();
-                        attrs.insert(
-                            CompactString::from("items"),
-                            PyObject::native_closure("WeakKeyDictionary.items", move |_| {
-                                let items: Vec<PyObjectRef> = weak_key_items(&s9)
-                                    .into_iter()
-                                    .map(|(k, v)| PyObject::tuple(vec![k, v]))
-                                    .collect();
-                                Ok(PyObject::list(items))
-                            }),
-                        );
-                    }
-                    Ok(inst)
-                }),
+                PyObject::native_function("WeakKeyDictionary", make_weak_key_dictionary),
             ),
             // ── WeakSet() ──
             // A set of weak references. Dead entries are auto-pruned.
