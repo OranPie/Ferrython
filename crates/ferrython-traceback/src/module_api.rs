@@ -57,6 +57,7 @@ fn traceback_format_exc(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             context: None,
             value: None,
             os_error_info: None,
+            keepalive: Vec::new(),
         };
         Ok(PyObject::str_val(CompactString::from(
             crate::format_traceback(&exc),
@@ -167,6 +168,7 @@ fn traceback_print_exc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             context: None,
             value: None,
             os_error_info: None,
+            keepalive: Vec::new(),
         };
         let text = crate::format_traceback(&exc);
         write_to_file_or_stderr(&file_obj, &text);

@@ -313,6 +313,8 @@ pub struct PyException {
     pub value: Option<PyObjectRef>,
     /// OSError details: (errno, strerror, filename) — populated by `from_io_error`.
     pub os_error_info: Option<OsErrorInfo>,
+    /// Objects kept alive by traceback frames while this exception is active.
+    pub keepalive: Vec<PyObjectRef>,
 }
 
 /// Details for OSError and its subclasses (FileNotFoundError, PermissionError, etc.).
@@ -342,6 +344,7 @@ impl PyException {
             context: None,
             value: None,
             os_error_info: None,
+            keepalive: Vec::new(),
         }
     }
     pub fn with_original(
@@ -358,6 +361,7 @@ impl PyException {
             context: None,
             value: None,
             os_error_info: None,
+            keepalive: Vec::new(),
         }
     }
     /// Ensure this exception has an `original` ExceptionInstance object.

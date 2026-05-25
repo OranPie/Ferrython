@@ -688,6 +688,29 @@ impl VirtualMachine {
         self.builtins.clone()
     }
 
+    fn keep_frame_objects_alive(exc: &mut PyException, frame: &Frame) {
+        exc.keepalive.extend(frame.stack.iter().cloned());
+        exc.keepalive
+            .extend(frame.locals.iter().filter_map(|item| item.clone()));
+        if let Some(local_names) = &frame.local_names {
+            exc.keepalive.extend(local_names.values().cloned());
+        }
+        for cell in &frame.cells {
+            if let Some(value) = cell.read().clone() {
+                exc.keepalive.push(value);
+            }
+        }
+        if let Some(obj) = &frame.prepare_dict {
+            exc.keepalive.push(obj.clone());
+        }
+        if let Some(obj) = &frame.exec_locals {
+            exc.keepalive.push(obj.clone());
+        }
+        if let Some(obj) = &frame.exec_globals {
+            exc.keepalive.push(obj.clone());
+        }
+    }
+
     pub(crate) fn enter_exception_handler(&mut self, exc: PyException) {
         self.exception_state_stack
             .push(self.active_exception.clone());
@@ -9839,6 +9862,7 @@ impl VirtualMachine {
                         // No handler in current frame — unwind iteratively
                         if self.call_stack.len() > initial_depth {
                             if let Some(child) = self.call_stack.pop() {
+                                Self::keep_frame_objects_alive(&mut exc, &child);
                                 child.recycle(&mut self.frame_pool);
                             }
                             continue; // try parent frame's block stack
