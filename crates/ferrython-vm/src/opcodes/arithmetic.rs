@@ -98,6 +98,18 @@ impl VirtualMachine {
 
 // ── Group 5: Binary / inplace arithmetic ─────────────────────────────
 impl VirtualMachine {
+    fn is_builtin_print_function(obj: &PyObjectRef) -> bool {
+        matches!(&obj.payload, PyObjectPayload::BuiltinFunction(name) if name.as_str() == "print")
+    }
+
+    fn py2_print_redirection_type_error(a: &PyObjectRef, b: &PyObjectRef) -> PyException {
+        PyException::type_error(format!(
+            "unsupported operand type(s) for >>: '{}' and '{}'. Did you mean \"print(<message>, file=<output_stream>)\"?",
+            a.type_name(),
+            b.type_name()
+        ))
+    }
+
     pub(crate) fn try_binary_dunder(
         &mut self,
         a: &PyObjectRef,
@@ -559,6 +571,8 @@ impl VirtualMachine {
                     self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))?
                 {
                     r
+                } else if Self::is_builtin_print_function(&a) {
+                    return Err(Self::py2_print_redirection_type_error(&a, &b));
                 } else {
                     with_enum_fallback!(a, b, rshift)
                 }

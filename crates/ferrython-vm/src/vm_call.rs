@@ -1016,8 +1016,10 @@ impl VirtualMachine {
             }
             Ok(())
         } else {
-            print!("{}", text);
-            Ok(())
+            Err(PyException::attribute_error(format!(
+                "'{}' object has no attribute 'write'",
+                target.type_name()
+            )))
         }
     }
 
@@ -1026,6 +1028,70 @@ impl VirtualMachine {
         explicit_file
             .or_else(|| ferrython_stdlib::get_stdout_override())
             .or_else(|| self.modules.get("sys").and_then(|s| s.get_attr("stdout")))
+    }
+
+    fn print_text_arg(
+        &mut self,
+        value: Option<PyObjectRef>,
+        default: &str,
+        name: &str,
+    ) -> PyResult<String> {
+        match value {
+            None => Ok(default.to_string()),
+            Some(value) if matches!(&value.payload, PyObjectPayload::None) => {
+                Ok(default.to_string())
+            }
+            Some(value) => {
+                if let PyObjectPayload::Str(s) = &value.payload {
+                    Ok(s.to_string())
+                } else {
+                    Err(PyException::type_error(format!(
+                        "{} must be None or a string, not {}",
+                        name,
+                        value.type_name()
+                    )))
+                }
+            }
+        }
+    }
+
+    fn vm_print(
+        &mut self,
+        args: &[PyObjectRef],
+        sep: Option<PyObjectRef>,
+        end: Option<PyObjectRef>,
+        file: Option<PyObjectRef>,
+        flush: bool,
+    ) -> PyResult<PyObjectRef> {
+        let sep = self.print_text_arg(sep, " ", "sep")?;
+        let end = self.print_text_arg(end, "\n", "end")?;
+        let file = file.filter(|f| !matches!(&f.payload, PyObjectPayload::None));
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            parts.push(self.vm_str(arg)?);
+        }
+        let output = format!("{}{}", parts.join(&sep), end);
+        if let Some(target) = self.resolve_print_target(file) {
+            self.write_to_file_object(&target, &output)?;
+            if flush {
+                let flush_fn = target.get_attr("flush").ok_or_else(|| {
+                    PyException::attribute_error(format!(
+                        "'{}' object has no attribute 'flush'",
+                        target.type_name()
+                    ))
+                })?;
+                self.call_object(flush_fn, vec![])?;
+            }
+        } else {
+            print!("{}", output);
+            if flush {
+                use std::io::Write;
+                std::io::stdout()
+                    .flush()
+                    .map_err(|e| PyException::runtime_error(e.to_string()))?;
+            }
+        }
+        Ok(PyObject::none())
     }
 
     /// str.format_map() with dict subclass mapping, supporting __missing__ via VM call dispatch.
@@ -2996,13 +3062,11 @@ impl VirtualMachine {
                             let sep = kwargs
                                 .iter()
                                 .find(|(k, _)| k.as_str() == "sep")
-                                .map(|(_, v)| v.py_to_string())
-                                .unwrap_or_else(|| " ".to_string());
+                                .map(|(_, v)| v.clone());
                             let end = kwargs
                                 .iter()
                                 .find(|(k, _)| k.as_str() == "end")
-                                .map(|(_, v)| v.py_to_string())
-                                .unwrap_or_else(|| "\n".to_string());
+                                .map(|(_, v)| v.clone());
                             let file_obj = kwargs
                                 .iter()
                                 .find(|(k, _)| k.as_str() == "file")
@@ -3012,26 +3076,7 @@ impl VirtualMachine {
                                 .find(|(k, _)| k.as_str() == "flush")
                                 .map(|(_, v)| v.is_truthy())
                                 .unwrap_or(false);
-                            let mut parts = Vec::new();
-                            for a in &pos_args {
-                                parts.push(self.vm_str(a)?);
-                            }
-                            let output = format!("{}{}", parts.join(&sep), end);
-                            if let Some(f) = self.resolve_print_target(file_obj) {
-                                self.write_to_file_object(&f, &output)?;
-                                if flush {
-                                    if let Some(flush_fn) = f.get_attr("flush") {
-                                        let _ = self.call_object(flush_fn, vec![]);
-                                    }
-                                }
-                            } else {
-                                print!("{}", output);
-                                if flush {
-                                    use std::io::Write;
-                                    let _ = std::io::stdout().flush();
-                                }
-                            }
-                            return Ok(PyObject::none());
+                            return self.vm_print(&pos_args, sep, end, file_obj, flush);
                         }
                         "max" | "min" => {
                             let is_max = name.as_str() == "max";
@@ -4001,17 +4046,7 @@ impl VirtualMachine {
                         return Ok(PyObject::dict(new_fx_hashkey_map()));
                     }
                     "print" => {
-                        let mut parts = Vec::new();
-                        for a in &args {
-                            parts.push(self.vm_str(a)?);
-                        }
-                        let output = format!("{}\n", parts.join(" "));
-                        if let Some(f) = self.resolve_print_target(None) {
-                            self.write_to_file_object(&f, &output)?;
-                        } else {
-                            print!("{}", output);
-                        }
-                        return Ok(PyObject::none());
+                        return self.vm_print(&args, None, None, None, false);
                     }
                     "str" => {
                         if args.is_empty() {

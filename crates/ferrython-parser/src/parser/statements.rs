@@ -137,6 +137,18 @@ impl Parser {
         }
 
         // Expression statement
+        if !self.check_newline_or_eof() {
+            if let Some(message) = self.py2_missing_parens_hint(&expr) {
+                return Err(ParseError::new(
+                    ParseErrorKind::SyntaxErrorMessage(message),
+                    self.peek().span,
+                ));
+            }
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidSyntax("unexpected token after expression".into()),
+                self.peek().span,
+            ));
+        }
         self.expect_newline()?;
         let loc = Self::expression_outer_location(&expr);
         Ok(Statement::new(
@@ -145,6 +157,147 @@ impl Parser {
             },
             loc,
         ))
+    }
+
+    fn py2_missing_parens_hint(&self, expr: &Expression) -> Option<String> {
+        let ExpressionKind::Name { id, .. } = &expr.node else {
+            return None;
+        };
+        match id.as_str() {
+            "print" => {
+                let (args, soft_space) = self.py2_print_suggestion_args();
+                let suggestion = if soft_space {
+                    format!("{}, end=\" \"", args)
+                } else {
+                    args
+                };
+                Some(format!(
+                    "Missing parentheses in call to 'print'. Did you mean print({})?",
+                    suggestion
+                ))
+            }
+            "exec" => Some("Missing parentheses in call to 'exec'".to_string()),
+            _ => None,
+        }
+    }
+
+    fn py2_print_suggestion_args(&self) -> (String, bool) {
+        let mut end = self.pos;
+        while end < self.tokens.len()
+            && !matches!(
+                self.tokens[end].kind,
+                TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof
+            )
+        {
+            end += 1;
+        }
+
+        let mut soft_space = false;
+        if end > self.pos && matches!(self.tokens[end - 1].kind, TokenKind::Comma) {
+            soft_space = true;
+            end -= 1;
+        }
+
+        (self.py2_print_tokens_to_source(self.pos, end), soft_space)
+    }
+
+    fn py2_print_tokens_to_source(&self, start: usize, end: usize) -> String {
+        let mut out = String::new();
+        for token in &self.tokens[start..end] {
+            match &token.kind {
+                TokenKind::Comma => {
+                    if out.ends_with(' ') {
+                        out.pop();
+                    }
+                    out.push_str(", ");
+                }
+                TokenKind::Dot => {
+                    if out.ends_with(' ') {
+                        out.pop();
+                    }
+                    out.push('.');
+                }
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => {
+                    out.push_str(Self::py2_print_token_source(&token.kind).as_str());
+                }
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    if out.ends_with(' ') {
+                        out.pop();
+                    }
+                    out.push_str(Self::py2_print_token_source(&token.kind).as_str());
+                }
+                _ => {
+                    let piece = Self::py2_print_token_source(&token.kind);
+                    if piece.is_empty() {
+                        continue;
+                    }
+                    if !out.is_empty()
+                        && !out
+                            .chars()
+                            .last()
+                            .is_some_and(|ch| matches!(ch, ' ' | '.' | '(' | '[' | '{'))
+                        && Self::py2_print_needs_space(&piece)
+                    {
+                        out.push(' ');
+                    }
+                    out.push_str(&piece);
+                }
+            }
+        }
+        out.trim().to_string()
+    }
+
+    fn py2_print_needs_space(piece: &str) -> bool {
+        piece
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '"' || ch == '\'')
+    }
+
+    fn py2_print_token_source(kind: &TokenKind) -> String {
+        match kind {
+            TokenKind::Name(name) => name.to_string(),
+            TokenKind::String(s) => format!("{:?}", s.as_str()),
+            TokenKind::Bytes(bytes) => format!("b{:?}", String::from_utf8_lossy(bytes)),
+            TokenKind::Int(n) => match n {
+                BigInt::Small(value) => value.to_string(),
+                BigInt::Big(value) => value.to_string(),
+            },
+            TokenKind::Float(f) => f.to_string(),
+            TokenKind::Complex(f) => format!("{}j", f),
+            TokenKind::False => "False".to_string(),
+            TokenKind::True => "True".to_string(),
+            TokenKind::None => "None".to_string(),
+            TokenKind::Plus => " + ".to_string(),
+            TokenKind::Minus => " - ".to_string(),
+            TokenKind::Star => "*".to_string(),
+            TokenKind::DoubleStar => "**".to_string(),
+            TokenKind::Slash => " / ".to_string(),
+            TokenKind::DoubleSlash => " // ".to_string(),
+            TokenKind::Percent => " % ".to_string(),
+            TokenKind::At => " @ ".to_string(),
+            TokenKind::LeftShift => " << ".to_string(),
+            TokenKind::RightShift => " >> ".to_string(),
+            TokenKind::Ampersand => " & ".to_string(),
+            TokenKind::Pipe => " | ".to_string(),
+            TokenKind::Caret => " ^ ".to_string(),
+            TokenKind::Tilde => "~".to_string(),
+            TokenKind::ColonEqual => " := ".to_string(),
+            TokenKind::Less => " < ".to_string(),
+            TokenKind::Greater => " > ".to_string(),
+            TokenKind::LessEqual => " <= ".to_string(),
+            TokenKind::GreaterEqual => " >= ".to_string(),
+            TokenKind::EqualEqual => " == ".to_string(),
+            TokenKind::NotEqual => " != ".to_string(),
+            TokenKind::LeftParen => "(".to_string(),
+            TokenKind::RightParen => ")".to_string(),
+            TokenKind::LeftBracket => "[".to_string(),
+            TokenKind::RightBracket => "]".to_string(),
+            TokenKind::LeftBrace => "{".to_string(),
+            TokenKind::RightBrace => "}".to_string(),
+            TokenKind::Colon => ": ".to_string(),
+            _ => String::new(),
+        }
     }
 
     fn parse_if_stmt(&mut self) -> Result<Statement, ParseError> {

@@ -25,6 +25,8 @@ pub enum ParseErrorKind {
     #[error("invalid syntax: {0}")]
     InvalidSyntax(String),
     #[error("{0}")]
+    SyntaxErrorMessage(String),
+    #[error("{0}")]
     IndentationError(String),
     #[error("inconsistent use of tabs and spaces")]
     TabError,
