@@ -303,6 +303,13 @@ impl Compiler {
             }
 
             ExpressionKind::ListComp { elt, generators } => {
+                Self::validate_comprehension_yields(
+                    ComprehensionKind::List,
+                    elt,
+                    None,
+                    generators,
+                    expr.location,
+                )?;
                 if generators.iter().any(|g| g.is_async) {
                     self.compile_async_comprehension_inline(
                         elt,
@@ -322,6 +329,13 @@ impl Compiler {
             }
 
             ExpressionKind::SetComp { elt, generators } => {
+                Self::validate_comprehension_yields(
+                    ComprehensionKind::Set,
+                    elt,
+                    None,
+                    generators,
+                    expr.location,
+                )?;
                 if generators.iter().any(|g| g.is_async) {
                     self.compile_async_comprehension_inline(
                         elt,
@@ -345,6 +359,13 @@ impl Compiler {
                 value,
                 generators,
             } => {
+                Self::validate_comprehension_yields(
+                    ComprehensionKind::Dict,
+                    key,
+                    Some(value),
+                    generators,
+                    expr.location,
+                )?;
                 if generators.iter().any(|g| g.is_async) {
                     self.compile_async_comprehension_inline(
                         key,
@@ -364,6 +385,13 @@ impl Compiler {
             }
 
             ExpressionKind::GeneratorExp { elt, generators } => {
+                Self::validate_comprehension_yields(
+                    ComprehensionKind::Generator,
+                    elt,
+                    None,
+                    generators,
+                    expr.location,
+                )?;
                 self.compile_comprehension(
                     "<genexpr>",
                     elt,
@@ -1486,6 +1514,38 @@ impl Compiler {
             ));
         }
         Ok(())
+    }
+
+    fn validate_comprehension_yields(
+        kind: ComprehensionKind,
+        elt: &Expression,
+        value: Option<&Expression>,
+        generators: &[Comprehension],
+        location: SourceLocation,
+    ) -> Result<()> {
+        let has_yield = expr_contains_yield(elt)
+            || value.map_or(false, expr_contains_yield)
+            || generators.iter().enumerate().any(|(idx, gen)| {
+                (idx > 0 && expr_contains_yield(&gen.iter))
+                    || gen.ifs.iter().any(expr_contains_yield)
+            });
+
+        if has_yield {
+            return Err(CompileError::syntax(
+                Self::comprehension_yield_message(kind),
+                location,
+            ));
+        }
+        Ok(())
+    }
+
+    fn comprehension_yield_message(kind: ComprehensionKind) -> &'static str {
+        match kind {
+            ComprehensionKind::List => "'yield' inside list comprehension",
+            ComprehensionKind::Set => "'yield' inside set comprehension",
+            ComprehensionKind::Dict => "'yield' inside dict comprehension",
+            ComprehensionKind::Generator => "'yield' inside generator expression",
+        }
     }
 
     pub(super) fn constant_to_value(&self, constant: &Constant) -> ConstantValue {

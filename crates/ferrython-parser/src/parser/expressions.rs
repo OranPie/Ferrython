@@ -686,7 +686,14 @@ impl Parser {
                         tuple_loc,
                     ));
                 }
+                let parenthesized_yield = self.check(TokenKind::Yield);
                 let mut expr = self.parse_test_list_star_expr()?;
+                if parenthesized_yield && self.check(TokenKind::Comma) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                        self.peek().span,
+                    ));
+                }
                 // Check for generator expression (including async)
                 if self.check(TokenKind::For) || self.check(TokenKind::Async) {
                     let generators = self.parse_comp_for()?;
@@ -1668,9 +1675,16 @@ impl Parser {
     }
 
     pub(super) fn parse_test_list_star_expr(&mut self) -> Result<Expression, ParseError> {
+        let starts_with_yield = self.check(TokenKind::Yield);
         let first = self.parse_test_or_star()?;
         if !self.check(TokenKind::Comma) {
             return Ok(first);
+        }
+        if starts_with_yield {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                self.peek().span,
+            ));
         }
         // Could be a tuple target or value — use Load context here.
         // The compiler's compile_store_target handles Store context separately.
@@ -1689,6 +1703,12 @@ impl Parser {
             {
                 trailing_comma = Some(comma_span);
                 break;
+            }
+            if self.check(TokenKind::Yield) {
+                return Err(ParseError::new(
+                    ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                    self.peek().span,
+                ));
             }
             let elt = self.parse_test_or_star()?;
             end = Self::expression_outer_location(&elt);

@@ -236,6 +236,12 @@ impl Parser {
                     loc,
                 ));
             } else {
+                if self.check(TokenKind::Yield) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                        self.peek().span,
+                    ));
+                }
                 let expr = self.parse_test()?;
                 // Check for generator expression: func(expr for x in iter)
                 if self.check(TokenKind::For) && args.is_empty() && keywords.is_empty() {
@@ -266,6 +272,12 @@ impl Parser {
                     if let ExpressionKind::Name { id, .. } = &expr.node {
                         let name = id.clone();
                         self.advance();
+                        if self.check(TokenKind::Yield) {
+                            return Err(ParseError::new(
+                                ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                                self.peek().span,
+                            ));
+                        }
                         let value = self.parse_test()?;
                         let location = Self::with_end_location(
                             Self::expression_outer_location(&expr),
