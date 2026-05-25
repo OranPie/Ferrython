@@ -47,11 +47,17 @@ fn create_source_file_loader(name: CompactString, location: CompactString) -> Py
             let globals = args[1]
                 .get_attr("__dict__")
                 .ok_or_else(|| PyException::type_error("exec_module() requires a module"))?;
-            let exec_fn = PyObject::builtin_function(CompactString::from("exec"));
-            ferrython_core::object::call_callable(
-                &exec_fn,
-                &[PyObject::str_val(CompactString::from(source)), globals],
+            let compile_fn = PyObject::builtin_function(CompactString::from("compile"));
+            let code = ferrython_core::object::call_callable(
+                &compile_fn,
+                &[
+                    PyObject::str_val(CompactString::from(source)),
+                    PyObject::str_val(CompactString::from(path.as_str())),
+                    PyObject::str_val(CompactString::from("exec")),
+                ],
             )?;
+            let exec_fn = PyObject::builtin_function(CompactString::from("exec"));
+            ferrython_core::object::call_callable(&exec_fn, &[code, globals])?;
             Ok(PyObject::none())
         }),
     );
