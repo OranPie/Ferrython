@@ -248,6 +248,21 @@ impl<'src> Lexer<'src> {
 
     // ─── Numbers ────────────────────────────────────────────────────
 
+    fn invalid_number(&self, msg: impl Into<String>, start: (u32, u32)) -> ParseError {
+        ParseError::new(
+            ParseErrorKind::SyntaxErrorMessage(msg.into()),
+            self.span_from(start),
+        )
+    }
+
+    fn previous_char_is_underscore(&self) -> bool {
+        self.pos > 0 && self.chars.get(self.pos - 1) == Some(&'_')
+    }
+
+    fn invalid_separator_after_digits(&self) -> bool {
+        self.previous_char_is_underscore() || self.peek_char_at(0) == Some('_')
+    }
+
     fn lex_number(&mut self) -> Result<Token, ParseError> {
         let start = self.span_start();
         let c = self.peek_char();
@@ -266,7 +281,10 @@ impl<'src> Lexer<'src> {
 
         // Decimal int or float
         let mut num_str = String::new();
-        self.collect_digits(&mut num_str);
+        let invalid_separator = self.collect_digits(&mut num_str);
+        if invalid_separator || self.invalid_separator_after_digits() {
+            return Err(self.invalid_number("invalid decimal literal", start));
+        }
         let leading_zero_decimal = num_str.len() > 1
             && num_str.starts_with('0')
             && num_str.chars().any(|ch| matches!(ch, '1'..='9'));
@@ -284,7 +302,13 @@ impl<'src> Lexer<'src> {
             if self.peek_char_at(1) != Some('.') {
                 num_str.push('.');
                 self.advance();
-                self.collect_digits(&mut num_str);
+                if self.peek_char_at(0) == Some('_') {
+                    return Err(self.invalid_number("invalid decimal literal", start));
+                }
+                let invalid_separator = self.collect_digits(&mut num_str);
+                if invalid_separator || self.invalid_separator_after_digits() {
+                    return Err(self.invalid_number("invalid decimal literal", start));
+                }
             } else if !is_float {
                 // It's an integer followed by ellipsis or attribute access
                 return self.make_int_token(num_str, 10, start);
@@ -300,13 +324,18 @@ impl<'src> Lexer<'src> {
                 if !self.is_at_end() && matches!(self.peek_char(), '+' | '-') {
                     num_str.push(self.peek_char());
                     self.advance();
+                    if self.peek_char_at(0) == Some('_') {
+                        return Err(self.invalid_number("invalid decimal literal", start));
+                    }
+                } else if self.peek_char_at(0) == Some('_') {
+                    return Err(self.invalid_number("invalid decimal literal", start));
                 }
-                self.collect_digits(&mut num_str);
+                let invalid_separator = self.collect_digits(&mut num_str);
+                if invalid_separator || self.invalid_separator_after_digits() {
+                    return Err(self.invalid_number("invalid decimal literal", start));
+                }
                 if num_str.ends_with('e') || num_str.ends_with("e+") || num_str.ends_with("e-") {
-                    return Err(ParseError::new(
-                        ParseErrorKind::InvalidNumber(num_str),
-                        self.span_from(start),
-                    ));
+                    return Err(self.invalid_number("invalid decimal literal", start));
                 }
                 return self.make_float_or_complex(num_str, start);
             } else if next_after_e.is_none()
@@ -318,10 +347,8 @@ impl<'src> Lexer<'src> {
                 let mut invalid = num_str;
                 invalid.push(self.peek_char());
                 self.advance();
-                return Err(ParseError::new(
-                    ParseErrorKind::InvalidNumber(invalid),
-                    self.span_from(start),
-                ));
+                let _ = invalid;
+                return Err(self.invalid_number("invalid decimal literal", start));
             }
         }
 
@@ -337,9 +364,9 @@ impl<'src> Lexer<'src> {
         }
 
         if leading_zero_decimal {
-            return Err(ParseError::new(
-                ParseErrorKind::InvalidNumber(num_str),
-                self.span_from(start),
+            return Err(self.invalid_number(
+                "leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers",
+                start,
             ));
         }
         self.make_int_token(num_str, 10, start)
@@ -349,18 +376,24 @@ impl<'src> Lexer<'src> {
         self.advance(); // 0
         self.advance(); // x/X
         let mut s = String::new();
-        self.collect_hex_digits(&mut s);
-        if s.is_empty()
-            || (!self.is_at_end()
-                && matches!(
-                    self.peek_char(),
-                    '.' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
-                ))
+        let allow_leading_underscore = self.peek_char_at(0) == Some('_')
+            && self
+                .peek_char_at(1)
+                .is_some_and(|ch| ch.is_ascii_hexdigit());
+        let invalid_separator = self.collect_hex_digits(&mut s, allow_leading_underscore);
+        if s.is_empty() {
+            return Err(self.invalid_number("invalid hexadecimal literal", start));
+        }
+        if invalid_separator || self.invalid_separator_after_digits() {
+            return Err(self.invalid_number("invalid hexadecimal literal", start));
+        }
+        if !self.is_at_end()
+            && matches!(
+                self.peek_char(),
+                '.' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+            )
         {
-            return Err(ParseError::new(
-                ParseErrorKind::InvalidNumber("invalid hex literal".into()),
-                self.span_from(start),
-            ));
+            return Err(self.invalid_number("invalid hexadecimal literal", start));
         }
         self.make_int_token(s, 16, start)
     }
@@ -369,32 +402,44 @@ impl<'src> Lexer<'src> {
         self.advance(); // 0
         self.advance(); // o/O
         let mut s = String::new();
+        let allow_leading_underscore =
+            self.peek_char_at(0) == Some('_') && matches!(self.peek_char_at(1), Some('0'..='7'));
+        let mut saw_digit = false;
+        let mut last_underscore = false;
+        let mut invalid_separator = false;
         while !self.is_at_end() && (self.peek_char().is_ascii_digit() || self.peek_char() == '_') {
             let c = self.peek_char();
             if c == '_' {
+                if last_underscore || (!saw_digit && !allow_leading_underscore) {
+                    invalid_separator = true;
+                }
+                last_underscore = true;
                 self.advance();
                 continue;
             }
             if c >= '8' {
-                return Err(ParseError::new(
-                    ParseErrorKind::InvalidNumber("invalid digit in octal literal".into()),
-                    self.span_from(start),
-                ));
+                return Err(
+                    self.invalid_number(format!("invalid digit '{}' in octal literal", c), start)
+                );
             }
             s.push(c);
+            saw_digit = true;
+            last_underscore = false;
             self.advance();
         }
-        if s.is_empty()
-            || (!self.is_at_end()
-                && matches!(
-                    self.peek_char(),
-                    '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
-                ))
+        if s.is_empty() {
+            return Err(self.invalid_number("invalid octal literal", start));
+        }
+        if invalid_separator || self.invalid_separator_after_digits() {
+            return Err(self.invalid_number("invalid octal literal", start));
+        }
+        if !self.is_at_end()
+            && matches!(
+                self.peek_char(),
+                '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+            )
         {
-            return Err(ParseError::new(
-                ParseErrorKind::InvalidNumber("invalid octal literal".into()),
-                self.span_from(start),
-            ));
+            return Err(self.invalid_number("invalid octal literal", start));
         }
         self.make_int_token(s, 8, start)
     }
@@ -403,26 +448,50 @@ impl<'src> Lexer<'src> {
         self.advance(); // 0
         self.advance(); // b/B
         let mut s = String::new();
+        let allow_leading_underscore =
+            self.peek_char_at(0) == Some('_') && matches!(self.peek_char_at(1), Some('0' | '1'));
+        let mut saw_digit = false;
+        let mut last_underscore = false;
+        let mut invalid_separator = false;
         while !self.is_at_end()
             && (self.peek_char() == '0' || self.peek_char() == '1' || self.peek_char() == '_')
         {
             let c = self.peek_char();
             if c != '_' {
                 s.push(c);
+                saw_digit = true;
+                last_underscore = false;
+            } else {
+                if last_underscore || (!saw_digit && !allow_leading_underscore) {
+                    invalid_separator = true;
+                }
+                last_underscore = true;
             }
             self.advance();
         }
-        if s.is_empty()
-            || (!self.is_at_end()
-                && matches!(
-                    self.peek_char(),
-                    '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
-                ))
+        if s.is_empty() {
+            if !self.is_at_end() && matches!(self.peek_char(), '2'..='9') {
+                return Err(self.invalid_number(
+                    format!("invalid digit '{}' in binary literal", self.peek_char()),
+                    start,
+                ));
+            }
+            return Err(self.invalid_number("invalid binary literal", start));
+        }
+        if !self.is_at_end()
+            && matches!(
+                self.peek_char(),
+                '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
+            )
         {
-            return Err(ParseError::new(
-                ParseErrorKind::InvalidNumber("invalid binary literal".into()),
-                self.span_from(start),
-            ));
+            let msg = match self.peek_char() {
+                '2'..='9' => format!("invalid digit '{}' in binary literal", self.peek_char()),
+                _ => "invalid binary literal".to_string(),
+            };
+            return Err(self.invalid_number(msg, start));
+        }
+        if invalid_separator || self.invalid_separator_after_digits() {
+            return Err(self.invalid_number("invalid binary literal", start));
         }
         self.make_int_token(s, 2, start)
     }
@@ -469,25 +538,47 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    fn collect_digits(&mut self, s: &mut String) {
+    fn collect_digits(&mut self, s: &mut String) -> bool {
+        let mut saw_digit = false;
+        let mut last_underscore = false;
+        let mut invalid_separator = false;
         while !self.is_at_end() && (self.peek_char().is_ascii_digit() || self.peek_char() == '_') {
             let c = self.peek_char();
-            if c != '_' {
+            if c == '_' {
+                if last_underscore || !saw_digit {
+                    invalid_separator = true;
+                }
+                last_underscore = true;
+            } else {
                 s.push(c);
+                saw_digit = true;
+                last_underscore = false;
             }
             self.advance();
         }
+        invalid_separator
     }
 
-    fn collect_hex_digits(&mut self, s: &mut String) {
+    fn collect_hex_digits(&mut self, s: &mut String, allow_leading_underscore: bool) -> bool {
+        let mut saw_digit = false;
+        let mut last_underscore = false;
+        let mut invalid_separator = false;
         while !self.is_at_end() && (self.peek_char().is_ascii_hexdigit() || self.peek_char() == '_')
         {
             let c = self.peek_char();
-            if c != '_' {
+            if c == '_' {
+                if last_underscore || (!saw_digit && !allow_leading_underscore) {
+                    invalid_separator = true;
+                }
+                last_underscore = true;
+            } else {
                 s.push(c);
+                saw_digit = true;
+                last_underscore = false;
             }
             self.advance();
         }
+        invalid_separator
     }
 
     // ─── Identifiers ────────────────────────────────────────────────
