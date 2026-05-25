@@ -6920,6 +6920,13 @@ impl VirtualMachine {
         reverse: bool,
     ) -> PyResult<()> {
         if let Some(key) = key_fn {
+            if matches!(&key.payload, PyObjectPayload::None) {
+                self.vm_sort(items)?;
+                if reverse {
+                    items.reverse();
+                }
+                return Ok(());
+            }
             // Check if key is a cmp_to_key class — use comparison function directly
             if let PyObjectPayload::Class(cd) = &key.payload {
                 if let Some(cmp_func) = cd.namespace.read().get("__cmp_to_key_func__").cloned() {

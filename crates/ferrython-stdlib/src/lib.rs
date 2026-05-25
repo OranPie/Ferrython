@@ -252,7 +252,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_functools" => Some(collection_modules::create_functools_module()),
         "_operator" => Some(collection_modules::create_operator_module()),
         "_csv" => Some(serial_modules::create_csv_module()),
-        "_heapq" => Some(math_modules::create_heapq_module()),
+        "_heapq" => Some(math_modules::create_heapq_accel_module()),
         "_json" => Some(serial_modules::create_json_module()),
         "_io" => Some(fs_modules::create_io_module()),
         "_collections" => Some(collection_modules::create_collections_module()),

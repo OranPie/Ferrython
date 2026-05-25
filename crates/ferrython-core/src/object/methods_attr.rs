@@ -2563,9 +2563,38 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
         }
         PyObjectPayload::NativeFunction(nf) => match name {
-            "__name__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
-            "__qualname__" => Some(PyObject::str_val(CompactString::from(nf.name.as_str()))),
-            "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+            "__name__" => {
+                let name = nf.name.as_str();
+                if let Some(func_name) = name
+                    .strip_prefix("heapq.")
+                    .or_else(|| name.strip_prefix("_heapq."))
+                {
+                    Some(PyObject::str_val(CompactString::from(func_name)))
+                } else {
+                    Some(PyObject::str_val(CompactString::from(name)))
+                }
+            }
+            "__qualname__" => {
+                let name = nf.name.as_str();
+                if let Some(func_name) = name
+                    .strip_prefix("heapq.")
+                    .or_else(|| name.strip_prefix("_heapq."))
+                {
+                    Some(PyObject::str_val(CompactString::from(func_name)))
+                } else {
+                    Some(PyObject::str_val(CompactString::from(name)))
+                }
+            }
+            "__module__" => {
+                let name = nf.name.as_str();
+                if name.starts_with("heapq.") {
+                    Some(PyObject::str_val(CompactString::from("heapq")))
+                } else if name.starts_with("_heapq.") {
+                    Some(PyObject::str_val(CompactString::from("_heapq")))
+                } else {
+                    Some(PyObject::str_val(CompactString::from("builtins")))
+                }
+            }
             "__class__" => Some(PyObject::builtin_type(CompactString::from(
                 "builtin_function_or_method",
             ))),

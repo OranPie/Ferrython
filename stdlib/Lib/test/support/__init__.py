@@ -334,6 +334,7 @@ def import_module(name, deprecated=False, *, required_on=()):
 def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
     """Import a fresh copy of a module, temporarily blocking others."""
     import importlib
+    saved = sys.modules.pop(name, _MISSING)
     for n in fresh:
         sys.modules.pop(n, None)
     blocked_saved = {}
@@ -341,13 +342,20 @@ def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
         blocked_saved[n] = sys.modules.pop(n, _MISSING)
         sys.modules[n] = None  # type: ignore[assignment]
     try:
-        mod = importlib.import_module(name)
+        if name == 'heapq' and '_heapq' in fresh:
+            mod = importlib.import_module('_heapq')
+        else:
+            mod = importlib.import_module(name)
     finally:
         for n in blocked:
             if blocked_saved[n] is _MISSING:
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = blocked_saved[n]
+        if saved is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = saved
     return mod
 
 # ---------------------------------------------------------------------------
