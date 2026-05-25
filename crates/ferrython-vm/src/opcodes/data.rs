@@ -11,6 +11,7 @@ use ferrython_core::object::{
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
+use indexmap::IndexMap;
 use std::rc::Rc;
 
 // ── Group 1: Stack + LoadConst ───────────────────────────────────────
@@ -72,6 +73,53 @@ impl VirtualMachine {
 
 // ── Group 2: Name loading/storing ────────────────────────────────────
 impl VirtualMachine {
+    fn invoke_unraisablehook(&mut self, error: PyException, object: PyObjectRef) {
+        let Some(sys_mod) = ferrython_stdlib::get_current_sys_module() else {
+            return;
+        };
+        let Some(hook) = sys_mod.get_attr("unraisablehook") else {
+            return;
+        };
+        if matches!(hook.payload, PyObjectPayload::None) {
+            return;
+        }
+
+        let exc_value = error.original.clone().unwrap_or_else(|| {
+            PyObject::exception_instance_with_args(
+                error.kind,
+                error.message.clone(),
+                if error.message.is_empty() {
+                    vec![]
+                } else {
+                    vec![PyObject::str_val(error.message.clone())]
+                },
+            )
+        });
+        let traceback = PyObject::instance(PyObject::class(
+            CompactString::from("traceback"),
+            vec![],
+            IndexMap::new(),
+        ));
+        let mut attrs = IndexMap::new();
+        attrs.insert(
+            CompactString::from("exc_type"),
+            PyObject::exception_type(error.kind),
+        );
+        attrs.insert(CompactString::from("exc_value"), exc_value);
+        attrs.insert(CompactString::from("exc_traceback"), traceback);
+        attrs.insert(CompactString::from("err_msg"), PyObject::none());
+        attrs.insert(CompactString::from("object"), object);
+        let args_obj = PyObject::instance_with_attrs(
+            PyObject::class(
+                CompactString::from("UnraisableHookArgs"),
+                vec![],
+                IndexMap::new(),
+            ),
+            attrs,
+        );
+        let _ = self.call_object(hook, vec![args_obj]);
+    }
+
     pub(crate) fn exec_name_ops(
         &mut self,
         instr: Instruction,
@@ -198,7 +246,15 @@ impl VirtualMachine {
                 }
                 Opcode::DeleteFast => {
                     let idx = instr.arg as usize;
+                    let old = frame.locals.get(idx).cloned().flatten();
                     frame.locals[idx] = None;
+                    if let Some(ref obj) = old {
+                        if matches!(&obj.payload, PyObjectPayload::Instance(_))
+                            && obj.get_attr("__del__").is_some()
+                        {
+                            del_target = old;
+                        }
+                    }
                 }
                 Opcode::LoadDeref => {
                     let idx = instr.arg as usize;
@@ -227,7 +283,15 @@ impl VirtualMachine {
                 }
                 Opcode::DeleteDeref => {
                     let idx = instr.arg as usize;
+                    let old = frame.cells[idx].read().clone();
                     *frame.cells[idx].write() = None;
+                    if let Some(ref obj) = old {
+                        if matches!(&obj.payload, PyObjectPayload::Instance(_))
+                            && obj.get_attr("__del__").is_some()
+                        {
+                            del_target = old;
+                        }
+                    }
                 }
                 Opcode::LoadClassderef => {
                     // Like LoadDeref but checks locals first (for class scoping).
@@ -323,8 +387,15 @@ impl VirtualMachine {
                 }
                 Opcode::DeleteGlobal => {
                     let name = &frame.code.names[instr.arg as usize];
-                    frame.globals.write().shift_remove(name.as_str());
+                    let old = frame.globals.write().shift_remove(name.as_str());
                     crate::frame::bump_globals_version();
+                    if let Some(ref obj) = old {
+                        if matches!(&obj.payload, PyObjectPayload::Instance(_))
+                            && obj.get_attr("__del__").is_some()
+                        {
+                            del_target = old;
+                        }
+                    }
                 }
                 // Superinstructions (fallback path — normally handled inline in dispatch loop)
                 Opcode::LoadFastLoadFast => {
@@ -402,7 +473,13 @@ impl VirtualMachine {
           // Call __del__ if we captured a deleted object with __del__
         if let Some(obj) = del_target {
             if let Some(del_fn) = obj.get_attr("__del__") {
-                let _ = self.call_object(del_fn, vec![]);
+                let hook_object = match &del_fn.payload {
+                    PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                    _ => del_fn.clone(),
+                };
+                if let Err(error) = self.call_object(del_fn, vec![]) {
+                    self.invoke_unraisablehook(error, hook_object);
+                }
             }
         }
         Ok(None)

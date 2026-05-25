@@ -621,7 +621,15 @@ def adjust_int_max_str_digits(max_digits):
 def catch_unraisable_exception():
     class _UnraisableContext:
         unraisable = None
-    yield _UnraisableContext()
+    cm = _UnraisableContext()
+    old_hook = sys.unraisablehook
+    def hook(unraisable):
+        cm.unraisable = unraisable
+    sys.unraisablehook = hook
+    try:
+        yield cm
+    finally:
+        sys.unraisablehook = old_hook
 
 
 def open_urlresource(url, *args, **kwargs):

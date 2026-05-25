@@ -38,6 +38,7 @@ pub use introspection_modules::pyobj_ast_to_module;
 pub use serial_modules::json_dumps_fn;
 pub use sys_modules::get_argv;
 pub use sys_modules::get_current_ctype_locale;
+pub use sys_modules::get_current_sys_module;
 pub use sys_modules::get_exc_info;
 pub use sys_modules::get_recursion_limit;
 pub use sys_modules::set_argv;

@@ -135,6 +135,11 @@ pub fn get_current_stdout() -> Option<PyObjectRef> {
     CURRENT_SYS_MODULE.with(|c| c.borrow().as_ref().and_then(|sys| sys.get_attr("stdout")))
 }
 
+/// Get the active sys module, including Python-level attribute replacements.
+pub fn get_current_sys_module() -> Option<PyObjectRef> {
+    CURRENT_SYS_MODULE.with(|c| c.borrow().clone())
+}
+
 /// Get the current recursion limit (for VM stack depth checking).
 pub fn get_recursion_limit() -> i64 {
     RECURSION_LIMIT.load(Ordering::Relaxed)
@@ -365,6 +370,8 @@ pub fn create_sys_module() -> PyObjectRef {
         ("getprofile", make_builtin(sys_getprofile)),
         ("excepthook", make_builtin(sys_excepthook_default)),
         ("__excepthook__", make_builtin(sys_excepthook_default)),
+        ("unraisablehook", make_builtin(sys_unraisablehook_default)),
+        ("__unraisablehook__", make_builtin(sys_unraisablehook_default)),
         ("getdefaultencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("getfilesystemencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("intern", make_builtin(|args| { check_args("sys.intern", args, 1)?; Ok(args[0].clone()) })),
@@ -681,6 +688,32 @@ fn sys_excepthook_default(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         text.push_str(&format!("{}: {}\n", type_name, value_str));
     }
     write_stderr(&text);
+    Ok(PyObject::none())
+}
+
+/// Default sys.unraisablehook: prints an unraisable exception summary.
+fn sys_unraisablehook_default(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "unraisablehook requires an argument",
+        ));
+    }
+    let unraisable = &args[0];
+    let exc_type = unraisable
+        .get_attr("exc_type")
+        .unwrap_or_else(|| PyObject::none());
+    let exc_value = unraisable
+        .get_attr("exc_value")
+        .unwrap_or_else(|| PyObject::none());
+    let object = unraisable
+        .get_attr("object")
+        .unwrap_or_else(|| PyObject::none());
+    write_stderr(&format!(
+        "Exception ignored in: {}\n{}: {}\n",
+        object.py_to_string(),
+        exception_display_type(&exc_type, &exc_value),
+        exception_display_value(&exc_value)
+    ));
     Ok(PyObject::none())
 }
 
