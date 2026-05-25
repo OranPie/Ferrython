@@ -609,6 +609,8 @@ pub struct VirtualMachine {
     pub(crate) modules: IndexMap<CompactString, PyObjectRef>,
     /// Currently active exception being handled (for bare `raise` re-raise).
     pub(crate) active_exception: Option<PyException>,
+    /// Previous active exceptions for nested except handlers.
+    pub(crate) exception_state_stack: Vec<Option<PyException>>,
     /// Reference to the sys.modules dict for synchronization.
     pub(crate) sys_modules_dict: Option<PyObjectRef>,
     /// Execution profiler (disabled by default — zero overhead when off).
@@ -649,6 +651,7 @@ impl VirtualMachine {
             builtins,
             modules,
             active_exception: None,
+            exception_state_stack: Vec::new(),
             sys_modules_dict: None,
             profiler: ExecutionProfiler::new(),
             breakpoints: BreakpointManager::new(),
@@ -670,6 +673,7 @@ impl VirtualMachine {
             builtins,
             modules,
             active_exception: None,
+            exception_state_stack: Vec::new(),
             sys_modules_dict: None,
             profiler: ExecutionProfiler::new(),
             breakpoints: BreakpointManager::new(),
@@ -682,6 +686,30 @@ impl VirtualMachine {
     /// Get a clone of the builtins Arc for passing to thread VMs.
     pub fn shared_builtins(&self) -> SharedBuiltins {
         self.builtins.clone()
+    }
+
+    pub(crate) fn enter_exception_handler(&mut self, exc: PyException) {
+        self.exception_state_stack
+            .push(self.active_exception.clone());
+        ferrython_core::error::set_thread_exc_info(
+            exc.kind,
+            exc.message.clone(),
+            exc.traceback.clone(),
+        );
+        self.active_exception = Some(exc);
+    }
+
+    pub(crate) fn restore_previous_exception(&mut self) {
+        self.active_exception = self.exception_state_stack.pop().unwrap_or(None);
+        if let Some(exc) = &self.active_exception {
+            ferrython_core::error::set_thread_exc_info(
+                exc.kind,
+                exc.message.clone(),
+                exc.traceback.clone(),
+            );
+        } else {
+            ferrython_core::error::clear_thread_exc_info();
+        }
     }
 
     pub(crate) fn builtins_module(&mut self) -> Option<PyObjectRef> {
@@ -3703,9 +3731,7 @@ impl VirtualMachine {
                 }
                 Opcode::PopExcept => {
                     frame.pop_block();
-                    self.active_exception = None;
-                    // sys.exc_info() reads through active_exception pointer — clearing
-                    // active_exception is sufficient, no TLS clear needed
+                    self.restore_previous_exception();
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline RaiseVarargs(1) for the common case: raise ExceptionInstance
@@ -9805,14 +9831,7 @@ impl VirtualMachine {
                             frame.push(exc_value); // value
                             frame.push(exc_type); // type
                             frame.ip = handler_ip;
-                            // Move exc into active_exception (avoids clone)
-                            // Also set thread-local exc info for traceback.format_exc()
-                            ferrython_core::error::set_thread_exc_info(
-                                exc.kind,
-                                exc.message.clone(),
-                                exc.traceback.clone(),
-                            );
-                            self.active_exception = Some(exc);
+                            self.enter_exception_handler(exc);
                             // Re-derive frame_ptr: exception unwind may have popped frames
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             break; // handler found, continue main loop
@@ -10088,42 +10107,47 @@ impl VirtualMachine {
 
     /// Find an exception handler on the block stack. Returns handler IP if found.
     pub(crate) fn unwind_except(&mut self) -> Option<usize> {
-        let frame = self.call_stack.last_mut()?;
-        while let Some(block) = frame.pop_block() {
-            match block.kind() {
-                BlockKind::Except | BlockKind::Finally => {
-                    // Unwind value stack to block level
-                    while frame.stack.len() > block.stack_level() {
-                        frame.pop();
+        loop {
+            let restore_interrupted_handler = {
+                let frame = self.call_stack.last_mut()?;
+                let block = frame.pop_block()?;
+                match block.kind() {
+                    BlockKind::Except | BlockKind::Finally => {
+                        // Unwind value stack to block level
+                        while frame.stack.len() > block.stack_level() {
+                            frame.pop();
+                        }
+                        // Push an ExceptHandler block so PopExcept can find it
+                        frame.push_block(BlockKind::ExceptHandler, 0);
+                        return Some(block.handler());
                     }
-                    // Push an ExceptHandler block so PopExcept can find it
-                    frame.push_block(BlockKind::ExceptHandler, 0);
-                    return Some(block.handler());
-                }
-                BlockKind::ExceptHandler => {
-                    // Clean up a previous except handler (exception in except body)
-                    while frame.stack.len() > block.stack_level() {
-                        frame.pop();
+                    BlockKind::ExceptHandler => {
+                        // Clean up a previous except handler (exception in except body)
+                        while frame.stack.len() > block.stack_level() {
+                            frame.pop();
+                        }
+                        true
                     }
-                    continue;
-                }
-                BlockKind::Loop => {
-                    while frame.stack.len() > block.stack_level() {
-                        frame.pop();
+                    BlockKind::Loop => {
+                        while frame.stack.len() > block.stack_level() {
+                            frame.pop();
+                        }
+                        false
                     }
-                    continue;
-                }
-                BlockKind::With => {
-                    // With block exception — jump to cleanup handler which will
-                    // call __exit__ with exception info
-                    while frame.stack.len() > block.stack_level() {
-                        frame.pop();
+                    BlockKind::With => {
+                        // With block exception — jump to cleanup handler which will
+                        // call __exit__ with exception info
+                        while frame.stack.len() > block.stack_level() {
+                            frame.pop();
+                        }
+                        return Some(block.handler());
                     }
-                    return Some(block.handler());
                 }
+            };
+            if restore_interrupted_handler {
+                self.restore_previous_exception();
             }
         }
-        None
     }
 
     #[cold]

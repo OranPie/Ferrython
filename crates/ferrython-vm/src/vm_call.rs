@@ -5898,21 +5898,7 @@ impl VirtualMachine {
                         }
                         "throw" => {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
-                            // Preserve original exception value for identity
-                            let original_value = if args.len() >= 2 {
-                                let v = &args[1];
-                                if matches!(
-                                    v.payload,
-                                    PyObjectPayload::ExceptionInstance(_)
-                                        | PyObjectPayload::Instance(_)
-                                ) {
-                                    Some(v.clone())
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            let original_value = Self::parse_throw_original_value(&args);
                             return self.gen_throw_with_value(
                                 gen_arc,
                                 exc_kind,
@@ -5975,7 +5961,13 @@ impl VirtualMachine {
                             if has_exc {
                                 // Exception in with block — throw into generator
                                 let (exc_kind, msg) = Self::parse_throw_args(&args);
-                                match self.gen_throw(gen_arc, exc_kind, msg) {
+                                let original_value = Self::parse_throw_original_value(&args);
+                                match self.gen_throw_with_value(
+                                    gen_arc,
+                                    exc_kind,
+                                    msg,
+                                    original_value,
+                                ) {
                                     Ok(_) => {
                                         // Generator caught the exception and yielded or returned
                                         return Ok(PyObject::bool_val(true)); // suppress exception
@@ -6089,20 +6081,7 @@ impl VirtualMachine {
                         }
                         "throw" => {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
-                            let original_value = if args.len() >= 2 {
-                                let v = &args[1];
-                                if matches!(
-                                    v.payload,
-                                    PyObjectPayload::ExceptionInstance(_)
-                                        | PyObjectPayload::Instance(_)
-                                ) {
-                                    Some(v.clone())
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            let original_value = Self::parse_throw_original_value(&args);
                             return self.gen_throw_with_value(gen, exc_kind, msg, original_value);
                         }
                         "close" => {

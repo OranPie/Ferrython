@@ -514,7 +514,7 @@ impl VirtualMachine {
                     if let Some(ref active) = self.active_exception {
                         if active.kind != ExceptionKind::StopAsyncIteration {
                             let e = active.clone();
-                            self.active_exception = None;
+                            self.restore_previous_exception();
                             return Err(e);
                         }
                     }
@@ -526,7 +526,7 @@ impl VirtualMachine {
                         frame.pop_block();
                     }
                 }
-                self.active_exception = None;
+                self.restore_previous_exception();
             }
             _ => unreachable!(),
         }

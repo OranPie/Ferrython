@@ -28,7 +28,7 @@ impl VirtualMachine {
             }
             Opcode::PopExcept => {
                 self.vm_frame().pop_block();
-                self.active_exception = None;
+                self.restore_previous_exception();
             }
             Opcode::EndFinally => {
                 return self.exec_end_finally();
@@ -384,7 +384,16 @@ impl VirtualMachine {
     }
 
     fn cancel_finally(&mut self) {
-        self.active_exception = None;
+        if self
+            .vm_frame()
+            .block_stack
+            .last()
+            .is_some_and(|block| block.kind() == BlockKind::ExceptHandler)
+        {
+            self.restore_previous_exception();
+        } else {
+            self.active_exception = None;
+        }
         let frame = self.vm_frame();
         frame.pending_return = None;
         frame.pending_jump = None;

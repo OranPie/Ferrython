@@ -1899,10 +1899,19 @@ impl VirtualMachine {
             exc.original = Some(orig.clone());
         }
         let exc_result = Err(exc);
-        let exc_obj = original_value
-            .clone()
-            .unwrap_or_else(|| PyObject::exception_instance(kind, msg.clone()));
-        let exc_type = PyObject::exception_type(kind);
+        let (exc_obj, exc_type) = if let Some(orig) = &original_value {
+            let typ = match &orig.payload {
+                PyObjectPayload::Instance(inst) => inst.class.clone(),
+                PyObjectPayload::ExceptionInstance(ei) => PyObject::exception_type(ei.kind),
+                _ => PyObject::exception_type(kind),
+            };
+            (orig.clone(), typ)
+        } else {
+            (
+                PyObject::exception_instance(kind, msg.clone()),
+                PyObject::exception_type(kind),
+            )
+        };
         let tb = PyObject::none();
 
         // Try to find an exception handler in the generator's frame
@@ -1911,7 +1920,7 @@ impl VirtualMachine {
             if let Some(ref orig) = original_value {
                 active.original = Some(orig.clone());
             }
-            self.active_exception = Some(active);
+            self.enter_exception_handler(active);
             let frame_ref = self.call_stack.last_mut().unwrap();
             frame_ref.push(tb);
             frame_ref.push(exc_obj);
@@ -1962,10 +1971,14 @@ impl VirtualMachine {
 
     /// Parse the arguments to generator.throw() / coroutine.throw() into (ExceptionKind, message).
     pub(crate) fn parse_throw_args(args: &[PyObjectRef]) -> (ExceptionKind, CompactString) {
-        let msg: CompactString = if args.len() >= 2 {
-            args[1].py_to_string().into()
-        } else {
-            CompactString::new("")
+        let msg: CompactString = match args {
+            [first] => match &first.payload {
+                PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
+                PyObjectPayload::Instance(_) => first.py_to_string().into(),
+                _ => CompactString::new(""),
+            },
+            [_, value, ..] => value.py_to_string().into(),
+            [] => CompactString::new(""),
         };
         let kind = if !args.is_empty() {
             match &args[0].payload {
@@ -1974,12 +1987,35 @@ impl VirtualMachine {
                     ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
                 }
                 PyObjectPayload::ExceptionInstance(ei) => ei.kind,
+                PyObjectPayload::Instance(inst) if Self::is_exception_class(&inst.class) => {
+                    Self::find_exception_kind(&inst.class)
+                }
+                PyObjectPayload::Class(_) if Self::is_exception_class(&args[0]) => {
+                    Self::find_exception_kind(&args[0])
+                }
                 _ => ExceptionKind::RuntimeError,
             }
         } else {
             ExceptionKind::RuntimeError
         };
         (kind, msg)
+    }
+
+    pub(crate) fn parse_throw_original_value(args: &[PyObjectRef]) -> Option<PyObjectRef> {
+        let candidate = match args {
+            [first, ..] if Self::is_exception_value(first) => Some(first),
+            [_, value, ..] if Self::is_exception_value(value) => Some(value),
+            _ => None,
+        }?;
+        Some(candidate.clone())
+    }
+
+    fn is_exception_value(obj: &PyObjectRef) -> bool {
+        match &obj.payload {
+            PyObjectPayload::ExceptionInstance(_) => true,
+            PyObjectPayload::Instance(inst) => Self::is_exception_class(&inst.class),
+            _ => false,
+        }
     }
 
     /// Drive an AsyncGenAwaitable: execute the action on the underlying async generator.
