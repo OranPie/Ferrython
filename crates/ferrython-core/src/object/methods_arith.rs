@@ -16,11 +16,11 @@ use super::payload::*;
 /// Extract keys as HashableKey set from DictKeys or DictItems view.
 fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyFlatMap> {
     match &obj.payload {
-        PyObjectPayload::DictKeys(m) => {
+        PyObjectPayload::DictKeys { map: m, .. } => {
             let r = m.read();
             Some(r.keys().map(|k| (k.clone(), k.to_object())).collect())
         }
-        PyObjectPayload::DictItems(m) => {
+        PyObjectPayload::DictItems { map: m, .. } => {
             let r = m.read();
             Some(
                 r.iter()
@@ -323,8 +323,8 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             )))))
         }
         // DictKeys/DictItems set-like difference
-        (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
-        | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+        (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
             if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
         {
             if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
@@ -1289,8 +1289,8 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             }
         }
         // DictKeys/DictItems set-like intersection
-        (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
-        | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+        (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
             if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
         {
             if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
@@ -1403,8 +1403,8 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             }
         }
         // DictKeys/DictItems set-like union
-        (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
-        | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+        (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
             if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
         {
             if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
@@ -1494,8 +1494,8 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             )))))
         }
         // DictKeys/DictItems set-like symmetric difference
-        (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
-        | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+        (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
             if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
         {
             if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {

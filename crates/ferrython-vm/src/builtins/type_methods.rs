@@ -773,11 +773,21 @@ pub(crate) fn call_dict_method(
     map: &Rc<PyCell<FxHashKeyMap>>,
     method: &str,
     args: &[PyObjectRef],
+    owner: Option<PyObjectRef>,
 ) -> PyResult<PyObjectRef> {
     match method {
-        "keys" => Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone()))),
-        "values" => Ok(PyObject::wrap(PyObjectPayload::DictValues(map.clone()))),
-        "items" => Ok(PyObject::wrap(PyObjectPayload::DictItems(map.clone()))),
+        "keys" => Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+            map: map.clone(),
+            owner,
+        })),
+        "values" => Ok(PyObject::wrap(PyObjectPayload::DictValues {
+            map: map.clone(),
+            owner,
+        })),
+        "items" => Ok(PyObject::wrap(PyObjectPayload::DictItems {
+            map: map.clone(),
+            owner,
+        })),
         "get" => {
             check_args_min("get", args, 1)?;
             let key = args[0].to_hashable_key()?;

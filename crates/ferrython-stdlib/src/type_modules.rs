@@ -19,8 +19,8 @@ fn is_set_like_for_comparison(
     match &obj.payload {
         PyObjectPayload::Set(_)
         | PyObjectPayload::FrozenSet(_)
-        | PyObjectPayload::DictKeys(_)
-        | PyObjectPayload::DictItems(_) => true,
+        | PyObjectPayload::DictKeys { .. }
+        | PyObjectPayload::DictItems { .. } => true,
         PyObjectPayload::Instance(inst) => match &inst.class.payload {
             PyObjectPayload::Class(cd) => cd.mro.iter().any(|base| {
                 PyObjectRef::ptr_eq(base, set_cls) || PyObjectRef::ptr_eq(base, mutable_set_cls)
@@ -2689,8 +2689,8 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                                 &left.payload,
                                 PyObjectPayload::Set(_)
                                     | PyObjectPayload::FrozenSet(_)
-                                    | PyObjectPayload::DictKeys(_)
-                                    | PyObjectPayload::DictItems(_)
+                                    | PyObjectPayload::DictKeys { .. }
+                                    | PyObjectPayload::DictItems { .. }
                             )
                         {
                             return Ok(PyObject::not_implemented());

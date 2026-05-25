@@ -138,7 +138,10 @@ fn is_recursive_container_pair(a: &PyObjectRef, b: &PyObjectRef) -> bool {
         (PyObjectPayload::List(_), PyObjectPayload::List(_))
             | (PyObjectPayload::Tuple(_), PyObjectPayload::Tuple(_))
             | (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_))
-            | (PyObjectPayload::DictItems(_), PyObjectPayload::DictItems(_))
+            | (
+                PyObjectPayload::DictItems { .. },
+                PyObjectPayload::DictItems { .. }
+            )
             | (
                 PyObjectPayload::MappingProxy(_),
                 PyObjectPayload::MappingProxy(_)
@@ -415,7 +418,10 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         {
             return Err(set_order_type_error(a, b, op));
         }
-        (PyObjectPayload::DictKeys(a_map), PyObjectPayload::DictKeys(b_map)) => {
+        (
+            PyObjectPayload::DictKeys { map: a_map, .. },
+            PyObjectPayload::DictKeys { map: b_map, .. },
+        ) => {
             let a_keys: Vec<_> = a_map
                 .read()
                 .keys()
@@ -443,7 +449,10 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             };
             return Ok(PyObject::bool_val(result));
         }
-        (PyObjectPayload::DictItems(a_map), PyObjectPayload::DictItems(b_map)) => {
+        (
+            PyObjectPayload::DictItems { map: a_map, .. },
+            PyObjectPayload::DictItems { map: b_map, .. },
+        ) => {
             let _comparison_guard = enter_container_comparison(a, b, op)?;
             let a_items: Vec<_> = a_map
                 .read()

@@ -3043,11 +3043,15 @@ fn make_chainmap_class() -> PyObjectRef {
             let maps = maps_from_self(&call_args[0])?;
             let combined = build_builtin_value(&maps)?;
             if let PyObjectPayload::Dict(m) = &combined.payload {
-                Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
+                Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                    map: m.clone(),
+                    owner: Some(combined.clone()),
+                }))
             } else {
-                Ok(PyObject::wrap(PyObjectPayload::DictKeys(Rc::new(
-                    PyCell::new(new_fx_hashkey_map()),
-                ))))
+                Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                    map: Rc::new(PyCell::new(new_fx_hashkey_map())),
+                    owner: None,
+                }))
             }
         }),
     );
@@ -3060,11 +3064,15 @@ fn make_chainmap_class() -> PyObjectRef {
             let maps = maps_from_self(&call_args[0])?;
             let combined = build_builtin_value(&maps)?;
             if let PyObjectPayload::Dict(m) = &combined.payload {
-                Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
+                Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                    map: m.clone(),
+                    owner: Some(combined.clone()),
+                }))
             } else {
-                Ok(PyObject::wrap(PyObjectPayload::DictKeys(Rc::new(
-                    PyCell::new(new_fx_hashkey_map()),
-                ))))
+                Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                    map: Rc::new(PyCell::new(new_fx_hashkey_map())),
+                    owner: None,
+                }))
             }
         }),
     );
@@ -3077,11 +3085,15 @@ fn make_chainmap_class() -> PyObjectRef {
             let maps = maps_from_self(&call_args[0])?;
             let combined = build_builtin_value(&maps)?;
             if let PyObjectPayload::Dict(m) = &combined.payload {
-                Ok(PyObject::wrap(PyObjectPayload::DictValues(m.clone())))
+                Ok(PyObject::wrap(PyObjectPayload::DictValues {
+                    map: m.clone(),
+                    owner: Some(combined.clone()),
+                }))
             } else {
-                Ok(PyObject::wrap(PyObjectPayload::DictValues(Rc::new(
-                    PyCell::new(new_fx_hashkey_map()),
-                ))))
+                Ok(PyObject::wrap(PyObjectPayload::DictValues {
+                    map: Rc::new(PyCell::new(new_fx_hashkey_map())),
+                    owner: None,
+                }))
             }
         }),
     );
@@ -3094,11 +3106,15 @@ fn make_chainmap_class() -> PyObjectRef {
             let maps = maps_from_self(&call_args[0])?;
             let combined = build_builtin_value(&maps)?;
             if let PyObjectPayload::Dict(m) = &combined.payload {
-                Ok(PyObject::wrap(PyObjectPayload::DictItems(m.clone())))
+                Ok(PyObject::wrap(PyObjectPayload::DictItems {
+                    map: m.clone(),
+                    owner: Some(combined.clone()),
+                }))
             } else {
-                Ok(PyObject::wrap(PyObjectPayload::DictItems(Rc::new(
-                    PyCell::new(new_fx_hashkey_map()),
-                ))))
+                Ok(PyObject::wrap(PyObjectPayload::DictItems {
+                    map: Rc::new(PyCell::new(new_fx_hashkey_map())),
+                    owner: None,
+                }))
             }
         }),
     );
@@ -3625,21 +3641,30 @@ fn install_dict_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
     attrs.write().insert(
         CompactString::from("keys"),
         PyObject::native_closure("keys", move |_| {
-            Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
+            Ok(PyObject::wrap(PyObjectPayload::DictKeys {
+                map: m.clone(),
+                owner: None,
+            }))
         }),
     );
     let m = map.clone();
     attrs.write().insert(
         CompactString::from("values"),
         PyObject::native_closure("values", move |_| {
-            Ok(PyObject::wrap(PyObjectPayload::DictValues(m.clone())))
+            Ok(PyObject::wrap(PyObjectPayload::DictValues {
+                map: m.clone(),
+                owner: None,
+            }))
         }),
     );
     let m = map.clone();
     attrs.write().insert(
         CompactString::from("items"),
         PyObject::native_closure("items", move |_| {
-            Ok(PyObject::wrap(PyObjectPayload::DictItems(m.clone())))
+            Ok(PyObject::wrap(PyObjectPayload::DictItems {
+                map: m.clone(),
+                owner: None,
+            }))
         }),
     );
     let m = map.clone();

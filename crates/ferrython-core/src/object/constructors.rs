@@ -6,6 +6,7 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
@@ -638,9 +639,15 @@ fn run_cycle_collection() -> usize {
     unsafe {
         let tracked = &mut *TRACKED_OBJECTS.0.get();
 
-        // 1. Upgrade weak refs, purge dead ones
-        let alive: Vec<PyObjectRef> = tracked.iter().filter_map(|w| w.upgrade()).collect();
+        // 1. Upgrade weak refs, purge dead ones, then include tracked intermediates.
+        let mut roots: Vec<PyObjectRef> = tracked.iter().filter_map(|w| w.upgrade()).collect();
         tracked.retain(|w| w.strong_count() > 0);
+        let mut alive = Vec::new();
+        let mut seen = HashSet::new();
+        for obj in roots.drain(..) {
+            collect_gc_reachable(obj, &mut alive, &mut seen);
+        }
+        drop(roots);
 
         if alive.is_empty() {
             return 0;
@@ -687,7 +694,216 @@ fn run_cycle_collection() -> usize {
             break_cycles(&alive[gi].payload);
         }
 
+        drop(alive);
         collected
+    }
+}
+
+fn collect_gc_reachable(obj: PyObjectRef, alive: &mut Vec<PyObjectRef>, seen: &mut HashSet<usize>) {
+    let ptr = PyObjectRef::as_ptr(&obj) as usize;
+    if !seen.insert(ptr) {
+        return;
+    }
+    if !is_gc_payload(&obj.payload) {
+        return;
+    }
+    let extra = gc_intermediate_refs(&obj.payload);
+    alive.push(obj);
+    for child in extra {
+        collect_gc_reachable(child, alive, seen);
+    }
+}
+
+fn is_gc_payload(payload: &PyObjectPayload) -> bool {
+    matches!(
+        payload,
+        PyObjectPayload::Instance(_)
+            | PyObjectPayload::List(_)
+            | PyObjectPayload::Dict(_)
+            | PyObjectPayload::MappingProxy(_)
+            | PyObjectPayload::Set(_)
+            | PyObjectPayload::Iterator(_)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::RevRefIter { .. }
+            | PyObjectPayload::DictKeys { .. }
+            | PyObjectPayload::DictValues { .. }
+            | PyObjectPayload::DictItems { .. }
+    )
+}
+
+fn gc_add_pyref(
+    obj: &PyObjectRef,
+    ptr_map: &std::collections::HashMap<usize, usize>,
+    internal_refs: &mut [usize],
+) {
+    let ptr = PyObjectRef::as_ptr(obj) as usize;
+    if let Some(&target_idx) = ptr_map.get(&ptr) {
+        internal_refs[target_idx] += 1;
+    }
+}
+
+fn gc_ref_is_garbage(
+    obj: &PyObjectRef,
+    ptr_map: &std::collections::HashMap<usize, usize>,
+    garbage_set: &std::collections::HashSet<usize>,
+) -> bool {
+    let ptr = PyObjectRef::as_ptr(obj) as usize;
+    match ptr_map.get(&ptr) {
+        Some(target_idx) => garbage_set.contains(target_idx),
+        None => true,
+    }
+}
+
+fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
+    match payload {
+        PyObjectPayload::Instance(inst) => {
+            let mut refs: Vec<PyObjectRef> = inst.attrs.read().values().cloned().collect();
+            if let Some(storage) = inst.dict_storage.as_ref() {
+                refs.extend(dict_storage_refs(storage));
+            }
+            refs
+        }
+        PyObjectPayload::List(items) => items.read().iter().cloned().collect(),
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => dict_storage_refs(map),
+        PyObjectPayload::Set(items) => set_storage_refs(items),
+        PyObjectPayload::DictKeys { map, owner }
+        | PyObjectPayload::DictValues { map, owner }
+        | PyObjectPayload::DictItems { map, owner } => {
+            let mut refs = dict_storage_refs(map);
+            if let Some(owner) = owner {
+                refs.push(owner.clone());
+            }
+            refs
+        }
+        PyObjectPayload::RefIter { source, .. } | PyObjectPayload::RevRefIter { source, .. } => {
+            vec![source.clone()]
+        }
+        PyObjectPayload::VecIter(data) => data.items.clone(),
+        PyObjectPayload::Iterator(iter_data) => {
+            let data = iter_data.read();
+            iterator_refs(&data)
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn dict_storage_refs(map: &Rc<PyCell<FxHashKeyMap>>) -> Vec<PyObjectRef> {
+    let read = map.read();
+    let mut refs = Vec::with_capacity(read.len() * 2);
+    for (key, value) in read.iter() {
+        hashable_key_refs(key, &mut refs);
+        refs.push(value.clone());
+    }
+    refs
+}
+
+fn set_storage_refs(map: &Rc<PyCell<FxHashKeyFlatMap>>) -> Vec<PyObjectRef> {
+    let read = map.read();
+    let mut refs = Vec::with_capacity(read.len() * 2);
+    for (key, value) in read.iter() {
+        hashable_key_refs(key, &mut refs);
+        refs.push(value.clone());
+    }
+    refs
+}
+
+fn hashable_key_refs(key: &HashableKey, refs: &mut Vec<PyObjectRef>) {
+    match key {
+        HashableKey::Tuple(items) => {
+            for item in items.iter() {
+                hashable_key_refs(item, refs);
+            }
+        }
+        HashableKey::FrozenSet(items) => {
+            for item in items.iter() {
+                hashable_key_refs(item, refs);
+            }
+        }
+        HashableKey::Identity(_, obj) => refs.push(obj.clone()),
+        HashableKey::Custom { object, .. } => refs.push(object.clone()),
+        _ => {}
+    }
+}
+
+fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
+    match data {
+        IteratorData::List { items, .. }
+        | IteratorData::Tuple { items, .. }
+        | IteratorData::Cycle { items, .. }
+        | IteratorData::Chain { sources: items, .. } => items.clone(),
+        IteratorData::Enumerate {
+            source,
+            cached_tuple,
+            ..
+        } => {
+            let mut refs = vec![source.clone()];
+            if let Some(tuple) = cached_tuple {
+                refs.push(tuple.clone());
+            }
+            refs
+        }
+        IteratorData::Zip {
+            sources,
+            cached_tuple,
+            items_buf,
+            ..
+        } => {
+            let mut refs = sources.clone();
+            if let Some(tuple) = cached_tuple {
+                refs.push(tuple.clone());
+            }
+            refs.extend(items_buf.iter().cloned());
+            refs
+        }
+        IteratorData::MapOne { func, source }
+        | IteratorData::Filter { func, source }
+        | IteratorData::FilterFalse { func, source }
+        | IteratorData::TakeWhile { func, source, .. }
+        | IteratorData::DropWhile { func, source, .. }
+        | IteratorData::Starmap { func, source } => vec![func.clone(), source.clone()],
+        IteratorData::Map { func, sources } => {
+            let mut refs = Vec::with_capacity(sources.len() + 1);
+            refs.push(func.clone());
+            refs.extend(sources.iter().cloned());
+            refs
+        }
+        IteratorData::Sentinel {
+            callable, sentinel, ..
+        } => vec![callable.clone(), sentinel.clone()],
+        IteratorData::SeqIter { obj, .. } => vec![obj.clone()],
+        IteratorData::Repeat { item, .. } => vec![item.clone()],
+        IteratorData::Tee { source, buffer, .. } => {
+            let mut refs = vec![source.read().clone()];
+            refs.extend(buffer.read().iter().cloned());
+            refs
+        }
+        IteratorData::DictEntries {
+            source,
+            owner,
+            cached_tuple,
+            ..
+        } => {
+            let mut refs = dict_storage_refs(source);
+            if let Some(owner) = owner {
+                refs.push(owner.clone());
+            }
+            if let Some(tuple) = cached_tuple {
+                refs.push(tuple.clone());
+            }
+            refs
+        }
+        IteratorData::DictKeys { keys, .. } => keys.clone(),
+        IteratorData::HeldIter { iter, owner } => {
+            let mut refs = vec![iter.clone()];
+            if let Some(owner) = owner {
+                refs.push(owner.clone());
+            }
+            refs
+        }
+        IteratorData::Range { .. } | IteratorData::Str { .. } | IteratorData::Count { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -701,35 +917,26 @@ fn count_internal_refs(
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
             for attr_val in attrs.values() {
-                let ptr = PyObjectRef::as_ptr(attr_val) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    internal_refs[target_idx] += 1;
+                gc_add_pyref(attr_val, ptr_map, internal_refs);
+            }
+            if let Some(storage) = inst.dict_storage.as_ref() {
+                for item in dict_storage_refs(storage) {
+                    gc_add_pyref(&item, ptr_map, internal_refs);
                 }
             }
-            let class_ptr = PyObjectRef::as_ptr(&inst.class) as usize;
-            if let Some(&target_idx) = ptr_map.get(&class_ptr) {
-                internal_refs[target_idx] += 1;
-            }
+            gc_add_pyref(&inst.class, ptr_map, internal_refs);
         }
         PyObjectPayload::List(items) => {
             let items = items.read();
             for item in items.iter() {
-                let ptr = PyObjectRef::as_ptr(item) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    internal_refs[target_idx] += 1;
-                }
+                gc_add_pyref(item, ptr_map, internal_refs);
             }
         }
-        PyObjectPayload::Dict(map) => {
-            let map = map.read();
-            for val in map.values() {
-                let ptr = PyObjectRef::as_ptr(val) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    internal_refs[target_idx] += 1;
-                }
+        _ => {
+            for item in gc_intermediate_refs(payload) {
+                gc_add_pyref(&item, ptr_map, internal_refs);
             }
         }
-        _ => {}
     }
 }
 
@@ -743,52 +950,62 @@ fn verify_all_refs_in_garbage(
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
             for attr_val in attrs.values() {
-                let ptr = PyObjectRef::as_ptr(attr_val) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    if !garbage_set.contains(&target_idx) {
+                if !gc_ref_is_garbage(attr_val, ptr_map, garbage_set) {
+                    return false;
+                }
+            }
+            if let Some(storage) = inst.dict_storage.as_ref() {
+                for item in dict_storage_refs(storage) {
+                    if !gc_ref_is_garbage(&item, ptr_map, garbage_set) {
                         return false;
                     }
                 }
             }
+            gc_ref_is_garbage(&inst.class, ptr_map, garbage_set)
         }
         PyObjectPayload::List(items) => {
             let items = items.read();
             for item in items.iter() {
-                let ptr = PyObjectRef::as_ptr(item) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    if !garbage_set.contains(&target_idx) {
-                        return false;
-                    }
+                if !gc_ref_is_garbage(item, ptr_map, garbage_set) {
+                    return false;
                 }
             }
+            true
         }
-        PyObjectPayload::Dict(map) => {
-            let map = map.read();
-            for val in map.values() {
-                let ptr = PyObjectRef::as_ptr(val) as usize;
-                if let Some(&target_idx) = ptr_map.get(&ptr) {
-                    if !garbage_set.contains(&target_idx) {
-                        return false;
-                    }
+        _ => {
+            for item in gc_intermediate_refs(payload) {
+                if !gc_ref_is_garbage(&item, ptr_map, garbage_set) {
+                    return false;
                 }
             }
+            true
         }
-        _ => {}
     }
-    true
 }
 
 /// Break cycles by clearing contents of a garbage object.
 fn break_cycles(payload: &PyObjectPayload) {
     match payload {
         PyObjectPayload::Instance(inst) => {
+            inst.finalizer_state.set(inst.finalizer_state.get() | 2);
             inst.attrs.write().clear();
+            if let Some(storage) = inst.dict_storage.as_ref() {
+                storage.write().clear();
+            }
         }
         PyObjectPayload::List(items) => {
             items.write().clear();
         }
         PyObjectPayload::Dict(map) => {
             map.write().clear();
+        }
+        PyObjectPayload::Set(items) => {
+            items.write().clear();
+        }
+        PyObjectPayload::DictKeys { owner, .. }
+        | PyObjectPayload::DictValues { owner, .. }
+        | PyObjectPayload::DictItems { owner, .. } => {
+            let _ = owner;
         }
         _ => {}
     }
@@ -952,10 +1169,14 @@ impl PyObject {
         items: IndexMap<HashableKey, PyObjectRef, S>,
     ) -> PyObjectRef {
         let fx: FxHashKeyFlatMap = items.into_iter().collect();
-        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
+        let obj = Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))));
+        track_object(&obj);
+        obj
     }
     pub fn set_from_flatmap(map: FxHashKeyFlatMap) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(map))))
+        let obj = Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(map))));
+        track_object(&obj);
+        obj
     }
     pub fn dict<S: std::hash::BuildHasher>(
         items: IndexMap<HashableKey, PyObjectRef, S>,

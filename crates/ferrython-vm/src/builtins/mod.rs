@@ -367,6 +367,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
                 IteratorData::DictEntries {
                     source,
+                    owner: _,
                     index,
                     cached_tuple,
                 } => {
@@ -523,7 +524,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
-                | PyObjectPayload::DictKeys(cell) => {
+                | PyObjectPayload::DictKeys { map: cell, .. } => {
                     let map = unsafe { &*cell.data_ptr() };
                     if idx < map.len() {
                         let v = map.get_index(idx).unwrap().0.to_object();
@@ -646,6 +647,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 }
                 IteratorData::DictEntries {
                     source,
+                    owner: _,
                     index,
                     cached_tuple,
                 } => {
@@ -757,7 +759,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 }
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
-                | PyObjectPayload::DictKeys(cell) => {
+                | PyObjectPayload::DictKeys { map: cell, .. } => {
                     let map = unsafe { &*cell.data_ptr() };
                     if idx < map.len() {
                         let v = map.get_index(idx).unwrap().0.to_object();
@@ -986,7 +988,7 @@ pub fn call_method(
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
         PyObjectPayload::List(items) => call_list_method(receiver, items, method, args),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
-            call_dict_method(map, method, args)
+            call_dict_method(map, method, args, Some(receiver.clone()))
         }
         PyObjectPayload::InstanceDict(attrs) => call_instance_dict_method(attrs, method, args),
         PyObjectPayload::Int(_) => call_int_method(receiver, method, args),
@@ -1001,7 +1003,7 @@ pub fn call_method(
         PyObjectPayload::Complex { real, imag } => {
             call_complex_method(receiver, *real, *imag, method, args)
         }
-        PyObjectPayload::Instance(inst) => call_instance_method(inst, method, args),
+        PyObjectPayload::Instance(inst) => call_instance_method(receiver, inst, method, args),
         _ => Err(PyException::attribute_error(format!(
             "'{}' object has no attribute '{}'",
             receiver.type_name(),
@@ -1011,6 +1013,7 @@ pub fn call_method(
 }
 
 fn call_instance_method(
+    receiver: &PyObjectRef,
     inst: &ferrython_core::object::InstanceData,
     method: &str,
     args: &[PyObjectRef],
@@ -1025,7 +1028,7 @@ fn call_instance_method(
     }
     // Dict subclass: delegate dict methods to dict_storage
     if let Some(ref ds) = inst.dict_storage {
-        return call_dict_method(ds, method, args);
+        return call_dict_method(ds, method, args, Some(receiver.clone()));
     }
     // Namedtuple methods
     if inst.class.get_attr("__namedtuple__").is_some() {

@@ -1500,7 +1500,7 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(cell)
                     | PyObjectPayload::MappingProxy(cell)
-                    | PyObjectPayload::DictKeys(cell) => {
+                    | PyObjectPayload::DictKeys { map: cell, .. } => {
                         let map = unsafe { &*cell.data_ptr() };
                         if idx >= map.len() {
                             return Ok(vec![]);
@@ -2345,7 +2345,7 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(cell)
                     | PyObjectPayload::MappingProxy(cell)
-                    | PyObjectPayload::DictKeys(cell) => {
+                    | PyObjectPayload::DictKeys { map: cell, .. } => {
                         let map = unsafe { &*cell.data_ptr() };
                         if idx < map.len() {
                             let v = map.get_index(idx).unwrap().0.to_object();

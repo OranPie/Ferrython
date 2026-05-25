@@ -486,7 +486,7 @@ impl VirtualMachine {
         if let Some(obj) = del_target {
             if let Some(del_fn) = obj.get_attr("__del__") {
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    inst.finalizer_state.set(1);
+                    inst.finalizer_state.set(inst.finalizer_state.get() | 1);
                 }
                 let hook_object = match &del_fn.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),

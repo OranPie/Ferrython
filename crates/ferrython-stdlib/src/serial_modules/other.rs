@@ -2202,7 +2202,7 @@ fn pickle_serialize_p0(
             let items: Vec<PyObjectRef> = match &source.payload {
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
-                | PyObjectPayload::DictKeys(cell) => cell
+                | PyObjectPayload::DictKeys { map: cell, .. } => cell
                     .read()
                     .iter()
                     .skip(idx)
@@ -2750,7 +2750,7 @@ fn pickle_serialize_p2(
             let items: Vec<PyObjectRef> = match &source.payload {
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
-                | PyObjectPayload::DictKeys(cell) => cell
+                | PyObjectPayload::DictKeys { map: cell, .. } => cell
                     .read()
                     .iter()
                     .skip(idx)

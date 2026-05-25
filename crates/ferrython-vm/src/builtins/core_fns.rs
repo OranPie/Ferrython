@@ -1692,21 +1692,14 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 index: SyncUsize::new(0),
             }))
         }
-        PyObjectPayload::Instance(_) => {
-            // For builtins without VM access, check if it's already an iterator
-            if obj.get_attr("__next__").is_some() || obj.get_attr("__iter__").is_some() {
-                // Try core get_iter (handles dict_storage, namedtuple, etc.)
-                match obj.get_iter() {
-                    Ok(iter) => Ok(iter),
-                    Err(_) => Ok(obj.clone()),
-                }
-            } else {
-                Err(PyException::type_error(format!(
-                    "'{}' object is not iterable",
-                    obj.type_name()
-                )))
-            }
-        }
+        PyObjectPayload::Instance(_) => match obj.get_iter() {
+            Ok(iter) => Ok(iter),
+            Err(_) if obj.get_attr("__next__").is_some() => Ok(obj.clone()),
+            Err(_) => Err(PyException::type_error(format!(
+                "'{}' object is not iterable",
+                obj.type_name()
+            ))),
+        },
         // Module with __iter__ (file objects, module_with_attrs with _bind_methods)
         // Need to call __iter__ method to get the iterable result
         PyObjectPayload::Module(_) => {

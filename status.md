@@ -1,8 +1,14 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T20:37:54+08:00
+Last updated: 2026-05-25T22:05:10+08:00
 
 ## 已提交成果
+
+- `PENDING fix: collect dict and set iterator cycles`
+  - dict views 增加 owner 保活，dict subclass / dict 临时对象的 view 和 iterator 生命周期与 CPython 对齐。
+  - cycle GC 遍历 dict/set storage、HashableKey identity/custom key、dict view、RefIter/RevRefIter、VecIter 和 IteratorData 引用。
+  - set 对象纳入 cycle GC tracking，dict/set iterator cycle 能在一次 `gc.collect()` 后让 weakref 失效。
+  - cycle GC 清理 instance 时同步清空 dict_storage，并用 bit flag 标记 weakref 已被 cycle GC 清理，避免弱引用看到半清理对象。
 
 - `a500095 docs: track test repair status`
   - 新增本文件，记录 CPython 兼容修复、已过验证、当前候选和后续队列。
@@ -38,6 +44,10 @@ Last updated: 2026-05-25T20:37:54+08:00
   - 旧序列协议 `SeqIter` 在耗尽后释放源对象强引用，并保持 sink-state，修复 exhausted iterator 不释放 iterable 的兼容问题。
   - list reverse iterator 改成持有源 list 的 `RevRefIter`，避免 `reversed(list)` 先复制快照导致 pickle 共享引用断开。
   - pickle 支持 list `RefIter` / `RevRefIter` 内部 reduce，保留 source/index/exhausted 状态；真实耗尽后才进入 sink-state。
+  - dict view payload 改为携带可选 owner，dict subclass 的 view/iterator 不再提前释放底层对象。
+  - cycle GC 遍历 dict/set keys、dict view、iterator、VecIter、RefIter/RevRefIter 和 IteratorData 内部引用，并追踪 Set。
+  - cycle GC 清理 Instance/List/Dict/Set，并在 Instance 被 cycle GC 清理后让 weakref 立即失效。
+  - 修复 `test_dict.DictTest.test_container_iterator` 与 `test_set.TestSet.test_container_iterator`。
 
 - 类创建补齐 `__module__`，用于 pickle 全局类定位。
 - pickle 用户实例反序列化优先复用模块/当前 globals 中已有类，避免重建空类丢失方法。
@@ -59,7 +69,7 @@ Last updated: 2026-05-25T20:37:54+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 29.63s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 24s`
 - 本轮 focused 通过：
   - `test_iter.TestCase.test_iter_class_for`
   - `test_iter.TestCase.test_seq_class_for`
@@ -87,6 +97,10 @@ Last updated: 2026-05-25T20:37:54+08:00
   - `test_list.ListTest.test_reversed_pickle`
   - `test_tuple.TupleTest.test_iterator_pickle`
   - `test_tuple.TupleTest.test_reversed_pickle`
+  - `test_dict.DictTest.test_container_iterator`
+  - `test_set.TestSet.test_container_iterator`
+  - `test_dict.DictTest.test_free_after_iterating`
+  - `test_set.TestSet.test_free_after_iterating`
 - 本轮 smoke 通过：
   - `hasattr(iter({1:2}), "__setstate__") == False`
   - `hasattr(iter({1,2}), "__setstate__") == False`
@@ -96,6 +110,9 @@ Last updated: 2026-05-25T20:37:54+08:00
   - 旧序列协议 iterator 耗尽后 `gc.collect()` 触发源对象 `__del__`
   - `pickle.dumps((reversed(l), l), 0)` 中 reverse iterator source 与原 list 共享 memo `g0`
   - CPython baseline 对比：`reversed(list)` 在列表变短/追加场景与 Ferrython 当前行为一致
+  - dict view cycle smoke: `dict.keys` / `dict.values` / `dict.items` 经 `gc.collect()` 后 weakref 返回 `None`
+  - set iterator cycle smoke: `iter(set([obj, 1]))` 经 `gc.collect()` 后 weakref 返回 `None`
+  - weakref smoke: 普通 alive/dead 对象 weakref 正常，self-cycle 经 `gc.collect()` 后 weakref 返回 `None`
 - `test_iter` 单项扫描当前已推进到：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter`
   - `run=54 pass=52 fail=0 err=0 skip=2`，模块级通过，耗时 1.11s
@@ -107,14 +124,20 @@ Last updated: 2026-05-25T20:37:54+08:00
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_tuple.TupleTest.test_iterator_pickle test_tuple.TupleTest.test_reversed_pickle`
     - `run=2 pass=2 fail=0 err=0 skip=0`
 
+- dict/set iterator cycle focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_dict.DictTest.test_container_iterator test_set.TestSet.test_container_iterator test_dict.DictTest.test_free_after_iterating test_set.TestSet.test_free_after_iterating`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter`
+    - `run=54 pass=52 fail=0 err=0 skip=2`
+
 ## 当前工作树
 
-- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持。
+- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持，以及 dict/set view/iterator cycle GC。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_iter` 当前模块级已过；list/tuple iterator pickle 单项已过；下一步转向 dict/set/copy/weakref 小批候选。
+- `test_iter` 当前模块级已过；list/tuple iterator pickle 单项已过；dict/set iterator cycle 单项已过；下一步转向 copy/weakref/deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -139,6 +162,12 @@ Last updated: 2026-05-25T20:37:54+08:00
   - 修复：list 正向/反向 iterator pickle 保留源 list 共享引用、当前位置和耗尽状态；`reversed(list)` 不再复制临时 list。
 - `test_tuple.TupleTest.test_iterator_pickle` / `test_tuple.TupleTest.test_reversed_pickle`
   - 验证：tuple iterator pickle 行为未被 list iterator 修复回归。
+- `test_dict.DictTest.test_container_iterator`
+  - 修复：dict view/iterator 纳入 cycle GC 遍历，HashableKey 中保存的 instance key 也计入内部引用，cycle GC 后 weakref 立即失效。
+- `test_set.TestSet.test_container_iterator`
+  - 修复：set 纳入 cycle GC tracking，set storage 中 identity/custom key 引用参与 cycle 判断和清理。
+- `test_dict.DictTest.test_free_after_iterating` / `test_set.TestSet.test_free_after_iterating`
+  - 验证：dict/set iterator owner 生命周期修复未回归。
 
 ## 修复原则
 
@@ -152,7 +181,7 @@ Last updated: 2026-05-25T20:37:54+08:00
 
 ## 后续修复队列
 
-1. `test_iter` 当前模块级已过，list/tuple iterator pickle focused 已过；继续按 case 扫描 dict/set/copy/weakref 小批队列，找出后续失败或 stack overflow 的真实触发用例。
+1. `test_iter` 当前模块级已过，list/tuple iterator pickle focused 已过，dict/set iterator cycle focused 已过；继续按 case 扫描 copy/weakref/deque 小批队列，找出后续失败或 stack overflow 的真实触发用例。
 2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：

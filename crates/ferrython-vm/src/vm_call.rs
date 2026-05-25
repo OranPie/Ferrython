@@ -4342,7 +4342,7 @@ impl VirtualMachine {
                     }
                     "iter" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
                                 if let Some(raw_iter) =
                                     Self::resolve_instance_dunder(&args[0], "__iter__")
                                 {
@@ -4350,6 +4350,9 @@ impl VirtualMachine {
                                         self.resolve_descriptor(&raw_iter, &args[0])?;
                                     let r = self.call_object(iter_method, vec![])?;
                                     return Self::ensure_iterator_result(&args[0], r);
+                                }
+                                if inst.dict_storage.is_some() {
+                                    return args[0].get_iter();
                                 }
                                 // Builtin base type subclass: delegate to __builtin_value__
                                 if let Some(bv) = Self::get_builtin_value(&args[0]) {

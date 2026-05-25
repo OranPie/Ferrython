@@ -710,13 +710,13 @@ impl Drop for PyObjectRef {
             if strong == 1 {
                 let obj = &*(*p).obj.as_ptr();
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    if inst.finalizer_state.get() == 0 {
+                    if inst.finalizer_state.get() & 1 == 0 {
                         let borrowed = PyObjectRef::from_block_borrowed(self.0);
                         let del_fn = borrowed.get_attr("__del__");
                         std::mem::forget(borrowed);
                         if let Some(del_fn) = del_fn {
                             if (*p).strong.get() > strong {
-                                inst.finalizer_state.set(1);
+                                inst.finalizer_state.set(inst.finalizer_state.get() | 1);
                                 crate::error::request_pending_finalizer(del_fn);
                             }
                         }
@@ -785,7 +785,16 @@ impl PyWeakRef {
             let s = (*p).strong.get();
             // Only upgrade if strong > 0 and not in a special state
             // (DROPPING_REFCOUNT means payload is being destroyed)
-            if s > 0 && s < DROPPING_REFCOUNT {
+            let alive = if s > 0 && s < DROPPING_REFCOUNT {
+                let obj = &*(*p).obj.as_ptr();
+                !matches!(
+                    &obj.payload,
+                    PyObjectPayload::Instance(inst) if inst.finalizer_state.get() & 2 != 0
+                )
+            } else {
+                false
+            };
+            if alive {
                 (*p).strong.set(s + 1);
                 Some(PyObjectRef(self.0))
             } else {
@@ -1176,10 +1185,20 @@ pub enum PyObjectPayload {
         secs: f64,
         result: PyObjectRef,
     },
-    /// Dict view objects — live views backed by the underlying dict's Arc
-    DictKeys(Rc<PyCell<FxHashKeyMap>>),
-    DictValues(Rc<PyCell<FxHashKeyMap>>),
-    DictItems(Rc<PyCell<FxHashKeyMap>>),
+    /// Dict view objects — live views backed by the underlying dict storage.
+    /// `owner` keeps dict subclasses alive for CPython-style view/iterator lifetime.
+    DictKeys {
+        map: Rc<PyCell<FxHashKeyMap>>,
+        owner: Option<PyObjectRef>,
+    },
+    DictValues {
+        map: Rc<PyCell<FxHashKeyMap>>,
+        owner: Option<PyObjectRef>,
+    },
+    DictItems {
+        map: Rc<PyCell<FxHashKeyMap>>,
+        owner: Option<PyObjectRef>,
+    },
 }
 
 impl Drop for PyObjectPayload {
@@ -1290,9 +1309,9 @@ impl fmt::Debug for PyObjectPayload {
             Self::Range(rd) => write!(f, "Range({}, {}, {})", rd.start, rd.stop, rd.step),
             Self::BuiltinAwaitable(_) => write!(f, "BuiltinAwaitable(...)"),
             Self::DeferredSleep { secs, .. } => write!(f, "DeferredSleep({secs}s)"),
-            Self::DictKeys(_) => write!(f, "dict_keys(...)"),
-            Self::DictValues(_) => write!(f, "dict_values(...)"),
-            Self::DictItems(_) => write!(f, "dict_items(...)"),
+            Self::DictKeys { .. } => write!(f, "dict_keys(...)"),
+            Self::DictValues { .. } => write!(f, "dict_values(...)"),
+            Self::DictItems { .. } => write!(f, "dict_items(...)"),
         }
     }
 }
@@ -1897,7 +1916,7 @@ pub struct InstanceData {
     /// Cached class flags — avoids dereferencing inst.class on every LoadAttr/StoreAttr.
     /// Bit layout: see CLASS_FLAG_* constants.
     pub class_flags: u8,
-    /// 0 = not finalized, 1 = finalizer queued or already run.
+    /// Bit 0 = finalizer queued or already run, bit 1 = cleared by cycle GC.
     pub finalizer_state: Cell<u8>,
 }
 
@@ -2050,6 +2069,7 @@ pub enum IteratorData {
     /// Uses cached_tuple reuse (CPython-style) for (key, value) pairs.
     DictEntries {
         source: Rc<PyCell<FxHashKeyMap>>,
+        owner: Option<PyObjectRef>,
         index: usize,
         cached_tuple: Option<PyObjectRef>,
     },

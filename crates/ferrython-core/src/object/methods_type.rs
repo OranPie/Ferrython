@@ -189,9 +189,9 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::InstanceDict(_) => "dict",
         PyObjectPayload::BuiltinAwaitable(_) => "coroutine",
         PyObjectPayload::DeferredSleep { .. } => "coroutine",
-        PyObjectPayload::DictKeys(_) => "dict_keys",
-        PyObjectPayload::DictValues(_) => "dict_values",
-        PyObjectPayload::DictItems(_) => "dict_items",
+        PyObjectPayload::DictKeys { .. } => "dict_keys",
+        PyObjectPayload::DictValues { .. } => "dict_values",
+        PyObjectPayload::DictItems { .. } => "dict_items",
     }
 }
 
@@ -209,9 +209,9 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
         PyObjectPayload::Set(m) => !m.read().is_empty(),
         PyObjectPayload::FrozenSet(m) => !m.is_empty(),
         PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => !m.read().is_empty(),
-        PyObjectPayload::DictKeys(m)
-        | PyObjectPayload::DictValues(m)
-        | PyObjectPayload::DictItems(m) => !m.read().is_empty(),
+        PyObjectPayload::DictKeys { map, .. }
+        | PyObjectPayload::DictValues { map, .. }
+        | PyObjectPayload::DictItems { map, .. } => !map.read().is_empty(),
         PyObjectPayload::Instance(inst) => {
             // Builtin base type subclass: delegate truthiness to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -753,7 +753,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             }
         }
         PyObjectPayload::BoundMethod { receiver, method } => bound_method_repr(receiver, method),
-        PyObjectPayload::DictKeys(map) => {
+        PyObjectPayload::DictKeys { map, .. } => {
             let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
             if !repr_enter(ptr) {
                 return "dict_keys([...])".into();
@@ -768,7 +768,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             repr_leave(ptr);
             result
         }
-        PyObjectPayload::DictValues(map) => {
+        PyObjectPayload::DictValues { map, .. } => {
             let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
             if !repr_enter(ptr) {
                 return "dict_values([...])".into();
@@ -783,7 +783,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             repr_leave(ptr);
             result
         }
-        PyObjectPayload::DictItems(map) => {
+        PyObjectPayload::DictItems { map, .. } => {
             let ptr = map.as_ref() as *const PyCell<FxHashKeyMap> as usize;
             if !repr_enter(ptr) {
                 return "dict_items([...])".into();
@@ -1190,7 +1190,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 }
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
-                | PyObjectPayload::DictKeys(cell) => {
+                | PyObjectPayload::DictKeys { map: cell, .. } => {
                     let map = unsafe { &*cell.data_ptr() };
                     if idx >= map.len() {
                         return Ok(vec![]);
@@ -1243,7 +1243,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             Ok(vec![])
         }
         PyObjectPayload::Instance(_) => collect_instance_iterable(obj),
-        PyObjectPayload::DictKeys(m) => {
+        PyObjectPayload::DictKeys { map: m, .. } => {
             let read = m.read();
             let visible = read.keys().filter(|k| !is_hidden_dict_key(k)).count();
             guard_eager_allocation(visible, "dict_keys -> list")?;
@@ -1253,7 +1253,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 .map(|k| k.to_object())
                 .collect())
         }
-        PyObjectPayload::DictValues(m) => {
+        PyObjectPayload::DictValues { map: m, .. } => {
             let read = m.read();
             let visible = read.iter().filter(|(k, _)| !is_hidden_dict_key(k)).count();
             guard_eager_allocation(visible, "dict_values -> list")?;
@@ -1263,7 +1263,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 .map(|(_, v)| v.clone())
                 .collect())
         }
-        PyObjectPayload::DictItems(m) => {
+        PyObjectPayload::DictItems { map: m, .. } => {
             let read = m.read();
             let visible = read.iter().filter(|(k, _)| !is_hidden_dict_key(k)).count();
             guard_eager_allocation(visible, "dict_items -> list")?;
