@@ -1216,6 +1216,9 @@ impl<'src> Lexer<'src> {
 
     fn emit_eof(&mut self) -> Result<Token, ParseError> {
         let span = self.span_here();
+        if self.nesting > 0 {
+            return Err(ParseError::new(ParseErrorKind::UnexpectedEof, span));
+        }
         self.done = true;
         // Push in reverse order (pending is LIFO stack).
         // Desired drain order: [Newline?] [Dedent...] Eof
