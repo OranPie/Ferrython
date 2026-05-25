@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T22:45:23+08:00
+Last updated: 2026-05-25T23:53:20+08:00
 
 ## 已提交成果
 
@@ -71,6 +71,11 @@ Last updated: 2026-05-25T22:45:23+08:00
 - `to_list()` / VM collect 支持 module-backed iterator、Python instance iterator、dict-backed `RefIter`。
 - `operator.indexOf` 改成流式迭代，命中即停；`operator.countOf` 流式消费全部，保留文件 iterator 语义。
 - two-arg `iter(callable, sentinel)` 增加 sink-state，遇到 sentinel 后永久耗尽。
+- `WeakValueDictionary` 改为保留原始 key 对象与 hashable key，避免用字符串化 key 破坏 identity 和碰撞语义。
+- `WeakKeyDictionary` / `WeakValueDictionary` 补齐 `items()` / `keys()` / `values()` / `get()` / `__delitem__` / equality 基础语义，支撑 copy/deepcopy 复制弱引用映射。
+- `copy.py` 对 weak key/value dict 走专用路径：WeakKeyDictionary deepcopy 保留 key、deepcopy value；WeakValueDictionary deepcopy key、保留 value。
+- VM 不再为每次 `call_object()` 无条件生成 `f_locals` 当前帧快照，避免 `weakref.ref()()`、weakdict `len()` 等路径被临时 frame snapshot 拖延对象释放；`sys._getframe` 和 trace/profile 仍按需生成。
+- cycle GC 对 trial deletion 候选集二次按候选内部入边收敛，避免活 list/dict 持有的普通 instance 被误判成循环垃圾并清空 `__dict__`。
 
 ## 已通过验证
 
@@ -80,7 +85,7 @@ Last updated: 2026-05-25T22:45:23+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 24s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 26s`
 - 本轮 focused 通过：
   - `test_iter.TestCase.test_iter_class_for`
   - `test_iter.TestCase.test_seq_class_for`
@@ -150,21 +155,28 @@ Last updated: 2026-05-25T22:45:23+08:00
   - 回归：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter.TestCase.test_iter_neg_setstate test_iter.TestCase.test_sinkstate_list test_dict.DictTest.test_container_iterator test_set.TestSet.test_container_iterator`
       - `run=4 pass=4 fail=0 err=0 skip=0`
+  - weakdict copy/deepcopy:
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_copy_weakkeydict test_copy.TestCopy.test_copy_weakvaluedict test_copy.TestCopy.test_deepcopy_weakkeydict test_copy.TestCopy.test_deepcopy_weakvaluedict`
+      - `run=4 pass=4 fail=0 err=0 skip=0`
+  - weakref/copy 回归：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_copy_weakref test_copy.TestCopy.test_deepcopy_weakref test_copy.TestCopy.test_deepcopy_bound_method`
+      - `run=3 pass=3 fail=0 err=0 skip=0`
+  - GC/runner smoke:
+    - `weakref.ref()()` 不再提高 referent 持久 refcount，`del o` 后第一次 `r()` 返回 `None`。
+    - weakdict copy 后 `del c,d`，第一次 `len(v)` 即为 `1`。
+    - self-cycle instance 经 `gc.collect()` 后 weakref 返回 `None`。
+    - runner `ModuleReport` 保存在活 list 中时不再被 cycle GC 清空 `__dict__`。
 
 ## 当前工作树
 
-- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持、dict/set view/iterator cycle GC，以及 copy protocol pure-Python 实现切换。
+- 本轮代码修复涉及 weakdict copy/deepcopy、WeakValueDictionary key identity、VM 当前帧快照保活、cycle GC candidate refinement，以及 copy protocol weakdict 专用路径。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭一批 copy protocol 单项；下一步优先 weakref dict 容器或 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；下一步优先继续扫描 weakref/deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
-    - `test_copy.TestCopy.test_copy_weakkeydict`
-    - `test_copy.TestCopy.test_copy_weakvaluedict`
-    - `test_copy.TestCopy.test_deepcopy_weakkeydict`
-    - `test_copy.TestCopy.test_deepcopy_weakvaluedict`
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选
@@ -199,6 +211,12 @@ Last updated: 2026-05-25T22:45:23+08:00
   - 修复：`copy` 模块使用 pure-Python protocol 实现；copyreg registry、reduce/reconstruct、state/slotstate、`__getnewargs__`/`__getnewargs_ex__`、实例 fallback、weakref ref identity、bound method deepcopy rebind 等通过 focused 验证。
   - 修复：`dict.get()` 支持 class/custom hashable key fallback，`copyreg.dispatch_table.get(cls)` 正常命中。
   - 修复：核心属性层不再暴露缺失的 `__copy__` / `__deepcopy__` 假方法。
+- `test_copy.TestCopy.test_copy_weakkeydict` / `test_copy.TestCopy.test_copy_weakvaluedict`
+  - 修复：weakdict copy 专用路径复制活 `(key, value)` item，底层容器 decouple，死 weak key/value 首次 `len()` 即清理。
+- `test_copy.TestCopy.test_deepcopy_weakkeydict` / `test_copy.TestCopy.test_deepcopy_weakvaluedict`
+  - 修复：WeakKeyDictionary deepcopy 保留 key/deepcopy value；WeakValueDictionary deepcopy key/保留 value，并保持 weak mapping equality 与 item identity。
+- runner `ModuleReport` 被 GC 清空属性
+  - 修复：cycle GC candidate refinement 不再把活 list 持有的普通 instance 当作循环垃圾。
 
 ## 修复原则
 
@@ -224,7 +242,6 @@ Last updated: 2026-05-25T22:45:23+08:00
    - `test_weakref`
    - `test_copy`
    - `test_deque`
-   - weakref dict copy/deepcopy: 需要先完善 WeakKeyDictionary / WeakValueDictionary 的 key/value identity、items/keys/values/copy/equality 语义。
 5. 性能队列：
    - 避免全量 CPython 测试长跑，继续单项/小批探测。
    - 对比 CPython baseline 后再做优化判断。

@@ -676,7 +676,33 @@ fn run_cycle_collection() -> usize {
             }
         }
 
-        // 5. Verify: all garbage objects must only reference other garbage objects
+        // 5. Refine trial deletion against the candidate set itself. The
+        // first pass counted references from every tracked object, including
+        // live containers that merely hold a dead-looking object. Recompute
+        // incoming references from candidates only; otherwise a live list that
+        // points at an instance can make that instance look cyclic.
+        loop {
+            let candidate_set: std::collections::HashSet<usize> =
+                garbage_indices.iter().copied().collect();
+            let mut candidate_internal_refs = vec![0usize; alive.len()];
+            for &gi in &garbage_indices {
+                count_internal_refs(&alive[gi].payload, &ptr_map, &mut candidate_internal_refs);
+            }
+            let refined: Vec<usize> = garbage_indices
+                .iter()
+                .copied()
+                .filter(|&gi| {
+                    let strong = PyObjectRef::strong_count(&alive[gi]);
+                    strong <= candidate_internal_refs[gi] + 1
+                })
+                .collect();
+            if refined.len() == candidate_set.len() {
+                break;
+            }
+            garbage_indices = refined;
+        }
+
+        // 6. Verify: all garbage objects must only reference other garbage objects
         // (conservative: only collect fully isolated cycles)
         let garbage_set: std::collections::HashSet<usize> =
             garbage_indices.iter().copied().collect();
@@ -688,7 +714,7 @@ fn run_cycle_collection() -> usize {
             }
         }
 
-        // 6. Break cycles by clearing contents on garbage objects
+        // 7. Break cycles by clearing contents on garbage objects
         let collected = confirmed_garbage.len();
         for &gi in &confirmed_garbage {
             break_cycles(&alive[gi].payload);

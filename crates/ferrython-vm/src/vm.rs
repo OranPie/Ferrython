@@ -5335,9 +5335,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(n) = fast_len {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::int(n));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5350,9 +5348,7 @@ impl VirtualMachine {
                                             &arg.payload
                                         {
                                             let stop = *stop;
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::range(0, stop, 1));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5456,9 +5452,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(result) = fast_result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::bool_val(result));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5469,9 +5463,7 @@ impl VirtualMachine {
                                     (Some("type"), 1) => {
                                         let arg = sget!(frame, stack_len - 1);
                                         if let Some(type_obj) = fast_exact_type(arg) {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, type_obj);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5497,9 +5489,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(b) = result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::bool_val(b));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5553,9 +5543,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(v) = result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, v);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5575,9 +5563,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(v) = result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, v);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5588,9 +5574,7 @@ impl VirtualMachine {
                                         let arg = sget!(frame, stack_len - 1);
                                         match fast_small_int_sequence_min_max(arg, false) {
                                             Some(v) => {
-                                                unsafe {
-                                                    frame.stack.set_len(func_idx);
-                                                }
+                                                frame.stack.truncate(func_idx);
                                                 spush!(frame, v);
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
@@ -5601,9 +5585,7 @@ impl VirtualMachine {
                                         let arg = sget!(frame, stack_len - 1);
                                         match fast_small_int_sequence_min_max(arg, true) {
                                             Some(v) => {
-                                                unsafe {
-                                                    frame.stack.set_len(func_idx);
-                                                }
+                                                frame.stack.truncate(func_idx);
                                                 spush!(frame, v);
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
@@ -5613,9 +5595,7 @@ impl VirtualMachine {
                                     (Some("sorted"), 1) => {
                                         let arg = sget!(frame, stack_len - 1);
                                         if let Some(v) = fast_small_int_sequence_sorted(arg) {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, v);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5659,9 +5639,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(v) = result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, v);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5705,9 +5683,7 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(v) = result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, v);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5723,9 +5699,7 @@ impl VirtualMachine {
                                                 obj,
                                                 s.as_str(),
                                             );
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::bool_val(result));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
@@ -5756,9 +5730,7 @@ impl VirtualMachine {
                                         if let PyObjectPayload::Str(s) = &name_arg.payload {
                                             let obj = sget!(frame, stack_len - 2);
                                             if let Some(val) = obj.get_attr(s.as_str()) {
-                                                unsafe {
-                                                    frame.stack.set_len(func_idx);
-                                                }
+                                                frame.stack.truncate(func_idx);
                                                 spush!(frame, val);
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             } else {
@@ -5876,9 +5848,7 @@ impl VirtualMachine {
                                             }
                                         }
                                         if let Some(total) = fast_result {
-                                            unsafe {
-                                                frame.stack.set_len(func_idx);
-                                            }
+                                            frame.stack.truncate(func_idx);
                                             spush!(frame, PyObject::int(total));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         } else {

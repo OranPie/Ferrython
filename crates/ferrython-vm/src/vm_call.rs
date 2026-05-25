@@ -4190,8 +4190,15 @@ impl VirtualMachine {
         func: PyObjectRef,
         args: Vec<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
-        let prev_frame = ferrython_stdlib::get_current_frame();
-        if !self.call_stack.is_empty() {
+        let needs_current_frame = ferrython_stdlib::is_trace_active()
+            || ferrython_stdlib::is_profile_active()
+            || matches!(&func.payload, PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "sys._getframe");
+        let prev_frame = if needs_current_frame {
+            ferrython_stdlib::get_current_frame()
+        } else {
+            None
+        };
+        if needs_current_frame && !self.call_stack.is_empty() {
             ferrython_stdlib::set_current_frame(Some(self.make_trace_frame()));
         }
         let result = match &func.payload {
@@ -7013,7 +7020,9 @@ impl VirtualMachine {
                 }
                 if let Some(method) = func.get_attr("__call__") {
                     let _dispatch_guard = self.enter_frameless_call_dispatch()?;
-                    self.call_object(method, args)
+                    let result = self.call_object(method, args);
+                    drop(func);
+                    result
                 } else {
                     Err(PyException::type_error(format!(
                         "'{}' object is not callable",
@@ -7026,7 +7035,9 @@ impl VirtualMachine {
                 func.type_name()
             ))),
         };
-        ferrython_stdlib::set_current_frame(prev_frame);
+        if needs_current_frame {
+            ferrython_stdlib::set_current_frame(prev_frame);
+        }
         result
     }
 

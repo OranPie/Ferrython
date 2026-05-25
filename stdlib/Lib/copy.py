@@ -153,6 +153,10 @@ def copy(x):
 
     if _is_weakref_ref(x):
         return x
+    if _is_weak_key_dict(x):
+        return _copy_weak_key_dict(x)
+    if _is_weak_value_dict(x):
+        return _copy_weak_value_dict(x)
 
     copier = _copy_dispatch.get(cls)
     if copier is not None:
@@ -201,6 +205,10 @@ def deepcopy(x, memo=None):
     cls = type(x)
     if _is_weakref_ref(x):
         y = x
+    elif _is_weak_key_dict(x):
+        y = _deepcopy_weak_key_dict(x, memo)
+    elif _is_weak_value_dict(x):
+        y = _deepcopy_weak_value_dict(x, memo)
     else:
         copier = _deepcopy_dispatch.get(cls)
         if copier is not None:
@@ -246,6 +254,44 @@ def _deepcopy_object(x, memo, cls):
 
 def _is_weakref_ref(x):
     return getattr(x, "__weakref_ref__", False)
+
+
+def _is_weak_key_dict(x):
+    return getattr(x, "__weakkeydict__", False)
+
+
+def _is_weak_value_dict(x):
+    return getattr(x, "__weakvaluedict__", False)
+
+
+def _copy_weak_key_dict(x):
+    y = weakref.WeakKeyDictionary()
+    for key, value in x.items():
+        y[key] = value
+    return y
+
+
+def _copy_weak_value_dict(x):
+    y = weakref.WeakValueDictionary()
+    for key, value in x.items():
+        y[key] = value
+    return y
+
+
+def _deepcopy_weak_key_dict(x, memo):
+    y = weakref.WeakKeyDictionary()
+    memo[id(x)] = y
+    for key, value in x.items():
+        y[key] = deepcopy(value, memo)
+    return y
+
+
+def _deepcopy_weak_value_dict(x, memo):
+    y = weakref.WeakValueDictionary()
+    memo[id(x)] = y
+    for key, value in x.items():
+        y[deepcopy(key, memo)] = value
+    return y
 
 
 def _can_copy_instance(x):

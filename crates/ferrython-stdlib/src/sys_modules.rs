@@ -521,7 +521,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
             }
         })),
-        ("_getframe", make_builtin(|args| {
+        ("_getframe", PyObject::native_function("sys._getframe", |args| {
             // sys._getframe([depth]) — return frame at given depth
             let depth = if !args.is_empty() {
                 if let PyObjectPayload::Int(i) = &args[0].payload {
