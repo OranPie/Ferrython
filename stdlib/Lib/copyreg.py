@@ -56,16 +56,31 @@ _HEAPTYPE = 1 << 9
 
 def _slotnames(cls):
     """Return a list of slot names for a given class."""
-    names = cls.__dict__.get("__slots__")
-    if names is None:
-        return []
-    if isinstance(names, str):
-        names = [names]
+    names = cls.__dict__.get("__slotnames__")
+    if names is not None:
+        return names
+
     result = []
-    for name in names:
-        if name == "__dict__" or name == "__weakref__":
-            continue
-        result.append(name)
+    if hasattr(cls, "__slots__"):
+        for c in cls.__mro__:
+            if "__slots__" not in c.__dict__:
+                continue
+            slots = c.__dict__["__slots__"]
+            if isinstance(slots, str):
+                slots = (slots,)
+            for name in slots:
+                if name in ("__dict__", "__weakref__"):
+                    continue
+                if name.startswith("__") and not name.endswith("__"):
+                    stripped = c.__name__.lstrip("_")
+                    if stripped:
+                        name = "_%s%s" % (stripped, name)
+                result.append(name)
+
+    try:
+        cls.__slotnames__ = result
+    except Exception:
+        pass
     return result
 
 
@@ -81,8 +96,13 @@ def _new_type(cls, *args):
 
 def add_extension(module, name, code):
     """Register an extension code for (module, name)."""
+    code = int(code)
+    if not 1 <= code <= 0x7fffffff:
+        raise ValueError("code out of range")
     key = (module, name)
-    if key in _extension_registry and _extension_registry[key] != code:
+    if key in _extension_registry:
+        if _extension_registry[key] == code and _inverted_registry.get(code) == key:
+            return
         raise ValueError(
             "key {} is already registered with code {}".format(
                 key, _extension_registry[key]
@@ -100,14 +120,21 @@ def add_extension(module, name, code):
 
 def remove_extension(module, name, code):
     """Unregister an extension code."""
+    code = int(code)
     key = (module, name)
-    if _extension_registry.get(key) != code or _inverted_registry.get(code) != key:
+    if (
+        key not in _extension_registry
+        or code not in _inverted_registry
+        or _extension_registry[key] != code
+        or _inverted_registry[code] != key
+    ):
         raise ValueError(
             "key {} is not registered with code {}".format(key, code)
         )
     del _extension_registry[key]
     del _inverted_registry[code]
-    _extension_cache.clear()
+    if code in _extension_cache:
+        del _extension_cache[code]
 
 
 def clear_extension_cache():
