@@ -564,7 +564,8 @@ impl Compiler {
         let mut ann_count: u32 = 0;
         for arg in &all_args {
             if let Some(ref annotation) = arg.annotation {
-                let key_idx = self.add_const(ConstantValue::Str(arg.arg.clone()));
+                let key = CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref());
+                let key_idx = self.add_const(ConstantValue::Str(key));
                 self.emit_arg(Opcode::LoadConst, key_idx);
                 if self.future_annotations {
                     let ann_str = Self::annotation_to_string(annotation);
