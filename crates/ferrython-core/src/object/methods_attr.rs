@@ -1806,8 +1806,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     "__reversed__",
                                     "__missing__",
                                     "__del__",
-                                    "__copy__",
-                                    "__deepcopy__",
                                     "__reduce__",
                                     "__sizeof__",
                                     "__class__",
@@ -2842,7 +2840,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             _ => func.get_attr(name),
         },
-        PyObjectPayload::BoundMethod { method, .. } => method.get_attr(name),
+        PyObjectPayload::BoundMethod { receiver, method } => match name {
+            "__self__" => Some(receiver.clone()),
+            "__func__" => Some(method.clone()),
+            _ => method.get_attr(name),
+        },
         // Int property-like attributes (return values, not bound methods)
         PyObjectPayload::Int(_n) => match name {
             "real" | "numerator" => Some(PyObject::wrap(obj.payload.clone())),

@@ -7321,7 +7321,8 @@ impl VirtualMachine {
                                 && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
                             {
-                                // Inline dict.get(key) — returns None for missing keys
+                                // Inline dict.get(key) — keep borrowed lookups for the
+                                // common keys and fall back for all other hashable keys.
                                 let key_obj = spop!(frame);
                                 let receiver = spop!(frame);
                                 {
@@ -7339,7 +7340,10 @@ impl VirtualMachine {
                                         PyObjectPayload::Bool(b) => {
                                             r.get(&BorrowedIntKey(*b as i64)).cloned()
                                         }
-                                        _ => None,
+                                        _ => {
+                                            let key = key_obj.to_hashable_key()?;
+                                            r.get(&key).cloned()
+                                        }
                                     }
                                     .unwrap_or_else(PyObject::none);
                                     spush!(frame, val);

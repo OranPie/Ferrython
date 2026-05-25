@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T22:05:10+08:00
+Last updated: 2026-05-25T22:45:23+08:00
 
 ## 已提交成果
 
@@ -9,6 +9,13 @@ Last updated: 2026-05-25T22:05:10+08:00
   - cycle GC 遍历 dict/set storage、HashableKey identity/custom key、dict view、RefIter/RevRefIter、VecIter 和 IteratorData 引用。
   - set 对象纳入 cycle GC tracking，dict/set iterator cycle 能在一次 `gc.collect()` 后让 weakref 失效。
   - cycle GC 清理 instance 时同步清空 dict_storage，并用 bit flag 标记 weakref 已被 cycle GC 清理，避免弱引用看到半清理对象。
+
+- PENDING `fix: use Python copy protocol implementation`
+  - `copy` 模块改走 `stdlib/Lib/copy.py`，避免 Rust stub 遮住 pure-Python copyreg/reduce/memo 语义。
+  - `copy.py` 补齐 dispatch table、copyreg registry、`__reduce__` / `__reduce_ex__`、`__getnewargs__` / `__getnewargs_ex__`、state/slotstate、list/dict/tuple subclass、memo keepalive 和 bound method deepcopy。
+  - `dict.get()` VM 快路径保留 str/int/bool borrowed lookup，同时对 class/function/custom key fallback 到通用 hashable lookup，修复 `copyreg.dispatch_table.get(cls)`。
+  - 核心属性层不再为缺失的 `__copy__` / `__deepcopy__` 制造 builtin placeholder，让协议探测能正确 fallback。
+  - bound method 暴露 `__self__` / `__func__`，weakref.ref 对象增加稳定标记，`copy.copy()` / `copy.deepcopy()` 对 weakref ref 返回原对象。
 
 - `a500095 docs: track test repair status`
   - 新增本文件，记录 CPython 兼容修复、已过验证、当前候选和后续队列。
@@ -48,6 +55,10 @@ Last updated: 2026-05-25T22:05:10+08:00
   - cycle GC 遍历 dict/set keys、dict view、iterator、VecIter、RefIter/RevRefIter 和 IteratorData 内部引用，并追踪 Set。
   - cycle GC 清理 Instance/List/Dict/Set，并在 Instance 被 cycle GC 清理后让 weakref 立即失效。
   - 修复 `test_dict.DictTest.test_container_iterator` 与 `test_set.TestSet.test_container_iterator`。
+  - `copy` 模块切到 pure-Python protocol 实现，补齐 copyreg/reduce/state/slot/bound method/weakref ref 等通用 copy 语义。
+  - `dict.get()` 快路径支持非 str/int/bool hashable key fallback，`copyreg.dispatch_table.get(cls)` 不再误返回 default。
+  - 移除核心层缺失 `__copy__` / `__deepcopy__` 的假 builtin placeholder，协议探测按 AttributeError/default 正常工作。
+  - bound method 暴露 `__self__` / `__func__`，weakref.ref 添加 `__weakref_ref__` 标记用于 atomic copy/deepcopy。
 
 - 类创建补齐 `__module__`，用于 pickle 全局类定位。
 - pickle 用户实例反序列化优先复用模块/当前 globals 中已有类，避免重建空类丢失方法。
@@ -113,6 +124,7 @@ Last updated: 2026-05-25T22:05:10+08:00
   - dict view cycle smoke: `dict.keys` / `dict.values` / `dict.items` 经 `gc.collect()` 后 weakref 返回 `None`
   - set iterator cycle smoke: `iter(set([obj, 1]))` 经 `gc.collect()` 后 weakref 返回 `None`
   - weakref smoke: 普通 alive/dead 对象 weakref 正常，self-cycle 经 `gc.collect()` 后 weakref 返回 `None`
+  - copy smoke: `dict.get(class_key)`、weakref ref copy/deepcopy identity、bound method deepcopy rebind 均通过。
 - `test_iter` 单项扫描当前已推进到：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter`
   - `run=54 pass=52 fail=0 err=0 skip=2`，模块级通过，耗时 1.11s
@@ -130,15 +142,30 @@ Last updated: 2026-05-25T22:05:10+08:00
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter`
     - `run=54 pass=52 fail=0 err=0 skip=2`
 
+- copy protocol focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_exceptions test_copy.TestCopy.test_copy_atomic test_copy.TestCopy.test_copy_bytearray test_copy.TestCopy.test_copy_tuple test_copy.TestCopy.test_copy_registry test_copy.TestCopy.test_deepcopy_registry test_copy.TestCopy.test_copy_reduce test_copy.TestCopy.test_copy_reduce_ex test_copy.TestCopy.test_deepcopy_reduce test_copy.TestCopy.test_deepcopy_reduce_ex test_copy.TestCopy.test_copy_cant test_copy.TestCopy.test_deepcopy_cant test_copy.TestCopy.test_copy_inst_getnewargs test_copy.TestCopy.test_copy_inst_getnewargs_ex test_copy.TestCopy.test_deepcopy_inst_getnewargs test_copy.TestCopy.test_deepcopy_inst_getnewargs_ex test_copy.TestCopy.test_copy_slots test_copy.TestCopy.test_deepcopy_slots test_copy.TestCopy.test_deepcopy_bound_method test_copy.TestCopy.test_copy_weakref test_copy.TestCopy.test_deepcopy_weakref`
+    - `run=21 pass=21 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reconstruct_string test_copy.TestCopy.test_reconstruct_nostate test_copy.TestCopy.test_reconstruct_state test_copy.TestCopy.test_reconstruct_state_setstate test_copy.TestCopy.test_reconstruct_reflexive test_copy.TestCopy.test_copy_list_subclass test_copy.TestCopy.test_deepcopy_list_subclass test_copy.TestCopy.test_copy_tuple_subclass test_copy.TestCopy.test_deepcopy_tuple_subclass test_copy.TestCopy.test_deepcopy_dict_subclass`
+    - `run=10 pass=10 fail=0 err=0 skip=0`
+  - 回归：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter.TestCase.test_iter_neg_setstate test_iter.TestCase.test_sinkstate_list test_dict.DictTest.test_container_iterator test_set.TestSet.test_container_iterator`
+      - `run=4 pass=4 fail=0 err=0 skip=0`
+
 ## 当前工作树
 
-- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持，以及 dict/set view/iterator cycle GC。
+- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持、dict/set view/iterator cycle GC，以及 copy protocol pure-Python 实现切换。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_iter` 当前模块级已过；list/tuple iterator pickle 单项已过；dict/set iterator cycle 单项已过；下一步转向 copy/weakref/deque 小批候选。
+- `test_copy` 已关闭一批 copy protocol 单项；下一步优先 weakref dict 容器或 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
+  - 已知残留：
+    - `test_copy.TestCopy.test_copy_weakkeydict`
+    - `test_copy.TestCopy.test_copy_weakvaluedict`
+    - `test_copy.TestCopy.test_deepcopy_weakkeydict`
+    - `test_copy.TestCopy.test_deepcopy_weakvaluedict`
+    - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选
 
@@ -168,6 +195,10 @@ Last updated: 2026-05-25T22:05:10+08:00
   - 修复：set 纳入 cycle GC tracking，set storage 中 identity/custom key 引用参与 cycle 判断和清理。
 - `test_dict.DictTest.test_free_after_iterating` / `test_set.TestSet.test_free_after_iterating`
   - 验证：dict/set iterator owner 生命周期修复未回归。
+- `test_copy` copy protocol 批次：
+  - 修复：`copy` 模块使用 pure-Python protocol 实现；copyreg registry、reduce/reconstruct、state/slotstate、`__getnewargs__`/`__getnewargs_ex__`、实例 fallback、weakref ref identity、bound method deepcopy rebind 等通过 focused 验证。
+  - 修复：`dict.get()` 支持 class/custom hashable key fallback，`copyreg.dispatch_table.get(cls)` 正常命中。
+  - 修复：核心属性层不再暴露缺失的 `__copy__` / `__deepcopy__` 假方法。
 
 ## 修复原则
 
@@ -193,6 +224,7 @@ Last updated: 2026-05-25T22:05:10+08:00
    - `test_weakref`
    - `test_copy`
    - `test_deque`
+   - weakref dict copy/deepcopy: 需要先完善 WeakKeyDictionary / WeakValueDictionary 的 key/value identity、items/keys/values/copy/equality 语义。
 5. 性能队列：
    - 避免全量 CPython 测试长跑，继续单项/小批探测。
    - 对比 CPython baseline 后再做优化判断。

@@ -1255,6 +1255,10 @@ pub fn create_weakref_module() -> PyObjectRef {
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                         let mut attrs = inst_data.attrs.write();
+                        attrs.insert(
+                            CompactString::from("__weakref_ref__"),
+                            PyObject::bool_val(true),
+                        );
 
                         // __call__() → referent or None
                         let w1 = weak.clone();

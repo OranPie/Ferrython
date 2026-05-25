@@ -152,7 +152,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "collections.abc" => Some(type_modules::create_collections_abc_module()),
         // Misc — contextlib provided by stdlib/Lib/contextlib.py (pure Python)
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
-        "copy" => Some(misc_modules::create_copy_module()),
+        // copy is implemented in stdlib/Lib/copy.py; the pure-Python version
+        // carries copyreg/reduce/memo semantics that the old Rust stub lacked.
         "operator" => Some(collection_modules::create_operator_module()),
         "hashlib" => Some(crypto_modules::create_hashlib_module()),
         "logging" => Some(testing_modules::create_logging_module()),
