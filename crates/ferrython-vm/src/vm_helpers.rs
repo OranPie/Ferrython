@@ -3139,7 +3139,7 @@ impl VirtualMachine {
             )
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
-        if args.len() >= 2 {
+        if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
             // Extract globals as FxAttrMap, whether Dict or InstanceDict
             let (new_globals, globals_source) =
                 if let PyObjectPayload::InstanceDict(ref shared_g) = args[1].payload {

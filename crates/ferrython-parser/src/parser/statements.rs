@@ -1,7 +1,7 @@
 //! Statement parsing methods for the Parser.
 
 use crate::error::{ParseError, ParseErrorKind};
-use crate::token::TokenKind;
+use crate::token::{Span, TokenKind};
 use compact_str::CompactString;
 use ferrython_ast::*;
 
@@ -685,7 +685,7 @@ impl Parser {
         let mut decorators = Vec::new();
         while self.check(TokenKind::At) {
             self.advance();
-            decorators.push(self.parse_expr()?);
+            decorators.push(self.parse_decorator_expr()?);
             self.expect_newline()?;
         }
         let mut stmt = match &self.peek().kind {
@@ -716,6 +716,56 @@ impl Parser {
             _ => unreachable!(),
         }
         Ok(stmt)
+    }
+
+    fn parse_decorator_expr(&mut self) -> Result<Expression, ParseError> {
+        let start = self.current_location();
+        let mut expr = Expression::name(self.expect_name()?, ExprContext::Load, start);
+
+        while self.check(TokenKind::Dot) {
+            self.advance();
+            let attr_span = self.peek().span;
+            let attr = self.expect_name()?;
+            let loc = Self::with_end_span(Self::expression_outer_location(&expr), attr_span);
+            expr = Expression::new(
+                ExpressionKind::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    ctx: ExprContext::Load,
+                },
+                loc,
+            );
+        }
+
+        if self.check(TokenKind::LeftParen) {
+            let open_location = self.current_location();
+            self.advance();
+            let (args, keywords) = self.parse_call_args(open_location)?;
+            let rparen_span = self.expect(TokenKind::RightParen)?.span;
+            let loc = Self::with_end_span(Self::expression_outer_location(&expr), rparen_span);
+            expr = Expression::new(
+                ExpressionKind::Call {
+                    func: Box::new(expr),
+                    args,
+                    keywords,
+                },
+                loc,
+            );
+        }
+
+        if !self.check_newline_or_eof() {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidSyntax("invalid decorator".into()),
+                Span::new(
+                    expr.location.line,
+                    expr.location.column,
+                    expr.location.end_line.unwrap_or(expr.location.line),
+                    expr.location.end_column.unwrap_or(expr.location.column),
+                ),
+            ));
+        }
+
+        Ok(expr)
     }
 
     // ─── Import helpers ─────────────────────────────────────────────
