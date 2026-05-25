@@ -10,7 +10,7 @@ Last updated: 2026-05-25T22:45:23+08:00
   - set 对象纳入 cycle GC tracking，dict/set iterator cycle 能在一次 `gc.collect()` 后让 weakref 失效。
   - cycle GC 清理 instance 时同步清空 dict_storage，并用 bit flag 标记 weakref 已被 cycle GC 清理，避免弱引用看到半清理对象。
 
-- PENDING `fix: use Python copy protocol implementation`
+- `1ed1214 fix: use Python copy protocol implementation`
   - `copy` 模块改走 `stdlib/Lib/copy.py`，避免 Rust stub 遮住 pure-Python copyreg/reduce/memo 语义。
   - `copy.py` 补齐 dispatch table、copyreg registry、`__reduce__` / `__reduce_ex__`、`__getnewargs__` / `__getnewargs_ex__`、state/slotstate、list/dict/tuple subclass、memo keepalive 和 bound method deepcopy。
   - `dict.get()` VM 快路径保留 str/int/bool borrowed lookup，同时对 class/function/custom key fallback 到通用 hashable lookup，修复 `copyreg.dispatch_table.get(cls)`。
