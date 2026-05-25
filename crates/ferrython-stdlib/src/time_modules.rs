@@ -1108,6 +1108,7 @@ pub fn create_datetime_module() -> PyObjectRef {
                     is_special: true,
                     dict_storage: None,
                     class_flags,
+                    finalizer_state: std::cell::Cell::new(0),
                 }),
             )));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1136,6 +1137,7 @@ pub fn create_datetime_module() -> PyObjectRef {
                     is_special: true,
                     dict_storage: None,
                     class_flags,
+                    finalizer_state: std::cell::Cell::new(0),
                 }),
             )));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1221,6 +1223,7 @@ fn make_timezone_utc() -> PyObjectRef {
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1756,6 +1759,7 @@ fn make_datetime_instance(
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     install_datetime_methods(&inst, year, month, day, hour, minute, second, microsecond);
@@ -2257,6 +2261,7 @@ fn make_time_instance(
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -2741,6 +2746,7 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -3002,6 +3008,7 @@ fn make_timedelta_with_ops(
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     if let PyObjectPayload::Instance(ref d) = inst.payload {

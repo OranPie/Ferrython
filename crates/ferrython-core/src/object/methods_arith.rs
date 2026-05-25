@@ -5,6 +5,8 @@ use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use num_traits::Signed;
 use std::rc::Rc;
 
 use super::helpers::*;
@@ -53,6 +55,47 @@ fn bool_as_int(o: &PyObjectRef) -> Option<PyObjectRef> {
         Some(PyObject::int(if *b { 1 } else { 0 }))
     } else {
         None
+    }
+}
+
+fn format_percent_radix(arg: &PyObjectRef, conv: char, spec: &str) -> PyResult<String> {
+    let n = match &arg.payload {
+        PyObjectPayload::Bool(v) => BigInt::from(if *v { 1 } else { 0 }),
+        PyObjectPayload::Int(PyInt::Small(v)) => BigInt::from(*v),
+        PyObjectPayload::Int(PyInt::Big(v)) => v.as_ref().clone(),
+        _ => {
+            return Err(PyException::type_error(format!(
+                "%{} format: an integer is required, not {}",
+                conv,
+                arg.type_name()
+            )))
+        }
+    };
+    let negative = n < BigInt::from(0);
+    let magnitude = n.abs();
+    let radix = match conv {
+        'o' => 8,
+        'x' | 'X' => 16,
+        _ => unreachable!(),
+    };
+    let mut digits = magnitude.to_str_radix(radix);
+    if conv == 'X' {
+        digits.make_ascii_uppercase();
+    }
+    let prefix = if spec.contains('#') {
+        match conv {
+            'o' => "0o",
+            'x' => "0x",
+            'X' => "0X",
+            _ => "",
+        }
+    } else {
+        ""
+    };
+    if negative {
+        Ok(format!("-{}{}", prefix, digits))
+    } else {
+        Ok(format!("{}{}", prefix, digits))
     }
 }
 
@@ -953,9 +996,9 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                                 result.push_str(&format_float_spec(f, &spec_chars));
                             }
                         }
-                        'x' => result.push_str(&format!("{:x}", arg.to_int()?)),
-                        'X' => result.push_str(&format!("{:X}", arg.to_int()?)),
-                        'o' => result.push_str(&format!("{:o}", arg.to_int()?)),
+                        'x' | 'X' | 'o' => {
+                            result.push_str(&format_percent_radix(&arg, conv, &spec_chars)?)
+                        }
                         'e' | 'E' => {
                             let f = arg.to_float()?;
                             let prec = parse_precision(&spec_chars).unwrap_or(6);

@@ -293,7 +293,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "faulthandler" => Some(testing_modules::create_faulthandler_module()),
         "tracemalloc" => Some(testing_modules::create_tracemalloc_module()),
         "pydoc" => Some(testing_modules::create_pydoc_module()),
-        "_testcapi" => Some(ferrython_core::object::make_module("_testcapi", vec![])),
+        "_testcapi" => Some(testing_modules::create_testcapi_module()),
         "pickletools" => Some(testing_modules::create_pickletools_module()),
         // Introspection (extended)
         "tokenize" => Some(introspection_modules::create_tokenize_module()),

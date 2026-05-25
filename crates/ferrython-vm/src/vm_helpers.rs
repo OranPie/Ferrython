@@ -1325,7 +1325,13 @@ impl VirtualMachine {
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
-                return bv.get_iter();
+                let iter = bv.get_iter()?;
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::HeldIter {
+                        iter,
+                        owner: Some(obj.clone()),
+                    }),
+                ))));
             }
             // Has __getitem__: use sequence protocol — return a lazy SeqIter
             if obj.get_attr("__getitem__").is_some() {
@@ -1516,6 +1522,7 @@ impl VirtualMachine {
                             | IteratorData::SeqIter { .. }
                             | IteratorData::Starmap { .. }
                             | IteratorData::Tee { .. }
+                            | IteratorData::HeldIter { .. }
                     )
                 };
                 if is_lazy {
@@ -2229,7 +2236,8 @@ impl VirtualMachine {
                         | IteratorData::Chain { .. }
                         | IteratorData::SeqIter { .. }
                         | IteratorData::Starmap { .. }
-                        | IteratorData::Tee { .. } => {
+                        | IteratorData::Tee { .. }
+                        | IteratorData::HeldIter { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
                         }
@@ -2646,6 +2654,20 @@ impl VirtualMachine {
                     Err(e) => Err(e),
                 }
             }
+            IteratorData::HeldIter { iter, .. } => {
+                let inner = iter.clone();
+                drop(data);
+                match self.vm_iter_next(&inner)? {
+                    Some(value) => Ok(Some(value)),
+                    None => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::HeldIter { owner, .. } = &mut *d {
+                            *owner = None;
+                        }
+                        Ok(None)
+                    }
+                }
+            }
             _ => {
                 drop(data);
                 match builtins::iter_advance(iter_obj)? {
@@ -2853,6 +2875,7 @@ impl VirtualMachine {
         if let Some(req) = ferrython_stdlib::take_reload_request() {
             result = self.reload_module(req.module)?;
         }
+        self.drain_pending_finalizers();
         Ok(result)
     }
 }

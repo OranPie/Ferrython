@@ -73,7 +73,7 @@ impl VirtualMachine {
 
 // ── Group 2: Name loading/storing ────────────────────────────────────
 impl VirtualMachine {
-    fn invoke_unraisablehook(&mut self, error: PyException, object: PyObjectRef) {
+    pub(crate) fn invoke_unraisablehook(&mut self, error: PyException, object: PyObjectRef) {
         let Some(sys_mod) = ferrython_stdlib::get_current_sys_module() else {
             return;
         };
@@ -118,6 +118,18 @@ impl VirtualMachine {
             attrs,
         );
         let _ = self.call_object(hook, vec![args_obj]);
+    }
+
+    pub(crate) fn drain_pending_finalizers(&mut self) {
+        while let Some(del_fn) = ferrython_core::error::take_pending_finalizer() {
+            let hook_object = match &del_fn.payload {
+                PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                _ => del_fn.clone(),
+            };
+            if let Err(error) = self.call_object(del_fn, vec![]) {
+                self.invoke_unraisablehook(error, hook_object);
+            }
+        }
     }
 
     pub(crate) fn exec_name_ops(
@@ -473,6 +485,9 @@ impl VirtualMachine {
           // Call __del__ if we captured a deleted object with __del__
         if let Some(obj) = del_target {
             if let Some(del_fn) = obj.get_attr("__del__") {
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    inst.finalizer_state.set(1);
+                }
                 let hook_object = match &del_fn.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                     _ => del_fn.clone(),

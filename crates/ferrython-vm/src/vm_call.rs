@@ -4246,8 +4246,13 @@ impl VirtualMachine {
                                 }
                                 // Builtin base type subclass: delegate to __builtin_value__
                                 if let Some(bv) = Self::get_builtin_value(&args[0]) {
-                                    let resolved = self.resolve_iterable(&bv)?;
-                                    return Ok(resolved);
+                                    let iter = self.resolve_iterable(&bv)?;
+                                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                                        PyCell::new(IteratorData::HeldIter {
+                                            iter,
+                                            owner: Some(args[0].clone()),
+                                        }),
+                                    ))));
                                 }
                                 // Old-style sequence protocol: lazy SeqIter
                                 if args[0].get_attr("__getitem__").is_some() {
@@ -4790,6 +4795,17 @@ impl VirtualMachine {
                                     Self::resolve_instance_dunder(&args[0], "__reversed__")
                                 {
                                     return self.call_object(rev_method, vec![]);
+                                }
+                                if let Some(bv) = Self::get_builtin_value(&args[0]) {
+                                    let items = self.collect_iterable(&bv)?;
+                                    let iter =
+                                        builtins::dispatch("reversed", &[PyObject::list(items)])?;
+                                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                                        PyCell::new(IteratorData::HeldIter {
+                                            iter,
+                                            owner: Some(args[0].clone()),
+                                        }),
+                                    ))));
                                 }
                             }
                             let items = self.collect_iterable(&args[0])?;

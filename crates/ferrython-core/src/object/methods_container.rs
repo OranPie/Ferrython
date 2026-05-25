@@ -814,7 +814,13 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
-                return py_get_iter(&bv);
+                let iter = py_get_iter(&bv)?;
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::HeldIter {
+                        iter,
+                        owner: Some(obj.clone()),
+                    }),
+                ))));
             }
             Err(PyException::type_error(format!(
                 "'{}' object is not iterable",

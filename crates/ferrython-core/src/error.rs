@@ -571,6 +571,8 @@ pub fn get_thread_exc_info() -> Option<(ExceptionKind, CompactString, Vec<Traceb
 thread_local! {
     static PENDING_VM_CALLS: RefCell<Vec<(PyObjectRef, Vec<PyObjectRef>)>>
         = RefCell::new(Vec::new());
+    static PENDING_FINALIZERS: RefCell<Vec<PyObjectRef>>
+        = RefCell::new(Vec::new());
     static COLLECT_VM_RESULTS: Cell<bool> = Cell::new(false);
 }
 
@@ -584,6 +586,24 @@ pub fn request_vm_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
 /// Returns calls in FIFO order; returns None when queue is empty.
 pub fn take_pending_vm_call() -> Option<(PyObjectRef, Vec<PyObjectRef>)> {
     PENDING_VM_CALLS.with(|c| {
+        let mut calls = c.borrow_mut();
+        if calls.is_empty() {
+            None
+        } else {
+            Some(calls.remove(0))
+        }
+    })
+}
+
+/// Queue an instance finalizer to be executed by the VM at the next safe point.
+pub fn request_pending_finalizer(func: PyObjectRef) {
+    PENDING_FINALIZERS.with(|c| c.borrow_mut().push(func));
+    crate::object::set_intercept_pending();
+}
+
+/// Take one pending finalizer in FIFO order.
+pub fn take_pending_finalizer() -> Option<PyObjectRef> {
+    PENDING_FINALIZERS.with(|c| {
         let mut calls = c.borrow_mut();
         if calls.is_empty() {
             None

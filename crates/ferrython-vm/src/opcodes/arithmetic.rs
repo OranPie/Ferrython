@@ -10,6 +10,48 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use num_traits::Signed;
+
+fn format_percent_radix_arg(
+    arg: &PyObjectRef,
+    spec: char,
+    alternate: bool,
+) -> Result<String, PyException> {
+    let n = match &arg.payload {
+        PyObjectPayload::Bool(v) => BigInt::from(if *v { 1 } else { 0 }),
+        PyObjectPayload::Int(PyInt::Small(v)) => BigInt::from(*v),
+        PyObjectPayload::Int(PyInt::Big(v)) => v.as_ref().clone(),
+        _ => {
+            return Err(PyException::type_error(&format!(
+                "%{} format: an integer is required, not {}",
+                spec,
+                arg.type_name()
+            )))
+        }
+    };
+    let negative = n < BigInt::from(0);
+    let radix = if spec == 'o' { 8 } else { 16 };
+    let mut digits = n.abs().to_str_radix(radix);
+    if spec == 'X' {
+        digits.make_ascii_uppercase();
+    }
+    let prefix = if alternate {
+        match spec {
+            'o' => "0o",
+            'x' => "0x",
+            'X' => "0X",
+            _ => "",
+        }
+    } else {
+        ""
+    };
+    if negative {
+        Ok(format!("-{}{}", prefix, digits))
+    } else {
+        Ok(format!("{}{}", prefix, digits))
+    }
+}
 
 // ── Group 4: Unary operations ────────────────────────────────────────
 impl VirtualMachine {
@@ -1571,33 +1613,9 @@ impl VirtualMachine {
                                 }
                             }
                         }
-                        'x' => {
-                            let n = arg.as_int().ok_or_else(|| {
-                                PyException::type_error(&format!(
-                                    "%x format: an integer is required, not {}",
-                                    arg.type_name()
-                                ))
-                            })?;
-                            format!("{:x}", n)
-                        }
-                        'X' => {
-                            let n = arg.as_int().ok_or_else(|| {
-                                PyException::type_error(&format!(
-                                    "%X format: an integer is required, not {}",
-                                    arg.type_name()
-                                ))
-                            })?;
-                            format!("{:X}", n)
-                        }
-                        'o' => {
-                            let n = arg.as_int().ok_or_else(|| {
-                                PyException::type_error(&format!(
-                                    "%o format: an integer is required, not {}",
-                                    arg.type_name()
-                                ))
-                            })?;
-                            format!("{:o}", n)
-                        }
+                        'x' => format_percent_radix_arg(&arg, spec, flags.contains('#'))?,
+                        'X' => format_percent_radix_arg(&arg, spec, flags.contains('#'))?,
+                        'o' => format_percent_radix_arg(&arg, spec, flags.contains('#'))?,
                         'c' => {
                             if let Some(n) = arg.as_int() {
                                 char::from_u32(n as u32)
@@ -1678,12 +1696,16 @@ impl VirtualMachine {
             // Parse flags
             let mut zero_pad = false;
             let mut left_align = false;
+            let mut alternate = false;
             while i < fmt.len() && matches!(fmt[i], b'-' | b'+' | b'0' | b' ' | b'#') {
                 if fmt[i] == b'0' {
                     zero_pad = true;
                 }
                 if fmt[i] == b'-' {
                     left_align = true;
+                }
+                if fmt[i] == b'#' {
+                    alternate = true;
                 }
                 i += 1;
             }
@@ -1736,18 +1758,9 @@ impl VirtualMachine {
                     let v = arg.as_int().unwrap_or(0);
                     format!("{}", v).into_bytes()
                 }
-                b'x' => {
-                    let v = arg.as_int().unwrap_or(0);
-                    format!("{:x}", v).into_bytes()
-                }
-                b'X' => {
-                    let v = arg.as_int().unwrap_or(0);
-                    format!("{:X}", v).into_bytes()
-                }
-                b'o' => {
-                    let v = arg.as_int().unwrap_or(0);
-                    format!("{:o}", v).into_bytes()
-                }
+                b'x' => format_percent_radix_arg(arg, 'x', alternate)?.into_bytes(),
+                b'X' => format_percent_radix_arg(arg, 'X', alternate)?.into_bytes(),
+                b'o' => format_percent_radix_arg(arg, 'o', alternate)?.into_bytes(),
                 b'c' => {
                     let v = arg.as_int().unwrap_or(0) as u8;
                     vec![v]

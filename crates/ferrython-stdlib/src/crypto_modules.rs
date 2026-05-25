@@ -295,6 +295,7 @@ fn make_hash_object(
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     inst
@@ -801,6 +802,7 @@ pub fn create_hmac_module() -> PyObjectRef {
                             is_special: true,
                             dict_storage: None,
                             class_flags: InstanceData::compute_flags(&inst.class),
+                            finalizer_state: std::cell::Cell::new(0),
                         })),
                     ));
                     return Ok(new_inst);
@@ -818,6 +820,7 @@ pub fn create_hmac_module() -> PyObjectRef {
                 is_special: true,
                 dict_storage: None,
                 class_flags,
+                finalizer_state: std::cell::Cell::new(0),
             }),
         )));
         Ok(inst)

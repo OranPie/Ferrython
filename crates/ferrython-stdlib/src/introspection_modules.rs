@@ -5900,6 +5900,7 @@ fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObj
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )))
 }

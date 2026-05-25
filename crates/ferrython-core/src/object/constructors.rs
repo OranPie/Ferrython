@@ -221,6 +221,7 @@ pub fn alloc_instance_box(
             data.class_flags = class_flags;
             data.dict_storage = dict_storage;
             data.is_special = false;
+            data.finalizer_state.set(0);
             if Rc::strong_count(&data.attrs) == 1 {
                 unsafe { &mut *data.attrs.data_ptr() }.clear();
             } else {
@@ -239,6 +240,7 @@ pub fn alloc_instance_box(
                 dict_storage,
                 is_special: false,
                 class_flags,
+                finalizer_state: std::cell::Cell::new(0),
             })
         }
     })
@@ -254,6 +256,7 @@ pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
         data.attrs = alloc_attr_map();
     }
     data.dict_storage = None;
+    data.finalizer_state.set(0);
     let old_class = std::mem::replace(&mut data.class, NONE_SINGLETON.clone());
     drop(old_class);
     let _ = INSTANCE_FREELIST.try_with(|f| {
@@ -1063,6 +1066,7 @@ impl PyObject {
                 dict_storage,
                 is_special: false,
                 class_flags,
+                finalizer_state: std::cell::Cell::new(0),
             },
         ))));
         track_object(&obj);

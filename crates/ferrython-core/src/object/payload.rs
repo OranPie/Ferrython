@@ -630,6 +630,11 @@ impl PyObjectRef {
     }
 
     #[inline(always)]
+    unsafe fn from_block_borrowed(block: NonNull<PyObjectBlock>) -> Self {
+        Self(block)
+    }
+
+    #[inline(always)]
     pub fn strong_count(this: &Self) -> usize {
         unsafe { (*this.0.as_ptr()).strong.get() as usize }
     }
@@ -702,7 +707,23 @@ impl Drop for PyObjectRef {
             if strong == IMMORTAL_REFCOUNT {
                 return;
             }
-            let new_strong = strong - 1;
+            if strong == 1 {
+                let obj = &*(*p).obj.as_ptr();
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if inst.finalizer_state.get() == 0 {
+                        let borrowed = PyObjectRef::from_block_borrowed(self.0);
+                        let del_fn = borrowed.get_attr("__del__");
+                        std::mem::forget(borrowed);
+                        if let Some(del_fn) = del_fn {
+                            if (*p).strong.get() > strong {
+                                inst.finalizer_state.set(1);
+                                crate::error::request_pending_finalizer(del_fn);
+                            }
+                        }
+                    }
+                }
+            }
+            let new_strong = (*p).strong.get() - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
                 // Fast path: when no weak refs exist, skip the DROPPING_REFCOUNT
@@ -1871,6 +1892,8 @@ pub struct InstanceData {
     /// Cached class flags — avoids dereferencing inst.class on every LoadAttr/StoreAttr.
     /// Bit layout: see CLASS_FLAG_* constants.
     pub class_flags: u8,
+    /// 0 = not finalized, 1 = finalizer queued or already run.
+    pub finalizer_state: Cell<u8>,
 }
 
 // Bit flags for InstanceData.class_flags (cached from ClassData at instance creation)
@@ -2029,5 +2052,10 @@ pub enum IteratorData {
     DictKeys {
         keys: Vec<PyObjectRef>,
         index: usize,
+    },
+    /// Wraps an iterator while keeping the original iterable alive until exhaustion.
+    HeldIter {
+        iter: PyObjectRef,
+        owner: Option<PyObjectRef>,
     },
 }

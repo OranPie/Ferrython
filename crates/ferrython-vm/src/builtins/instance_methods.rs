@@ -978,6 +978,7 @@ pub(super) fn call_hashlib_method(
                     is_special: true,
                     dict_storage: None,
                     class_flags,
+                    finalizer_state: std::cell::Cell::new(0),
                 }),
             )));
             Ok(new_inst)

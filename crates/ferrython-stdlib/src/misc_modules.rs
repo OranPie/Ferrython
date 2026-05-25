@@ -9,6 +9,8 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use std::rc::Rc;
 
 #[cfg(target_os = "linux")]
@@ -1639,6 +1641,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                         .as_ref()
                         .map(|ds| Rc::new(PyCell::new(ds.read().clone()))),
                     class_flags: InstanceData::compute_flags(&inst.class),
+                    finalizer_state: std::cell::Cell::new(0),
                 })),
             )))
         }
@@ -4734,7 +4737,7 @@ fn make_ctype(name: &str) -> PyObjectRef {
                 PyObject::int(0)
             }
         } else {
-            args[0].clone()
+            normalize_ctype_value(&name_owned, &args[0])
         };
         let inst = PyObject::instance(cls_clone.clone());
         if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -4747,6 +4750,271 @@ fn make_ctype(name: &str) -> PyObjectRef {
         }
         Ok(inst)
     })
+}
+
+fn py_int_to_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Bool(v) => Some(BigInt::from(if *v { 1 } else { 0 })),
+        PyObjectPayload::Int(PyInt::Small(v)) => Some(BigInt::from(*v)),
+        PyObjectPayload::Int(PyInt::Big(v)) => Some(v.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn bigint_to_pyobject(value: BigInt) -> PyObjectRef {
+    value
+        .to_i64()
+        .map(PyObject::int)
+        .unwrap_or_else(|| PyObject::big_int(value))
+}
+
+fn ctype_unsigned_bits(name: &str) -> Option<u32> {
+    match name {
+        "c_uint8" | "c_ubyte" => Some(8),
+        "c_uint16" | "c_ushort" => Some(16),
+        "c_uint32" | "c_uint" => Some(32),
+        "c_uint64" | "c_ulonglong" => Some(64),
+        "c_ulong" => Some((std::mem::size_of::<libc::c_ulong>() * 8) as u32),
+        "c_size_t" => Some((std::mem::size_of::<usize>() * 8) as u32),
+        _ => None,
+    }
+}
+
+fn ctype_signed_bits(name: &str) -> Option<u32> {
+    match name {
+        "c_int8" | "c_byte" | "c_char" => Some(8),
+        "c_int16" | "c_short" => Some(16),
+        "c_int32" | "c_int" => Some(32),
+        "c_int64" | "c_longlong" => Some(64),
+        "c_long" => Some((std::mem::size_of::<libc::c_long>() * 8) as u32),
+        "c_ssize_t" => Some((std::mem::size_of::<isize>() * 8) as u32),
+        _ => None,
+    }
+}
+
+fn normalize_ctype_value(type_name: &str, value: &PyObjectRef) -> PyObjectRef {
+    let Some(bits) = ctype_unsigned_bits(type_name) else {
+        return value.clone();
+    };
+    let Some(n) = py_int_to_bigint(value) else {
+        return value.clone();
+    };
+    let modulus = BigInt::from(1u8) << bits;
+    let wrapped = ((n % &modulus) + &modulus) % &modulus;
+    bigint_to_pyobject(wrapped)
+}
+
+fn ctypes_instance_type_name(obj: &PyObjectRef) -> Option<String> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let Some(t) = inst.attrs.read().get("_type_") {
+            return Some(t.py_to_string());
+        }
+    }
+    None
+}
+
+fn ctypes_value_obj(obj: &PyObjectRef) -> PyObjectRef {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let Some(value) = inst.attrs.read().get("value") {
+            return value.clone();
+        }
+    }
+    obj.clone()
+}
+
+fn ctypes_bigint_arg(obj: &PyObjectRef) -> PyResult<BigInt> {
+    let value = ctypes_value_obj(obj);
+    py_int_to_bigint(&value).ok_or_else(|| {
+        PyException::type_error(format!(
+            "integer argument expected, got {}",
+            value.type_name()
+        ))
+    })
+}
+
+fn ctypes_i128_arg(obj: &PyObjectRef, bits_hint: Option<u32>) -> PyResult<i128> {
+    let mut n = ctypes_bigint_arg(obj)?;
+    if let Some(bits) = bits_hint {
+        if bits > 0 {
+            let sign_bit = BigInt::from(1u8) << (bits - 1);
+            if n >= sign_bit {
+                n -= BigInt::from(1u8) << bits;
+            }
+        }
+    }
+    n.to_i128()
+        .ok_or_else(|| PyException::overflow_error("Python int too large to convert"))
+}
+
+fn ctypes_u128_arg(obj: &PyObjectRef, bits_hint: Option<u32>) -> PyResult<u128> {
+    let mut n = ctypes_bigint_arg(obj)?;
+    if n < BigInt::from(0u8) {
+        let bits = bits_hint.unwrap_or(64);
+        let modulus = BigInt::from(1u8) << bits;
+        n = ((n % &modulus) + &modulus) % &modulus;
+    }
+    n.to_u128()
+        .ok_or_else(|| PyException::overflow_error("Python int too large to convert"))
+}
+
+fn ctypes_signed_bits_for_arg(obj: &PyObjectRef, default_bits: u32) -> u32 {
+    ctypes_instance_type_name(obj)
+        .as_deref()
+        .and_then(|name| ctype_unsigned_bits(name).or_else(|| ctype_signed_bits(name)))
+        .unwrap_or(default_bits)
+}
+
+fn ctypes_bytes_arg(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
+    let value = ctypes_value_obj(obj);
+    match &value.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok((**b).clone()),
+        PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
+        PyObjectPayload::None => Ok(Vec::new()),
+        _ => Err(PyException::type_error(format!(
+            "bytes-like argument expected, got {}",
+            value.type_name()
+        ))),
+    }
+}
+
+fn pybytes_from_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "PyBytes_FromFormat requires a format string",
+        ));
+    }
+    let format = ctypes_bytes_arg(&args[0])?;
+    let mut arg_index = 1usize;
+    let mut out = Vec::with_capacity(format.len());
+    let mut i = 0usize;
+
+    while i < format.len() {
+        if format[i] != b'%' {
+            out.push(format[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= format.len() {
+            out.push(b'%');
+            break;
+        }
+        if format[i] == b'%' {
+            out.push(b'%');
+            i += 1;
+            continue;
+        }
+
+        while i < format.len() && matches!(format[i], b'-' | b'+' | b' ' | b'#' | b'0') {
+            i += 1;
+        }
+        while i < format.len() && format[i].is_ascii_digit() {
+            i += 1;
+        }
+        let precision = if i < format.len() && format[i] == b'.' {
+            i += 1;
+            let start = i;
+            while i < format.len() && format[i].is_ascii_digit() {
+                i += 1;
+            }
+            std::str::from_utf8(&format[start..i])
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+        } else {
+            None
+        };
+
+        let length = if i < format.len() && matches!(format[i], b'l' | b'z') {
+            let marker = format[i];
+            i += 1;
+            Some(marker)
+        } else {
+            None
+        };
+        if i >= format.len() {
+            out.push(b'%');
+            if let Some(marker) = length {
+                out.push(marker);
+            }
+            break;
+        }
+
+        let conv = format[i];
+        i += 1;
+        let arg = if matches!(conv, b's' | b'c' | b'd' | b'i' | b'u' | b'x' | b'p') {
+            if arg_index >= args.len() {
+                return Err(PyException::type_error(
+                    "not enough arguments for PyBytes_FromFormat",
+                ));
+            }
+            let arg = &args[arg_index];
+            arg_index += 1;
+            arg
+        } else {
+            out.push(b'%');
+            if let Some(marker) = length {
+                out.push(marker);
+            }
+            out.push(conv);
+            continue;
+        };
+
+        match conv {
+            b's' => {
+                let mut bytes = ctypes_bytes_arg(arg)?;
+                if let Some(limit) = precision {
+                    bytes.truncate(limit);
+                }
+                out.extend(bytes);
+            }
+            b'c' => {
+                let value = ctypes_i128_arg(arg, Some(ctypes_signed_bits_for_arg(arg, 32)))?;
+                if !(0..=255).contains(&value) {
+                    return Err(PyException::overflow_error(
+                        "PyBytes_FromFormat(): %c argument out of range",
+                    ));
+                }
+                out.push(value as u8);
+            }
+            b'd' | b'i' => {
+                let bits = match length {
+                    Some(b'l') => std::mem::size_of::<libc::c_long>() as u32 * 8,
+                    Some(b'z') => std::mem::size_of::<isize>() as u32 * 8,
+                    _ => ctypes_signed_bits_for_arg(arg, 32),
+                };
+                let value = ctypes_i128_arg(arg, Some(bits))?;
+                out.extend(value.to_string().as_bytes());
+            }
+            b'u' => {
+                let bits = match length {
+                    Some(b'l') => std::mem::size_of::<libc::c_ulong>() as u32 * 8,
+                    Some(b'z') => std::mem::size_of::<usize>() as u32 * 8,
+                    _ => ctypes_instance_type_name(arg)
+                        .as_deref()
+                        .and_then(ctype_unsigned_bits)
+                        .unwrap_or(32),
+                };
+                let value = ctypes_u128_arg(arg, Some(bits))?;
+                out.extend(value.to_string().as_bytes());
+            }
+            b'x' => {
+                let bits = ctypes_instance_type_name(arg)
+                    .as_deref()
+                    .and_then(ctype_unsigned_bits)
+                    .unwrap_or(32);
+                let value = ctypes_u128_arg(arg, Some(bits))?;
+                out.extend(format!("{:x}", value).as_bytes());
+            }
+            b'p' => {
+                let bits = std::mem::size_of::<usize>() as u32 * 8;
+                let value = ctypes_u128_arg(arg, Some(bits))?;
+                out.extend(format!("{:#x}", value).as_bytes());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    Ok(PyObject::bytes(out))
 }
 
 /// Return the standard byte size for a ctypes type name
@@ -4803,6 +5071,16 @@ pub fn create_ctypes_module() -> PyObjectRef {
     let c_ulonglong = make_ctype("c_ulonglong");
     let c_size_t = make_ctype("c_size_t");
     let c_ssize_t = make_ctype("c_ssize_t");
+    let py_object = make_ctype("py_object");
+
+    let pythonapi = {
+        let mut attrs = IndexMap::new();
+        attrs.insert(
+            CompactString::from("PyBytes_FromFormat"),
+            PyObject::native_function("PyBytes_FromFormat", pybytes_from_format),
+        );
+        PyObject::module_with_attrs(CompactString::from("ctypes.pythonapi"), attrs)
+    };
 
     let structure_cls = {
         let mut ns = IndexMap::new();
@@ -4983,6 +5261,8 @@ pub fn create_ctypes_module() -> PyObjectRef {
             ("c_ulonglong", c_ulonglong),
             ("c_size_t", c_size_t),
             ("c_ssize_t", c_ssize_t),
+            ("py_object", py_object),
+            ("pythonapi", pythonapi),
             ("c_int8", make_ctype("c_int8")),
             ("c_int16", make_ctype("c_int16")),
             ("c_int32", make_ctype("c_int32")),

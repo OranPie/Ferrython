@@ -545,6 +545,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }))),
     })
 }
@@ -593,6 +594,7 @@ fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             is_special: true,
             dict_storage: None,
             class_flags,
+            finalizer_state: std::cell::Cell::new(0),
         }),
     )));
     if let PyObjectPayload::Instance(ref d) = inst.payload {

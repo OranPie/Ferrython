@@ -326,6 +326,7 @@ impl VirtualMachine {
                                 | IteratorData::SeqIter { .. }
                                 | IteratorData::Starmap { .. }
                                 | IteratorData::Tee { .. }
+                                | IteratorData::HeldIter { .. }
                         )
                     };
                     if needs_vm {

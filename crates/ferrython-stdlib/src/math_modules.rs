@@ -1772,6 +1772,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                             is_special: true,
                             dict_storage: None,
                             class_flags: inst.class_flags,
+                            finalizer_state: std::cell::Cell::new(0),
                         };
                         return Ok(PyObject::wrap(PyObjectPayload::Instance(
                             std::mem::ManuallyDrop::new(Box::new(new_inst)),
@@ -2393,6 +2394,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 is_special: true,
                 dict_storage: None,
                 class_flags,
+                finalizer_state: std::cell::Cell::new(0),
             }),
         )));
         if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -3248,6 +3250,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                         is_special: true,
                         dict_storage: None,
                         class_flags,
+                        finalizer_state: std::cell::Cell::new(0),
                     }),
                 )));
                 Ok(inst)
@@ -3336,6 +3339,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                         is_special: true,
                         dict_storage: None,
                         class_flags,
+                        finalizer_state: std::cell::Cell::new(0),
                     }),
                 )));
                 // Add __enter__ and __exit__ for context manager
@@ -3391,6 +3395,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                     is_special: true,
                     dict_storage: None,
                     class_flags,
+                    finalizer_state: std::cell::Cell::new(0),
                 }),
             )))
         }),
@@ -3413,6 +3418,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                     is_special: true,
                     dict_storage: None,
                     class_flags,
+                    finalizer_state: std::cell::Cell::new(0),
                 }),
             )))
         }),
@@ -3456,6 +3462,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                         is_special: true,
                         dict_storage: None,
                         class_flags,
+                        finalizer_state: std::cell::Cell::new(0),
                     })),
                 )))
             }),
@@ -4954,6 +4961,7 @@ pub fn create_fractions_module() -> PyObjectRef {
                 is_special: true,
                 dict_storage: None,
                 class_flags,
+                finalizer_state: std::cell::Cell::new(0),
             }),
         )));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
