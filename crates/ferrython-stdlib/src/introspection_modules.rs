@@ -1886,8 +1886,16 @@ pub fn create_inspect_module() -> PyObjectRef {
                 }),
             ),
             // ── Constants ──
+            ("CO_OPTIMIZED", PyObject::int(0x01)),
+            ("CO_NEWLOCALS", PyObject::int(0x02)),
             ("CO_VARARGS", PyObject::int(0x04)),
             ("CO_VARKEYWORDS", PyObject::int(0x08)),
+            ("CO_NESTED", PyObject::int(0x10)),
+            ("CO_GENERATOR", PyObject::int(0x20)),
+            ("CO_NOFREE", PyObject::int(0x40)),
+            ("CO_COROUTINE", PyObject::int(0x80)),
+            ("CO_ITERABLE_COROUTINE", PyObject::int(0x100)),
+            ("CO_ASYNC_GENERATOR", PyObject::int(0x200)),
             ("TPFLAGS_IS_ABSTRACT", PyObject::int(1 << 20)),
         ],
     )

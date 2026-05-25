@@ -68,9 +68,9 @@ bitflags! {
         const NESTED             = 0x0010;
         const GENERATOR          = 0x0020;
         const NOFREE             = 0x0040;
-        const COROUTINE          = 0x0100;
-        const ITERABLE_COROUTINE = 0x0200;
-        const ASYNC_GENERATOR    = 0x0400;
+        const COROUTINE          = 0x0080;
+        const ITERABLE_COROUTINE = 0x0100;
+        const ASYNC_GENERATOR    = 0x0200;
     }
 }
 
