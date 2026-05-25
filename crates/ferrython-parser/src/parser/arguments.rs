@@ -2,7 +2,9 @@
 
 use crate::error::{ParseError, ParseErrorKind};
 use crate::token::{Span, TokenKind};
+use compact_str::CompactString;
 use ferrython_ast::*;
+use std::collections::HashSet;
 
 use super::Parser;
 
@@ -188,6 +190,7 @@ impl Parser {
         let mut keywords = Vec::new();
         let mut has_keyword = false;
         let mut has_kwarg_unpacking = false;
+        let mut seen_keyword_names = HashSet::<CompactString>::new();
 
         if self.check(TokenKind::RightParen) {
             return Ok((args, keywords));
@@ -268,6 +271,20 @@ impl Parser {
                             Self::expression_outer_location(&expr),
                             Self::expression_outer_location(&value),
                         );
+                        if !seen_keyword_names.insert(name.clone()) {
+                            return Err(ParseError::new(
+                                ParseErrorKind::SyntaxErrorMessage(format!(
+                                    "keyword argument repeated: {}",
+                                    name
+                                )),
+                                Span {
+                                    start_line: expr.location.line,
+                                    start_col: expr.location.column,
+                                    end_line: expr.location.line,
+                                    end_col: expr.location.column,
+                                },
+                            ));
+                        }
                         keywords.push(Keyword {
                             arg: Some(name),
                             value,

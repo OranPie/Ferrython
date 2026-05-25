@@ -771,7 +771,11 @@ impl VirtualMachine {
                             for (k, v) in map.read().iter() {
                                 let name = match k {
                                     HashableKey::Str(s) => s.to_compact_string(),
-                                    _ => CompactString::from(format!("{:?}", k)),
+                                    _ => {
+                                        return Err(PyException::type_error(
+                                            "keywords must be strings",
+                                        ));
+                                    }
                                 };
                                 kw_vec.push((name, v.clone()));
                             }
