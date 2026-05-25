@@ -185,7 +185,7 @@ impl VirtualMachine {
                         }
                         None => {
                             let name = &frame.code.varnames[idx];
-                            return Err(PyException::name_error(format!(
+                            return Err(PyException::unbound_local_error(format!(
                                 "local variable '{}' referenced before assignment",
                                 name
                             )));
@@ -331,7 +331,7 @@ impl VirtualMachine {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = (instr.arg & 0xFFFF) as usize;
                     let v1 = frame.get_local(idx1).cloned().ok_or_else(|| {
-                        PyException::name_error(format!(
+                        PyException::unbound_local_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame
                                 .code
@@ -342,7 +342,7 @@ impl VirtualMachine {
                         ))
                     })?;
                     let v2 = frame.get_local(idx2).cloned().ok_or_else(|| {
-                        PyException::name_error(format!(
+                        PyException::unbound_local_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame
                                 .code
@@ -359,7 +359,7 @@ impl VirtualMachine {
                     let fast_idx = (instr.arg >> 16) as usize;
                     let const_idx = (instr.arg & 0xFFFF) as usize;
                     let v = frame.get_local(fast_idx).cloned().ok_or_else(|| {
-                        PyException::name_error(format!(
+                        PyException::unbound_local_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame
                                 .code
@@ -378,7 +378,7 @@ impl VirtualMachine {
                     let val = frame.pop();
                     frame.set_local(store_idx, val);
                     let v = frame.get_local(load_idx).cloned().ok_or_else(|| {
-                        PyException::name_error(format!(
+                        PyException::unbound_local_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame
                                 .code

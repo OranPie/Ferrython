@@ -452,23 +452,34 @@ impl Analyzer {
                 target,
                 annotation,
                 value,
-                ..
+                simple,
             } => {
-                if let ExpressionKind::Name { id, .. } = &target.node {
-                    if let Some(sym) = self.current_scope().symbols.get(id.as_str()) {
-                        if sym.scope == SymbolScope::Global && sym.is_explicit_global_or_nonlocal {
-                            self.errors.push(CompileError::syntax(
-                                format!("annotated name '{}' can't be global", id),
-                                target.location,
-                            ));
+                let in_function_scope = self.current_scope().scope_type == ScopeType::Function;
+                if *simple {
+                    if let ExpressionKind::Name { id, .. } = &target.node {
+                        if let Some(sym) = self.current_scope().symbols.get(id.as_str()) {
+                            if sym.scope == SymbolScope::Global
+                                && sym.is_explicit_global_or_nonlocal
+                            {
+                                self.errors.push(CompileError::syntax(
+                                    format!("annotated name '{}' can't be global", id),
+                                    target.location,
+                                ));
+                            }
                         }
                     }
                 }
-                self.analyze_expression(annotation);
+                if !in_function_scope {
+                    self.analyze_expression(annotation);
+                }
                 if let Some(val) = value {
                     self.analyze_expression(val);
+                    self.analyze_target(target);
+                } else if *simple {
+                    self.analyze_target(target);
+                } else if !in_function_scope {
+                    self.analyze_expression(target);
                 }
-                self.analyze_target(target);
             }
 
             StatementKind::Return { value } => {

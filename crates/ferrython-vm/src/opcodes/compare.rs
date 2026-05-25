@@ -139,7 +139,7 @@ impl VirtualMachine {
             let jump_target = (instr.arg & 0xFFF) as usize;
             let frame = self.call_stack.last_mut().unwrap();
             let local = frame.locals[local_idx].clone().ok_or_else(|| {
-                PyException::name_error(format!(
+                PyException::unbound_local_error(format!(
                     "local variable '{}' referenced before assignment",
                     frame
                         .code

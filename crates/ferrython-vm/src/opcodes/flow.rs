@@ -1143,7 +1143,7 @@ impl VirtualMachine {
                 {
                     Some(v) => v.clone(),
                     None => {
-                        return Err(PyException::name_error(format!(
+                        return Err(PyException::unbound_local_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame
                                 .code

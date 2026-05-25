@@ -67,6 +67,9 @@ impl Compiler {
                     self.compile_expression(val)?;
                     self.compile_store_target(target)?;
                 }
+                if self.current_unit().is_function {
+                    return Ok(());
+                }
                 // Store annotation in __annotations__ dict: __annotations__[name] = annotation
                 if let ExpressionKind::Name { id: name, .. } = &target.node {
                     if self.future_annotations {
@@ -78,8 +81,9 @@ impl Compiler {
                         self.compile_expression(annotation)?;
                     }
                     self.load_name("__annotations__"); // push __annotations__ dict
+                    let key = self.mangle_name(name);
                     let name_idx =
-                        self.add_const(ConstantValue::Str(CompactString::from(name.as_str())));
+                        self.add_const(ConstantValue::Str(CompactString::from(key.as_ref())));
                     self.emit_arg(Opcode::LoadConst, name_idx); // push key
                     self.emit_op(Opcode::StoreSubscr);
                 }
@@ -505,18 +509,6 @@ impl Compiler {
 
             if is_async {
                 unit.code.flags |= CodeFlags::COROUTINE;
-            }
-        }
-
-        // Emit SetupAnnotations if the function body has annotation assignments
-        if Self::has_annotations(body) {
-            self.emit_op(Opcode::SetupAnnotations);
-            // Ensure __annotations__ is registered as a local variable so
-            // load_name() compiles to LoadFast instead of LoadGlobal
-            let unit = self.current_unit_mut();
-            let ann_name = CompactString::from("__annotations__");
-            if !unit.code.varnames.iter().any(|v| v == &ann_name) {
-                unit.code.varnames.push(ann_name);
             }
         }
 

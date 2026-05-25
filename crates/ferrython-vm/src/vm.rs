@@ -821,7 +821,7 @@ impl VirtualMachine {
         varnames: &[compact_str::CompactString],
         idx: usize,
     ) -> Result<Option<PyObjectRef>, PyException> {
-        Err(PyException::name_error(format!(
+        Err(PyException::unbound_local_error(format!(
             "local variable '{}' referenced before assignment",
             varnames.get(idx).map(|s| s.as_str()).unwrap_or("?")
         )))

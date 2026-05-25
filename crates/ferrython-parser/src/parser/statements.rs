@@ -100,6 +100,8 @@ impl Parser {
 
         // Check for annotation
         if self.check(TokenKind::Colon) {
+            let simple = matches!(&expr.node, ExpressionKind::Name { .. })
+                && expr.location == expr.outer_location;
             self.validate_annotation_target(&expr)?;
             self.advance();
             let annotation = self.parse_expr()?;
@@ -120,7 +122,7 @@ impl Parser {
                     target: Box::new(expr),
                     annotation: Box::new(annotation),
                     value,
-                    simple: true,
+                    simple,
                 },
                 loc,
             ));
