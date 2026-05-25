@@ -2,11 +2,12 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, make_builtin, make_module, new_fx_hashkey_map,
-    ExceptionInstanceData, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef,
+    ExceptionInstanceData, FxAttrMap, FxHashKeyMap, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1904,7 +1905,7 @@ fn pickle_serialize_operator_reduce_p0(
     func_name: &str,
     args: &[PyObjectRef],
     buf: &mut Vec<u8>,
-    memo: &mut u32,
+    memo: &mut PickleWriteMemo,
 ) -> PyResult<()> {
     buf.extend_from_slice(b"coperator\n");
     buf.extend_from_slice(func_name.as_bytes());
@@ -1920,7 +1921,7 @@ fn pickle_serialize_operator_reduce_p2(
     func_name: &str,
     args: &[PyObjectRef],
     buf: &mut Vec<u8>,
-    memo: &mut u32,
+    memo: &mut PickleWriteMemo,
 ) -> PyResult<()> {
     buf.extend_from_slice(b"coperator\n");
     buf.extend_from_slice(func_name.as_bytes());
@@ -1931,6 +1932,98 @@ fn pickle_serialize_operator_reduce_p2(
 }
 
 // ── Protocol 0 (text) serialization ──
+
+#[derive(Default)]
+struct PickleWriteMemo {
+    next: u32,
+    seen: HashMap<usize, u32>,
+}
+
+impl std::ops::Deref for PickleWriteMemo {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.next
+    }
+}
+
+impl std::ops::DerefMut for PickleWriteMemo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.next
+    }
+}
+
+fn pickle_identity_key(obj: &PyObjectRef) -> Option<usize> {
+    match &obj.payload {
+        PyObjectPayload::List(_)
+        | PyObjectPayload::Dict(_)
+        | PyObjectPayload::MappingProxy(_)
+        | PyObjectPayload::Instance(_) => Some(PyObjectRef::as_ptr(obj) as usize),
+        _ => None,
+    }
+}
+
+fn p0_emit_get(buf: &mut Vec<u8>, id: u32) {
+    buf.push(b'g');
+    buf.extend_from_slice(format!("{}\n", id).as_bytes());
+}
+
+fn p0_try_emit_get(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &PickleWriteMemo) -> bool {
+    let Some(key) = pickle_identity_key(obj) else {
+        return false;
+    };
+    let Some(id) = memo.seen.get(&key) else {
+        return false;
+    };
+    p0_emit_get(buf, *id);
+    true
+}
+
+fn p0_emit_put_obj(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut PickleWriteMemo) {
+    let id = **memo;
+    **memo += 1;
+    if let Some(key) = pickle_identity_key(obj) {
+        memo.seen.insert(key, id);
+    }
+    buf.push(b'p');
+    buf.extend_from_slice(format!("{}\n", id).as_bytes());
+}
+
+fn p2_emit_get(buf: &mut Vec<u8>, id: u32) {
+    if id <= 0xff {
+        buf.push(b'h');
+        buf.push(id as u8);
+    } else {
+        buf.push(b'j');
+        buf.extend_from_slice(&id.to_le_bytes());
+    }
+}
+
+fn p2_try_emit_get(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &PickleWriteMemo) -> bool {
+    let Some(key) = pickle_identity_key(obj) else {
+        return false;
+    };
+    let Some(id) = memo.seen.get(&key) else {
+        return false;
+    };
+    p2_emit_get(buf, *id);
+    true
+}
+
+fn p2_emit_put_obj(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut PickleWriteMemo) {
+    let id = **memo;
+    **memo += 1;
+    if let Some(key) = pickle_identity_key(obj) {
+        memo.seen.insert(key, id);
+    }
+    if id <= 0xff {
+        buf.push(b'q');
+        buf.push(id as u8);
+    } else {
+        buf.push(b'r');
+        buf.extend_from_slice(&id.to_le_bytes());
+    }
+}
 
 fn p0_escape_unicode(s: &str) -> Vec<u8> {
     let mut out = Vec::new();
@@ -1973,7 +2066,14 @@ fn p0_escape_bytes(b: &[u8]) -> Vec<u8> {
     out
 }
 
-fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> PyResult<()> {
+fn pickle_serialize_p0(
+    obj: &PyObjectRef,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    if p0_try_emit_get(obj, buf, memo) {
+        return Ok(());
+    }
     match &obj.payload {
         PyObjectPayload::None => buf.push(b'N'),
         PyObjectPayload::Bool(b) => {
@@ -1998,8 +2098,12 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::List(items) => {
             let items = items.read();
             buf.extend_from_slice(b"(lp");
-            buf.extend_from_slice(format!("{}\n", *memo).as_bytes());
-            *memo += 1;
+            let id = **memo;
+            **memo += 1;
+            if let Some(key) = pickle_identity_key(obj) {
+                memo.seen.insert(key, id);
+            }
+            buf.extend_from_slice(format!("{}\n", id).as_bytes());
             for item in items.iter() {
                 pickle_serialize_p0(item, buf, memo)?;
                 buf.push(b'a');
@@ -2015,8 +2119,12 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::Dict(map) => {
             let map = map.read();
             buf.extend_from_slice(b"(dp");
-            buf.extend_from_slice(format!("{}\n", *memo).as_bytes());
-            *memo += 1;
+            let id = **memo;
+            **memo += 1;
+            if let Some(key) = pickle_identity_key(obj) {
+                memo.seen.insert(key, id);
+            }
+            buf.extend_from_slice(format!("{}\n", id).as_bytes());
             for (k, v) in map.iter() {
                 pickle_serialize_p0(&hashable_key_to_pyobj(k), buf, memo)?;
                 pickle_serialize_p0(v, buf, memo)?;
@@ -2026,8 +2134,12 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::MappingProxy(map) => {
             let map = map.read();
             buf.extend_from_slice(b"(dp");
-            buf.extend_from_slice(format!("{}\n", *memo).as_bytes());
-            *memo += 1;
+            let id = **memo;
+            **memo += 1;
+            if let Some(key) = pickle_identity_key(obj) {
+                memo.seen.insert(key, id);
+            }
+            buf.extend_from_slice(format!("{}\n", id).as_bytes());
             for (k, v) in map.iter() {
                 pickle_serialize_p0(&hashable_key_to_pyobj(k), buf, memo)?;
                 pickle_serialize_p0(v, buf, memo)?;
@@ -2052,17 +2164,19 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
                 return Ok(());
             }
-            let (class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
             // Serialize as dict via GLOBAL + REDUCE pattern:
-            // c__main__\nClassName\n( {state_dict} tR
-            buf.extend_from_slice(b"c__main__\n");
+            // cmodule\nClassName\n( {state_dict} tR
+            buf.push(b'c');
+            buf.extend_from_slice(module_name.as_bytes());
+            buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
             // Build state dict
             buf.extend_from_slice(b"(d");
-            let id = *memo;
-            *memo += 1;
+            let id = **memo;
+            **memo += 1;
             buf.extend_from_slice(format!("p{}\n", id).as_bytes());
             for (k, v) in &data_pairs {
                 pickle_serialize_p0(&PyObject::str_val(k.clone()), buf, memo)?;
@@ -2070,6 +2184,7 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 buf.push(b's');
             }
             buf.extend_from_slice(b"tR");
+            p0_emit_put_obj(obj, buf, memo);
         }
         // Iterators — pickle as remaining-items list reconstructed via builtins.iter
         PyObjectPayload::RefIter { source, index } => {
@@ -2164,6 +2279,18 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                         .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                         .collect()
                 }
+                IteratorData::SeqIter {
+                    obj: source,
+                    index,
+                    exhausted,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_seqiter__\n(");
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*index), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::bool_val(*exhausted), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
                 _ => {
                     return Err(PyException::runtime_error(format!(
                         "PicklingError: can't pickle object of type {}",
@@ -2225,12 +2352,18 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
 fn pickle_extract_instance(
     obj: &PyObjectRef,
     inst: &ferrython_core::object::InstanceData,
-) -> PyResult<(String, Vec<(CompactString, PyObjectRef)>)> {
+) -> PyResult<(String, String, Vec<(CompactString, PyObjectRef)>)> {
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
         cd.name.to_string()
     } else {
         "object".to_string()
     };
+    let module_name = inst
+        .class
+        .get_attr("__module__")
+        .map(|module| module.py_to_string())
+        .filter(|module| !module.is_empty())
+        .unwrap_or_else(|| "__main__".to_string());
     let state_dict = if class_name == "Counter" {
         if let Some(ref ds) = inst.dict_storage {
             let mut map = IndexMap::new();
@@ -2292,7 +2425,7 @@ fn pickle_extract_instance(
             data_pairs.push((CompactString::from("__module__"), module));
         }
     }
-    Ok((class_name, data_pairs))
+    Ok((module_name, class_name, data_pairs))
 }
 
 fn defaultdict_pickle_parts(
@@ -2324,7 +2457,7 @@ fn defaultdict_pickle_parts(
 fn pickle_serialize_builtin_factory_p0(factory: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
     match &factory.payload {
         PyObjectPayload::None => {
-            let mut nested_memo = 0;
+            let mut nested_memo = PickleWriteMemo::default();
             pickle_serialize_p0(factory, buf, &mut nested_memo)
         }
         PyObjectPayload::BuiltinType(name)
@@ -2337,7 +2470,7 @@ fn pickle_serialize_builtin_factory_p0(factory: &PyObjectRef, buf: &mut Vec<u8>)
                 "__ferrython_builtin_type__:{}",
                 name.as_str()
             )));
-            let mut nested_memo = 0;
+            let mut nested_memo = PickleWriteMemo::default();
             pickle_serialize_p0(&marker, buf, &mut nested_memo)
         }
         _ => Err(PyException::runtime_error(format!(
@@ -2350,7 +2483,7 @@ fn pickle_serialize_builtin_factory_p0(factory: &PyObjectRef, buf: &mut Vec<u8>)
 fn pickle_serialize_builtin_factory_p2(factory: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
     match &factory.payload {
         PyObjectPayload::None => {
-            let mut nested_memo = 0;
+            let mut nested_memo = PickleWriteMemo::default();
             pickle_serialize_p2(factory, buf, &mut nested_memo)
         }
         PyObjectPayload::BuiltinType(name)
@@ -2363,7 +2496,7 @@ fn pickle_serialize_builtin_factory_p2(factory: &PyObjectRef, buf: &mut Vec<u8>)
                 "__ferrython_builtin_type__:{}",
                 name.as_str()
             )));
-            let mut nested_memo = 0;
+            let mut nested_memo = PickleWriteMemo::default();
             pickle_serialize_p2(&marker, buf, &mut nested_memo)
         }
         _ => Err(PyException::runtime_error(format!(
@@ -2377,13 +2510,13 @@ fn pickle_serialize_defaultdict_p0(
     factory: &PyObjectRef,
     items: &[(HashableKey, PyObjectRef)],
     buf: &mut Vec<u8>,
-    memo: &mut u32,
+    memo: &mut PickleWriteMemo,
 ) -> PyResult<()> {
     buf.extend_from_slice(b"ccollections\ndefaultdict\n(");
     pickle_serialize_builtin_factory_p0(factory, buf)?;
     buf.extend_from_slice(b"(d");
-    let id = *memo;
-    *memo += 1;
+    let id = **memo;
+    **memo += 1;
     buf.extend_from_slice(format!("p{}\n", id).as_bytes());
     for (k, v) in items {
         pickle_serialize_p0(&hashable_key_to_pyobj(k), buf, memo)?;
@@ -2398,7 +2531,7 @@ fn pickle_serialize_defaultdict_p2(
     factory: &PyObjectRef,
     items: &[(HashableKey, PyObjectRef)],
     buf: &mut Vec<u8>,
-    memo: &mut u32,
+    memo: &mut PickleWriteMemo,
 ) -> PyResult<()> {
     buf.push(b'c');
     buf.extend_from_slice(b"collections\ndefaultdict\n");
@@ -2420,15 +2553,26 @@ fn pickle_serialize_defaultdict_p2(
 
 // ── Protocol 2 (binary) serialization ──
 
-fn p2_emit_put(buf: &mut Vec<u8>, memo: &mut u32) {
-    if *memo <= 0xff {
+fn p2_emit_put(buf: &mut Vec<u8>, memo: &mut PickleWriteMemo) {
+    let id = **memo;
+    **memo += 1;
+    if id <= 0xff {
         buf.push(b'q');
-        buf.push(*memo as u8);
+        buf.push(id as u8);
+    } else {
+        buf.push(b'r');
+        buf.extend_from_slice(&id.to_le_bytes());
     }
-    *memo += 1;
 }
 
-fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> PyResult<()> {
+fn pickle_serialize_p2(
+    obj: &PyObjectRef,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    if p2_try_emit_get(obj, buf, memo) {
+        return Ok(());
+    }
     match &obj.payload {
         PyObjectPayload::None => buf.push(b'N'),
         PyObjectPayload::Bool(b) => buf.push(if *b { 0x88 } else { 0x89 }),
@@ -2468,7 +2612,7 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::List(items) => {
             let items = items.read();
             buf.push(b']');
-            p2_emit_put(buf, memo);
+            p2_emit_put_obj(obj, buf, memo);
             if !items.is_empty() {
                 buf.push(b'(');
                 for item in items.iter() {
@@ -2505,7 +2649,7 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::Dict(map) => {
             let map = map.read();
             buf.push(b'}');
-            p2_emit_put(buf, memo);
+            p2_emit_put_obj(obj, buf, memo);
             if !map.is_empty() {
                 buf.push(b'(');
                 for (k, v) in map.iter() {
@@ -2518,7 +2662,7 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
         PyObjectPayload::MappingProxy(map) => {
             let map = map.read();
             buf.push(b'}');
-            p2_emit_put(buf, memo);
+            p2_emit_put_obj(obj, buf, memo);
             if !map.is_empty() {
                 buf.push(b'(');
                 for (k, v) in map.iter() {
@@ -2546,9 +2690,11 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;
                 return Ok(());
             }
-            let (class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
-            // c__main__\nClassName\n( {state_dict} t R
-            buf.extend_from_slice(b"c__main__\n");
+            let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            // cmodule\nClassName\n( {state_dict} t R
+            buf.push(b'c');
+            buf.extend_from_slice(module_name.as_bytes());
+            buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
@@ -2564,6 +2710,7 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 buf.push(b'u');
             }
             buf.extend_from_slice(b"tR");
+            p2_emit_put_obj(obj, buf, memo);
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
@@ -2657,6 +2804,24 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                         .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                         .collect()
                 }
+                IteratorData::SeqIter {
+                    obj: source,
+                    index,
+                    exhausted,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_seqiter__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            source.clone(),
+                            PyObject::int(*index),
+                            PyObject::bool_val(*exhausted),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
                 _ => {
                     return Err(PyException::runtime_error(format!(
                         "PicklingError: can't pickle object of type {}",
@@ -2718,7 +2883,7 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
 
 fn pickle_serialize(obj: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
     buf.extend_from_slice(b"\x80\x02");
-    let mut memo: u32 = 0;
+    let mut memo = PickleWriteMemo::default();
     pickle_serialize_p2(obj, buf, &mut memo)?;
     buf.push(b'.');
     Ok(())
@@ -2938,6 +3103,74 @@ fn maybe_add_ast_empty_fields(name: &str, attrs: &mut IndexMap<CompactString, Py
     }
 }
 
+fn pkl_class_candidate(obj: PyObjectRef) -> Option<PyObjectRef> {
+    if matches!(
+        &obj.payload,
+        PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_)
+    ) {
+        Some(obj)
+    } else {
+        None
+    }
+}
+
+fn pkl_resolve_dotted_attr(root: PyObjectRef, path: &str) -> Option<PyObjectRef> {
+    let mut obj = root;
+    for part in path.split('.') {
+        if part.is_empty() {
+            return None;
+        }
+        obj = obj.get_attr(part)?;
+    }
+    Some(obj)
+}
+
+fn pkl_resolve_attr_map_name(attrs: &FxAttrMap, name: &str) -> Option<PyObjectRef> {
+    if let Some(obj) = attrs.get(name).cloned() {
+        return Some(obj);
+    }
+    let (root_name, rest) = name.split_once('.')?;
+    let root = attrs.get(root_name).cloned()?;
+    pkl_resolve_dotted_attr(root, rest)
+}
+
+fn pkl_resolve_sys_module(module: &str) -> Option<PyObjectRef> {
+    let sys = crate::get_current_sys_module()?;
+    let modules = sys.get_attr("modules")?;
+    let PyObjectPayload::Dict(map) = &modules.payload else {
+        return None;
+    };
+    map.read()
+        .get(&HashableKey::str_key(CompactString::from(module)))
+        .cloned()
+}
+
+fn pkl_resolve_global_class(module: &str, name: &str) -> Option<PyObjectRef> {
+    if let Some(module_obj) = pkl_resolve_sys_module(module) {
+        if let Some(cls) = pkl_resolve_dotted_attr(module_obj, name).and_then(pkl_class_candidate) {
+            return Some(cls);
+        }
+    }
+
+    let globals = crate::get_current_globals()?;
+    let globals_r = globals.read();
+    let current_module = globals_r.get("__name__").map(|value| value.py_to_string());
+    if module == "__main__" || current_module.as_deref() == Some(module) {
+        if let Some(cls) = pkl_resolve_attr_map_name(&globals_r, name).and_then(pkl_class_candidate)
+        {
+            return Some(cls);
+        }
+    }
+
+    if let Some(module_obj) = pkl_resolve_attr_map_name(&globals_r, module) {
+        if let Some(cls) = pkl_resolve_dotted_attr(module_obj, name).and_then(pkl_class_candidate) {
+            return Some(cls);
+        }
+    }
+
+    None
+}
+
 fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectRef> {
     if let PklStackItem::Global(module, name) = callable {
         let arg_list = match &args.payload {
@@ -3008,6 +3241,19 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                 "__builtin__" | "builtins",
                 "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool",
             ) => Ok(PyObject::builtin_type(CompactString::from(name.as_str()))),
+            ("__builtin__" | "builtins", "__ferrython_seqiter__") => {
+                use ferrython_core::object::IteratorData;
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let index = arg_list.get(1).and_then(|v| v.as_int()).unwrap_or(0);
+                let exhausted = arg_list.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::SeqIter {
+                        obj: source,
+                        index,
+                        exhausted,
+                    }),
+                ))))
+            }
             ("collections", "defaultdict") | ("__main__", "defaultdict") => {
                 let collections = create_collections_module();
                 let cls = collections.get_attr("defaultdict").ok_or_else(|| {
@@ -3222,11 +3468,18 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                             }
                         }
                         maybe_add_ast_empty_fields(name, &mut attrs);
-                        let cls = PyObject::class(
-                            CompactString::from(name.as_str()),
-                            vec![],
-                            IndexMap::new(),
-                        );
+                        let cls = pkl_resolve_global_class(module, name).unwrap_or_else(|| {
+                            let mut class_namespace = IndexMap::new();
+                            class_namespace.insert(
+                                CompactString::from("__module__"),
+                                PyObject::str_val(CompactString::from(module.as_str())),
+                            );
+                            PyObject::class(
+                                CompactString::from(name.as_str()),
+                                vec![],
+                                class_namespace,
+                            )
+                        });
                         return Ok(PyObject::instance_with_attrs(cls, attrs));
                     }
                 }
@@ -4254,7 +4507,7 @@ fn pickle_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     let mut buf = Vec::new();
-    let mut memo: u32 = 0;
+    let mut memo = PickleWriteMemo::default();
     if protocol >= 2 {
         buf.extend_from_slice(b"\x80\x02");
         pickle_serialize_p2(&args[0], &mut buf, &mut memo)?;

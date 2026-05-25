@@ -16,6 +16,24 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 impl VirtualMachine {
+    fn class_module_name(body_func: &PyObjectRef) -> CompactString {
+        if let PyObjectPayload::Function(pyfunc) = &body_func.payload {
+            if let Some(module) = pyfunc.globals.read().get("__name__") {
+                return CompactString::from(module.py_to_string());
+            }
+        }
+        CompactString::from("__main__")
+    }
+
+    fn ensure_class_module(namespace: &mut FxAttrMap, body_func: &PyObjectRef) {
+        if !namespace.contains_key("__module__") {
+            namespace.insert(
+                intern_or_new("__module__"),
+                PyObject::str_val(Self::class_module_name(body_func)),
+            );
+        }
+    }
+
     /// Extract inherited metaclass from bases: if any base has a custom metaclass, return it.
     fn inherited_metaclass(bases: &[PyObjectRef]) -> Option<PyObjectRef> {
         for base in bases {
@@ -177,7 +195,8 @@ impl VirtualMachine {
             }
             _ => (FxAttrMap::default(), None),
         };
-        let (namespace, class_cell_info) = namespace;
+        let (mut namespace, class_cell_info) = namespace;
+        Self::ensure_class_module(&mut namespace, &body_func);
 
         // Build MRO: [self_class, ...linearized_parents, object]
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
@@ -953,7 +972,8 @@ impl VirtualMachine {
             }
             _ => (FxAttrMap::default(), None),
         };
-        let (namespace, class_cell_info) = namespace;
+        let (mut namespace, class_cell_info) = namespace;
+        Self::ensure_class_module(&mut namespace, &body_func);
 
         if let Some(meta) = metaclass {
             // Metaclass provided: call metaclass.__new__(mcs, name, bases, namespace_dict)

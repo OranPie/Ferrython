@@ -4236,13 +4236,7 @@ impl VirtualMachine {
                                     let iter_method =
                                         self.resolve_descriptor(&raw_iter, &args[0])?;
                                     let r = self.call_object(iter_method, vec![])?;
-                                    if matches!(
-                                        &r.payload,
-                                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)
-                                    ) {
-                                        return r.get_iter();
-                                    }
-                                    return Ok(r);
+                                    return Self::ensure_iterator_result(&args[0], r);
                                 }
                                 // Builtin base type subclass: delegate to __builtin_value__
                                 if let Some(bv) = Self::get_builtin_value(&args[0]) {

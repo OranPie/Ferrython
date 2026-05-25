@@ -38,6 +38,121 @@ fn call_inplace_dunder(
     call_dunder(obj, fallback_name, &[arg.clone()])
 }
 
+fn operator_call_iterator_dunder(
+    receiver: &PyObjectRef,
+    method: &PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    if matches!(&receiver.payload, PyObjectPayload::Module(_))
+        && matches!(
+            &method.payload,
+            PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_)
+        )
+    {
+        ferrython_core::object::call_callable(method, &[receiver.clone()])
+    } else {
+        ferrython_core::object::call_callable(method, &[])
+    }
+}
+
+fn operator_iterator_from(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    if matches!(&obj.payload, PyObjectPayload::Module(_)) {
+        if let Some(iter_method) = obj.get_attr("__iter__") {
+            let iter = operator_call_iterator_dunder(obj, &iter_method)?;
+            if iter.get_attr("__next__").is_some() {
+                return Ok(iter);
+            }
+            return Err(PyException::type_error(format!(
+                "iter() returned non-iterator of type '{}'",
+                obj.type_name()
+            )));
+        }
+        if obj.get_attr("__next__").is_some() {
+            return Ok(obj.clone());
+        }
+        return Err(PyException::type_error(format!(
+            "'{}' object is not iterable",
+            obj.type_name()
+        )));
+    }
+    obj.get_iter()
+}
+
+fn operator_next_from_iter(iter: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    let next = iter.get_attr("__next__").ok_or_else(|| {
+        PyException::type_error(format!("'{}' object is not an iterator", iter.type_name()))
+    })?;
+    match operator_call_iterator_dunder(iter, &next) {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if err.kind == ExceptionKind::StopIteration => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn operator_index_of(seq: &PyObjectRef, target: &PyObjectRef) -> PyResult<i64> {
+    match &seq.payload {
+        PyObjectPayload::List(items) => {
+            for (i, item) in items.read().iter().enumerate() {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    return Ok(i as i64);
+                }
+            }
+        }
+        PyObjectPayload::Tuple(items) => {
+            for (i, item) in items.iter().enumerate() {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    return Ok(i as i64);
+                }
+            }
+        }
+        _ => {
+            let iter = operator_iterator_from(seq)?;
+            let mut index = 0i64;
+            while let Some(item) = operator_next_from_iter(&iter)? {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    return Ok(index);
+                }
+                index += 1;
+            }
+        }
+    }
+    Err(PyException::value_error(
+        "sequence.index(x): x not in sequence",
+    ))
+}
+
+fn operator_count_of(seq: &PyObjectRef, target: &PyObjectRef) -> PyResult<i64> {
+    match &seq.payload {
+        PyObjectPayload::List(items) => {
+            let mut count = 0i64;
+            for item in items.read().iter() {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+        PyObjectPayload::Tuple(items) => {
+            let mut count = 0i64;
+            for item in items.iter() {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+        _ => {
+            let iter = operator_iterator_from(seq)?;
+            let mut count = 0i64;
+            while let Some(item) = operator_next_from_iter(&iter)? {
+                if item.compare(target, CompareOp::Eq)?.is_truthy() {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+    }
+}
+
 fn builtin_index_value(obj: &PyObjectRef) -> Option<PyInt> {
     match &obj.payload {
         PyObjectPayload::Int(n) => Some(n.clone()),
@@ -1220,43 +1335,14 @@ pub fn create_operator_module() -> PyObjectRef {
                 "indexOf",
                 make_builtin(|args| {
                     check_args("indexOf", args, 2)?;
-                    let target = &args[1];
-                    let items = match &args[0].payload {
-                        PyObjectPayload::List(items) => {
-                            items.read().iter().cloned().collect::<Vec<PyObjectRef>>()
-                        }
-                        PyObjectPayload::Tuple(items) => items.iter().cloned().collect(),
-                        _ => args[0].to_list()?,
-                    };
-                    for (i, item) in items.iter().enumerate() {
-                        if item.compare(target, CompareOp::Eq)?.is_truthy() {
-                            return Ok(PyObject::int(i as i64));
-                        }
-                    }
-                    Err(PyException::value_error(
-                        "sequence.index(x): x not in sequence",
-                    ))
+                    Ok(PyObject::int(operator_index_of(&args[0], &args[1])?))
                 }),
             ),
             (
                 "countOf",
                 make_builtin(|args| {
                     check_args("countOf", args, 2)?;
-                    let target = &args[1];
-                    let mut count = 0i64;
-                    let items = match &args[0].payload {
-                        PyObjectPayload::List(items) => {
-                            items.read().iter().cloned().collect::<Vec<PyObjectRef>>()
-                        }
-                        PyObjectPayload::Tuple(items) => items.iter().cloned().collect(),
-                        _ => args[0].to_list()?,
-                    };
-                    for item in items.iter() {
-                        if item.compare(target, CompareOp::Eq)?.is_truthy() {
-                            count += 1;
-                        }
-                    }
-                    Ok(PyObject::int(count))
+                    Ok(PyObject::int(operator_count_of(&args[0], &args[1])?))
                 }),
             ),
         ],

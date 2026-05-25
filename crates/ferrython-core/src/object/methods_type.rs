@@ -9,6 +9,104 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 use super::payload::*;
 
+fn ensure_iterator_for_to_list(owner: &PyObjectRef, iter: PyObjectRef) -> PyResult<PyObjectRef> {
+    if iter.get_attr("__next__").is_some() {
+        Ok(iter)
+    } else {
+        Err(PyException::type_error(format!(
+            "iter() returned non-iterator of type '{}'",
+            owner.type_name()
+        )))
+    }
+}
+
+fn collect_next_iterator(iter_obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+    let mut result = Vec::new();
+    loop {
+        let next = iter_obj.get_attr("__next__").ok_or_else(|| {
+            PyException::type_error(format!(
+                "'{}' object is not an iterator",
+                iter_obj.type_name()
+            ))
+        })?;
+        match call_callable(&next, &[]) {
+            Ok(value) => guarded_push(&mut result, value, "iterator -> list")?,
+            Err(err) if err.kind == ExceptionKind::StopIteration => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(result)
+}
+
+fn collect_instance_iterable(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+    if let Some(iter_method) = obj.get_attr("__iter__") {
+        let iter = ensure_iterator_for_to_list(obj, call_callable(&iter_method, &[])?)?;
+        return collect_next_iterator(&iter);
+    }
+    if obj.get_attr("__next__").is_some() {
+        return collect_next_iterator(obj);
+    }
+    if obj.get_attr("__getitem__").is_some() {
+        let mut result = Vec::new();
+        let mut idx = 0i64;
+        loop {
+            match obj.get_item(&PyObject::int(idx)) {
+                Ok(value) => guarded_push(&mut result, value, "sequence -> list")?,
+                Err(err)
+                    if err.kind == ExceptionKind::IndexError
+                        || err.kind == ExceptionKind::StopIteration =>
+                {
+                    break
+                }
+                Err(err) => return Err(err),
+            }
+            idx += 1;
+        }
+        return Ok(result);
+    }
+    Err(PyException::type_error(format!(
+        "'{}' object is not iterable",
+        obj.type_name()
+    )))
+}
+
+fn call_module_dunder(obj: &PyObjectRef, method: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &method.payload {
+        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
+            call_callable(method, &[obj.clone()])
+        }
+        _ => call_callable(method, &[]),
+    }
+}
+
+fn collect_module_iterable(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+    let iter = if let Some(iter_method) = obj.get_attr("__iter__") {
+        call_module_dunder(obj, &iter_method)?
+    } else if obj.get_attr("__next__").is_some() {
+        obj.clone()
+    } else {
+        return Err(PyException::type_error(format!(
+            "'{}' object is not iterable",
+            obj.type_name()
+        )));
+    };
+    if !PyObjectRef::ptr_eq(&iter, obj) {
+        return iter.to_list();
+    }
+    let mut result = Vec::new();
+    loop {
+        let next = obj.get_attr("__next__").ok_or_else(|| {
+            PyException::type_error(format!("'{}' object is not an iterator", obj.type_name()))
+        })?;
+        match call_module_dunder(obj, &next) {
+            Ok(value) => guarded_push(&mut result, value, "module iterator -> list")?,
+            Err(err) if err.kind == ExceptionKind::StopIteration => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(result)
+}
+
 pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
     match &obj.payload {
         PyObjectPayload::None => "NoneType",
@@ -1085,6 +1183,22 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     index.set(usize::MAX);
                     Ok(result)
                 }
+                PyObjectPayload::Dict(cell)
+                | PyObjectPayload::MappingProxy(cell)
+                | PyObjectPayload::DictKeys(cell) => {
+                    let map = unsafe { &*cell.data_ptr() };
+                    if idx >= map.len() {
+                        return Ok(vec![]);
+                    }
+                    guard_eager_allocation(map.len() - idx, "dict iterator -> list")?;
+                    let result = map
+                        .iter()
+                        .skip(idx)
+                        .map(|(key, _)| key.to_object())
+                        .collect();
+                    index.set(usize::MAX);
+                    Ok(result)
+                }
                 _ => Ok(vec![]),
             }
         }
@@ -1097,15 +1211,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             }
             Ok(vec![])
         }
-        PyObjectPayload::Instance(_) => {
-            if obj.get_attr("__iter__").is_some() || obj.get_attr("__next__").is_some() {
-                return obj.get_iter().and_then(|iter| iter.to_list());
-            }
-            Err(PyException::type_error(format!(
-                "'{}' object is not iterable",
-                obj.type_name()
-            )))
-        }
+        PyObjectPayload::Instance(_) => collect_instance_iterable(obj),
         PyObjectPayload::DictKeys(m) => {
             let read = m.read();
             let visible = read.keys().filter(|k| !is_hidden_dict_key(k)).count();
@@ -1136,6 +1242,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                 .collect())
         }
+        PyObjectPayload::Module(_) => collect_module_iterable(obj),
         _ => Err(PyException::type_error(format!(
             "'{}' object is not iterable",
             obj.type_name()

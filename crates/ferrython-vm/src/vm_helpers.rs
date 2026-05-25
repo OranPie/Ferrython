@@ -403,6 +403,20 @@ impl VirtualMachine {
         false
     }
 
+    pub(crate) fn ensure_iterator_result(
+        owner: &PyObjectRef,
+        iter: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        if iter.get_attr("__next__").is_some() {
+            Ok(iter)
+        } else {
+            Err(PyException::type_error(format!(
+                "iter() returned non-iterator of type '{}'",
+                owner.type_name()
+            )))
+        }
+    }
+
     /// Resolve a dunder method on an Instance, skipping BuiltinBoundMethod
     /// (which comes from BuiltinType bases like list/dict and can't be called).
     /// Returns the method if it's a real callable (BoundMethod, Function, etc.).
@@ -1315,13 +1329,7 @@ impl VirtualMachine {
             // Custom __iter__: call it to get the actual iterator
             if let Some(iter_method) = obj.get_attr("__iter__") {
                 let result = self.call_object(iter_method, vec![])?;
-                // If __iter__ returns a raw Tuple/List, convert to proper iterator
-                match &result.payload {
-                    PyObjectPayload::Tuple(_) | PyObjectPayload::List(_) => {
-                        return builtins::get_iter_from_obj_pub(&result);
-                    }
-                    _ => return Ok(result),
-                }
+                return Self::ensure_iterator_result(obj, result);
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -1482,6 +1490,21 @@ impl VirtualMachine {
                             return Ok(vec![]);
                         }
                         let result = items[idx..].to_vec();
+                        index.set(usize::MAX);
+                        Ok(result)
+                    }
+                    PyObjectPayload::Dict(cell)
+                    | PyObjectPayload::MappingProxy(cell)
+                    | PyObjectPayload::DictKeys(cell) => {
+                        let map = unsafe { &*cell.data_ptr() };
+                        if idx >= map.len() {
+                            return Ok(vec![]);
+                        }
+                        let result = map
+                            .iter()
+                            .skip(idx)
+                            .map(|(key, _)| key.to_object())
+                            .collect();
                         index.set(usize::MAX);
                         Ok(result)
                     }
@@ -2425,13 +2448,26 @@ impl VirtualMachine {
                     }
                 }
             }
-            IteratorData::Sentinel { callable, sentinel } => {
+            IteratorData::Sentinel {
+                callable,
+                sentinel,
+                done,
+            } => {
+                if *done {
+                    drop(data);
+                    return Ok(None);
+                }
                 let f = callable.clone();
                 let s = sentinel.clone();
                 drop(data);
                 let val = self.call_object(f, vec![])?;
                 let eq_result = val.compare(&s, ferrython_core::object::CompareOp::Eq)?;
                 if eq_result.is_truthy() {
+                    if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
+                        if let IteratorData::Sentinel { done, .. } = &mut *arc.write() {
+                            *done = true;
+                        }
+                    }
                     Ok(None)
                 } else {
                     Ok(Some(val))

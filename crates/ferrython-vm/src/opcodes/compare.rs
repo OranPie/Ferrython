@@ -617,10 +617,11 @@ impl VirtualMachine {
                 // Fallback: iterate via __iter__ (CPython behavior)
                 if let Some(iter_method) = b.get_attr("__iter__") {
                     let iterator = self.call_object(iter_method, vec![])?;
+                    let iterator = Self::ensure_iterator_result(&b, iterator)?;
                     let mut found = false;
                     loop {
-                        match crate::builtins::iter_advance(&iterator)? {
-                            Some((_iter, item)) => {
+                        match self.vm_iter_next(&iterator)? {
+                            Some(item) => {
                                 if item.compare(&a, CompareOp::Eq)?.is_truthy() {
                                     found = true;
                                     break;
@@ -670,6 +671,24 @@ impl VirtualMachine {
                     } else {
                         !r.is_truthy()
                     };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
+                if b.get_attr("__iter__").is_some() || b.get_attr("__next__").is_some() {
+                    let iterator = crate::builtins::get_iter_from_obj_pub(&b)?;
+                    let mut found = false;
+                    loop {
+                        match self.vm_iter_next(&iterator)? {
+                            Some(item) => {
+                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    let val = if op == 6 { found } else { !found };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }

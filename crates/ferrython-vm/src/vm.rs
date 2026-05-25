@@ -2955,14 +2955,18 @@ impl VirtualMachine {
                                     Opcode::ForIter,
                                     jump_target as u32,
                                 );
-                                self.execute_one(for_instr)?;
-                                let frame = self.call_stack.last_mut().unwrap();
-                                // If ForIter didn't jump (value was pushed), store it
-                                if frame.ip != jump_target {
-                                    let v = spop!(frame);
-                                    sset_local!(frame, store_idx, v);
+                                match self.execute_one(for_instr) {
+                                    Ok(_) => {
+                                        let frame = self.call_stack.last_mut().unwrap();
+                                        // If ForIter didn't jump (value was pushed), store it
+                                        if frame.ip != jump_target {
+                                            let v = spop!(frame);
+                                            sset_local!(frame, store_idx, v);
+                                        }
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                    Err(e) => Err(e),
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                     } else if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
@@ -2990,13 +2994,17 @@ impl VirtualMachine {
                             Opcode::ForIter,
                             jump_target as u32,
                         );
-                        self.execute_one(for_instr)?;
-                        let frame = self.call_stack.last_mut().unwrap();
-                        if frame.ip != jump_target {
-                            let v = spop!(frame);
-                            sset_local!(frame, store_idx, v);
+                        match self.execute_one(for_instr) {
+                            Ok(_) => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                if frame.ip != jump_target {
+                                    let v = spop!(frame);
+                                    sset_local!(frame, store_idx, v);
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            Err(e) => Err(e),
                         }
-                        hot_ok!(profiling, self.profiler, instr.op)
                     }
                 }
                 // Inline ReturnValue: fast path when no finally blocks are active

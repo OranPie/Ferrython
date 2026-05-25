@@ -2023,6 +2023,7 @@ pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             PyCell::new(IteratorData::Sentinel {
                 callable: args[0].clone(),
                 sentinel: args[1].clone(),
+                done: false,
             }),
         ))));
     }

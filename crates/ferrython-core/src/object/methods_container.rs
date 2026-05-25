@@ -29,6 +29,17 @@ fn instance_special_method(
     })
 }
 
+fn ensure_iterator_result(owner: &PyObjectRef, iter: PyObjectRef) -> PyResult<PyObjectRef> {
+    if iter.get_attr("__next__").is_some() {
+        Ok(iter)
+    } else {
+        Err(PyException::type_error(format!(
+            "iter() returned non-iterator of type '{}'",
+            owner.type_name()
+        )))
+    }
+}
+
 fn element_matches(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
     if PyObjectRef::ptr_eq(a, b) {
         return Ok(true);
@@ -792,7 +803,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             if let Some(method) = instance_special_method(obj, "__iter__") {
                 let method = method?;
                 if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
-                    return call_callable(&method, &[]);
+                    return ensure_iterator_result(obj, call_callable(&method, &[])?);
                 }
             }
             if let Some(bv) = chainmap_builtin_value(inst)? {
@@ -819,6 +830,16 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     PyCell::new(IteratorData::HeldIter {
                         iter,
                         owner: Some(obj.clone()),
+                    }),
+                ))));
+            }
+            if let Some(method) = instance_special_method(obj, "__getitem__") {
+                method?;
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::SeqIter {
+                        obj: obj.clone(),
+                        index: 0,
+                        exhausted: false,
                     }),
                 ))));
             }

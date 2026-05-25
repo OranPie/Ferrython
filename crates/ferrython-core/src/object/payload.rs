@@ -1988,6 +1988,7 @@ pub enum IteratorData {
     Sentinel {
         callable: PyObjectRef,
         sentinel: PyObjectRef,
+        done: bool,
     },
     TakeWhile {
         func: PyObjectRef,
