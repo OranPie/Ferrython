@@ -3731,9 +3731,12 @@ impl VirtualMachine {
                     spush!(frame, PyObject::none());
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // EndFinally fast path: TOS is None → no exception, no pending return
+                // EndFinally fast path: TOS is None → no exception, no pending return/jump
                 Opcode::EndFinally => {
-                    if frame.pending_return.is_none() && !frame.stack.is_empty() {
+                    if frame.pending_return.is_none()
+                        && frame.pending_jump.is_none()
+                        && !frame.stack.is_empty()
+                    {
                         if matches!(
                             unsafe { frame.peek_unchecked() }.payload,
                             PyObjectPayload::None
@@ -10217,6 +10220,7 @@ impl VirtualMachine {
 
             Opcode::JumpForward
             | Opcode::JumpAbsolute
+            | Opcode::JumpFinally
             | Opcode::PopJumpIfFalse
             | Opcode::PopJumpIfTrue
             | Opcode::JumpIfTrueOrPop
@@ -10270,6 +10274,7 @@ impl VirtualMachine {
             | Opcode::PopExcept
             | Opcode::EndFinally
             | Opcode::BeginFinally
+            | Opcode::CancelFinally
             | Opcode::RaiseVarargs
             | Opcode::SetupWith
             | Opcode::SetupAsyncWith

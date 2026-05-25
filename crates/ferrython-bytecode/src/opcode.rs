@@ -167,6 +167,12 @@ pub enum Opcode {
     /// Pop iterator from stack and call close() if it's a generator.
     /// Used by `break` in for-loops to ensure generator finally blocks run.
     EndForLoop = 202,
+    /// Enter active finally handlers before completing a non-local jump.
+    /// arg = eventual jump target after all finally handlers complete.
+    JumpFinally = 203,
+    /// Discard the active finally reason so a new break/continue in the finally
+    /// body overrides an earlier return, exception, break, or continue.
+    CancelFinally = 204,
 
     // ── Superinstructions (peephole fused pairs) ──
     /// Two consecutive LoadFast. arg = (idx1 << 16) | idx2.
@@ -364,7 +370,7 @@ impl Opcode {
                 }
             }
             Self::CompareOp => -1,
-            Self::JumpForward | Self::JumpAbsolute => 0,
+            Self::JumpForward | Self::JumpAbsolute | Self::JumpFinally => 0,
             Self::PopJumpIfFalse | Self::PopJumpIfTrue => -1,
             Self::JumpIfFalseOrPop | Self::JumpIfTrueOrPop => 0, // varies
             Self::ForIter => 1,                                  // pushes next or jumps
@@ -402,6 +408,7 @@ impl Opcode {
             Self::SetupFinally | Self::SetupExcept | Self::SetupAsyncWith => 0,
             Self::SetupWith => 1,
             Self::EndForLoop => -1,
+            Self::CancelFinally => -1,
             Self::PopBlock | Self::PopExcept => 0,
             Self::BeginFinally => 1,
             Self::EndFinally => -1,
@@ -481,6 +488,7 @@ impl Opcode {
                 | Self::SetupWith
                 | Self::SetupExcept
                 | Self::SetupAsyncWith
+                | Self::JumpFinally
                 | Self::CompareOpPopJumpIfFalse
                 | Self::ForIterStoreFast
                 | Self::LoadFastCompareConstJump

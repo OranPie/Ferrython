@@ -24,6 +24,26 @@ impl VirtualMachine {
             Opcode::JumpForward | Opcode::JumpAbsolute => {
                 self.vm_frame().ip = instr.arg as usize;
             }
+            Opcode::JumpFinally => {
+                let target = instr.arg as usize;
+                let frame = self.vm_frame();
+                let mut found_finally = false;
+                while let Some(block) = frame.block_stack.last().copied() {
+                    if block.kind() == BlockKind::Finally {
+                        frame.block_stack.pop();
+                        frame.pending_jump = Some(target);
+                        frame.push(PyObject::none());
+                        frame.ip = block.handler();
+                        found_finally = true;
+                        break;
+                    } else {
+                        frame.block_stack.pop();
+                    }
+                }
+                if !found_finally {
+                    frame.ip = target;
+                }
+            }
             Opcode::PopJumpIfFalse => {
                 let v = self.vm_pop();
                 if !self.vm_is_truthy(&v)? {
@@ -1115,6 +1135,7 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let value = frame.pop();
                 // If inside a finally block, the new return overrides any pending return
+                frame.pending_jump = None;
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
                     if block.kind() == BlockKind::Finally {
@@ -1155,6 +1176,7 @@ impl VirtualMachine {
                     }
                 };
                 // Handle finally blocks
+                frame.pending_jump = None;
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
                     if block.kind() == BlockKind::Finally {
@@ -1176,6 +1198,7 @@ impl VirtualMachine {
             Opcode::LoadConstReturnValue => {
                 let frame = self.vm_frame();
                 let val = frame.constant_cache[instr.arg as usize].clone();
+                frame.pending_jump = None;
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
                     if block.kind() == BlockKind::Finally {

@@ -233,6 +233,7 @@ fn format_arg_desc(code: &CodeObject, op: Opcode, arg: u32) -> String {
         }
         Opcode::JumpAbsolute
         | Opcode::JumpForward
+        | Opcode::JumpFinally
         | Opcode::PopJumpIfTrue
         | Opcode::PopJumpIfFalse
         | Opcode::JumpIfTrueOrPop

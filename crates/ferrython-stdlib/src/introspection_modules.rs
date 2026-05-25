@@ -2130,6 +2130,7 @@ pub fn create_dis_module() -> PyObjectRef {
             }
             Opcode::JumpAbsolute
             | Opcode::JumpForward
+            | Opcode::JumpFinally
             | Opcode::PopJumpIfTrue
             | Opcode::PopJumpIfFalse
             | Opcode::JumpIfTrueOrPop
@@ -2256,6 +2257,7 @@ pub fn create_dis_module() -> PyObjectRef {
             }
             Opcode::JumpAbsolute
             | Opcode::JumpForward
+            | Opcode::JumpFinally
             | Opcode::PopJumpIfTrue
             | Opcode::PopJumpIfFalse
             | Opcode::JumpIfTrueOrPop

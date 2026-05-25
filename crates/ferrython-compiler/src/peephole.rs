@@ -321,6 +321,7 @@ fn eliminate_dead_code(code: &mut CodeObject) -> bool {
             match code.instructions[i].op {
                 Opcode::ReturnValue
                 | Opcode::JumpAbsolute
+                | Opcode::JumpFinally
                 | Opcode::RaiseVarargs
                 | Opcode::JumpForward => {
                     dead = true;
@@ -1514,7 +1515,9 @@ fn compute_max_stack_size(code: &mut CodeObject) {
             Opcode::LoadConstReturnValue | Opcode::LoadFastReturnValue => {
                 max_depth = max_depth.max(depth + 1);
             }
-            Opcode::JumpAbsolute | Opcode::JumpForward => enqueue(instr.arg as usize, depth),
+            Opcode::JumpAbsolute | Opcode::JumpForward | Opcode::JumpFinally => {
+                enqueue(instr.arg as usize, depth)
+            }
             Opcode::StoreFastJumpAbsolute => {
                 let target = (instr.arg & 0xFFFF) as usize;
                 enqueue(target, depth + instr.op.stack_effect(instr.arg));

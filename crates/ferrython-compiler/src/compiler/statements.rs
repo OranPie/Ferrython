@@ -123,18 +123,37 @@ impl Compiler {
                         location: stmt.location,
                     });
                 };
-                self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
-                // For `for` loops, pop the iterator and close generators
-                if loop_ctx.is_for_loop {
+                let needs_finally_jump = self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
+                if loop_ctx.is_for_loop && needs_finally_jump {
+                    let cleanup_label = self.emit_jump(Opcode::JumpFinally);
+                    let cleanup_target = self.current_offset();
+                    self.patch_jump(cleanup_label, cleanup_target);
                     self.emit_op(Opcode::EndForLoop);
+                    let label = self.emit_jump(Opcode::JumpAbsolute);
+                    self.current_unit_mut()
+                        .loop_stack
+                        .last_mut()
+                        .unwrap()
+                        .break_labels
+                        .push(label);
+                } else {
+                    // For `for` loops, pop the iterator and close generators.
+                    if loop_ctx.is_for_loop {
+                        self.emit_op(Opcode::EndForLoop);
+                    }
+                    let jump_op = if needs_finally_jump {
+                        Opcode::JumpFinally
+                    } else {
+                        Opcode::JumpAbsolute
+                    };
+                    let label = self.emit_jump(jump_op);
+                    self.current_unit_mut()
+                        .loop_stack
+                        .last_mut()
+                        .unwrap()
+                        .break_labels
+                        .push(label);
                 }
-                let label = self.emit_jump(Opcode::JumpAbsolute);
-                self.current_unit_mut()
-                    .loop_stack
-                    .last_mut()
-                    .unwrap()
-                    .break_labels
-                    .push(label);
             }
 
             StatementKind::Continue => {
@@ -143,8 +162,13 @@ impl Compiler {
                         location: stmt.location,
                     });
                 };
-                self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
-                self.emit_arg(Opcode::JumpAbsolute, loop_ctx.continue_target);
+                let needs_finally_jump = self.emit_loop_control_cleanups(loop_ctx.cleanup_depth);
+                let jump_op = if needs_finally_jump {
+                    Opcode::JumpFinally
+                } else {
+                    Opcode::JumpAbsolute
+                };
+                self.emit_arg(jump_op, loop_ctx.continue_target);
             }
 
             StatementKind::If { test, body, orelse } => {
@@ -278,12 +302,13 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_loop_control_cleanups(&mut self, cleanup_depth: usize) {
+    fn emit_loop_control_cleanups(&mut self, cleanup_depth: usize) -> bool {
         let cleanups: Vec<CleanupContext> = self.current_unit().cleanup_stack[cleanup_depth..]
             .iter()
             .rev()
             .copied()
             .collect();
+        let mut needs_finally_jump = false;
         for cleanup in cleanups {
             match cleanup {
                 CleanupContext::With => {
@@ -293,11 +318,15 @@ impl Compiler {
                     self.emit_op(Opcode::WithCleanupFinish);
                     self.emit_op(Opcode::EndFinally);
                 }
+                CleanupContext::TryFinally => {
+                    needs_finally_jump = true;
+                }
                 CleanupContext::FinallyBody => {
-                    self.emit_op(Opcode::EndFinally);
+                    self.emit_op(Opcode::CancelFinally);
                 }
             }
         }
+        needs_finally_jump
     }
 
     // ── control flow compilation ────────────────────────────────────
@@ -949,6 +978,12 @@ impl Compiler {
             None
         };
 
+        if has_finally {
+            self.current_unit_mut()
+                .cleanup_stack
+                .push(CleanupContext::TryFinally);
+        }
+
         // Compile try body
         self.compile_body(body)?;
 
@@ -1055,6 +1090,10 @@ impl Compiler {
             self.patch_jump(label, after_handlers);
         }
 
+        if has_finally {
+            self.current_unit_mut().cleanup_stack.pop();
+        }
+
         // Finally block
         if has_finally {
             self.emit_op(Opcode::PopBlock);
@@ -1090,6 +1129,12 @@ impl Compiler {
         };
 
         let except_label = self.emit_jump(Opcode::SetupExcept);
+
+        if has_finally {
+            self.current_unit_mut()
+                .cleanup_stack
+                .push(CleanupContext::TryFinally);
+        }
 
         self.compile_body(body)?;
         self.emit_op(Opcode::PopBlock);
@@ -1189,7 +1234,12 @@ impl Compiler {
         }
 
         if has_finally {
+            self.current_unit_mut().cleanup_stack.pop();
+        }
+
+        if has_finally {
             self.emit_op(Opcode::PopBlock);
+            self.emit_op(Opcode::BeginFinally);
             if let Some(label) = finally_label {
                 self.patch_jump_here(label);
             }

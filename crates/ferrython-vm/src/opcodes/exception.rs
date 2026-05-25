@@ -36,6 +36,9 @@ impl VirtualMachine {
             Opcode::BeginFinally => {
                 self.vm_frame().push(PyObject::none());
             }
+            Opcode::CancelFinally => {
+                self.cancel_finally();
+            }
             Opcode::RaiseVarargs => {
                 return self.exec_raise_varargs(instr.arg);
             }
@@ -273,7 +276,32 @@ impl VirtualMachine {
 
     fn exec_end_finally(&mut self) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
-        if let Some(ret_val) = frame.pending_return.take() {
+        if frame
+            .stack
+            .last()
+            .is_some_and(|tos| matches!(tos.payload, PyObjectPayload::None))
+        {
+            frame.pop();
+        }
+        if let Some(jump_target) = frame.pending_jump.take() {
+            let mut has_finally = false;
+            while let Some(block) = frame.block_stack.last() {
+                if block.kind() == BlockKind::Finally {
+                    let handler = block.handler();
+                    frame.block_stack.pop();
+                    frame.pending_jump = Some(jump_target);
+                    frame.push(PyObject::none());
+                    frame.ip = handler;
+                    has_finally = true;
+                    break;
+                } else {
+                    frame.block_stack.pop();
+                }
+            }
+            if !has_finally {
+                frame.ip = jump_target;
+            }
+        } else if let Some(ret_val) = frame.pending_return.take() {
             let mut has_finally = false;
             while let Some(block) = frame.block_stack.last() {
                 if block.kind() == BlockKind::Finally {
@@ -353,6 +381,43 @@ impl VirtualMachine {
             }
         }
         Ok(None)
+    }
+
+    fn cancel_finally(&mut self) {
+        self.active_exception = None;
+        let frame = self.vm_frame();
+        frame.pending_return = None;
+        frame.pending_jump = None;
+        if frame.stack.is_empty() {
+            return;
+        }
+        let marker_kind = match &frame.peek().payload {
+            PyObjectPayload::None => 1,
+            PyObjectPayload::ExceptionType(_) | PyObjectPayload::Class(_) => 2,
+            _ => 0,
+        };
+        match marker_kind {
+            1 => {
+                frame.pop();
+            }
+            2 => {
+                frame.pop();
+                if !frame.stack.is_empty() {
+                    frame.pop();
+                }
+                if !frame.stack.is_empty() {
+                    frame.pop();
+                }
+                if frame
+                    .block_stack
+                    .last()
+                    .is_some_and(|block| block.kind() == BlockKind::ExceptHandler)
+                {
+                    frame.block_stack.pop();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn exec_raise_varargs(&mut self, argc: u32) -> Result<Option<PyObjectRef>, PyException> {

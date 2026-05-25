@@ -165,6 +165,7 @@ pub struct Frame {
     // ── Cold: rarely accessed in inner loops ──
     pub cells: Vec<CellRef>,
     pub pending_return: Option<PyObjectRef>,
+    pub pending_jump: Option<usize>,
     /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
     pub local_names: Option<Box<FxAttrMap>>,
     /// The dict returned by metaclass.__prepare__() (PEP 3115).
@@ -284,6 +285,7 @@ impl Frame {
             scope_kind: ScopeKind::Module,
             yielded: false,
             pending_return: None,
+            pending_jump: None,
             constant_cache,
             global_cache: None,
             global_cache_version: u64::MAX, // force miss on first access
@@ -345,6 +347,7 @@ impl Frame {
             scope_kind: ScopeKind::Module,
             yielded: false,
             pending_return: None,
+            pending_jump: None,
             constant_cache,
             global_cache: None,
             global_cache_version: u64::MAX,
@@ -414,6 +417,7 @@ impl Frame {
             scope_kind: ScopeKind::Function,
             yielded: false,
             pending_return: None,
+            pending_jump: None,
             constant_cache,
             global_cache: None,
             global_cache_version: u64::MAX,
@@ -467,6 +471,7 @@ impl Frame {
             scope_kind: ScopeKind::Function,
             yielded: false,
             pending_return: None,
+            pending_jump: None,
             constant_cache: std::ptr::read(&parent.constant_cache),
             global_cache: std::ptr::read(&parent.global_cache),
             global_cache_version: parent.global_cache_version,
@@ -519,6 +524,7 @@ impl Frame {
             scope_kind: ScopeKind::Function,
             yielded: false,
             pending_return: None,
+            pending_jump: None,
             constant_cache: std::ptr::read(&func.constant_cache),
             global_cache: None,
             global_cache_version: u64::MAX,
