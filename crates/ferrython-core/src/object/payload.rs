@@ -1120,6 +1120,10 @@ pub enum PyObjectPayload {
         source: PyObjectRef,
         index: SyncUsize,
     },
+    RevRefIter {
+        source: PyObjectRef,
+        index: SyncUsize,
+    },
     Slice(Box<SliceData>),
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
@@ -1263,6 +1267,7 @@ impl fmt::Debug for PyObjectPayload {
             ),
             Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
+            Self::RevRefIter { index, .. } => write!(f, "RevRefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),

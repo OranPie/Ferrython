@@ -257,6 +257,9 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             })
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(0);
+            }
             let idx = index.get();
             let total = match &source.payload {
                 PyObjectPayload::List(cell) => unsafe { &*cell.data_ptr() }.len(),
@@ -264,6 +267,17 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 _ => 0,
             };
             Ok(if idx < total { total - idx } else { 0 })
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX {
+                return Ok(0);
+            }
+            let total = match &source.payload {
+                PyObjectPayload::List(cell) => unsafe { &*cell.data_ptr() }.len(),
+                _ => 0,
+            };
+            Ok(if idx <= total { idx } else { 0 })
         }
         PyObjectPayload::DictKeys(m)
         | PyObjectPayload::DictValues(m)
@@ -661,6 +675,9 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             Ok(false)
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(false);
+            }
             let idx = index.get();
             match &source.payload {
                 PyObjectPayload::List(cell) => {
@@ -681,6 +698,29 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     }
                     for x in &items[idx..] {
                         if element_matches(x, item)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                _ => Ok(false),
+            }
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX || idx == 0 {
+                return Ok(false);
+            }
+            match &source.payload {
+                PyObjectPayload::List(cell) => {
+                    let items = unsafe { &*cell.data_ptr() };
+                    if idx > items.len() {
+                        return Ok(false);
+                    }
+                    let mut pos = idx;
+                    while pos > 0 {
+                        pos -= 1;
+                        if element_matches(&items[pos], item)? {
                             return Ok(true);
                         }
                     }
@@ -766,7 +806,8 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
-        | PyObjectPayload::RefIter { .. } => Ok(obj.clone()),
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. } => Ok(obj.clone()),
         PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
             let items: Vec<PyObjectRef> =

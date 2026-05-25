@@ -92,9 +92,30 @@ fn set_iterator_state(iter: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyOb
             }
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(PyObject::none());
+            }
             let total = match &source.payload {
                 PyObjectPayload::List(cell) => unsafe { &*cell.data_ptr() }.len(),
                 PyObjectPayload::Tuple(items) => items.len(),
+                _ => {
+                    return Err(PyException::attribute_error(format!(
+                        "'{}' object has no attribute '__setstate__'",
+                        iter.type_name()
+                    )))
+                }
+            };
+            if index.get() <= total {
+                index.set(iterator_setstate_index(&args[0])?.min(total));
+            }
+            Ok(PyObject::none())
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(PyObject::none());
+            }
+            let total = match &source.payload {
+                PyObjectPayload::List(cell) => unsafe { &*cell.data_ptr() }.len(),
                 _ => {
                     return Err(PyException::attribute_error(format!(
                         "'{}' object has no attribute '__setstate__'",
@@ -4875,6 +4896,9 @@ impl VirtualMachine {
                     }
                     "reversed" => {
                         if !args.is_empty() {
+                            if matches!(&args[0].payload, PyObjectPayload::List(_)) {
+                                return builtins::dispatch("reversed", &[args[0].clone()]);
+                            }
                             // Check for __reversed__ dunder on instances
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(rev_method) =
@@ -6150,7 +6174,8 @@ impl VirtualMachine {
                 if let PyObjectPayload::Iterator(_)
                 | PyObjectPayload::RangeIter(..)
                 | PyObjectPayload::VecIter(_)
-                | PyObjectPayload::RefIter { .. } = &bbm.receiver.payload
+                | PyObjectPayload::RefIter { .. }
+                | PyObjectPayload::RevRefIter { .. } = &bbm.receiver.payload
                 {
                     match bbm.method_name.as_str() {
                         "__next__" => match self.vm_iter_next(&bbm.receiver)? {

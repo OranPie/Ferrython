@@ -142,6 +142,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::Module(_) => "module",
         PyObjectPayload::RangeIter(..) => "range_iterator",
         PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "list_iterator",
+        PyObjectPayload::RevRefIter { .. } => "list_reverseiterator",
         PyObjectPayload::Iterator(iter_data) => {
             let guard = iter_data.read();
             match &*guard {
@@ -723,6 +724,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         }
         PyObjectPayload::Iterator(_) => "<iterator>".into(),
         PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
+        PyObjectPayload::RevRefIter { .. } => "<iterator>".into(),
         PyObjectPayload::Range(rd) => {
             if rd.step == 1 {
                 format!("range({}, {})", rd.start, rd.stop)
@@ -1162,6 +1164,9 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             Ok(result)
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(vec![]);
+            }
             let idx = index.get();
             match &source.payload {
                 PyObjectPayload::List(cell) => {
@@ -1196,6 +1201,32 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                         .skip(idx)
                         .map(|(key, _)| key.to_object())
                         .collect();
+                    index.set(usize::MAX);
+                    Ok(result)
+                }
+                _ => Ok(vec![]),
+            }
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let mut idx = index.get();
+            if idx == usize::MAX || idx == 0 {
+                return Ok(vec![]);
+            }
+            match &source.payload {
+                PyObjectPayload::List(cell) => {
+                    let items = unsafe { &*cell.data_ptr() };
+                    if idx > items.len() {
+                        index.set(usize::MAX);
+                        return Ok(vec![]);
+                    }
+                    guard_eager_allocation(idx, "reverse iterator -> list")?;
+                    let mut result = Vec::with_capacity(idx);
+                    while idx > 0 {
+                        idx -= 1;
+                        if idx < items.len() {
+                            result.push(items[idx].clone());
+                        }
+                    }
                     index.set(usize::MAX);
                     Ok(result)
                 }

@@ -706,14 +706,11 @@ pub(crate) fn call_list_method(
             Ok(receiver.clone())
         }
         "__reversed__" => {
-            let mut snapshot = items.read().clone();
-            snapshot.reverse();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                PyCell::new(IteratorData::List {
-                    items: snapshot,
-                    index: 0,
-                }),
-            ))))
+            let len = items.read().len();
+            Ok(PyObject::wrap(PyObjectPayload::RevRefIter {
+                source: receiver.clone(),
+                index: ferrython_core::object::SyncUsize::new(len),
+            }))
         }
         "__repr__" | "__str__" => {
             let r = items.read();

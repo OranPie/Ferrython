@@ -495,34 +495,29 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             }
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(None);
+            }
             let idx = index.get();
             match &source.payload {
                 PyObjectPayload::List(cell) => {
                     let items = unsafe { &*cell.data_ptr() };
                     if idx < items.len() {
                         let v = items[idx].clone();
-                        let new_idx = idx + 1;
-                        index.set(if new_idx >= items.len() {
-                            usize::MAX
-                        } else {
-                            new_idx
-                        });
+                        index.set(idx + 1);
                         Ok(Some((iter_obj.clone(), v)))
                     } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }
                 PyObjectPayload::Tuple(items) => {
                     if idx < items.len() {
                         let v = items[idx].clone();
-                        let new_idx = idx + 1;
-                        index.set(if new_idx >= items.len() {
-                            usize::MAX
-                        } else {
-                            new_idx
-                        });
+                        index.set(idx + 1);
                         Ok(Some((iter_obj.clone(), v)))
                     } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }
@@ -535,6 +530,32 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         index.set(idx + 1);
                         Ok(Some((iter_obj.clone(), v)))
                     } else {
+                        index.set(usize::MAX);
+                        Ok(None)
+                    }
+                }
+                _ => Ok(None),
+            }
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX {
+                return Ok(None);
+            }
+            if idx == 0 {
+                index.set(usize::MAX);
+                return Ok(None);
+            }
+            match &source.payload {
+                PyObjectPayload::List(cell) => {
+                    let pos = idx - 1;
+                    let items = unsafe { &*cell.data_ptr() };
+                    if pos < items.len() {
+                        let v = items[pos].clone();
+                        index.set(pos);
+                        Ok(Some((iter_obj.clone(), v)))
+                    } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }
@@ -708,6 +729,9 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
             }
         }
         PyObjectPayload::RefIter { source, index } => {
+            if index.get() == usize::MAX {
+                return Ok(None);
+            }
             let idx = index.get();
             match &source.payload {
                 PyObjectPayload::List(cell) => {
@@ -717,6 +741,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         index.set(idx + 1);
                         Ok(Some(v))
                     } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }
@@ -726,6 +751,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         index.set(idx + 1);
                         Ok(Some(v))
                     } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }
@@ -738,6 +764,32 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         index.set(idx + 1);
                         Ok(Some(v))
                     } else {
+                        index.set(usize::MAX);
+                        Ok(None)
+                    }
+                }
+                _ => Ok(None),
+            }
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX {
+                return Ok(None);
+            }
+            if idx == 0 {
+                index.set(usize::MAX);
+                return Ok(None);
+            }
+            match &source.payload {
+                PyObjectPayload::List(cell) => {
+                    let pos = idx - 1;
+                    let items = unsafe { &*cell.data_ptr() };
+                    if pos < items.len() {
+                        let v = items[pos].clone();
+                        index.set(pos);
+                        Ok(Some(v))
+                    } else {
+                        index.set(usize::MAX);
                         Ok(None)
                     }
                 }

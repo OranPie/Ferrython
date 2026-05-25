@@ -92,6 +92,7 @@ fn iterator_supports_setstate(obj: &PyObjectRef) -> bool {
                 PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)
             )
         }
+        PyObjectPayload::RevRefIter { .. } => true,
         _ => false,
     }
 }
@@ -3962,7 +3963,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
-        | PyObjectPayload::RefIter { .. } => match name {
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. } => match name {
             "__next__" | "__iter__" | "__length_hint__" => Some(PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(
                     obj.clone(),

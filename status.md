@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-25T19:53:08+08:00
+Last updated: 2026-05-25T20:37:54+08:00
 
 ## 已提交成果
 
@@ -22,6 +22,10 @@ Last updated: 2026-05-25T19:53:08+08:00
   - VM `iter(set)` 改回 `VecIter` 快照迭代，避免 set iterator 错误继承 list iterator 的 `__setstate__`。
   - `tools/run_cpython_tests.py` 支持 dotted 单例选择器，便于单项探测。
 
+- `c323207 fix: release exhausted sequence iterables`
+  - 旧序列协议 `SeqIter` 在真实耗尽后释放源对象强引用，允许 iterable 被 GC/finalizer 回收。
+  - 保持 exhausted sink-state，重复 `next()` 不再重新访问源对象。
+
 ## 本轮修复成果
 
 - 2026-05-25 追加：
@@ -32,6 +36,8 @@ Last updated: 2026-05-25T19:53:08+08:00
   - VM `iter(set)` 改回 `VecIter` 快照迭代，避免 set iterator 错误继承 list iterator 的 `__setstate__`。
   - `tools/run_cpython_tests.py` 支持 dotted 单例选择器，如 `test_iter.TestCase.test_iter_neg_setstate`，便于单项探测。
   - 旧序列协议 `SeqIter` 在耗尽后释放源对象强引用，并保持 sink-state，修复 exhausted iterator 不释放 iterable 的兼容问题。
+  - list reverse iterator 改成持有源 list 的 `RevRefIter`，避免 `reversed(list)` 先复制快照导致 pickle 共享引用断开。
+  - pickle 支持 list `RefIter` / `RevRefIter` 内部 reduce，保留 source/index/exhausted 状态；真实耗尽后才进入 sink-state。
 
 - 类创建补齐 `__module__`，用于 pickle 全局类定位。
 - pickle 用户实例反序列化优先复用模块/当前 globals 中已有类，避免重建空类丢失方法。
@@ -77,6 +83,10 @@ Last updated: 2026-05-25T19:53:08+08:00
   - `test_iter.TestCase.test_free_after_iterating`
   - `test_iter.TestCase.test_error_iter`
   - `test_iter.TestCase.test_mutating_seq_class_exhausted_iter`
+  - `test_list.ListTest.test_iterator_pickle`
+  - `test_list.ListTest.test_reversed_pickle`
+  - `test_tuple.TupleTest.test_iterator_pickle`
+  - `test_tuple.TupleTest.test_reversed_pickle`
 - 本轮 smoke 通过：
   - `hasattr(iter({1:2}), "__setstate__") == False`
   - `hasattr(iter({1,2}), "__setstate__") == False`
@@ -84,19 +94,27 @@ Last updated: 2026-05-25T19:53:08+08:00
   - `hasattr(iter((1,)), "__setstate__") == True`
   - 旧序列 iterator `__setstate__(sys.maxsize - 2)` 后第三次 `next()` 抛 `OverflowError`
   - 旧序列协议 iterator 耗尽后 `gc.collect()` 触发源对象 `__del__`
+  - `pickle.dumps((reversed(l), l), 0)` 中 reverse iterator source 与原 list 共享 memo `g0`
+  - CPython baseline 对比：`reversed(list)` 在列表变短/追加场景与 Ferrython 当前行为一致
 - `test_iter` 单项扫描当前已推进到：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_iter`
   - `run=54 pass=52 fail=0 err=0 skip=2`，模块级通过，耗时 1.11s
-  - 下一个候选：转向 `test_list` / `test_tuple` / `test_dict` / `test_set` / `test_copy` 等小批单项扫描
+  - 下一个候选：转向 `test_dict` / `test_set` / `test_copy` 等小批单项扫描
+
+- list/tuple iterator pickle focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_list.ListTest.test_iterator_pickle test_list.ListTest.test_reversed_pickle`
+    - `run=2 pass=2 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_tuple.TupleTest.test_iterator_pickle test_tuple.TupleTest.test_reversed_pickle`
+    - `run=2 pass=2 fail=0 err=0 skip=0`
 
 ## 当前工作树
 
-- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source。
+- 本轮代码修复涉及 iterator state API、lazy `next()` 推进、测试 runner 单例选择器、旧序列协议 iterator 耗尽释放 source、list iterator pickle 状态保持。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_iter` 当前模块级已过，下一步转向容器/copy/weakref 小批候选。
+- `test_iter` 当前模块级已过；list/tuple iterator pickle 单项已过；下一步转向 dict/set/copy/weakref 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -117,6 +135,10 @@ Last updated: 2026-05-25T19:53:08+08:00
   - 修复：基础 iterator `__setstate__` 支持负 state 归零，并保留耗尽 sink-state。
 - `test_iter.TestCase.test_free_after_iterating`
   - 修复：旧序列协议 `SeqIter` 耗尽后释放源对象强引用，允许源对象 `__del__` 在 GC 后运行。
+- `test_list.ListTest.test_iterator_pickle` / `test_list.ListTest.test_reversed_pickle`
+  - 修复：list 正向/反向 iterator pickle 保留源 list 共享引用、当前位置和耗尽状态；`reversed(list)` 不再复制临时 list。
+- `test_tuple.TupleTest.test_iterator_pickle` / `test_tuple.TupleTest.test_reversed_pickle`
+  - 验证：tuple iterator pickle 行为未被 list iterator 修复回归。
 
 ## 修复原则
 
@@ -130,7 +152,7 @@ Last updated: 2026-05-25T19:53:08+08:00
 
 ## 后续修复队列
 
-1. `test_iter` 当前模块级已过；继续按 case 扫描容器/copy/weakref 小批队列，找出后续失败或 stack overflow 的真实触发用例。
+1. `test_iter` 当前模块级已过，list/tuple iterator pickle focused 已过；继续按 case 扫描 dict/set/copy/weakref 小批队列，找出后续失败或 stack overflow 的真实触发用例。
 2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：

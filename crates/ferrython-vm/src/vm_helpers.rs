@@ -1248,7 +1248,8 @@ impl VirtualMachine {
         if let PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
-        | PyObjectPayload::RefIter { .. } = &iterable.payload
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. } = &iterable.payload
         {
             let mut result = Vec::new();
             let mut idx = 0usize;
@@ -1415,6 +1416,7 @@ impl VirtualMachine {
                             | PyObjectPayload::RangeIter(..)
                             | PyObjectPayload::VecIter(_)
                             | PyObjectPayload::RefIter { .. }
+                            | PyObjectPayload::RevRefIter { .. }
                     ) {
                         return self.collect_iterable(&iter_obj);
                     }
@@ -1474,6 +1476,9 @@ impl VirtualMachine {
                 Ok(result)
             }
             PyObjectPayload::RefIter { source, index } => {
+                if index.get() == usize::MAX {
+                    return Ok(vec![]);
+                }
                 let idx = index.get();
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
@@ -1505,6 +1510,31 @@ impl VirtualMachine {
                             .skip(idx)
                             .map(|(key, _)| key.to_object())
                             .collect();
+                        index.set(usize::MAX);
+                        Ok(result)
+                    }
+                    _ => Ok(vec![]),
+                }
+            }
+            PyObjectPayload::RevRefIter { source, index } => {
+                let mut idx = index.get();
+                if idx == usize::MAX || idx == 0 {
+                    return Ok(vec![]);
+                }
+                match &source.payload {
+                    PyObjectPayload::List(cell) => {
+                        let items = unsafe { &*cell.data_ptr() };
+                        if idx > items.len() {
+                            index.set(usize::MAX);
+                            return Ok(vec![]);
+                        }
+                        let mut result = Vec::with_capacity(idx);
+                        while idx > 0 {
+                            idx -= 1;
+                            if idx < items.len() {
+                                result.push(items[idx].clone());
+                            }
+                        }
                         index.set(usize::MAX);
                         Ok(result)
                     }
@@ -1674,6 +1704,9 @@ impl VirtualMachine {
                 source: inner,
                 index,
             } => {
+                if index.get() == usize::MAX {
+                    return Ok(vec![]);
+                }
                 let idx = index.get();
                 match &inner.payload {
                     PyObjectPayload::List(cell) => {
@@ -2284,6 +2317,9 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::RefIter { source, index } => {
+                if index.get() == usize::MAX {
+                    return Ok(None);
+                }
                 let idx = index.get();
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
@@ -2293,6 +2329,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Ok(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Ok(None)
                         }
                     }
@@ -2302,6 +2339,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Ok(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Ok(None)
                         }
                     }
@@ -2314,6 +2352,32 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Ok(Some(v))
                         } else {
+                            index.set(usize::MAX);
+                            Ok(None)
+                        }
+                    }
+                    _ => Ok(None),
+                }
+            }
+            PyObjectPayload::RevRefIter { source, index } => {
+                let idx = index.get();
+                if idx == usize::MAX {
+                    return Ok(None);
+                }
+                if idx == 0 {
+                    index.set(usize::MAX);
+                    return Ok(None);
+                }
+                match &source.payload {
+                    PyObjectPayload::List(cell) => {
+                        let pos = idx - 1;
+                        let items = unsafe { &*cell.data_ptr() };
+                        if pos < items.len() {
+                            let v = items[pos].clone();
+                            index.set(pos);
+                            Ok(Some(v))
+                        } else {
+                            index.set(usize::MAX);
                             Ok(None)
                         }
                     }
@@ -2742,6 +2806,7 @@ impl VirtualMachine {
             | PyObjectPayload::RangeIter(..)
             | PyObjectPayload::VecIter(_)
             | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::RevRefIter { .. }
             | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {

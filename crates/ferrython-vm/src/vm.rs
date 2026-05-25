@@ -560,6 +560,9 @@ fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => {
             Some(PyObject::builtin_type_by_name("list_iterator"))
         }
+        PyObjectPayload::RevRefIter { .. } => {
+            Some(PyObject::builtin_type_by_name("list_reverseiterator"))
+        }
         PyObjectPayload::Slice(_) => Some(PyObject::builtin_type_by_name("slice")),
         PyObjectPayload::Cell(_) => Some(PyObject::builtin_type_by_name("cell")),
         PyObjectPayload::ExceptionInstance(ei) => Some(PyObject::exception_type(ei.kind)),
@@ -1950,6 +1953,7 @@ impl VirtualMachine {
                         | PyObjectPayload::RangeIter(..)
                         | PyObjectPayload::VecIter(_)
                         | PyObjectPayload::RefIter { .. }
+                        | PyObjectPayload::RevRefIter { .. }
                         | PyObjectPayload::Generator(_) => {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
@@ -2029,6 +2033,11 @@ impl VirtualMachine {
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::RefIter { source, index } = &iter.payload {
+                        if index.get() == usize::MAX {
+                            drop(spop!(frame));
+                            frame.ip = instr.arg as usize;
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
                         let idx = index.get();
                         let item = match &source.payload {
                             PyObjectPayload::List(cell) => {
@@ -2130,6 +2139,31 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             spush!(frame, v);
                         } else {
+                            index.set(usize::MAX);
+                            drop(spop!(frame));
+                            frame.ip = instr.arg as usize;
+                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    } else if let PyObjectPayload::RevRefIter { source, index } = &iter.payload {
+                        let idx = index.get();
+                        if idx == usize::MAX || idx == 0 {
+                            index.set(usize::MAX);
+                            drop(spop!(frame));
+                            frame.ip = instr.arg as usize;
+                        } else if let PyObjectPayload::List(cell) = &source.payload {
+                            let pos = idx - 1;
+                            let items = unsafe { &*cell.data_ptr() };
+                            if pos < items.len() {
+                                let v = items[pos].clone();
+                                index.set(pos);
+                                spush!(frame, v);
+                            } else {
+                                index.set(usize::MAX);
+                                drop(spop!(frame));
+                                frame.ip = instr.arg as usize;
+                            }
+                        } else {
+                            index.set(usize::MAX);
                             drop(spop!(frame));
                             frame.ip = instr.arg as usize;
                         }
@@ -2788,6 +2822,18 @@ impl VirtualMachine {
                             instr_count
                         )
                     } else if let PyObjectPayload::RefIter { source, index } = &iter.payload {
+                        if index.get() == usize::MAX {
+                            drop(spop!(frame));
+                            frame.ip = jump_target;
+                            hot_ok_chain!(
+                                profiling,
+                                self.profiler,
+                                instr.op,
+                                frame,
+                                instr_base,
+                                instr_count
+                            )
+                        }
                         let idx = index.get();
                         let item = match &source.payload {
                             PyObjectPayload::List(cell) => {
@@ -2845,6 +2891,38 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             sset_local!(frame, store_idx, v);
                         } else {
+                            index.set(usize::MAX);
+                            drop(spop!(frame));
+                            frame.ip = jump_target;
+                        }
+                        hot_ok_chain!(
+                            profiling,
+                            self.profiler,
+                            instr.op,
+                            frame,
+                            instr_base,
+                            instr_count
+                        )
+                    } else if let PyObjectPayload::RevRefIter { source, index } = &iter.payload {
+                        let idx = index.get();
+                        if idx == usize::MAX || idx == 0 {
+                            index.set(usize::MAX);
+                            drop(spop!(frame));
+                            frame.ip = jump_target;
+                        } else if let PyObjectPayload::List(cell) = &source.payload {
+                            let pos = idx - 1;
+                            let items = unsafe { &*cell.data_ptr() };
+                            if pos < items.len() {
+                                let obj = items[pos].clone();
+                                index.set(pos);
+                                sset_local!(frame, store_idx, obj);
+                            } else {
+                                index.set(usize::MAX);
+                                drop(spop!(frame));
+                                frame.ip = jump_target;
+                            }
+                        } else {
+                            index.set(usize::MAX);
                             drop(spop!(frame));
                             frame.ip = jump_target;
                         }
@@ -7421,9 +7499,11 @@ impl VirtualMachine {
                                                         | PyObjectPayload::Instance(_)
                                                         | PyObjectPayload::Iterator(_)
                                                         | PyObjectPayload::VecIter(_)
-                                                        | PyObjectPayload::RefIter { .. } => self
-                                                            .collect_iterable(&a0)
-                                                            .map(PyObject::list),
+                                                        | PyObjectPayload::RefIter { .. }
+                                                        | PyObjectPayload::RevRefIter { .. } => {
+                                                            self.collect_iterable(&a0)
+                                                                .map(PyObject::list)
+                                                        }
                                                         _ => Ok(a0),
                                                     }
                                                 } else if matches!(
@@ -10076,6 +10156,9 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::RefIter { source, index } => {
+                if index.get() == usize::MAX {
+                    return Some(None);
+                }
                 let idx = index.get();
                 match &source.payload {
                     PyObjectPayload::List(cell) => {
@@ -10085,6 +10168,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Some(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Some(None)
                         }
                     }
@@ -10094,6 +10178,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Some(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Some(None)
                         }
                     }
@@ -10106,6 +10191,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Some(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Some(None)
                         }
                     }
@@ -10116,6 +10202,7 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Some(Some(v))
                         } else {
+                            index.set(usize::MAX);
                             Some(None)
                         }
                     }
@@ -10127,6 +10214,32 @@ impl VirtualMachine {
                             index.set(idx + 1);
                             Some(Some(tuple))
                         } else {
+                            index.set(usize::MAX);
+                            Some(None)
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            PyObjectPayload::RevRefIter { source, index } => {
+                let idx = index.get();
+                if idx == usize::MAX {
+                    return Some(None);
+                }
+                if idx == 0 {
+                    index.set(usize::MAX);
+                    return Some(None);
+                }
+                match &source.payload {
+                    PyObjectPayload::List(cell) => {
+                        let pos = idx - 1;
+                        let items = unsafe { &*cell.data_ptr() };
+                        if pos < items.len() {
+                            let v = items[pos].clone();
+                            index.set(pos);
+                            Some(Some(v))
+                        } else {
+                            index.set(usize::MAX);
                             Some(None)
                         }
                     }

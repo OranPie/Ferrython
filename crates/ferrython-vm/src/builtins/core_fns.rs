@@ -1548,6 +1548,13 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("reversed", args, 1)?;
     let obj = &args[0];
+    if let PyObjectPayload::List(items) = &obj.payload {
+        let len = items.read().len();
+        return Ok(PyObject::wrap(PyObjectPayload::RevRefIter {
+            source: obj.clone(),
+            index: SyncUsize::new(len),
+        }));
+    }
     if let Some(reversed_attr) = obj.get_attr("__reversed__") {
         if !matches!(&reversed_attr.payload, PyObjectPayload::None) {
             return ferrython_core::object::helpers::call_callable(&reversed_attr, &[]);
@@ -1648,6 +1655,7 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Generator(_)
         | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range(rd) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
@@ -1709,7 +1717,9 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     | PyObjectPayload::Tuple(_)
                     | PyObjectPayload::Iterator(_)
                     | PyObjectPayload::RangeIter(..)
-                    | PyObjectPayload::VecIter(_) => Some(iter_attr.clone()),
+                    | PyObjectPayload::VecIter(_)
+                    | PyObjectPayload::RefIter { .. }
+                    | PyObjectPayload::RevRefIter { .. } => Some(iter_attr.clone()),
                     // __iter__ is a bound method — call it
                     PyObjectPayload::BoundMethod { receiver, method } => {
                         if let PyObjectPayload::NativeClosure(nc) = &method.payload {
@@ -1865,6 +1875,8 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
             let mut map = IndexMap::new();

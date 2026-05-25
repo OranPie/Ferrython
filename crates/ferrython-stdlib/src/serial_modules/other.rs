@@ -2186,12 +2186,20 @@ fn pickle_serialize_p0(
             buf.extend_from_slice(b"tR");
             p0_emit_put_obj(obj, buf, memo);
         }
-        // Iterators — pickle as remaining-items list reconstructed via builtins.iter
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
+            match &source.payload {
+                PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_refiter__\n(");
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(idx as i64), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::bool_val(idx == usize::MAX), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
+                _ => {}
+            }
             let items: Vec<PyObjectRef> = match &source.payload {
-                PyObjectPayload::List(cell) => cell.read().iter().skip(idx).cloned().collect(),
-                PyObjectPayload::Tuple(items) => items.iter().skip(idx).cloned().collect(),
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
                 | PyObjectPayload::DictKeys(cell) => cell
@@ -2209,6 +2217,14 @@ fn pickle_serialize_p0(
             };
             buf.extend_from_slice(b"cbuiltins\niter\n(");
             pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_revrefiter__\n(");
+            pickle_serialize_p0(source, buf, memo)?;
+            pickle_serialize_p0(&PyObject::int(idx as i64), buf, memo)?;
+            pickle_serialize_p0(&PyObject::bool_val(idx == usize::MAX), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::VecIter(data) => {
@@ -2714,9 +2730,24 @@ fn pickle_serialize_p2(
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
+            match &source.payload {
+                PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_refiter__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            source.clone(),
+                            PyObject::int(idx as i64),
+                            PyObject::bool_val(idx == usize::MAX),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                _ => {}
+            }
             let items: Vec<PyObjectRef> = match &source.payload {
-                PyObjectPayload::List(cell) => cell.read().iter().skip(idx).cloned().collect(),
-                PyObjectPayload::Tuple(items) => items.iter().skip(idx).cloned().collect(),
                 PyObjectPayload::Dict(cell)
                 | PyObjectPayload::MappingProxy(cell)
                 | PyObjectPayload::DictKeys(cell) => cell
@@ -2735,6 +2766,20 @@ fn pickle_serialize_p2(
             buf.extend_from_slice(b"cbuiltins\niter\n(");
             pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
             buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_revrefiter__\n");
+            pickle_serialize_p2(
+                &PyObject::tuple(vec![
+                    source.clone(),
+                    PyObject::int(idx as i64),
+                    PyObject::bool_val(idx == usize::MAX),
+                ]),
+                buf,
+                memo,
+            )?;
+            buf.push(b'R');
         }
         PyObjectPayload::VecIter(data) => {
             let idx = data.index.get();
@@ -3253,6 +3298,34 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         exhausted,
                     }),
                 ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_refiter__") => {
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let index = arg_list.get(1).and_then(|v| v.as_int()).unwrap_or(0);
+                let exhausted = arg_list.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+                let index = if exhausted || index < 0 {
+                    usize::MAX
+                } else {
+                    index as usize
+                };
+                Ok(PyObject::wrap(PyObjectPayload::RefIter {
+                    source,
+                    index: ferrython_core::object::SyncUsize::new(index),
+                }))
+            }
+            ("__builtin__" | "builtins", "__ferrython_revrefiter__") => {
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let index = arg_list.get(1).and_then(|v| v.as_int()).unwrap_or(0);
+                let exhausted = arg_list.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+                let index = if exhausted || index < 0 {
+                    usize::MAX
+                } else {
+                    index as usize
+                };
+                Ok(PyObject::wrap(PyObjectPayload::RevRefIter {
+                    source,
+                    index: ferrython_core::object::SyncUsize::new(index),
+                }))
             }
             ("collections", "defaultdict") | ("__main__", "defaultdict") => {
                 let collections = create_collections_module();
