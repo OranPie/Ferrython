@@ -100,6 +100,7 @@ impl Parser {
 
         // Check for annotation
         if self.check(TokenKind::Colon) {
+            self.validate_annotation_target(&expr)?;
             self.advance();
             let annotation = self.parse_expr()?;
             let value = if self.check(TokenKind::Equal) {
@@ -175,6 +176,30 @@ impl Parser {
             },
             loc,
         ))
+    }
+
+    fn validate_annotation_target(&self, expr: &Expression) -> Result<(), ParseError> {
+        match &expr.node {
+            ExpressionKind::Name { .. }
+            | ExpressionKind::Attribute { .. }
+            | ExpressionKind::Subscript { .. } => Ok(()),
+            ExpressionKind::List { .. } => Err(ParseError::new(
+                ParseErrorKind::SyntaxErrorMessage(
+                    "only single target (not list) can be annotated".into(),
+                ),
+                Self::span_from_location(Self::expression_outer_location(expr)),
+            )),
+            ExpressionKind::Tuple { .. } => Err(ParseError::new(
+                ParseErrorKind::SyntaxErrorMessage(
+                    "only single target (not tuple) can be annotated".into(),
+                ),
+                Self::span_from_location(Self::expression_outer_location(expr)),
+            )),
+            _ => Err(ParseError::new(
+                ParseErrorKind::SyntaxErrorMessage("illegal target for annotation".into()),
+                Self::span_from_location(Self::expression_outer_location(expr)),
+            )),
+        }
     }
 
     fn is_py2_missing_parens_candidate(&self, expr: &Expression) -> bool {
