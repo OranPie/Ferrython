@@ -4,7 +4,7 @@ Last updated: 2026-05-25T22:05:10+08:00
 
 ## 已提交成果
 
-- `PENDING fix: collect dict and set iterator cycles`
+- `a542303 fix: collect dict and set iterator cycles`
   - dict views 增加 owner 保活，dict subclass / dict 临时对象的 view 和 iterator 生命周期与 CPython 对齐。
   - cycle GC 遍历 dict/set storage、HashableKey identity/custom key、dict view、RefIter/RevRefIter、VecIter 和 IteratorData 引用。
   - set 对象纳入 cycle GC tracking，dict/set iterator cycle 能在一次 `gc.collect()` 后让 weakref 失效。
