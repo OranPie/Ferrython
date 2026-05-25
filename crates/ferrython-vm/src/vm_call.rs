@@ -197,6 +197,42 @@ impl VirtualMachine {
             .map(|(_, value)| value)
     }
 
+    fn is_unicode_error_kind(kind: ExceptionKind) -> bool {
+        matches!(
+            kind,
+            ExceptionKind::UnicodeEncodeError
+                | ExceptionKind::UnicodeDecodeError
+                | ExceptionKind::UnicodeTranslateError
+        )
+    }
+
+    fn set_unicode_error_attrs(inst: &PyObjectRef, kind: ExceptionKind, args: &[PyObjectRef]) {
+        let PyObjectPayload::ExceptionInstance(ei) = &inst.payload else {
+            return;
+        };
+        let mut attrs = ei.ensure_attrs().write();
+        match kind {
+            ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeDecodeError => {
+                if args.len() >= 5 {
+                    attrs.insert(CompactString::from("encoding"), args[0].clone());
+                    attrs.insert(CompactString::from("object"), args[1].clone());
+                    attrs.insert(CompactString::from("start"), args[2].clone());
+                    attrs.insert(CompactString::from("end"), args[3].clone());
+                    attrs.insert(CompactString::from("reason"), args[4].clone());
+                }
+            }
+            ExceptionKind::UnicodeTranslateError => {
+                if args.len() >= 4 {
+                    attrs.insert(CompactString::from("object"), args[0].clone());
+                    attrs.insert(CompactString::from("start"), args[1].clone());
+                    attrs.insert(CompactString::from("end"), args[2].clone());
+                    attrs.insert(CompactString::from("reason"), args[3].clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn build_builtin_exception_instance(
         kind: ExceptionKind,
         args: Vec<PyObjectRef>,
@@ -219,7 +255,8 @@ impl VirtualMachine {
             ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup
         ) || (kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2)
             || (kind == ExceptionKind::SystemExit && !args.is_empty())
-            || kind.is_subclass_of(&ExceptionKind::ImportError);
+            || kind.is_subclass_of(&ExceptionKind::ImportError)
+            || Self::is_unicode_error_kind(kind);
 
         if !needs_post {
             return Ok(PyObject::exception_instance_with_args(kind, msg, args));
@@ -295,6 +332,8 @@ impl VirtualMachine {
                 );
             }
         }
+
+        Self::set_unicode_error_attrs(&inst, kind, &args);
 
         Ok(inst)
     }

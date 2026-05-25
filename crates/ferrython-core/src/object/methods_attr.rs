@@ -2294,6 +2294,54 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     attrs.insert(CompactString::from("name"), PyObject::none());
                                     attrs.insert(CompactString::from("path"), PyObject::none());
                                 }
+                                match ei.kind {
+                                    ExceptionKind::UnicodeEncodeError
+                                    | ExceptionKind::UnicodeDecodeError
+                                        if init_args.len() >= 5 =>
+                                    {
+                                        attrs.insert(
+                                            CompactString::from("encoding"),
+                                            init_args[0].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("object"),
+                                            init_args[1].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("start"),
+                                            init_args[2].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("end"),
+                                            init_args[3].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("reason"),
+                                            init_args[4].clone(),
+                                        );
+                                    }
+                                    ExceptionKind::UnicodeTranslateError
+                                        if init_args.len() >= 4 =>
+                                    {
+                                        attrs.insert(
+                                            CompactString::from("object"),
+                                            init_args[0].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("start"),
+                                            init_args[1].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("end"),
+                                            init_args[2].clone(),
+                                        );
+                                        attrs.insert(
+                                            CompactString::from("reason"),
+                                            init_args[3].clone(),
+                                        );
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {}
                         }
@@ -2301,9 +2349,32 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }))
                 }
                 "__new__" => {
-                    // Only return __new__ for direct ExceptionType calls (ValueError()),
-                    // not for user-defined subclasses (handled by normal Class instantiation)
-                    None
+                    let new_kind = *kind;
+                    Some(PyObject::native_closure("__new__", move |args| {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__new__ requires cls"));
+                        }
+                        let cls = &args[0];
+                        let actual_kind = match &cls.payload {
+                            PyObjectPayload::ExceptionType(actual) => *actual,
+                            _ => {
+                                return Err(PyException::type_error(
+                                    "exception __new__ requires an exception type",
+                                ))
+                            }
+                        };
+                        if !actual_kind.is_subclass_of(&new_kind) {
+                            return Err(PyException::type_error(format!(
+                                "{}.__new__({}): {} is not a subtype of {}",
+                                new_kind, actual_kind, actual_kind, new_kind
+                            )));
+                        }
+                        Ok(PyObject::exception_instance_with_args(
+                            actual_kind,
+                            CompactString::default(),
+                            vec![],
+                        ))
+                    }))
                 }
                 "__str__" => Some(PyObject::native_function("__str__", |args| {
                     if args.is_empty() {
@@ -2382,6 +2453,42 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 );
                                 attrs.insert(CompactString::from("name"), PyObject::none());
                                 attrs.insert(CompactString::from("path"), PyObject::none());
+                            }
+                            match ei.kind {
+                                ExceptionKind::UnicodeEncodeError
+                                | ExceptionKind::UnicodeDecodeError
+                                    if init_args.len() >= 5 =>
+                                {
+                                    attrs.insert(
+                                        CompactString::from("encoding"),
+                                        init_args[0].clone(),
+                                    );
+                                    attrs.insert(
+                                        CompactString::from("object"),
+                                        init_args[1].clone(),
+                                    );
+                                    attrs
+                                        .insert(CompactString::from("start"), init_args[2].clone());
+                                    attrs.insert(CompactString::from("end"), init_args[3].clone());
+                                    attrs.insert(
+                                        CompactString::from("reason"),
+                                        init_args[4].clone(),
+                                    );
+                                }
+                                ExceptionKind::UnicodeTranslateError if init_args.len() >= 4 => {
+                                    attrs.insert(
+                                        CompactString::from("object"),
+                                        init_args[0].clone(),
+                                    );
+                                    attrs
+                                        .insert(CompactString::from("start"), init_args[1].clone());
+                                    attrs.insert(CompactString::from("end"), init_args[2].clone());
+                                    attrs.insert(
+                                        CompactString::from("reason"),
+                                        init_args[3].clone(),
+                                    );
+                                }
+                                _ => {}
                             }
                         }
                         Ok(PyObject::none())

@@ -1,6 +1,6 @@
 //! Type introspection & conversion methods.
 
-use crate::error::{PyException, PyResult};
+use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -154,6 +154,158 @@ pub(super) fn py_is_same(a: &PyObjectRef, b: &PyObjectRef) -> bool {
             (&a.payload, &b.payload),
             (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) if a == b
         )
+}
+
+fn exception_field(
+    ei: &ExceptionInstanceData,
+    name: &str,
+    arg_index: usize,
+) -> Option<PyObjectRef> {
+    ei.get_attrs()
+        .and_then(|attrs| attrs.read().get(name).cloned())
+        .or_else(|| ei.args.get(arg_index).cloned())
+}
+
+fn exception_field_i64(ei: &ExceptionInstanceData, name: &str, arg_index: usize) -> Option<i64> {
+    exception_field(ei, name, arg_index).and_then(|value| value.as_int())
+}
+
+fn escaped_unicode_char(ch: char) -> String {
+    let code = ch as u32;
+    if code <= 0xff {
+        format!("\\x{:02x}", code)
+    } else if code <= 0xffff {
+        format!("\\u{:04x}", code)
+    } else {
+        format!("\\U{:08x}", code)
+    }
+}
+
+fn str_char_at(obj: &PyObjectRef, index: i64) -> Option<String> {
+    let idx = usize::try_from(index).ok()?;
+    match &obj.payload {
+        PyObjectPayload::Str(s) => s.to_string().chars().nth(idx).map(escaped_unicode_char),
+        _ => None,
+    }
+}
+
+fn byte_at(obj: &PyObjectRef, index: i64) -> Option<u8> {
+    let idx = usize::try_from(index).ok()?;
+    match &obj.payload {
+        PyObjectPayload::Bytes(bytes) => bytes.get(idx).copied(),
+        PyObjectPayload::ByteArray(bytes) => bytes.get(idx).copied(),
+        _ => None,
+    }
+}
+
+fn unicode_error_to_string(ei: &ExceptionInstanceData) -> Option<String> {
+    let reason_arg = match ei.kind {
+        ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeDecodeError => 4,
+        ExceptionKind::UnicodeTranslateError => 3,
+        _ => return None,
+    };
+
+    let object_arg = if ei.kind == ExceptionKind::UnicodeTranslateError {
+        0
+    } else {
+        1
+    };
+    let start_arg = if ei.kind == ExceptionKind::UnicodeTranslateError {
+        1
+    } else {
+        2
+    };
+    let end_arg = if ei.kind == ExceptionKind::UnicodeTranslateError {
+        2
+    } else {
+        3
+    };
+
+    let reason = match exception_field(ei, "reason", reason_arg) {
+        Some(value) => value.py_to_string(),
+        None => return Some(String::new()),
+    };
+    let start = match exception_field_i64(ei, "start", start_arg) {
+        Some(value) => value,
+        None => return Some(String::new()),
+    };
+    let end = match exception_field_i64(ei, "end", end_arg) {
+        Some(value) => value,
+        None => return Some(String::new()),
+    };
+
+    let single = end == start.saturating_add(1);
+    let range = if single {
+        format!("position {}", start)
+    } else {
+        format!("position {}-{}", start, end.saturating_sub(1))
+    };
+
+    match ei.kind {
+        ExceptionKind::UnicodeEncodeError => {
+            let encoding = match exception_field(ei, "encoding", 0) {
+                Some(value) => value.py_to_string(),
+                None => return Some(String::new()),
+            };
+            if single {
+                let object = exception_field(ei, "object", object_arg);
+                let ch = object
+                    .as_ref()
+                    .and_then(|obj| str_char_at(obj, start))
+                    .unwrap_or_else(|| "?".to_string());
+                Some(format!(
+                    "'{}' codec can't encode character '{}' in {}: {}",
+                    encoding, ch, range, reason
+                ))
+            } else {
+                Some(format!(
+                    "'{}' codec can't encode characters in {}: {}",
+                    encoding, range, reason
+                ))
+            }
+        }
+        ExceptionKind::UnicodeDecodeError => {
+            let encoding = match exception_field(ei, "encoding", 0) {
+                Some(value) => value.py_to_string(),
+                None => return Some(String::new()),
+            };
+            if single {
+                let object = exception_field(ei, "object", object_arg);
+                let byte = object
+                    .as_ref()
+                    .and_then(|obj| byte_at(obj, start))
+                    .unwrap_or(0);
+                Some(format!(
+                    "'{}' codec can't decode byte 0x{:02x} in {}: {}",
+                    encoding, byte, range, reason
+                ))
+            } else {
+                Some(format!(
+                    "'{}' codec can't decode bytes in {}: {}",
+                    encoding, range, reason
+                ))
+            }
+        }
+        ExceptionKind::UnicodeTranslateError => {
+            if single {
+                let object = exception_field(ei, "object", object_arg);
+                let ch = object
+                    .as_ref()
+                    .and_then(|obj| str_char_at(obj, start))
+                    .unwrap_or_else(|| "?".to_string());
+                Some(format!(
+                    "can't translate character '{}' in {}: {}",
+                    ch, range, reason
+                ))
+            } else {
+                Some(format!(
+                    "can't translate characters in {}: {}",
+                    range, reason
+                ))
+            }
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
@@ -481,6 +633,9 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         }
         PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
         PyObjectPayload::ExceptionInstance(ei) => {
+            if let Some(text) = unicode_error_to_string(ei) {
+                return text;
+            }
             // KeyError wraps its argument in repr() for str()
             if ei.kind == crate::error::ExceptionKind::KeyError && ei.args.len() == 1 {
                 return ei.args[0].repr();
