@@ -1620,6 +1620,9 @@ pub(super) fn stmt_contains_yield(stmt: &Statement) -> bool {
         StatementKind::Expr { value } => expr_contains_yield(value),
         StatementKind::Return { value } => value.as_ref().map_or(false, |v| expr_contains_yield(v)),
         StatementKind::Assign { value, .. } => expr_contains_yield(value),
+        StatementKind::AnnAssign { value, .. } => {
+            value.as_ref().map_or(false, |v| expr_contains_yield(v))
+        }
         StatementKind::AugAssign { value, .. } => expr_contains_yield(value),
         StatementKind::If { test, body, orelse } => {
             expr_contains_yield(test) || body_contains_yield(body) || body_contains_yield(orelse)

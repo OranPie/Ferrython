@@ -107,7 +107,7 @@ impl Parser {
             let annotation = self.parse_expr()?;
             let value = if self.check(TokenKind::Equal) {
                 self.advance();
-                Some(Box::new(self.parse_test_list()?))
+                Some(Box::new(self.parse_test_list_star_expr()?))
             } else {
                 None
             };

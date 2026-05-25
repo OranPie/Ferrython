@@ -1566,6 +1566,8 @@ impl Parser {
     fn parse_subscript_element(&mut self) -> Result<Expression, ParseError> {
         let lower = if self.check(TokenKind::Colon) {
             None
+        } else if self.check(TokenKind::Ellipsis) {
+            Some(Box::new(self.parse_atom()?))
         } else {
             Some(Box::new(self.parse_test()?))
         };
