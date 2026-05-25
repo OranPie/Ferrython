@@ -831,6 +831,22 @@ impl Compiler {
             self.emit_arg(Opcode::BuildTuple, num_defaults as u32);
         }
 
+        let kw_defaults: Vec<_> = args
+            .kw_defaults
+            .iter()
+            .zip(args.kwonlyargs.iter())
+            .filter(|(d, _)| d.is_some())
+            .collect();
+        let has_kw_defaults = !kw_defaults.is_empty();
+        if has_kw_defaults {
+            for (default, arg) in &kw_defaults {
+                let key_idx = self.add_const(ConstantValue::Str(arg.arg.clone()));
+                self.emit_arg(Opcode::LoadConst, key_idx);
+                self.compile_expression(default.as_ref().unwrap())?;
+            }
+            self.emit_arg(Opcode::BuildMap, kw_defaults.len() as u32);
+        }
+
         let child_scope = self.current_unit_mut().take_child_scope();
         let qualname_prefix = &self.current_unit().qualname_prefix;
         let qualname = if qualname_prefix.is_empty() {
@@ -931,6 +947,9 @@ impl Compiler {
         let mut make_fn_flags: u32 = 0;
         if num_defaults > 0 {
             make_fn_flags |= 0x01;
+        }
+        if has_kw_defaults {
+            make_fn_flags |= 0x02;
         }
         if has_closure {
             make_fn_flags |= 0x08;
