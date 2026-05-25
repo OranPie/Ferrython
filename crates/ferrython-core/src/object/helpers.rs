@@ -379,6 +379,111 @@ pub fn unwrap_builtin_subclass(obj: &PyObjectRef) -> PyObjectRef {
     obj.clone()
 }
 
+pub fn is_property_subclass_class(class: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        if cd.name.as_str() == "property" {
+            return true;
+        }
+        for base in &cd.bases {
+            match &base.payload {
+                PyObjectPayload::BuiltinType(name) | PyObjectPayload::BuiltinFunction(name)
+                    if name.as_str() == "property" =>
+                {
+                    return true;
+                }
+                PyObjectPayload::Class(_) if is_property_subclass_class(base) => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+#[inline]
+pub fn is_property_like(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Property(_) => true,
+        PyObjectPayload::Instance(inst) => is_property_subclass_class(&inst.class),
+        _ => false,
+    }
+}
+
+pub fn property_doc_from_getter(fget: Option<&PyObjectRef>) -> Option<PyObjectRef> {
+    fget.and_then(|fg| fg.get_attr("__doc__"))
+}
+
+pub fn property_init_doc(
+    fget: Option<&PyObjectRef>,
+    explicit_doc: Option<PyObjectRef>,
+) -> (Option<PyObjectRef>, bool) {
+    if let Some(doc) = explicit_doc {
+        if matches!(&doc.payload, PyObjectPayload::None) {
+            (property_doc_from_getter(fget), true)
+        } else {
+            (Some(doc), false)
+        }
+    } else {
+        (property_doc_from_getter(fget), true)
+    }
+}
+
+pub fn property_field(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::Property(pd) => match name {
+            "fget" => pd.fget.clone(),
+            "fset" => pd.fset.clone(),
+            "fdel" => pd.fdel.clone(),
+            "__doc__" => pd.doc.read().clone(),
+            _ => None,
+        },
+        PyObjectPayload::Instance(inst) if is_property_subclass_class(&inst.class) => {
+            inst.attrs.read().get(name).cloned()
+        }
+        _ => None,
+    }
+}
+
+pub fn property_set_doc(obj: &PyObjectRef, value: PyObjectRef) -> PyResult<()> {
+    match &obj.payload {
+        PyObjectPayload::Property(pd) => {
+            *pd.doc.write() = Some(value);
+            Ok(())
+        }
+        PyObjectPayload::Instance(inst) if is_property_subclass_class(&inst.class) => {
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if let Some(own_slots) = &cd.slots {
+                    if !own_slots.iter().any(|s| s.as_str() == "__dict__")
+                        && !own_slots.iter().any(|s| s.as_str() == "__doc__")
+                    {
+                        return Err(PyException::attribute_error(format!(
+                            "'{}' object attribute '__doc__' is read-only",
+                            cd.name
+                        )));
+                    }
+                }
+                if let Some(allowed) = cd.collect_all_slots() {
+                    if !allowed.iter().any(|s| s.as_str() == "__dict__")
+                        && !allowed.iter().any(|s| s.as_str() == "__doc__")
+                    {
+                        return Err(PyException::attribute_error(format!(
+                            "'{}' object attribute '__doc__' is read-only",
+                            cd.name
+                        )));
+                    }
+                }
+            }
+            inst.attrs
+                .write()
+                .insert(CompactString::from("__doc__"), value);
+            Ok(())
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'{}' object does not support attribute assignment",
+            obj.type_name()
+        ))),
+    }
+}
+
 fn index_to_i128_unbounded(obj: &PyObjectRef) -> PyResult<i128> {
     match obj.to_index()? {
         PyInt::Small(n) => Ok(n as i128),
@@ -1830,6 +1935,30 @@ pub fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<
 /// This is used by super() resolution when a base is a BuiltinType.
 pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option<PyObjectRef> {
     match (type_name, method_name) {
+        ("property", "__get__") => Some(PyObject::native_function("property.__get__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "descriptor '__get__' requires a property object",
+                ));
+            }
+            let prop = &args[0];
+            let obj = args.get(1);
+            let obj = match obj {
+                Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
+                _ => return Ok(prop.clone()),
+            };
+            if let Some(getter) = property_field(prop, "fget") {
+                if !matches!(&getter.payload, PyObjectPayload::None) {
+                    return Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: obj.clone(),
+                            method: getter,
+                        },
+                    }));
+                }
+            }
+            Err(PyException::attribute_error("unreadable attribute"))
+        })),
         ("type", "__new__") => Some(PyObject::native_function("type.__new__", |args| {
             // type.__new__(mcs, name, bases, dict) or type(name, bases, dict)
             if args.len() == 4 {
@@ -2087,20 +2216,42 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if args.is_empty() {
                 return Ok(PyObject::none());
             }
-            let fget = args.get(1).cloned();
-            let fset = args.get(2).cloned();
-            let fdel = args.get(3).cloned();
+            let property_arg = |idx: usize| {
+                args.get(idx).and_then(|arg| {
+                    if matches!(&arg.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(arg.clone())
+                    }
+                })
+            };
+            let fget = property_arg(1);
+            let fset = property_arg(2);
+            let fdel = property_arg(3);
             if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                 let mut w = inst.attrs.write();
-                if let Some(f) = &fget {
-                    w.insert(CompactString::from("fget"), f.clone());
-                }
-                if let Some(f) = &fset {
-                    w.insert(CompactString::from("fset"), f.clone());
-                }
-                if let Some(f) = &fdel {
-                    w.insert(CompactString::from("fdel"), f.clone());
-                }
+                w.insert(
+                    CompactString::from("fget"),
+                    fget.clone().unwrap_or_else(PyObject::none),
+                );
+                w.insert(
+                    CompactString::from("fset"),
+                    fset.clone().unwrap_or_else(PyObject::none),
+                );
+                w.insert(
+                    CompactString::from("fdel"),
+                    fdel.clone().unwrap_or_else(PyObject::none),
+                );
+            }
+            let (doc, doc_from_getter) = property_init_doc(fget.as_ref(), args.get(4).cloned());
+            if let Some(doc) = doc {
+                property_set_doc(&args[0], doc)?;
+            }
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                inst.attrs.write().insert(
+                    CompactString::from("__property_doc_from_getter__"),
+                    PyObject::bool_val(doc_from_getter),
+                );
             }
             Ok(PyObject::none())
         })),

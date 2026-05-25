@@ -303,6 +303,159 @@ impl VirtualMachine {
         (args.to_vec(), Vec::new())
     }
 
+    fn property_arg(
+        args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+        idx: usize,
+        name: &str,
+    ) -> Option<PyObjectRef> {
+        kwargs
+            .iter()
+            .find(|(k, _)| k.as_str() == name)
+            .map(|(_, v)| v.clone())
+            .or_else(|| args.get(idx).cloned())
+            .filter(|v| !matches!(&v.payload, PyObjectPayload::None))
+    }
+
+    fn raw_property_arg(
+        args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+        idx: usize,
+        name: &str,
+    ) -> Option<PyObjectRef> {
+        kwargs
+            .iter()
+            .find(|(k, _)| k.as_str() == name)
+            .map(|(_, v)| v.clone())
+            .or_else(|| args.get(idx).cloned())
+    }
+
+    fn init_property_instance_attrs(
+        instance: &PyObjectRef,
+        args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
+        let fget = Self::property_arg(args, kwargs, 0, "fget");
+        let fset = Self::property_arg(args, kwargs, 1, "fset");
+        let fdel = Self::property_arg(args, kwargs, 2, "fdel");
+        let doc_arg = Self::raw_property_arg(args, kwargs, 3, "doc");
+        let (doc, doc_from_getter) =
+            ferrython_core::object::property_init_doc(fget.as_ref(), doc_arg);
+        if let PyObjectPayload::Instance(inst) = &instance.payload {
+            let mut w = inst.attrs.write();
+            w.insert(
+                CompactString::from("fget"),
+                fget.unwrap_or_else(PyObject::none),
+            );
+            w.insert(
+                CompactString::from("fset"),
+                fset.unwrap_or_else(PyObject::none),
+            );
+            w.insert(
+                CompactString::from("fdel"),
+                fdel.unwrap_or_else(PyObject::none),
+            );
+            w.insert(
+                CompactString::from("__property_doc_from_getter__"),
+                PyObject::bool_val(doc_from_getter),
+            );
+        }
+        if let Some(doc) = doc {
+            ferrython_core::object::property_set_doc(instance, doc)?;
+        }
+        Ok(())
+    }
+
+    fn property_callable_field(prop: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        ferrython_core::object::property_field(prop, name)
+            .filter(|v| !matches!(&v.payload, PyObjectPayload::None))
+    }
+
+    fn property_doc_from_getter_flag(prop: &PyObjectRef) -> bool {
+        match &prop.payload {
+            PyObjectPayload::Property(pd) => pd.doc_from_getter.get(),
+            PyObjectPayload::Instance(inst)
+                if ferrython_core::object::is_property_subclass_class(&inst.class) =>
+            {
+                inst.attrs
+                    .read()
+                    .get("__property_doc_from_getter__")
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(true)
+            }
+            _ => false,
+        }
+    }
+
+    fn make_property_like(
+        template: &PyObjectRef,
+        fget: Option<PyObjectRef>,
+        fset: Option<PyObjectRef>,
+        fdel: Option<PyObjectRef>,
+        doc: Option<PyObjectRef>,
+        doc_from_getter: bool,
+    ) -> PyResult<PyObjectRef> {
+        match &template.payload {
+            PyObjectPayload::Property(_) => Ok(PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::Property(Box::new(PropertyData {
+                    fget,
+                    fset,
+                    fdel,
+                    doc: PyCell::new(doc),
+                    doc_from_getter: Cell::new(doc_from_getter),
+                })),
+            })),
+            PyObjectPayload::Instance(inst)
+                if ferrython_core::object::is_property_subclass_class(&inst.class) =>
+            {
+                let obj = PyObject::instance(inst.class.clone());
+                if let PyObjectPayload::Instance(new_inst) = &obj.payload {
+                    let mut attrs = new_inst.attrs.write();
+                    attrs.insert(
+                        CompactString::from("fget"),
+                        fget.unwrap_or_else(PyObject::none),
+                    );
+                    attrs.insert(
+                        CompactString::from("fset"),
+                        fset.unwrap_or_else(PyObject::none),
+                    );
+                    attrs.insert(
+                        CompactString::from("fdel"),
+                        fdel.unwrap_or_else(PyObject::none),
+                    );
+                    attrs.insert(
+                        CompactString::from("__property_doc_from_getter__"),
+                        PyObject::bool_val(doc_from_getter),
+                    );
+                }
+                if let Some(doc) = doc {
+                    ferrython_core::object::property_set_doc(&obj, doc)?;
+                }
+                Ok(obj)
+            }
+            _ => Err(PyException::attribute_error(format!(
+                "'{}' object has no property methods",
+                template.type_name()
+            ))),
+        }
+    }
+
+    pub(crate) fn property_isabstractmethod(
+        &mut self,
+        prop: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        for field in ["fget", "fset", "fdel"] {
+            if let Some(func) = Self::property_callable_field(prop, field) {
+                if let Some(flag) = func.get_attr("__isabstractmethod__") {
+                    if self.vm_is_truthy(&flag)? {
+                        return Ok(PyObject::bool_val(true));
+                    }
+                }
+            }
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
     fn bytes_like_data(obj: &PyObjectRef) -> Option<Vec<u8>> {
         match &obj.payload {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some((**b).clone()),
@@ -1361,6 +1514,12 @@ impl VirtualMachine {
         if let Some(instance) =
             self.try_instantiate_ast_node(cls, pos_args.clone(), kwargs.clone())?
         {
+            return Ok(instance);
+        }
+
+        if ferrython_core::object::is_property_subclass_class(cls) {
+            let instance = PyObject::instance(cls.clone());
+            Self::init_property_instance_attrs(&instance, &pos_args, &kwargs)?;
             return Ok(instance);
         }
 
@@ -3132,6 +3291,24 @@ impl VirtualMachine {
                             }
                             return self.call_object(func, all_args);
                         }
+                        "property" => {
+                            let mut all_args = pos_args;
+                            for (idx, key) in ["fget", "fset", "fdel", "doc"].iter().enumerate() {
+                                if let Some((_, value)) =
+                                    kwargs.iter().find(|(k, _)| k.as_str() == *key)
+                                {
+                                    while all_args.len() < idx {
+                                        all_args.push(PyObject::none());
+                                    }
+                                    if all_args.len() == idx {
+                                        all_args.push(value.clone());
+                                    } else {
+                                        all_args[idx] = value.clone();
+                                    }
+                                }
+                            }
+                            return self.call_object(func, all_args);
+                        }
                         "type" => {
                             // type(name, bases, dict) — 3-arg form with kwargs
                             if !kwargs.is_empty() && pos_args.len() >= 3 {
@@ -3196,33 +3373,11 @@ impl VirtualMachine {
                             if pos_args.is_empty() {
                                 return Ok(PyObject::none());
                             }
-                            let fget = kwargs
-                                .iter()
-                                .find(|(k, _)| k.as_str() == "fget")
-                                .map(|(_, v)| v.clone())
-                                .or_else(|| pos_args.get(1).cloned());
-                            let fset = kwargs
-                                .iter()
-                                .find(|(k, _)| k.as_str() == "fset")
-                                .map(|(_, v)| v.clone())
-                                .or_else(|| pos_args.get(2).cloned());
-                            let fdel = kwargs
-                                .iter()
-                                .find(|(k, _)| k.as_str() == "fdel")
-                                .map(|(_, v)| v.clone())
-                                .or_else(|| pos_args.get(3).cloned());
-                            if let PyObjectPayload::Instance(ref inst) = pos_args[0].payload {
-                                let mut w = inst.attrs.write();
-                                if let Some(f) = &fget {
-                                    w.insert(CompactString::from("fget"), f.clone());
-                                }
-                                if let Some(f) = &fset {
-                                    w.insert(CompactString::from("fset"), f.clone());
-                                }
-                                if let Some(f) = &fdel {
-                                    w.insert(CompactString::from("fdel"), f.clone());
-                                }
-                            }
+                            Self::init_property_instance_attrs(
+                                &pos_args[0],
+                                &pos_args[1..],
+                                &kwargs,
+                            )?;
                             return Ok(PyObject::none());
                         }
                         // OrderedDict(**kwargs) / Counter(**kwargs) / defaultdict(factory, **kwargs) — dict-like init
@@ -5160,13 +5315,29 @@ impl VirtualMachine {
                         let attr_name = args[1].as_str().ok_or_else(|| {
                             PyException::type_error("getattr(): attribute name must be string")
                         })?;
+                        if attr_name == "__isabstractmethod__"
+                            && ferrython_core::object::is_property_like(&args[0])
+                        {
+                            return self.property_isabstractmethod(&args[0]);
+                        }
                         // Use get_attr which handles MRO + data descriptors
                         match args[0].get_attr(attr_name) {
                             Some(v) => {
                                 // Invoke descriptor protocol (Property, custom __get__)
-                                if let PyObjectPayload::Property(pd) = &v.payload {
-                                    if let Some(getter) = pd.fget.as_ref() {
-                                        let getter = crate::builtins::unwrap_abstract_fget(getter);
+                                if ferrython_core::object::is_property_like(&v) {
+                                    if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                                        return Ok(v);
+                                    }
+                                    if let Some(getter) =
+                                        ferrython_core::object::property_field(&v, "fget")
+                                    {
+                                        if matches!(&getter.payload, PyObjectPayload::None) {
+                                            return Err(PyException::attribute_error(format!(
+                                                "unreadable attribute '{}'",
+                                                attr_name
+                                            )));
+                                        }
+                                        let getter = crate::builtins::unwrap_abstract_fget(&getter);
                                         return self.call_object(getter, vec![args[0].clone()]);
                                     }
                                     return Err(PyException::attribute_error(format!(
@@ -5233,12 +5404,17 @@ impl VirtualMachine {
                                 return Ok(PyObject::none());
                             }
                             if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
-                                if let PyObjectPayload::Property(pd) = &desc.payload {
-                                    if let Some(setter) = pd.fset.as_ref() {
-                                        self.call_object(
-                                            setter.clone(),
-                                            vec![args[0].clone(), value],
-                                        )?;
+                                if ferrython_core::object::is_property_like(&desc) {
+                                    if let Some(setter) =
+                                        ferrython_core::object::property_field(&desc, "fset")
+                                    {
+                                        if matches!(&setter.payload, PyObjectPayload::None) {
+                                            return Err(PyException::attribute_error(format!(
+                                                "can't set attribute '{}'",
+                                                attr_name
+                                            )));
+                                        }
+                                        self.call_object(setter, vec![args[0].clone(), value])?;
                                         return Ok(PyObject::none());
                                     } else {
                                         return Err(PyException::attribute_error(format!(
@@ -5285,11 +5461,23 @@ impl VirtualMachine {
                         let attr_name = args[1].py_to_string();
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
                             if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
-                                if let PyObjectPayload::Property(pd) = &desc.payload {
-                                    if let Some(deleter) = pd.fdel.as_ref() {
-                                        self.call_object(deleter.clone(), vec![args[0].clone()])?;
+                                if ferrython_core::object::is_property_like(&desc) {
+                                    if let Some(deleter) =
+                                        ferrython_core::object::property_field(&desc, "fdel")
+                                    {
+                                        if matches!(&deleter.payload, PyObjectPayload::None) {
+                                            return Err(PyException::attribute_error(format!(
+                                                "can't delete attribute '{}'",
+                                                attr_name
+                                            )));
+                                        }
+                                        self.call_object(deleter, vec![args[0].clone()])?;
                                         return Ok(PyObject::none());
                                     }
+                                    return Err(PyException::attribute_error(format!(
+                                        "can't delete attribute '{}'",
+                                        attr_name
+                                    )));
                                 }
                             }
                         }
@@ -5900,25 +6088,45 @@ impl VirtualMachine {
                     }
                 }
                 // Property descriptor methods: setter/getter/deleter
-                if let PyObjectPayload::Property(pd) = &bbm.receiver.payload {
+                if ferrython_core::object::is_property_like(&bbm.receiver) {
                     if args.len() == 1 {
                         let func = args[0].clone();
-                        let new_prop = match bbm.method_name.as_str() {
-                            "setter" => PyObjectPayload::Property(Box::new(PropertyData {
-                                fget: pd.fget.clone(),
-                                fset: Some(func),
-                                fdel: pd.fdel.clone(),
-                            })),
-                            "getter" => PyObjectPayload::Property(Box::new(PropertyData {
-                                fget: Some(func),
-                                fset: pd.fset.clone(),
-                                fdel: pd.fdel.clone(),
-                            })),
-                            "deleter" => PyObjectPayload::Property(Box::new(PropertyData {
-                                fget: pd.fget.clone(),
-                                fset: pd.fset.clone(),
-                                fdel: Some(func),
-                            })),
+                        let old_fget = Self::property_callable_field(&bbm.receiver, "fget");
+                        let old_fset = Self::property_callable_field(&bbm.receiver, "fset");
+                        let old_fdel = Self::property_callable_field(&bbm.receiver, "fdel");
+                        let doc_from_getter = Self::property_doc_from_getter_flag(&bbm.receiver);
+                        let (fget, fset, fdel, doc, new_doc_from_getter) = match bbm
+                            .method_name
+                            .as_str()
+                        {
+                            "setter" => {
+                                let doc = if doc_from_getter {
+                                    ferrython_core::object::property_doc_from_getter(
+                                        old_fget.as_ref(),
+                                    )
+                                } else {
+                                    ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                                };
+                                (old_fget, Some(func), old_fdel, doc, doc_from_getter)
+                            }
+                            "getter" => {
+                                let doc = if doc_from_getter {
+                                    ferrython_core::object::property_doc_from_getter(Some(&func))
+                                } else {
+                                    ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                                };
+                                (Some(func), old_fset, old_fdel, doc, doc_from_getter)
+                            }
+                            "deleter" => {
+                                let doc = if doc_from_getter {
+                                    ferrython_core::object::property_doc_from_getter(
+                                        old_fget.as_ref(),
+                                    )
+                                } else {
+                                    ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                                };
+                                (old_fget, old_fset, Some(func), doc, doc_from_getter)
+                            }
                             _ => {
                                 return Err(PyException::attribute_error(format!(
                                     "property has no attribute '{}'",
@@ -5926,7 +6134,14 @@ impl VirtualMachine {
                                 )))
                             }
                         };
-                        return Ok(PyObjectRef::new(PyObject { payload: new_prop }));
+                        return Self::make_property_like(
+                            &bbm.receiver,
+                            fget,
+                            fset,
+                            fdel,
+                            doc,
+                            new_doc_from_getter,
+                        );
                     }
                 }
                 // namedtuple methods — delegated to builtins
@@ -6314,7 +6529,7 @@ impl VirtualMachine {
                             }
                         }
                     }
-                    return Ok(prop.clone());
+                    return Err(PyException::attribute_error("unreadable attribute"));
                 }
                 if nf_data.name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);

@@ -1100,15 +1100,17 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                     // For InstanceProperty (subclass of property), look for fget in instance attrs
                     if let PyObjectPayload::Instance(inst) = &prop.payload {
                         if let Some(fget) = inst.attrs.read().get("fget").cloned() {
-                            return Ok(PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: fget,
-                                },
-                            }));
+                            if !matches!(&fget.payload, PyObjectPayload::None) {
+                                return Ok(PyObjectRef::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj.clone(),
+                                        method: fget,
+                                    },
+                                }));
+                            }
                         }
                     }
-                    Ok(prop.clone())
+                    Err(PyException::attribute_error("unreadable attribute"))
                 },
             },
         )))),
@@ -1121,20 +1123,45 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                     if args.is_empty() {
                         return Ok(PyObject::none());
                     }
-                    let fget = args.get(1).cloned();
-                    let fset = args.get(2).cloned();
-                    let fdel = args.get(3).cloned();
+                    let property_arg = |idx: usize| {
+                        args.get(idx).and_then(|arg| {
+                            if matches!(&arg.payload, PyObjectPayload::None) {
+                                None
+                            } else {
+                                Some(arg.clone())
+                            }
+                        })
+                    };
+                    let fget = property_arg(1);
+                    let fset = property_arg(2);
+                    let fdel = property_arg(3);
                     if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                         let mut w = inst.attrs.write();
-                        if let Some(f) = &fget {
-                            w.insert(CompactString::from("fget"), f.clone());
-                        }
-                        if let Some(f) = &fset {
-                            w.insert(CompactString::from("fset"), f.clone());
-                        }
-                        if let Some(f) = &fdel {
-                            w.insert(CompactString::from("fdel"), f.clone());
-                        }
+                        w.insert(
+                            CompactString::from("fget"),
+                            fget.clone().unwrap_or_else(PyObject::none),
+                        );
+                        w.insert(
+                            CompactString::from("fset"),
+                            fset.clone().unwrap_or_else(PyObject::none),
+                        );
+                        w.insert(
+                            CompactString::from("fdel"),
+                            fdel.clone().unwrap_or_else(PyObject::none),
+                        );
+                    }
+                    let (doc, doc_from_getter) = ferrython_core::object::property_init_doc(
+                        fget.as_ref(),
+                        args.get(4).cloned(),
+                    );
+                    if let Some(doc) = doc {
+                        ferrython_core::object::property_set_doc(&args[0], doc)?;
+                    }
+                    if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(
+                            CompactString::from("__property_doc_from_getter__"),
+                            PyObject::bool_val(doc_from_getter),
+                        );
                     }
                     Ok(PyObject::none())
                 },

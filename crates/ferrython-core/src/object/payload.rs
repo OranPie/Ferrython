@@ -997,6 +997,8 @@ pub struct PropertyData {
     pub fget: Option<PyObjectRef>,
     pub fset: Option<PyObjectRef>,
     pub fdel: Option<PyObjectRef>,
+    pub doc: PyCell<Option<PyObjectRef>>,
+    pub doc_from_getter: Cell<bool>,
 }
 
 /// Boxed native function data (cold variant — registered once at startup)
@@ -1785,11 +1787,35 @@ impl ClassData {
     /// When false, instance attribute lookup can skip the full descriptor protocol and
     /// check instance __dict__ directly — a significant hot-path optimization.
     fn detect_descriptors(namespace: &FxAttrMap, mro: &[PyObjectRef]) -> bool {
+        fn class_inherits_property(class: &PyObjectRef) -> bool {
+            if let PyObjectPayload::Class(cd) = &class.payload {
+                if cd.name.as_str() == "property" {
+                    return true;
+                }
+                for base in &cd.bases {
+                    match &base.payload {
+                        PyObjectPayload::BuiltinType(name)
+                        | PyObjectPayload::BuiltinFunction(name)
+                            if name.as_str() == "property" =>
+                        {
+                            return true;
+                        }
+                        PyObjectPayload::Class(_) if class_inherits_property(base) => return true,
+                        _ => {}
+                    }
+                }
+            }
+            false
+        }
+
         // Check own namespace for Property or descriptor-like objects
         for v in namespace.values() {
             match &v.payload {
-                PyObjectPayload::Property { .. } => return true,
+                PyObjectPayload::Property(_) => return true,
                 PyObjectPayload::Instance(inst) => {
+                    if class_inherits_property(&inst.class) {
+                        return true;
+                    }
                     let attrs = inst.attrs.read();
                     if attrs.contains_key("__set__") || attrs.contains_key("__delete__") {
                         return true;

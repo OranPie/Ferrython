@@ -450,6 +450,13 @@ impl VirtualMachine {
             }
         }
 
+        if name.as_str() == "__isabstractmethod__" && ferrython_core::object::is_property_like(&obj)
+        {
+            let result = self.property_isabstractmethod(&obj)?;
+            self.vm_push(result);
+            return Ok(None);
+        }
+
         // __getattribute__ override: called before normal lookup
         // Fast-path: skip MRO scan if the class doesn't override __getattribute__
         if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -504,9 +511,17 @@ impl VirtualMachine {
                             | PyObjectPayload::NativeClosure { .. }
                             | PyObjectPayload::Property(_)
                     ) {
-                        if let PyObjectPayload::Property(pd) = &class_val.payload {
-                            if let Some(getter) = &pd.fget {
-                                let getter = crate::builtins::unwrap_abstract_fget(getter);
+                        if ferrython_core::object::is_property_like(&class_val) {
+                            if let Some(getter) =
+                                ferrython_core::object::property_field(&class_val, "fget")
+                            {
+                                if matches!(&getter.payload, PyObjectPayload::None) {
+                                    return Err(PyException::attribute_error(format!(
+                                        "unreadable attribute '{}'",
+                                        name
+                                    )));
+                                }
+                                let getter = crate::builtins::unwrap_abstract_fget(&getter);
                                 let result = self.call_object(getter, vec![obj.clone()])?;
                                 self.vm_push(result);
                                 return Ok(None);
@@ -528,14 +543,21 @@ impl VirtualMachine {
         }
         match obj.get_attr(name) {
             Some(v) => {
-                if let PyObjectPayload::Property(pd) = &v.payload {
+                if ferrython_core::object::is_property_like(&v) {
                     // On class-level access (e.g. MyClass.prop), return the property
                     // object itself — don't invoke pd.fget.
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                         self.vm_push(v);
-                    } else if let Some(getter) = &pd.fget {
+                    } else if let Some(getter) = ferrython_core::object::property_field(&v, "fget")
+                    {
+                        if matches!(&getter.payload, PyObjectPayload::None) {
+                            return Err(PyException::attribute_error(format!(
+                                "unreadable attribute '{}'",
+                                name
+                            )));
+                        }
                         // Unwrap abstract marker if present (@property @abstractmethod)
-                        let getter = crate::builtins::unwrap_abstract_fget(getter);
+                        let getter = crate::builtins::unwrap_abstract_fget(&getter);
                         // When property is accessed via super() proxy, pass the
                         // underlying instance to pd.fget, not the Super wrapper.
                         let receiver = if let PyObjectPayload::Super { instance, .. } = &obj.payload
@@ -697,9 +719,14 @@ impl VirtualMachine {
     ) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
-                if let PyObjectPayload::Property(pd) = &desc.payload {
-                    if let Some(setter) = &pd.fset {
-                        let setter = setter.clone();
+                if ferrython_core::object::is_property_like(&desc) {
+                    if let Some(setter) = ferrython_core::object::property_field(&desc, "fset") {
+                        if matches!(&setter.payload, PyObjectPayload::None) {
+                            return Err(PyException::attribute_error(format!(
+                                "can't set attribute '{}'",
+                                name
+                            )));
+                        }
                         self.call_object(setter, vec![obj, value])?;
                         return Ok(None);
                     } else {
@@ -805,6 +832,9 @@ impl VirtualMachine {
             PyObjectPayload::Function(f) => {
                 f.attrs.write().insert(name.clone(), value);
             }
+            PyObjectPayload::Property(_) if name.as_str() == "__doc__" => {
+                ferrython_core::object::property_set_doc(&obj, value)?;
+            }
             // Native functions: silently accept attribute assignment (common in decorators)
             PyObjectPayload::NativeFunction(_)
             | PyObjectPayload::NativeClosure(_)
@@ -833,15 +863,17 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 // Check for descriptor with __delete__ or property fdel first
                 if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
-                    if let PyObjectPayload::Property(pd) = &class_attr.payload {
-                        if let Some(fdel_fn) = &pd.fdel {
-                            let bound = PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: fdel_fn.clone(),
-                                },
-                            });
-                            self.call_object(bound, vec![])?;
+                    if ferrython_core::object::is_property_like(&class_attr) {
+                        if let Some(fdel_fn) =
+                            ferrython_core::object::property_field(&class_attr, "fdel")
+                        {
+                            if matches!(&fdel_fn.payload, PyObjectPayload::None) {
+                                return Err(PyException::attribute_error(format!(
+                                    "can't delete attribute '{}'",
+                                    name
+                                )));
+                            }
+                            self.call_object(fdel_fn, vec![obj.clone()])?;
                         } else {
                             return Err(PyException::attribute_error(format!(
                                 "can't delete attribute '{}'",

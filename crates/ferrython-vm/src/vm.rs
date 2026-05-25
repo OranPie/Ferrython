@@ -4960,6 +4960,9 @@ impl VirtualMachine {
                                 if cd.is_simple_class.get()
                                     && !cd.namespace.read().contains_key("__new__")
                                     && cd.builtin_base_name.is_none()
+                                    && !ferrython_core::object::is_property_subclass_class(sget!(
+                                        frame, func_idx
+                                    ))
                                 {
                                     // Look up __init__: try vtable first (O(1) hash), fall back to namespace
                                     let vt = unsafe { &*cd.method_vtable.data_ptr() };

@@ -170,6 +170,9 @@ pub fn is_data_descriptor(obj: &PyObjectRef) -> bool {
     match &obj.payload {
         PyObjectPayload::Property(_) => true,
         PyObjectPayload::Instance(inst) => {
+            if is_property_subclass_class(&inst.class) {
+                return true;
+            }
             has_method_in_class(&inst.class, "__set__")
                 || has_method_in_class(&inst.class, "__delete__")
         }
@@ -181,7 +184,9 @@ pub fn is_data_descriptor(obj: &PyObjectRef) -> bool {
 pub fn has_descriptor_get(obj: &PyObjectRef) -> bool {
     match &obj.payload {
         PyObjectPayload::Property(_) => true,
-        PyObjectPayload::Instance(inst) => has_method_in_class(&inst.class, "__get__"),
+        PyObjectPayload::Instance(inst) => {
+            is_property_subclass_class(&inst.class) || has_method_in_class(&inst.class, "__get__")
+        }
         _ => false,
     }
 }
@@ -730,8 +735,21 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
                 }
                 return false;
             }
-            // Standard path: fall through to get_attr
-            py_get_attr(obj, name).is_some()
+            // Standard path: fall through to get_attr.  Descriptor attributes
+            // need their getter invoked so hasattr(x, "prop") matches Python.
+            if let Some(v) = py_get_attr(obj, name) {
+                if is_property_like(&v) {
+                    if let Some(getter) = property_field(&v, "fget") {
+                        if !matches!(&getter.payload, PyObjectPayload::None) {
+                            return call_callable(&getter, &[obj.clone()]).is_ok();
+                        }
+                    }
+                    return false;
+                }
+                true
+            } else {
+                false
+            }
         }
         // For non-Instance types, delegate to get_attr (less hot path)
         _ => py_get_attr(obj, name).is_some(),
@@ -741,6 +759,63 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
 pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     match &obj.payload {
         PyObjectPayload::Instance(inst) => {
+            if is_property_subclass_class(&inst.class) {
+                match name {
+                    "__doc__" => {
+                        return Some(
+                            inst.attrs
+                                .read()
+                                .get("__doc__")
+                                .cloned()
+                                .unwrap_or_else(PyObject::none),
+                        );
+                    }
+                    "__isabstractmethod__" => {
+                        for field in ["fget", "fset", "fdel"] {
+                            if let Some(func) = inst.attrs.read().get(field).cloned() {
+                                if !matches!(&func.payload, PyObjectPayload::None) {
+                                    if let Some(flag) = func.get_attr("__isabstractmethod__") {
+                                        if flag.is_truthy() {
+                                            return Some(PyObject::bool_val(true));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return Some(PyObject::bool_val(false));
+                    }
+                    "fget" | "fset" | "fdel" => {
+                        return Some(
+                            inst.attrs
+                                .read()
+                                .get(name)
+                                .cloned()
+                                .unwrap_or_else(PyObject::none),
+                        );
+                    }
+                    "setter" | "getter" | "deleter" => {
+                        return Some(PyObjectRef::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod(
+                                super::constructors::alloc_bbm_box(
+                                    obj.clone(),
+                                    CompactString::from(name),
+                                ),
+                            ),
+                        }));
+                    }
+                    "__get__" => {
+                        if let Some(method) = resolve_builtin_type_method("property", "__get__") {
+                            return Some(PyObjectRef::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method,
+                                },
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // ── ULTRA-FAST PATH ──
             // For simple instances: no descriptors, no __getattribute__, no
             // dict_storage, and name is NOT a dunder. Skips the expensive
@@ -1938,6 +2013,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     | "imag"
                             ),
                             "type" => matches!(name, "mro"),
+                            "property" => {
+                                matches!(name, "__get__" | "getter" | "setter" | "deleter")
+                            }
                             _ => false,
                         };
                         if has_method {
@@ -1959,13 +2037,17 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
         PyObjectPayload::Property(pd) => {
             match name {
                 "__doc__" => {
-                    // Return the docstring from pd.fget, if any
-                    if let Some(fg) = &pd.fget {
-                        if let Some(doc) = fg.get_attr("__doc__") {
-                            return Some(doc);
+                    return Some(pd.doc.read().clone().unwrap_or_else(PyObject::none));
+                }
+                "__isabstractmethod__" => {
+                    for func in [&pd.fget, &pd.fset, &pd.fdel].into_iter().flatten() {
+                        if let Some(flag) = func.get_attr("__isabstractmethod__") {
+                            if flag.is_truthy() {
+                                return Some(PyObject::bool_val(true));
+                            }
                         }
                     }
-                    return Some(PyObject::none());
+                    return Some(PyObject::bool_val(false));
                 }
                 "setter" | "getter" | "deleter" | "fget" | "fset" | "fdel" => {
                     match name {

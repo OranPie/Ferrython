@@ -165,8 +165,9 @@ impl VirtualMachine {
                     }
                 }
                 self.call_stack.push(frame);
-                let _ = self.run_frame();
+                let body_result = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
+                body_result?;
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
                 (
@@ -940,8 +941,9 @@ impl VirtualMachine {
                     }
                 }
                 self.call_stack.push(frame);
-                let _ = self.run_frame();
+                let body_result = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
+                body_result?;
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
                 (

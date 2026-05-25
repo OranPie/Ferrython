@@ -882,9 +882,17 @@ impl VirtualMachine {
                                     frame.push(effective_class.clone());
                                     return Ok(None);
                                 }
-                                PyObjectPayload::Property(pd) => {
-                                    if let Some(getter) = pd.fget.as_ref() {
-                                        let getter = crate::builtins::unwrap_abstract_fget(getter);
+                                _ if ferrython_core::object::is_property_like(&method) => {
+                                    if let Some(getter) =
+                                        ferrython_core::object::property_field(&method, "fget")
+                                    {
+                                        if matches!(&getter.payload, PyObjectPayload::None) {
+                                            return Err(PyException::attribute_error(format!(
+                                                "unreadable attribute '{}'",
+                                                name
+                                            )));
+                                        }
+                                        let getter = crate::builtins::unwrap_abstract_fget(&getter);
                                         let result = self.call_object(getter, vec![obj])?;
                                         let frame = self.vm_frame();
                                         frame.push(PyObject::none());

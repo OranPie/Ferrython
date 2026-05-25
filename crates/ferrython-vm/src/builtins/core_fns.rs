@@ -2121,9 +2121,20 @@ pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let fget_raw = args.first().cloned();
-    let fset = args.get(1).cloned();
-    let fdel = args.get(2).cloned();
+    let property_func = |idx: usize| {
+        args.get(idx).and_then(|arg| {
+            if matches!(&arg.payload, PyObjectPayload::None) {
+                None
+            } else {
+                Some(arg.clone())
+            }
+        })
+    };
+    let fget_raw = property_func(0);
+    let fset = property_func(1);
+    let fdel = property_func(2);
+    let (doc, doc_from_getter) =
+        ferrython_core::object::property_init_doc(fget_raw.as_ref(), args.get(3).cloned());
     // If fget is an abstract marker ("__abstract__", func), keep it as-is.
     // is_abstract_marker() detects Property.fget abstract markers.
     // unwrap_abstract_fget() unwraps the marker when actually calling the getter.
@@ -2132,6 +2143,8 @@ pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             fget: fget_raw,
             fset,
             fdel,
+            doc: PyCell::new(doc),
+            doc_from_getter: Cell::new(doc_from_getter),
         })),
     }))
 }
@@ -2194,6 +2207,9 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             f.attrs
                 .write()
                 .insert(CompactString::from(name), args[2].clone());
+        }
+        PyObjectPayload::Property(_) if name == "__doc__" => {
+            ferrython_core::object::property_set_doc(&args[0], args[2].clone())?;
         }
         PyObjectPayload::NativeFunction(_)
         | PyObjectPayload::NativeClosure(_)
