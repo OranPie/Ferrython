@@ -2281,10 +2281,19 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 );
                             }
                             PyObjectPayload::ExceptionInstance(ei) => {
-                                ei.ensure_attrs().write().insert(
+                                let mut attrs = ei.ensure_attrs().write();
+                                attrs.insert(
                                     CompactString::from("args"),
-                                    PyObject::tuple(init_args),
+                                    PyObject::tuple(init_args.clone()),
                                 );
+                                if ei.kind.is_subclass_of(&ExceptionKind::ImportError) {
+                                    attrs.insert(
+                                        CompactString::from("msg"),
+                                        init_args.first().cloned().unwrap_or_else(PyObject::none),
+                                    );
+                                    attrs.insert(CompactString::from("name"), PyObject::none());
+                                    attrs.insert(CompactString::from("path"), PyObject::none());
+                                }
                             }
                             _ => {}
                         }
@@ -2356,6 +2365,28 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                 }
                 "__class__" => Some(PyObject::exception_type(ei.kind)),
+                "__init__" => {
+                    let obj_ref = obj.clone();
+                    Some(PyObject::native_closure("__init__", move |args| {
+                        if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
+                            let init_args = args.to_vec();
+                            let mut attrs = ei.ensure_attrs().write();
+                            attrs.insert(
+                                CompactString::from("args"),
+                                PyObject::tuple(init_args.clone()),
+                            );
+                            if ei.kind.is_subclass_of(&ExceptionKind::ImportError) {
+                                attrs.insert(
+                                    CompactString::from("msg"),
+                                    init_args.first().cloned().unwrap_or_else(PyObject::none),
+                                );
+                                attrs.insert(CompactString::from("name"), PyObject::none());
+                                attrs.insert(CompactString::from("path"), PyObject::none());
+                            }
+                        }
+                        Ok(PyObject::none())
+                    }))
+                }
                 "__str__" => Some(PyObject::native_function("__str__", |args| {
                     if args.is_empty() {
                         return Ok(PyObject::str_val(CompactString::new("")));
@@ -2395,6 +2426,22 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         Some(PyObject::none())
                     }
                 }
+                "msg" if ei.kind.is_subclass_of(&ExceptionKind::ImportError) => ei
+                    .get_attrs()
+                    .and_then(|a| a.read().get("msg").cloned())
+                    .or_else(|| {
+                        if !ei.args.is_empty() {
+                            Some(ei.args[0].clone())
+                        } else if !ei.message.is_empty() {
+                            Some(PyObject::str_val(ei.message.clone()))
+                        } else {
+                            Some(PyObject::none())
+                        }
+                    }),
+                "name" | "path" if ei.kind.is_subclass_of(&ExceptionKind::ImportError) => ei
+                    .get_attrs()
+                    .and_then(|a| a.read().get(name).cloned())
+                    .or_else(|| Some(PyObject::none())),
                 "__cause__" => ei
                     .get_attrs()
                     .and_then(|a| a.read().get("__cause__").cloned())
