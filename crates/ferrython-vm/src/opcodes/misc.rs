@@ -1,7 +1,7 @@
 //! Miscellaneous operations: format, annotations, generators, async iterators
 
 use crate::builtins;
-use crate::frame::BlockKind;
+use crate::frame::{BlockKind, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
@@ -44,6 +44,16 @@ impl VirtualMachine {
                     return Ok(None);
                 }
                 let frame = self.vm_frame();
+                if frame.scope_kind == ScopeKind::Module {
+                    if !frame.globals.read().contains_key("__annotations__") {
+                        frame.globals.write().insert(
+                            intern_or_new("__annotations__"),
+                            PyObject::dict(new_fx_hashkey_map()),
+                        );
+                        crate::frame::bump_globals_version();
+                    }
+                    return Ok(None);
+                }
                 // In function scope, __annotations__ may be a fast local (varname).
                 // Check if it's registered as a varname and use fast locals.
                 let varname_idx = frame

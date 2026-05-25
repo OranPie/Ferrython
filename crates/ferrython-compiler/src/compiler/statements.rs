@@ -61,7 +61,7 @@ impl Compiler {
                 target,
                 annotation,
                 value,
-                ..
+                simple,
             } => {
                 if let Some(val) = value {
                     self.compile_expression(val)?;
@@ -71,7 +71,10 @@ impl Compiler {
                     return Ok(());
                 }
                 // Store annotation in __annotations__ dict: __annotations__[name] = annotation
-                if let ExpressionKind::Name { id: name, .. } = &target.node {
+                if *simple {
+                    let ExpressionKind::Name { id: name, .. } = &target.node else {
+                        return Ok(());
+                    };
                     if self.future_annotations {
                         // PEP 563: store annotation as string constant
                         let ann_str = Self::annotation_to_string(annotation);

@@ -273,6 +273,59 @@ fn instance_dict_storage(obj: &PyObjectRef) -> Option<&std::rc::Rc<PyCell<FxHash
     }
 }
 
+fn is_generic_alias_instance(obj: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+            return cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias");
+        }
+    }
+    false
+}
+
+fn compare_generic_alias_objects(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    op: CompareOp,
+) -> PyResult<Option<PyObjectRef>> {
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        return Ok(None);
+    }
+    if !is_generic_alias_instance(a) || !is_generic_alias_instance(b) {
+        return Ok(None);
+    }
+
+    let (a_origin, a_args, b_origin, b_args) = match (&a.payload, &b.payload) {
+        (PyObjectPayload::Instance(a_inst), PyObjectPayload::Instance(b_inst)) => {
+            let a_attrs = a_inst.attrs.read();
+            let b_attrs = b_inst.attrs.read();
+            let (Some(a_origin), Some(a_args), Some(b_origin), Some(b_args)) = (
+                a_attrs.get("__origin__"),
+                a_attrs.get("__args__"),
+                b_attrs.get("__origin__"),
+                b_attrs.get("__args__"),
+            ) else {
+                return Ok(None);
+            };
+            (
+                a_origin.clone(),
+                a_args.clone(),
+                b_origin.clone(),
+                b_args.clone(),
+            )
+        }
+        _ => return Ok(None),
+    };
+
+    let origin_eq = a_origin.compare(&b_origin, CompareOp::Eq)?.is_truthy();
+    let args_eq = a_args.compare(&b_args, CompareOp::Eq)?.is_truthy();
+    let eq = origin_eq && args_eq;
+    Ok(Some(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
+        eq
+    } else {
+        !eq
+    })))
+}
+
 fn compare_mapping_proxy_objects(
     a: &PyObjectRef,
     b: &PyObjectRef,
@@ -518,6 +571,9 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         };
 
     if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        if let Some(result) = compare_generic_alias_objects(a, b, op)? {
+            return Ok(result);
+        }
         if matches!(op, CompareOp::Ne) {
             let right_is_subclass = match (instance_class(a), instance_class(b)) {
                 (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
