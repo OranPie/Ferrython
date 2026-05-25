@@ -615,6 +615,22 @@ pub(super) fn py_floor_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjec
             }
             Ok(PyObject::float((a / b).floor()))
         }
+        (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+            if *b == 0.0 {
+                return Err(PyException::zero_division_error(
+                    "float floor division by zero",
+                ));
+            }
+            Ok(PyObject::float((a.to_f64() / b).floor()))
+        }
+        (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+            if b.is_zero() {
+                return Err(PyException::zero_division_error(
+                    "float floor division by zero",
+                ));
+            }
+            Ok(PyObject::float((a / b.to_f64()).floor()))
+        }
         _ => Err(PyException::type_error(format!(
             "unsupported operand type(s) for //: '{}' and '{}'",
             a.type_name(),
@@ -812,6 +828,18 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 return Err(PyException::zero_division_error("float modulo"));
             }
             Ok(PyObject::float(python_fmod(*a, *b)))
+        }
+        (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+            if *b == 0.0 {
+                return Err(PyException::zero_division_error("float modulo"));
+            }
+            Ok(PyObject::float(python_fmod(a.to_f64(), *b)))
+        }
+        (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+            if b.is_zero() {
+                return Err(PyException::zero_division_error("float modulo"));
+            }
+            Ok(PyObject::float(python_fmod(*a, b.to_f64())))
         }
         (PyObjectPayload::Str(fmt_str), _) => {
             // printf-style string formatting: "Hello %s" % "world"
