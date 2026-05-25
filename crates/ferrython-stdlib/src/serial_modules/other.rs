@@ -1,8 +1,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args, check_args_min, make_builtin, make_module, new_fx_hashkey_map, FxHashKeyMap,
-    PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    check_args, check_args_min, make_builtin, make_module, new_fx_hashkey_map,
+    ExceptionInstanceData, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1828,6 +1829,77 @@ fn operator_reduce_target(name: &str) -> Option<&'static str> {
     }
 }
 
+fn pickle_exception_instance(kind: ExceptionKind, args: Vec<PyObjectRef>) -> PyObjectRef {
+    let message = args
+        .first()
+        .map(|arg| CompactString::from(arg.py_to_string()))
+        .unwrap_or_else(|| CompactString::from(""));
+    let inst = PyObject::exception_instance_with_args(kind, message, args.clone());
+
+    if kind.is_subclass_of(&ExceptionKind::ImportError) {
+        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+            let mut attrs = ei.ensure_attrs().write();
+            attrs.insert(CompactString::from("args"), PyObject::tuple(args.clone()));
+            attrs.insert(
+                CompactString::from("msg"),
+                args.first().cloned().unwrap_or_else(PyObject::none),
+            );
+            attrs.insert(CompactString::from("name"), PyObject::none());
+            attrs.insert(CompactString::from("path"), PyObject::none());
+        }
+    }
+
+    inst
+}
+
+fn exception_pickle_state(ei: &ExceptionInstanceData) -> Option<PyObjectRef> {
+    if !ei.kind.is_subclass_of(&ExceptionKind::ImportError) {
+        return None;
+    }
+
+    let attrs = ei.get_attrs()?;
+    let attrs = attrs.read();
+    let mut pairs = Vec::new();
+    for key in ["name", "path"] {
+        if let Some(value) = attrs.get(key) {
+            if !matches!(value.payload, PyObjectPayload::None) {
+                pairs.push((PyObject::str_val(CompactString::from(key)), value.clone()));
+            }
+        }
+    }
+    if pairs.is_empty() {
+        None
+    } else {
+        Some(PyObject::dict_from_pairs(pairs))
+    }
+}
+
+fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResult<()> {
+    let PyObjectPayload::Dict(map) = &state.payload else {
+        return Ok(());
+    };
+
+    for (key, value) in map.read().iter() {
+        let HashableKey::Str(name) = key else {
+            continue;
+        };
+        match &obj.payload {
+            PyObjectPayload::Instance(inst) => {
+                inst.attrs
+                    .write()
+                    .insert(name.to_compact_string(), value.clone());
+            }
+            PyObjectPayload::ExceptionInstance(ei) => {
+                ei.ensure_attrs()
+                    .write()
+                    .insert(name.to_compact_string(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn pickle_serialize_operator_reduce_p0(
     func_name: &str,
     args: &[PyObjectRef],
@@ -2122,6 +2194,10 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 }
             }
             buf.extend_from_slice(b"tR");
+            if let Some(state) = exception_pickle_state(ei) {
+                pickle_serialize_p0(&state, buf, memo)?;
+                buf.push(b'b');
+            }
         }
         PyObjectPayload::NativeClosure(nc) => {
             if let (Some(func_name), Some(args)) = (
@@ -2610,6 +2686,10 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                 }
             }
             buf.extend_from_slice(b"tR");
+            if let Some(state) = exception_pickle_state(ei) {
+                pickle_serialize_p2(&state, buf, memo)?;
+                buf.push(b'b');
+            }
         }
         PyObjectPayload::NativeClosure(nc) => {
             if let (Some(func_name), Some(args)) = (
@@ -2864,6 +2944,11 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
             PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
         };
+        if matches!(module.as_str(), "__builtin__" | "builtins" | "exceptions") {
+            if let Some(kind) = ExceptionKind::from_name(name.as_str()) {
+                return Ok(pickle_exception_instance(kind, arg_list));
+            }
+        }
         match (module.as_str(), name.as_str()) {
             ("__builtin__" | "builtins", "set") => {
                 if let Some(first) = arg_list.first() {
@@ -3354,6 +3439,26 @@ fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                 };
                 let result = pkl_reduce(&callable, &args_item)?;
                 stack.push(PklStackItem::Value(result));
+            }
+            b'b' => {
+                // BUILD — apply a state dict to the object on top of the stack.
+                let state = match stack.pop() {
+                    Some(PklStackItem::Value(v)) => v,
+                    _ => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: BUILD expects state",
+                        ))
+                    }
+                };
+                let obj = match stack.last() {
+                    Some(PklStackItem::Value(v)) => v.clone(),
+                    _ => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: BUILD expects object",
+                        ))
+                    }
+                };
+                pkl_apply_state(&obj, &state)?;
             }
             b'\n' | b'\r' | b' ' => {} // skip whitespace
             _ => {
@@ -3868,6 +3973,26 @@ fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                 };
                 let result = pkl_reduce(&callable, &args_item)?;
                 stack.push(PklStackItem::Value(result));
+            }
+            b'b' => {
+                // BUILD — apply a state dict to the object on top of the stack.
+                let state = match stack.pop() {
+                    Some(PklStackItem::Value(v)) => v,
+                    _ => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: BUILD expects state",
+                        ))
+                    }
+                };
+                let obj = match stack.last() {
+                    Some(PklStackItem::Value(v)) => v.clone(),
+                    _ => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: BUILD expects object",
+                        ))
+                    }
+                };
+                pkl_apply_state(&obj, &state)?;
             }
             0x8a => {
                 // LONG1 — 1-byte count + little-endian 2's complement bytes
