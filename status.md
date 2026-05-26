@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T14:30:16+08:00
+Last updated: 2026-05-26T14:33:14+08:00
 
 ## 已提交成果
 
@@ -117,6 +117,7 @@ Last updated: 2026-05-26T14:30:16+08:00
   - VM 比较路径对 builtin-value 子类代理到底层值比较，同时保留 weakref ref dead identity 语义。
   - class call / instantiate simple-class fast path 排除 dict subclass，避免 `class C(dict): pass; C([...])` 绕过 dict 初始化。
   - dict subclass 默认 `dict.__init__` 路径补齐 mapping / iterable-of-pairs / kwargs 填充，并避免给 dict subclass 写入会遮蔽 `dict_storage` 的空 `__builtin_value__`。
+  - copy `_apply_state()` 过滤 VM 内部 `__builtin_value__`，避免 reduce 4-tuple 恢复 list subclass state 后再追加 listiter 时自我扩展成无限序列。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -180,6 +181,12 @@ Last updated: 2026-05-26T14:30:16+08:00
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_5tuple test_copy.TestCopy.test_deepcopy_dict_subclass test_copy.TestCopy.test_copy_dict`
     - `run=3 pass=3 fail=0 err=0 skip=0`
   - note: `timeout 15s target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_4tuple` 仍超时，作为下一候选继续分析。
+- copy reduce 4-tuple focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_4tuple`
+    - `run=1 pass=1 fail=0 err=0 skip=0`
+  - smoke: list subclass reduce 4-tuple `copy.copy()` 保持元素浅共享，`copy.deepcopy()` 深拷贝元素，均不再重复元素或挂起。
+  - regression: `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_5tuple test_copy.TestCopy.test_deepcopy_dict_subclass test_copy.TestCopy.test_copy_dict test_copy.TestCopy.test_deepcopy_range`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`
@@ -391,9 +398,8 @@ Last updated: 2026-05-26T14:30:16+08:00
 
 ## 当前修复候选
 
-- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range` 与 `test_copy.TestCopy.test_reduce_5tuple` 已关闭。
-  - 当前明确候选：`test_copy.TestCopy.test_reduce_4tuple` 单项 15s 超时，疑似 list subclass reduce 的 listiter/apply 重建路径挂起。
-  - 下一步：优先修 `test_reduce_4tuple`，或转向 `deque` 小批候选。
+- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range`、`test_copy.TestCopy.test_reduce_5tuple`、`test_copy.TestCopy.test_reduce_4tuple` 已关闭。
+  - 下一步：继续小批扫描 `test_copy` 剩余 case，或转向 `deque` 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -434,6 +440,8 @@ Last updated: 2026-05-26T14:30:16+08:00
   - 修复：WeakKeyDictionary deepcopy 保留 key/deepcopy value；WeakValueDictionary deepcopy key/保留 value，并保持 weak mapping equality 与 item identity。
 - `test_copy.TestCopy.test_reduce_5tuple`
   - 修复：dict subclass 不能走普通 simple-class fast path；默认 `dict.__init__` 继承路径按 mapping / iterable-of-pairs / kwargs 填充内部 `dict_storage`，copy reduce 5-tuple 的 dictiter 能正确重建条目。
+- `test_copy.TestCopy.test_reduce_4tuple`
+  - 修复：copy state 应用过滤 VM 内部 `__builtin_value__`，避免 list subclass reduce 4-tuple 的 listiter 追加到同一个底层列表造成无限增长；deepcopy 不再重复元素。
 - runner `ModuleReport` 被 GC 清空属性
   - 修复：cycle GC candidate refinement 不再把活 list 持有的普通 instance 当作循环垃圾。
 - `test_weakref.FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors`

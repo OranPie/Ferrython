@@ -448,10 +448,13 @@ def _apply_state(y, state):
     if state is not None:
         d = getattr(y, "__dict__", None)
         if d is not None:
-            d.update(state)
+            for key, value in state.items():
+                if key != "__builtin_value__":
+                    d[key] = value
         else:
             for key, value in state.items():
-                setattr(y, key, value)
+                if key != "__builtin_value__":
+                    setattr(y, key, value)
 
     if slotstate is not None:
         for key, value in slotstate.items():
