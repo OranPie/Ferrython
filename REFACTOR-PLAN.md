@@ -60,10 +60,11 @@ Last updated: 2026-05-27
   `weakref/mappings/`.
   The remaining root file now keeps only shared deferred-call state plus
   submodule declarations/re-exports.
-- Phase 2 collection module mechanical splits have started. `UserDict`,
-  `UserList`, `UserString`, `deque`, `ChainMap`, and `namedtuple` now live in
-  focused `collection_modules/` files; `collections.rs` still owns module
-  assembly plus OrderedDict/defaultdict/Counter and `_count_elements`.
+- Phase 2 collection module mechanical splits are complete at the top-level
+  bucket. `UserDict`, `UserList`, `UserString`, `deque`, `ChainMap`,
+  `namedtuple`, `defaultdict`, and `Counter` now live in focused
+  `collection_modules/` files; `collections.rs` is a small assembly shell plus
+  the remaining `OrderedDict` shim.
 - Phase 2 filesystem/process module mechanical splits are complete at the
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
@@ -86,10 +87,10 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-vm/src/vm_call.rs` is over 7k lines and combines function
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
-- `crates/ferrython-stdlib/src/collection_modules/collections.rs` is now about
-  1.5k lines after the User*/deque/ChainMap/namedtuple split and combines
-  OrderedDict, defaultdict, Counter, `_count_elements`, and module assembly
-  helpers.
+- `crates/ferrython-stdlib/src/collection_modules/counter.rs`,
+  `namedtuple.rs`, and `user_types.rs` are medium-sized focused files after the
+  top-level `collections.rs` bucket split; evaluate internal splits only if
+  future changes need them.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

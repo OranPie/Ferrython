@@ -2,6 +2,7 @@
 
 mod chainmap;
 mod collections;
+mod counter;
 mod deque;
 mod functools;
 mod itertools;
