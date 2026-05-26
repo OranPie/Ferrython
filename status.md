@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T19:21:21+08:00
+Last updated: 2026-05-26T19:31:32+08:00
 
 ## 代码质量重构进度
 
@@ -74,6 +74,9 @@ Last updated: 2026-05-26T19:21:21+08:00
   - `serial_modules/dbm_module.rs` 拆出 `dbm` module factory 和长度前缀磁盘存储 stub。
   - `serial_modules/shelve_module.rs` 拆出 `shelve` module factory，并通过 `pickle_module` 的 `pub(super)` helper 复用序列化/反序列化。
   - `serial_modules/other.rs` 移除，剩余 pickle 代码改为职责明确的 `serial_modules/pickle_module.rs`，当前约 2909 行。
+- 本批已完成待提交：
+  - `misc_modules/future.rs`、`readline.rs`、`runpy.rs`、`compileall.rs`、`pstats.rs`、`quopri.rs`、`stringprep.rs` 拆出低耦合 misc 小模块。
+  - `misc_modules.rs` 从约 5412 行降到约 4605 行；保留 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`mimetypes`、`cmd`、`plistlib`、`curses`、`ctypes` 等较重模块供后续分批拆。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -89,9 +92,11 @@ Last updated: 2026-05-26T19:21:21+08:00
   - serial marshal 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial binascii 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial codecs/dbm/shelve/pickle rename 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - misc 小模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
+  - 继续拆 `misc_modules.rs`，优先考虑 `mimetypes`、`cmd`、`plistlib`、`curses`，再处理 `contextlib`、`dataclasses`、`ctypes` 等高耦合块。
   - 再评估 `misc_modules.rs`、`sys_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
