@@ -476,6 +476,12 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
         }
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                    return py_get_item(&data, key);
+                }
+                return Err(PyException::index_error("deque index out of range"));
+            }
             if let Some(method) = instance_special_method(obj, "__getitem__") {
                 let method = method?;
                 if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {

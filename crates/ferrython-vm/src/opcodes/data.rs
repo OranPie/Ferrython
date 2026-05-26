@@ -611,38 +611,41 @@ impl VirtualMachine {
         // parent __init__ installs same-named closures as instance attrs.
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
-                    if matches!(
-                        &class_val.payload,
-                        PyObjectPayload::Function(_)
-                            | PyObjectPayload::NativeClosure { .. }
-                            | PyObjectPayload::Property(_)
-                    ) {
-                        if ferrython_core::object::is_property_like(&class_val) {
-                            if let Some(getter) =
-                                ferrython_core::object::property_field(&class_val, "fget")
-                            {
-                                if matches!(&getter.payload, PyObjectPayload::None) {
-                                    return Err(PyException::attribute_error(format!(
-                                        "unreadable attribute '{}'",
-                                        name
-                                    )));
+                let is_deque = inst.attrs.read().contains_key("__deque__");
+                if !is_deque {
+                    if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                        if matches!(
+                            &class_val.payload,
+                            PyObjectPayload::Function(_)
+                                | PyObjectPayload::NativeClosure { .. }
+                                | PyObjectPayload::Property(_)
+                        ) {
+                            if ferrython_core::object::is_property_like(&class_val) {
+                                if let Some(getter) =
+                                    ferrython_core::object::property_field(&class_val, "fget")
+                                {
+                                    if matches!(&getter.payload, PyObjectPayload::None) {
+                                        return Err(PyException::attribute_error(format!(
+                                            "unreadable attribute '{}'",
+                                            name
+                                        )));
+                                    }
+                                    let getter = crate::builtins::unwrap_abstract_fget(&getter);
+                                    let result = self.call_object(getter, vec![obj.clone()])?;
+                                    self.vm_push(result);
+                                    return Ok(None);
                                 }
-                                let getter = crate::builtins::unwrap_abstract_fget(&getter);
-                                let result = self.call_object(getter, vec![obj.clone()])?;
-                                self.vm_push(result);
+                            } else {
+                                // Wrap as BoundMethod
+                                let bound = PyObjectRef::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj.clone(),
+                                        method: class_val,
+                                    },
+                                });
+                                self.vm_push(bound);
                                 return Ok(None);
                             }
-                        } else {
-                            // Wrap as BoundMethod
-                            let bound = PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: class_val,
-                                },
-                            });
-                            self.vm_push(bound);
-                            return Ok(None);
                         }
                     }
                 }

@@ -500,6 +500,8 @@ fn instance_builtin_method(
                 | "__len__"
                 | "__contains__"
                 | "__getitem__"
+                | "__setitem__"
+                | "__delitem__"
         ) {
             return Some(make_bound(name));
         }

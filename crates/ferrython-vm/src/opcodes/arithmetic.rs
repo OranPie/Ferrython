@@ -931,6 +931,13 @@ impl VirtualMachine {
                 }
                 // If the subclass defines its own __getitem__, call it instead of dict_storage
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if inst.attrs.read().contains_key("__deque__") {
+                        if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                            self.vm_push(data.get_item(&key)?);
+                            return Ok(None);
+                        }
+                        return Err(PyException::index_error("deque index out of range"));
+                    }
                     let is_chainmap = inst.attrs.read().contains_key("__chainmap__");
                     if is_chainmap {
                         if let Some(maps_obj) = obj.get_attr("maps") {

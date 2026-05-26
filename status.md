@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T15:14:00+08:00
+Last updated: 2026-05-26T15:37:53+08:00
 
 ## 已提交成果
 
@@ -45,6 +45,12 @@ Last updated: 2026-05-26T15:14:00+08:00
   - focused weakdict 9-case 全部通过。
 
 ## 本轮修复成果
+
+- 2026-05-26 deque 继续修复：
+  - `collections.deque` 的 `__getitem__`、`__setitem__`、`__delitem__`、`count`、`index`、`remove`、`__contains__`、`extend`、`extendleft`、`insert`、`reverse` 补齐 CPython 风格参数校验和负索引/负 start-stop 处理。
+  - deque 比较、`in`、索引访问和删除路径改为 marker 分派，避免命中旧的构造期闭包或 class namespace closure。
+  - `count` / `index` / `remove` / `__contains__` 在比较时不再持有容器借用去执行用户 `__eq__`，并在迭代期间检测 deque 长度变化。
+  - focused 验证：`test_deque.TestBasic.test_getitem`、`test_delitem`、`test_index`、`test_count`、`test_contains`、`test_contains_count_stop_crashes`、`test_extend`、`test_extendleft`、`test_insert`、`test_setitem`、`test_reverse`，合计 `run=11 pass=11 fail=0 err=0 skip=0`。
 
 - 2026-05-26 deque focused 追加：
   - `collections.deque` 构造与 `__init__` 支持负 `maxlen` 校验、`maxlen=None`、重新初始化和 maxlen 裁剪。

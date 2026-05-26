@@ -291,6 +291,33 @@ pub(super) fn call_deque_method(
             .and_then(|v| v.as_int())
             .map(|n| n as usize)
     };
+    let normalize_index = |idx: i64, len: usize| -> PyResult<usize> {
+        let len_i = len as i64;
+        let actual = if idx < 0 { len_i + idx } else { idx };
+        if actual < 0 || actual >= len_i {
+            Err(PyException::new(
+                ExceptionKind::IndexError,
+                "deque index out of range",
+            ))
+        } else {
+            Ok(actual as usize)
+        }
+    };
+    let normalize_insert_index = |idx: i64, len: usize| -> usize {
+        let len_i = len as i64;
+        let actual = if idx < 0 {
+            (len_i + idx).max(0)
+        } else {
+            idx.min(len_i)
+        };
+        actual as usize
+    };
+    let deque_item_matches = |item: &PyObjectRef, target: &PyObjectRef| -> PyResult<bool> {
+        if PyObjectRef::ptr_eq(item, target) {
+            return Ok(true);
+        }
+        Ok(item.compare(target, CompareOp::Eq)?.is_truthy())
+    };
     // Helper: enforce maxlen by trimming from the appropriate end
     let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
         if let Some(ml) = get_maxlen() {
@@ -403,8 +430,13 @@ pub(super) fn call_deque_method(
             Ok(PyObject::none())
         }
         "extend" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "extend() takes exactly one argument",
+                ));
+            }
             // args[0] should be pre-collected items as a List (VM collects iterable before calling)
-            let items = args[0].to_list().unwrap_or_default();
+            let items = args[0].to_list()?;
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().extend(items);
@@ -413,7 +445,12 @@ pub(super) fn call_deque_method(
             Ok(PyObject::none())
         }
         "extendleft" => {
-            let items = args[0].to_list().unwrap_or_default();
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "extendleft() takes exactly one argument",
+                ));
+            }
+            let items = args[0].to_list()?;
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
@@ -466,40 +503,77 @@ pub(super) fn call_deque_method(
             dispatch("deque", &[PyObject::list(items), maxlen_obj])
         }
         "count" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "count() takes exactly one argument",
+                ));
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                let v = list.read();
-                let count = v
-                    .iter()
-                    .filter(|x| x.py_to_string() == args[0].py_to_string())
-                    .count();
+                let expected_len = list.read().len();
+                let mut count = 0usize;
+                for i in 0..expected_len {
+                    let item = {
+                        let v = list.read();
+                        if v.len() != expected_len {
+                            return Err(PyException::runtime_error(
+                                "deque mutated during iteration",
+                            ));
+                        }
+                        v[i].clone()
+                    };
+                    if deque_item_matches(&item, &args[0])? {
+                        count += 1;
+                    }
+                    if list.read().len() != expected_len {
+                        return Err(PyException::runtime_error("deque mutated during iteration"));
+                    }
+                }
                 return Ok(PyObject::int(count as i64));
             }
             Ok(PyObject::int(0))
         }
         "index" => {
-            if args.is_empty() {
+            if args.is_empty() || args.len() > 3 {
                 return Err(PyException::type_error(
-                    "index() requires at least 1 argument",
+                    "index() takes at least 1 and at most 3 arguments",
                 ));
             }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                let v = list.read();
-                let target = args[0].py_to_string();
-                let start = if args.len() > 1 {
-                    args[1].as_int().unwrap_or(0) as usize
+                let expected_len = list.read().len();
+                let len = expected_len as i64;
+                let start_raw = if args.len() > 1 { args[1].to_int()? } else { 0 };
+                let stop_raw = if args.len() > 2 {
+                    args[2].to_int()?
                 } else {
-                    0
+                    len
                 };
-                let stop = if args.len() > 2 {
-                    args[2].as_int().unwrap_or(v.len() as i64) as usize
+                let start = if start_raw < 0 {
+                    (len + start_raw).max(0)
                 } else {
-                    v.len()
-                };
-                for i in start..stop.min(v.len()) {
-                    if v[i].py_to_string() == target {
+                    start_raw.min(len)
+                } as usize;
+                let stop = if stop_raw < 0 {
+                    (len + stop_raw).max(0)
+                } else {
+                    stop_raw.min(len)
+                } as usize;
+                for i in start..stop {
+                    let item = {
+                        let v = list.read();
+                        if v.len() != expected_len {
+                            return Err(PyException::runtime_error(
+                                "deque mutated during iteration",
+                            ));
+                        }
+                        v[i].clone()
+                    };
+                    if deque_item_matches(&item, &args[0])? {
                         return Ok(PyObject::int(i as i64));
+                    }
+                    if list.read().len() != expected_len {
+                        return Err(PyException::runtime_error("deque mutated during iteration"));
                     }
                 }
                 return Err(PyException::new(
@@ -513,8 +587,10 @@ pub(super) fn call_deque_method(
             ))
         }
         "insert" => {
-            if args.len() < 2 {
-                return Err(PyException::type_error("insert() requires 2 arguments"));
+            if args.len() != 2 {
+                return Err(PyException::type_error(
+                    "insert() takes exactly 2 arguments",
+                ));
             }
             if let Some(ml) = get_maxlen() {
                 let data = get_data();
@@ -527,26 +603,46 @@ pub(super) fn call_deque_method(
                     }
                 }
             }
-            let idx = args[0].to_int()? as usize;
+            let idx = args[0].to_int()?;
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
-                let idx = idx.min(v.len());
+                let idx = normalize_insert_index(idx, v.len());
                 v.insert(idx, args[1].clone());
             }
             Ok(PyObject::none())
         }
         "remove" => {
-            if args.is_empty() {
-                return Err(PyException::type_error("remove() requires 1 argument"));
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "remove() takes exactly one argument",
+                ));
             }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
-                let target = args[0].py_to_string();
-                if let Some(pos) = v.iter().position(|x| x.py_to_string() == target) {
-                    v.remove(pos);
-                    return Ok(PyObject::none());
+                let expected_len = list.read().len();
+                for pos in 0..expected_len {
+                    let item = {
+                        let v = list.read();
+                        if v.len() != expected_len {
+                            return Err(PyException::runtime_error(
+                                "deque mutated during iteration",
+                            ));
+                        }
+                        v[pos].clone()
+                    };
+                    if deque_item_matches(&item, &args[0])? {
+                        if list.read().len() != expected_len {
+                            return Err(PyException::runtime_error(
+                                "deque mutated during iteration",
+                            ));
+                        }
+                        list.write().remove(pos);
+                        return Ok(PyObject::none());
+                    }
+                    if list.read().len() != expected_len {
+                        return Err(PyException::runtime_error("deque mutated during iteration"));
+                    }
                 }
                 return Err(PyException::new(
                     ExceptionKind::ValueError,
@@ -556,6 +652,9 @@ pub(super) fn call_deque_method(
             Ok(PyObject::none())
         }
         "reverse" => {
+            if !args.is_empty() {
+                return Err(PyException::type_error("reverse() takes no arguments"));
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().reverse();
@@ -580,16 +679,31 @@ pub(super) fn call_deque_method(
             Ok(PyObject::int(0))
         }
         "__contains__" => {
-            if args.is_empty() {
-                return Ok(PyObject::bool_val(false));
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__contains__() takes exactly one argument",
+                ));
             }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                let v = list.read();
-                let target = args[0].py_to_string();
-                return Ok(PyObject::bool_val(
-                    v.iter().any(|x| x.py_to_string() == target),
-                ));
+                let expected_len = list.read().len();
+                for i in 0..expected_len {
+                    let item = {
+                        let v = list.read();
+                        if v.len() != expected_len {
+                            return Err(PyException::runtime_error(
+                                "deque mutated during iteration",
+                            ));
+                        }
+                        v[i].clone()
+                    };
+                    if deque_item_matches(&item, &args[0])? {
+                        return Ok(PyObject::bool_val(true));
+                    }
+                    if list.read().len() != expected_len {
+                        return Err(PyException::runtime_error("deque mutated during iteration"));
+                    }
+                }
             }
             Ok(PyObject::bool_val(false))
         }
@@ -610,6 +724,44 @@ pub(super) fn call_deque_method(
                     ));
                 }
                 return Ok(v[actual_idx as usize].clone());
+            }
+            Err(PyException::new(
+                ExceptionKind::IndexError,
+                "deque index out of range",
+            ))
+        }
+        "__setitem__" => {
+            if args.len() != 2 {
+                return Err(PyException::type_error(
+                    "__setitem__() takes exactly 2 arguments",
+                ));
+            }
+            let idx = args[0].to_int()?;
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let mut v = list.write();
+                let actual_idx = normalize_index(idx, v.len())?;
+                v[actual_idx] = args[1].clone();
+                return Ok(PyObject::none());
+            }
+            Err(PyException::new(
+                ExceptionKind::IndexError,
+                "deque index out of range",
+            ))
+        }
+        "__delitem__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__delitem__() takes exactly one argument",
+                ));
+            }
+            let idx = args[0].to_int()?;
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let mut v = list.write();
+                let actual_idx = normalize_index(idx, v.len())?;
+                v.remove(actual_idx);
+                return Ok(PyObject::none());
             }
             Err(PyException::new(
                 ExceptionKind::IndexError,

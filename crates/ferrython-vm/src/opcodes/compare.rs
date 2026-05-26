@@ -671,7 +671,11 @@ impl VirtualMachine {
                 }
                 // Check for user-defined __contains__ in the class (including dict subclasses)
                 let custom_contains = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    cd.namespace.read().get("__contains__").cloned()
+                    if inst.attrs.read().contains_key("__deque__") {
+                        None
+                    } else {
+                        cd.namespace.read().get("__contains__").cloned()
+                    }
                 } else {
                     None
                 };
