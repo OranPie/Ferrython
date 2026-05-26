@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T13:10:19+08:00
+Last updated: 2026-05-26T13:35:39+08:00
 
 ## 已提交成果
 
@@ -47,6 +47,11 @@ Last updated: 2026-05-26T13:10:19+08:00
 ## 本轮修复成果
 
 - 2026-05-26 追加：
+  - cycle GC 纳入 heap class、bound method、builtin bound method，并遍历 class namespace/MRO/cache/vtable、bound method receiver/function，补齐 weakref cycle tests 里 class 与 callback bound method 的可达性分析。
+  - cycle GC 对 weakref ref 的 registry callback 额外计入内部引用，避免 weakref callback closure 被候选集错误漏算。
+  - 确认 cyclic garbage 后先把对象标记为 cycle-cleared，使外部 weakref 立即观察为 dead，再通知仍存活的外部 weakref callback；处于 trial cyclic trash 内的 weakref 自身 callback 被抑制，符合 CPython 清理 weakref trash 的语义。
+  - object freelist 复用对象块时清理 cycle-cleared 指针标记，避免地址复用后新对象被误判为 dead weakref target。
+  - instance 的 class 引用保留在内部引用计数中，但 verify 阶段不再把仍存活 class 当成阻止 instance 自环回收的外部边，修复 WeakKey/WeakValueDictionary len cycle 回归。
   - `WeakValueDictionary` / `WeakKeyDictionary` 补齐 mapping 构造、`update`、`setdefault`、`pop`、`popitem`、`clear`、`copy`、`keys`、`values`、`items`、`__iter__`、`__bool__`、repr 和 weakref helper 基础语义。
   - weakdict constructor 支持 mapping / iterable-of-pairs / kwargs，类级 `Weak*Dictionary.__init__` / `update` 描述符可以按 CPython 方式校验 self 并分派到实例方法。
   - `WeakKeyDictionary(dict_with_custom_hash_keys)` 保留原 key 对象 identity，不再因 native 层重新 hash 或 kwargs marker 探测误判导致容器为空。
@@ -150,7 +155,14 @@ Last updated: 2026-05-26T13:10:19+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 19s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 12.81s`
+- weakref cycle GC focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
+    - `run=2 pass=2 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_multiple_callbacks test_weakref.ReferencesTestCase.test_multiple_selfref_callbacks test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.FinalizeTestCase.test_finalize test_weakref.FinalizeTestCase.test_order test_weakref.FinalizeTestCase.test_all_freed test_weakref.FinalizeTestCase.test_arg_errors test_weakref.FinalizeTestCase.test_atexit test_weakref.MappingTestCase.test_weak_keyed_cascading_deletes test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating test_weakref.MappingTestCase.test_weak_keys_destroy_while_iterating test_weakref.MappingTestCase.test_weak_values test_weakref.MappingTestCase.test_weak_keys test_weakref.MappingTestCase.test_weak_valued_iters test_weakref.MappingTestCase.test_weak_keyed_iters`
+    - `run=18 pass=18 fail=0 err=0 skip=0`
 - weakdict focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_valued_dict_popitem test_weakref.MappingTestCase.test_weak_keyed_dict_popitem test_weakref.MappingTestCase.test_weak_valued_dict_setdefault test_weakref.MappingTestCase.test_weak_keyed_dict_setdefault test_weakref.MappingTestCase.test_weak_valued_dict_update test_weakref.MappingTestCase.test_weak_keyed_dict_update test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_weak_keyed_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_weak_valued_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_misc test_weakref.MappingTestCase.test_weak_keyed_delitem test_weakref.MappingTestCase.test_weak_valued_delitem test_weakref.MappingTestCase.test_weak_keyed_bad_delitem test_weakref.MappingTestCase.test_make_weak_valued_dict_repr test_weakref.MappingTestCase.test_make_weak_keyed_dict_repr test_weakref.MappingTestCase.test_weak_keyed_iters test_weakref.MappingTestCase.test_weak_valued_iters`
     - `run=18 pass=18 fail=0 err=0 skip=0`

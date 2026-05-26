@@ -5,7 +5,7 @@ use crate::object::methods::PyObjectMethods;
 use crate::types::{hash_frozenset_key_iter, HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::fmt;
 use std::hash::BuildHasherDefault;
@@ -199,6 +199,8 @@ struct WeakObjectEntry {
 thread_local! {
     static WEAKREF_OBJECTS: RefCell<FxHashMap<usize, Vec<WeakObjectEntry>>> =
         RefCell::new(FxHashMap::default());
+    static CYCLE_CLEARED_OBJECTS: RefCell<FxHashSet<usize>> =
+        RefCell::new(FxHashSet::default());
 }
 
 /// Allocate a fresh class version number.
@@ -583,6 +585,9 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
     });
     unsafe {
         let p = block.as_ptr();
+        CYCLE_CLEARED_OBJECTS.with(|cleared| {
+            cleared.borrow_mut().remove(&(p as usize));
+        });
         (*p).strong = Cell::new(1);
         // weak is already 0: initialized in alloc_slab_and_pop, and blocks are
         // only recycled when weak==0 (Drop fast path), so no reset needed.
@@ -762,6 +767,36 @@ impl PyObjectRef {
         Self::live_weak_entries(target_ptr).1
     }
 
+    pub fn mark_cycle_cleared(this: &Self) {
+        CYCLE_CLEARED_OBJECTS.with(|cleared| {
+            cleared.borrow_mut().insert(Self::as_ptr(this) as usize);
+        });
+    }
+
+    pub fn notify_cycle_collected_weakrefs(
+        this: &Self,
+        garbage_ptrs: &std::collections::HashSet<usize>,
+    ) {
+        let target_ptr = Self::as_ptr(this) as usize;
+        let entries = WEAKREF_OBJECTS
+            .try_with(|registry| registry.borrow_mut().remove(&target_ptr))
+            .ok()
+            .flatten();
+        if let Some(entries) = entries {
+            for entry in entries.into_iter().rev() {
+                let Some(weak_obj) = entry.weak_obj.upgrade() else {
+                    continue;
+                };
+                if garbage_ptrs.contains(&(Self::as_ptr(&weak_obj) as usize)) {
+                    continue;
+                }
+                if let Some(callback) = entry.callback {
+                    crate::error::request_vm_call(callback, vec![weak_obj]);
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     pub fn get_mut(this: &mut Self) -> Option<&mut PyObject> {
         unsafe {
@@ -893,9 +928,11 @@ impl PyWeakRef {
         unsafe {
             let p = self.0.as_ptr();
             let s = (*p).strong.get();
+            let is_cycle_cleared = CYCLE_CLEARED_OBJECTS
+                .with(|cleared| cleared.borrow().contains(&(self.0.as_ptr() as usize)));
             // Only upgrade if strong > 0 and not in a special state
             // (DROPPING_REFCOUNT means payload is being destroyed)
-            let alive = if s > 0 && s < DROPPING_REFCOUNT {
+            let alive = if !is_cycle_cleared && s > 0 && s < DROPPING_REFCOUNT {
                 let obj = &*(*p).obj.as_ptr();
                 !matches!(
                     &obj.payload,

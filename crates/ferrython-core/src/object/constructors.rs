@@ -704,6 +704,10 @@ fn run_cycle_collection() -> usize {
 
         // 6. Verify: all garbage objects must only reference other garbage objects
         // (conservative: only collect fully isolated cycles)
+        let candidate_ptrs: std::collections::HashSet<usize> = garbage_indices
+            .iter()
+            .map(|&gi| PyObjectRef::as_ptr(&alive[gi]) as usize)
+            .collect();
         let garbage_set: std::collections::HashSet<usize> =
             garbage_indices.iter().copied().collect();
         let mut confirmed_garbage: Vec<usize> = Vec::new();
@@ -714,8 +718,15 @@ fn run_cycle_collection() -> usize {
             }
         }
 
-        // 7. Break cycles by clearing contents on garbage objects
+        // 7. Make weak refs observe confirmed cyclic garbage as dead before
+        // clearing payloads, then notify weak refs that survived the cycle.
         let collected = confirmed_garbage.len();
+        for &gi in &confirmed_garbage {
+            PyObjectRef::mark_cycle_cleared(&alive[gi]);
+        }
+        for &gi in &confirmed_garbage {
+            PyObjectRef::notify_cycle_collected_weakrefs(&alive[gi], &candidate_ptrs);
+        }
         for &gi in &confirmed_garbage {
             break_cycles(&alive[gi].payload);
         }
@@ -747,6 +758,9 @@ fn is_gc_payload(payload: &PyObjectPayload) -> bool {
             | PyObjectPayload::List(_)
             | PyObjectPayload::Dict(_)
             | PyObjectPayload::MappingProxy(_)
+            | PyObjectPayload::Class(_)
+            | PyObjectPayload::BoundMethod { .. }
+            | PyObjectPayload::BuiltinBoundMethod(_)
             | PyObjectPayload::Set(_)
             | PyObjectPayload::Iterator(_)
             | PyObjectPayload::VecIter(_)
@@ -787,13 +801,24 @@ fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
     match payload {
         PyObjectPayload::Instance(inst) => {
             let mut refs: Vec<PyObjectRef> = inst.attrs.read().values().cloned().collect();
+            refs.push(inst.class.clone());
             if let Some(storage) = inst.dict_storage.as_ref() {
                 refs.extend(dict_storage_refs(storage));
+            }
+            if inst.attrs.read().contains_key("__weakref_ref__") {
+                if let Some(callback) = inst.attrs.read().get("__weakref_callback__").cloned() {
+                    refs.push(callback);
+                }
             }
             refs
         }
         PyObjectPayload::List(items) => items.read().iter().cloned().collect(),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => dict_storage_refs(map),
+        PyObjectPayload::Class(cd) => class_refs(cd),
+        PyObjectPayload::BoundMethod { receiver, method } => {
+            vec![receiver.clone(), method.clone()]
+        }
+        PyObjectPayload::BuiltinBoundMethod(data) => vec![data.receiver.clone()],
         PyObjectPayload::Set(items) => set_storage_refs(items),
         PyObjectPayload::DictKeys { map, owner }
         | PyObjectPayload::DictValues { map, owner }
@@ -843,6 +868,19 @@ fn set_storage_refs(map: &Rc<PyCell<FxHashKeyFlatMap>>) -> Vec<PyObjectRef> {
         hashable_key_refs(key, &mut refs);
         refs.push(value.clone());
     }
+    refs
+}
+
+fn class_refs(cd: &ClassData) -> Vec<PyObjectRef> {
+    let mut refs = Vec::new();
+    refs.extend(cd.bases.iter().cloned());
+    refs.extend(cd.namespace.read().values().cloned());
+    refs.extend(cd.mro.iter().cloned());
+    if let Some(metaclass) = &cd.metaclass {
+        refs.push(metaclass.clone());
+    }
+    refs.extend(cd.method_cache.read().values().filter_map(|v| v.clone()));
+    refs.extend(cd.method_vtable.read().values().cloned());
     refs
 }
 
@@ -962,6 +1000,11 @@ fn count_internal_refs(
                     gc_add_pyref(&item, ptr_map, internal_refs);
                 }
             }
+            if attrs.contains_key("__weakref_ref__") {
+                if let Some(callback) = attrs.get("__weakref_callback__") {
+                    gc_add_pyref(&callback, ptr_map, internal_refs);
+                }
+            }
             gc_add_pyref(&inst.class, ptr_map, internal_refs);
         }
         PyObjectPayload::List(items) => {
@@ -999,7 +1042,7 @@ fn verify_all_refs_in_garbage(
                     }
                 }
             }
-            gc_ref_is_garbage(&inst.class, ptr_map, garbage_set)
+            true
         }
         PyObjectPayload::List(items) => {
             let items = items.read();
@@ -1039,6 +1082,12 @@ fn break_cycles(payload: &PyObjectPayload) {
         }
         PyObjectPayload::Dict(map) => {
             map.write().clear();
+        }
+        PyObjectPayload::Class(cd) => {
+            cd.namespace.write().clear();
+            cd.method_cache.write().clear();
+            cd.method_vtable.write().clear();
+            cd.subclasses.write().clear();
         }
         PyObjectPayload::Set(items) => {
             items.write().clear();
@@ -1280,13 +1329,15 @@ impl PyObject {
         namespace: IndexMap<CompactString, PyObjectRef>,
     ) -> PyObjectRef {
         let fx_ns: FxAttrMap = namespace.into_iter().collect();
-        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+        let obj = Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
             name,
             bases,
             fx_ns,
             Vec::new(),
             None,
-        ))))
+        ))));
+        track_object(&obj);
+        obj
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         // Use cached flags from ClassData to avoid hierarchy traversal
