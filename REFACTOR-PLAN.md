@@ -9,7 +9,8 @@ Last updated: 2026-05-26
 - Phase 2 text module mechanical splits are mostly complete. The top-level
   `text_modules.rs` is now a small module/re-export shell; `regex_impl.rs`
   has been split internally into match objects, compiled/scanner methods,
-  classes/flags, and pattern conversion/validation helpers.
+  classes/flags, pattern conversion/validation helpers, `_sre` helpers, and
+  module-level `re.*` functions.
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
