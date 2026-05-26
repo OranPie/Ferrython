@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:44:05+08:00
+Last updated: 2026-05-27T07:47:39+08:00
 
 ## 代码质量重构进度
 
@@ -44,6 +44,9 @@ Last updated: 2026-05-27T07:44:05+08:00
   - `7b4ae08 refactor: split regex pattern helpers`
   - `text_modules/regex_impl/pattern.rs` 拆出 pattern 对象识别、str/bytes pattern 抽取、inline flags、Python regex 到 Rust regex 转换、replacement template 校验、re.error 构造、debug dump、regex/fancy-regex 编译辅助和 offset/index 转换。
   - `regex_impl.rs` 从约 3766 行降到约 1416 行，并从 `CODE_HEALTH_BASELINE.md` 的 top 25 最长 Rust 文件中退出。
+- 已继续 regex pattern helper 内部分层：
+  - 新增 `text_modules/regex_impl/pattern/extract.rs`，拆出 Pattern 对象识别、str/bytes subject 和 pattern 抽取、bytes/text 转换、replacement 抽取、mapping proxy helper。
+  - `pattern.rs` 从约 2369 行降到约 2182 行；新 `extract.rs` 约 200 行。
 - 已完成并提交 regex `_sre` 拆分：
   - `59cf99a refactor: split sre module helpers`
   - `text_modules/regex_impl/sre.rs` 拆出 `_sre` module factory、大小写 helper 和 `_sre.compile` stub 校验。
@@ -235,6 +238,7 @@ Last updated: 2026-05-27T07:44:05+08:00
   - regex classes/flags 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex classes/flags 拆分后追加通过 `cargo check -p ferrython-vm`，仅剩既有 warning。
   - regex pattern/conversion/validation 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex pattern extract helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex `_sre` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex module functions 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial base64 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
