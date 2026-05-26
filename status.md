@@ -69,7 +69,7 @@ Last updated: 2026-05-26T19:21:21+08:00
   - `serial_modules/binascii_module.rs` 拆出 `binascii` module factory、hexlify/unhexlify、crc32、base64 bridge 和 `Error` 类型导出。
   - `serial_modules/other.rs` 从约 4734 行降到约 4617 行。
 - 已完成并提交 serial 剩余模块拆分：
-  - `b732523 refactor: split remaining serial modules`
+  - `f6658c6 refactor: split remaining serial modules`
   - `serial_modules/codecs_module.rs` 拆出 `codecs` module factory、编码规范化、utf-8/utf-16/utf-32、cp1252、rot13、punycode/idna 和错误处理 helper。
   - `serial_modules/dbm_module.rs` 拆出 `dbm` module factory 和长度前缀磁盘存储 stub。
   - `serial_modules/shelve_module.rs` 拆出 `shelve` module factory，并通过 `pickle_module` 的 `pub(super)` helper 复用序列化/反序列化。
