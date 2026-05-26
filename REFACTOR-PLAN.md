@@ -21,8 +21,8 @@ Last updated: 2026-05-26
   `pickle`, `shelve`, and `struct`.
 - Phase 2 misc module mechanical splits have started. Low/medium-coupling
   `__future__`, `readline`, `runpy`, `compileall`, `pstats`, `quopri`,
-  `stringprep`, `mimetypes`, `cmd`, `plistlib`, and `curses` implementations
-  now live under `misc_modules/`.
+  `stringprep`, `mimetypes`, `cmd`, `plistlib`, `curses`, `contextvars`, and
+  `ctypes` implementations now live under `misc_modules/`.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 

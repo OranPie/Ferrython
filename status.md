@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T19:35:46+08:00
+Last updated: 2026-05-26T19:45:33+08:00
 
 ## 代码质量重构进度
 
@@ -82,6 +82,10 @@ Last updated: 2026-05-26T19:35:46+08:00
   - `aafeb8d refactor: split more misc modules`
   - `misc_modules/mimetypes.rs`、`cmd.rs`、`plistlib.rs`、`curses.rs` 拆出中等耦合 misc 模块。
   - `misc_modules.rs` 从约 4605 行降到约 3295 行；剩余主要是 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`copy` 和 `ctypes`。
+- 已完成待提交 misc context/ctypes 批量拆分：
+  - `misc_modules/contextvars.rs` 拆出 `contextvars` module factory、`ContextVar`、`Context` 和 `Token` stub 逻辑。
+  - `misc_modules/ctypes.rs` 拆出 `ctypes` module factory、C 类型包装、`CDLL`/`dlsym` bridge、`pythonapi.PyBytes_FromFormat` 和 errno helpers。
+  - `misc_modules.rs` 从约 3295 行降到约 2208 行；剩余主要是 `contextlib`、`dataclasses`、`copy` 和 `builtins`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -99,10 +103,11 @@ Last updated: 2026-05-26T19:35:46+08:00
   - serial codecs/dbm/shelve/pickle rename 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc 小模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc mimetypes/cmd/plistlib/curses 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - misc contextvars/ctypes 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
-  - 继续拆 `misc_modules.rs`，优先考虑 `contextvars` 和 `ctypes`，再处理 `contextlib`、`dataclasses`、`builtins`、`copy` 等高耦合块。
+  - 继续拆 `misc_modules.rs`，下一批优先批量处理 `contextlib`、`dataclasses`、`copy` 和 `builtins` 等高耦合块。
   - 再评估 `misc_modules.rs`、`sys_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
