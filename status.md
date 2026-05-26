@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T13:35:39+08:00
+Last updated: 2026-05-26T13:50:36+08:00
 
 ## 已提交成果
 
@@ -110,6 +110,8 @@ Last updated: 2026-05-26T13:35:39+08:00
   - CLI 正常脚本结束后调用 `atexit._run_exitfuncs()`，普通 `atexit.register(print, ...)` 和 `weakref.finalize(..., atexit=True)` 能在进程退出时执行。
   - `weakref.finalize` 的 atexit callback 在手动调用、detach 或 referent 自动触发后同步注销，避免 `test_all_freed` 中 callback/finalizer 被退出 registry 残留。
   - `stdlib/Lib/test/test_weakref.py` 增加代理模块，让子进程中的 `from test.test_weakref import FinalizeTestCase` 能加载 vendored CPython 测试。
+  - VM native kwargs fallback 对 `weakref.__new__` / `weakref.__init__` 保留内部 marker；精确 `weakref.ref(..., callback=...)` 和默认继承 init 的 ref 子类按 CPython 拒绝 keyword，而自定义 `__init__` 的 ref 子类可消费额外 kwargs。
+  - `weakref.__new__` 不再把子类构造 kwargs dict 误当 callback 注册，清除 `SubclassableWeakrefTestCase.test_subclass_refs` 的 unraisable `TypeError: 'dict' object is not callable` 输出噪音。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -155,7 +157,14 @@ Last updated: 2026-05-26T13:35:39+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 12.81s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 14s`
+- weakref subclass kwargs cleanup：
+  - smoke: `MyRef(weakref.ref).__init__(..., value=24)` 可消费 `value`，内部 `__weakref_callback__` 保持 `None`，referent 删除后无 unraisable callback 噪音。
+  - smoke: `weakref.ref(obj, callback=...)` 与默认继承 init 的 `PlainRef(obj, value=24)` 均抛 `TypeError: ref() takes no keyword arguments`。
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.SubclassableWeakrefTestCase.test_subclass_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_replace_standard_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_conflate_callbacks test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_slots test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_cycle test_weakref.ReferencesTestCase.test_init test_weakref.ReferencesTestCase.test_callback_attribute test_weakref.ReferencesTestCase.test_callback_attribute_after_deletion test_weakref.ReferencesTestCase.test_set_callback_attribute`
+    - `run=9 pass=9 fail=0 err=0 skip=0`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref`
+    - `run=125 pass=122 fail=0 err=0 skip=3`，无 `dict object is not callable` unraisable 噪音
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`
@@ -269,13 +278,12 @@ Last updated: 2026-05-26T13:35:39+08:00
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating`
     - `run=1 pass=1 fail=0 err=0 skip=0`
   - `test_weakref` module summary：
-    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref`
-    - `run=125 pass=116 fail=6 err=0 skip=3`; remaining: `FinalizeTestCase.test_all_freed`, `FinalizeTestCase.test_atexit`, `FinalizeTestCase.test_finalize`, `FinalizeTestCase.test_order`, `ReferencesTestCase.test_callback_in_cycle_resurrection`, `ReferencesTestCase.test_callbacks_on_callback`
-    - note: finalize 4 项随后已通过 focused 验证；未重跑整模块以节省迭代时间。
+    - previous: `run=125 pass=116 fail=6 err=0 skip=3`; remaining were finalize 4 项与 cycle-callback 2 项。
+    - latest: `run=125 pass=122 fail=0 err=0 skip=3`，模块级通过且无 ref 子类 unraisable 噪音。
   - smoke: dead `weakref.ref` equality 与 CPython identity 语义一致，`a == b` 为 `False`、`a != b` 为 `True`，共享无 callback ref 的 `a == d` 为 `True`。
   - smoke: `ref.__callback__` alive/dead、`hash(ref)` alive/dead cache、`weakref.ref(obj, callback=None)` TypeError 与 CPython 期望一致。
   - smoke: weakdict 内部 ref 计数可见，`WeakValueDictionary` 中 value 的 `getweakrefcount()` 为 1，`WeakKeyDictionary` 中 key 在同时被 weak value/key dict 持有时为 2；删除对象后两类 weakdict 长度同步下降。
-  - known noise: `SubclassableWeakrefTestCase.test_subclass_refs` 仍会输出一次 unraisable `TypeError: 'dict' object is not callable`，当前不影响 focused 通过，后续可单独清理。
+  - fixed noise: `SubclassableWeakrefTestCase.test_subclass_refs` 不再输出 `TypeError: 'dict' object is not callable` unraisable。
   - smoke: `WeakKeyDictionary({custom_hash_object: value})` 后 `list(keys)`、`contains`、`get` 均保留同一 key identity。
   - smoke: custom key `__eq__` 返回 `NotImplemented` 时，`'__weakdict_kwargs__' in {custom_key: value}` 为 `False`。
   - smoke: `dict.keys(None)` / `dict.values(None)` / `dict.items(None)` / `dict.get(1, 2, 3)` 均抛 `TypeError`。
@@ -368,10 +376,9 @@ Last updated: 2026-05-26T13:35:39+08:00
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict focused 批次已通过；`FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors` / `test_atexit` 已关闭。下一步优先继续扫描 `test_weakref` 剩余 cycle-callback 失败，或转向 deque 小批候选。
+- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；下一步转向 `test_copy` 残留或 `deque` 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
-    - `test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection` / `test_callbacks_on_callback` 仍与 cycle GC 弱回调清理语义有关。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选

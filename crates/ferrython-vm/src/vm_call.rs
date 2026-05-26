@@ -4130,6 +4130,17 @@ impl VirtualMachine {
                             for (k, v) in kwargs {
                                 kw_map.insert(HashableKey::str_key(k), v);
                             }
+                            if matches!(
+                                nf_data.name.as_str(),
+                                "weakref.__new__" | "weakref.__init__"
+                            ) {
+                                kw_map.insert(
+                                    HashableKey::str_key(CompactString::from(
+                                        "__weakref_ref_kwargs__",
+                                    )),
+                                    PyObject::bool_val(true),
+                                );
+                            }
                             all_args.push(PyObject::dict(kw_map));
                             return (nf_data.func)(&all_args);
                         }

@@ -1307,6 +1307,21 @@ pub fn create_weakref_module() -> PyObjectRef {
     }
 
     fn weak_ref_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let marker = HashableKey::str_key(CompactString::from("__weakref_ref_kwargs__"));
+        let (args, has_kwargs_marker) =
+            if let Some(PyObjectPayload::Dict(map)) = args.last().map(|arg| &arg.payload) {
+                let has_marker = map.read().contains_key(&marker);
+                if has_marker {
+                    (&args[..args.len() - 1], true)
+                } else {
+                    (args, false)
+                }
+            } else {
+                (args, false)
+            };
+        if has_kwargs_marker {
+            return Err(PyException::type_error("ref() takes no keyword arguments"));
+        }
         if args.len() > 3 {
             return Err(PyException::type_error(format!(
                 "__init__() takes at most 2 arguments ({} given)",
@@ -1322,17 +1337,18 @@ pub fn create_weakref_module() -> PyObjectRef {
                 "ref.__new__ requires type and object",
             ));
         }
-        let has_kwargs_marker = args.last().is_some_and(|arg| {
-            if let PyObjectPayload::Dict(map) = &arg.payload {
-                let marker = HashableKey::str_key(CompactString::from("__weakref_ref_kwargs__"));
-                map.read().contains_key(&marker)
+        let marker = HashableKey::str_key(CompactString::from("__weakref_ref_kwargs__"));
+        let (args, has_kwargs_marker) =
+            if let Some(PyObjectPayload::Dict(map)) = args.last().map(|arg| &arg.payload) {
+                let has_marker = map.read().contains_key(&marker);
+                if has_marker {
+                    (&args[..args.len() - 1], true)
+                } else {
+                    (args, false)
+                }
             } else {
-                false
-            }
-        });
-        if has_kwargs_marker {
-            return Err(PyException::type_error("ref() takes no keyword arguments"));
-        }
+                (args, false)
+            };
         if args.len() > 3 {
             return Err(PyException::type_error(format!(
                 "ref() takes at most 2 arguments ({} given)",
@@ -1340,6 +1356,13 @@ pub fn create_weakref_module() -> PyObjectRef {
             )));
         }
         let cls = args[0].clone();
+        if has_kwargs_marker {
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                if cd.name.as_str() == "weakref" {
+                    return Err(PyException::type_error("ref() takes no keyword arguments"));
+                }
+            }
+        }
         let target = args[1].clone();
         let callback = args.get(2).cloned().unwrap_or_else(PyObject::none);
         let callback = if matches!(callback.payload, PyObjectPayload::None) {
