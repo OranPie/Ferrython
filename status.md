@@ -1,6 +1,36 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T17:45:15+08:00
+Last updated: 2026-05-26T18:28:31+08:00
+
+## 代码质量重构进度
+
+- 已写入并提交重构计划：
+  - `46458b2 docs: add code quality refactor plan`
+  - `REFACTOR-PLAN.md` 明确 guardrails、stdlib 拆分、stdlib registry、VM dispatch、VM call 和 core object 边界清理阶段。
+- 已提交代码健康基线：
+  - `24f550c tools: add code health baseline`
+  - `tools/code_health.py` 可生成最长文件、match 热点、item 密度和 oversized candidates。
+- 已完成并提交 `text_modules` 第一轮机械拆分：
+  - `e2890b5 refactor: split text encoding modules`
+  - `bc52d9f refactor: split small text modules`
+  - `024e38d refactor: split difflib and pprint modules`
+  - `6e0b17f refactor: split html parser and unicodedata modules`
+  - `cf32a4a refactor: split textwrap module`
+  - `73a0b2f refactor: split string and regex text modules`
+  - 结果：`crates/ferrython-stdlib/src/text_modules.rs` 缩到入口/重导出文件；剩余热点是 `text_modules/regex_impl.rs`。
+- 已完成并提交 `introspection_modules` 第一轮机械拆分：
+  - `2195530 refactor: split introspection modules`
+  - 结果：`warnings`、`traceback`、`inspect`、`dis`、`ast`、`linecache`、`token`、`tokenize`、`symtable` 和 `ast_convert` 分离成独立文件。
+- 本批已完成待提交：
+  - `introspection_modules/ast.rs` 继续拆为入口、`ast/nodes.rs`、`ast/to_py.rs`、`ast/tools.rs`、`ast/unparse.rs`。
+  - `ast.rs` 从约 3274 行降到约 754 行，最大 AST 子文件约 1084 行。
+- 当前验证：
+  - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
+  - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+- 后续重构队列：
+  - 继续拆 `text_modules/regex_impl.rs`，优先拆 regex flags/class、pattern conversion/validation、match object、module functions、compiled pattern methods。
+  - 再评估 `serial_modules/other.rs`、`misc_modules.rs`、`sys_modules.rs` 等 stdlib 热点。
+  - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
 

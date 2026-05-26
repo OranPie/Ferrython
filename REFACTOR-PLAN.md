@@ -2,6 +2,20 @@
 
 Last updated: 2026-05-26
 
+## Progress Snapshot
+
+- Phase 1 guardrails are committed: `tools/code_health.py` and
+  `CODE_HEALTH_BASELINE.md`.
+- Phase 2 text module mechanical splits are mostly complete. The top-level
+  `text_modules.rs` is now a small module/re-export shell; `regex_impl.rs`
+  remains the main text-processing hotspot and should be split internally.
+- Phase 2 introspection module mechanical splits are complete. The top-level
+  `introspection_modules.rs` is now a small module/re-export shell.
+- `_ast` implementation is being split internally into node/class helpers,
+  Rust-AST-to-PyObject conversion, utility APIs, and unparse support.
+- Latest focused validation for these mechanical Rust moves:
+  `cargo check -p ferrython-stdlib`.
+
 ## Goal
 
 Improve Ferrython's code quality and architecture while preserving CPython
