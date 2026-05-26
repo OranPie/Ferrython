@@ -8,7 +8,8 @@ Last updated: 2026-05-26
   `CODE_HEALTH_BASELINE.md`.
 - Phase 2 text module mechanical splits are mostly complete. The top-level
   `text_modules.rs` is now a small module/re-export shell; `regex_impl.rs`
-  remains the main text-processing hotspot and should be split internally.
+  has been split internally into match objects, compiled/scanner methods,
+  classes/flags, and pattern conversion/validation helpers.
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,

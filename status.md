@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T18:39:07+08:00
+Last updated: 2026-05-26T18:46:40+08:00
 
 ## 代码质量重构进度
 
@@ -36,17 +36,23 @@ Last updated: 2026-05-26T18:39:07+08:00
   - `55326c4 refactor: split regex compiled methods`
   - `text_modules/regex_impl/compiled.rs` 拆出 compiled Pattern 方法、Scanner 方法和 pattern window 参数处理。
   - `regex_impl.rs` 进一步降到约 4128 行。
-- 本批已完成待提交：
+- 已完成并提交 regex classes/flags 拆分：
+  - `328baa8 refactor: split regex classes`
   - `text_modules/regex_impl/classes.rs` 拆出 Pattern/Scanner class 构造、RegexFlag 对象和 Pattern dunder 方法。
   - `regex_impl.rs` 进一步降到约 3766 行。
+- 本批已完成待提交：
+  - `text_modules/regex_impl/pattern.rs` 拆出 pattern 对象识别、str/bytes pattern 抽取、inline flags、Python regex 到 Rust regex 转换、replacement template 校验、re.error 构造、debug dump、regex/fancy-regex 编译辅助和 offset/index 转换。
+  - `regex_impl.rs` 从约 3766 行降到约 1416 行，并从 `CODE_HEALTH_BASELINE.md` 的 top 25 最长 Rust 文件中退出。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex match object 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex compiled/scanner 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex classes/flags 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex classes/flags 拆分后追加通过 `cargo check -p ferrython-vm`，仅剩既有 warning。
+  - regex pattern/conversion/validation 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
-  - 继续拆 `text_modules/regex_impl.rs`，优先拆 pattern conversion/validation、module functions 和 engine helpers。
+  - 继续拆 `text_modules/regex_impl.rs`，优先拆 module functions、sub/subn/split helpers 和 simple-match fast paths。
   - 再评估 `serial_modules/other.rs`、`misc_modules.rs`、`sys_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
