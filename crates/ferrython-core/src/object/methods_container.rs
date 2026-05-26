@@ -261,6 +261,14 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 0
             })
         }
+        PyObjectPayload::WeakValueIter(data) => {
+            let idx = data.index.get();
+            Ok(if idx < data.entries.len() {
+                data.entries.len() - idx
+            } else {
+                0
+            })
+        }
         PyObjectPayload::RefIter { source, index } => {
             if index.get() == usize::MAX {
                 return Ok(0);
@@ -816,6 +824,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } => Ok(obj.clone()),
         PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators

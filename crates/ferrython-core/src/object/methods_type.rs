@@ -141,7 +141,9 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         }
         PyObjectPayload::Module(_) => "module",
         PyObjectPayload::RangeIter(..) => "range_iterator",
-        PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "list_iterator",
+        PyObjectPayload::VecIter(_)
+        | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::RefIter { .. } => "list_iterator",
         PyObjectPayload::RevRefIter { .. } => "list_reverseiterator",
         PyObjectPayload::Iterator(iter_data) => {
             let guard = iter_data.read();
@@ -728,7 +730,9 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             format!("<module '{}'>", m.name)
         }
         PyObjectPayload::Iterator(_) => "<iterator>".into(),
-        PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
+        PyObjectPayload::VecIter(_)
+        | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
         PyObjectPayload::RevRefIter { .. } => "<iterator>".into(),
         PyObjectPayload::Range(rd) => {
             if rd.step == 1 {

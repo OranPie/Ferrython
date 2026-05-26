@@ -880,7 +880,8 @@ pub(crate) fn call_dict_method(
                     }
                     PyObjectPayload::Instance(_) => {
                         if let Some(keys_method) = args[0].get_attr("keys") {
-                            let keys_obj = ferrython_core::object::call_callable(&keys_method, &[])?;
+                            let keys_obj =
+                                ferrython_core::object::call_callable(&keys_method, &[])?;
                             let keys = keys_obj.to_list()?;
                             let mut w = map.write();
                             for key_obj in keys {

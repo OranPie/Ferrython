@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T11:50:00+08:00
+Last updated: 2026-05-26T12:15:42+08:00
 
 ## 已提交成果
 
@@ -85,6 +85,9 @@ Last updated: 2026-05-26T11:50:00+08:00
   - `WeakMethod` hash 区分普通 weakref target 与 WeakMethod 重建路径，使用 receiver hash + 稳定 function 标识，保证相等 WeakMethod hash 相等且 dead 后复用缓存。
   - `WeakValueDictionary` / `WeakKeyDictionary` 内部弱引用改为持有并注册真实 weakref 对象，`getweakrefcount()`、`valuerefs()`、`keyrefs()` 能观察到 weakdict 内部 weakref。
   - weakdict `len()` / `bool()` / `pop()` / `popitem()` / refs iterator 清理路径统一通过 weakref target 判断 live/dead，避免裸 `PyWeakRef` 与 registry 状态分裂。
+  - `WeakValueDictionary.keys()` / `values()` / `items()` / `__iter__` 改用专用 weak-value iterator，迭代器只持有 key 与内部 weakref，不再强保活 value。
+  - VM / builtin iterator hot paths 识别 weak-value iterator，`list()` / `for` / `next()` / `iter()` 等路径按 live weakref target 流式产出，跳过 dead value。
+  - `WeakValueDictionary.__delitem__` 对 dead entry 先清理再按 CPython 抛 `KeyError`；weakdict `copy()` / `update()` / equality 对 weakdict 对象使用内部 live items accessor，避免经 view iterator 强保活或触发 core-only `to_list()`。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -216,7 +219,11 @@ Last updated: 2026-05-26T11:50:00+08:00
     - `run=4 pass=4 fail=0 err=0 skip=0`
   - weakdict remaining failure probe：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_keyed_cascading_deletes test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating test_weakref.MappingTestCase.test_weak_keys_destroy_while_iterating`
-    - `run=5 pass=2 fail=3 err=0 skip=0`; remaining: `test_weak_keyed_cascading_deletes`, `test_weak_keyed_len_cycles`, `test_weak_values_destroy_while_iterating`
+    - latest: `run=5 pass=3 fail=2 err=0 skip=0`; remaining: `test_weak_keyed_cascading_deletes`, `test_weak_keyed_len_cycles`
+    - previous: `run=5 pass=2 fail=3 err=0 skip=0`; fixed from this probe: `test_weak_values_destroy_while_iterating`
+  - weak value destroy-while-iterating focused：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating`
+    - `run=1 pass=1 fail=0 err=0 skip=0`
   - smoke: dead `weakref.ref` equality 与 CPython identity 语义一致，`a == b` 为 `False`、`a != b` 为 `True`，共享无 callback ref 的 `a == d` 为 `True`。
   - smoke: `ref.__callback__` alive/dead、`hash(ref)` alive/dead cache、`weakref.ref(obj, callback=None)` TypeError 与 CPython 期望一致。
   - smoke: weakdict 内部 ref 计数可见，`WeakValueDictionary` 中 value 的 `getweakrefcount()` 为 1，`WeakKeyDictionary` 中 key 在同时被 weak value/key dict 持有时为 2；删除对象后两类 weakdict 长度同步下降。

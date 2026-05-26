@@ -1163,6 +1163,20 @@ pub struct VecIterData {
     pub index: SyncUsize,
 }
 
+#[derive(Clone, Debug)]
+pub enum WeakValueIterKind {
+    Keys,
+    Values,
+    Items,
+}
+
+#[derive(Clone, Debug)]
+pub struct WeakValueIterData {
+    pub entries: Vec<(PyObjectRef, PyObjectRef)>,
+    pub index: SyncUsize,
+    pub kind: WeakValueIterKind,
+}
+
 /// Boxed range data — moved out of enum to shrink PyObjectPayload from 32→24 bytes.
 #[derive(Clone, Debug)]
 pub struct RangeData {
@@ -1232,6 +1246,7 @@ pub enum PyObjectPayload {
     /// Used for dict-key/set/bytes iteration where items must be materialized.
     /// Boxed to keep PyObjectPayload at 32 bytes (Vec + SyncUsize = 32 > 24 limit).
     VecIter(Box<VecIterData>),
+    WeakValueIter(Box<WeakValueIterData>),
     /// Lazy reference iterator — holds a reference to the source container (list/tuple)
     /// and iterates by index without cloning elements upfront. Saves n Rc::clone at
     /// creation + n Rc::drop at destruction. CPython-style: just a pointer + position.
@@ -1395,6 +1410,14 @@ impl fmt::Debug for PyObjectPayload {
                 ri.step
             ),
             Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
+            Self::WeakValueIter(data) => {
+                write!(
+                    f,
+                    "WeakValueIter({}/{})",
+                    data.index.get(),
+                    data.entries.len()
+                )
+            }
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::RevRefIter { index, .. } => write!(f, "RevRefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),

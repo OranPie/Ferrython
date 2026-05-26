@@ -4174,9 +4174,7 @@ impl VirtualMachine {
                                 PyObject::bool_val(true),
                             ));
                         }
-                        if !adjusted_kwargs.is_empty()
-                            && nc.name.as_str() == "weakref.__new__"
-                        {
+                        if !adjusted_kwargs.is_empty() && nc.name.as_str() == "weakref.__new__" {
                             adjusted_kwargs.push((
                                 CompactString::from("__weakref_ref_kwargs__"),
                                 PyObject::bool_val(true),
@@ -4837,27 +4835,27 @@ impl VirtualMachine {
                             return Ok(PyObject::dict(map));
                         }
                         // dict(instance_with_dict_storage) — e.g., defaultdict, OrderedDict
-	                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
-	                            if let Some(ref ds) = inst.dict_storage {
-	                                let mut map = IndexMap::new();
-	                                for (k, v) in ds.read().iter() {
-	                                    map.insert(k.clone(), v.clone());
-	                                }
-	                                return Ok(PyObject::dict(map));
-	                            }
-	                            if let Some(keys_method) = args[0].get_attr("keys") {
-	                                let keys_obj = self.call_object(keys_method, vec![])?;
-	                                let keys = self.collect_iterable(&keys_obj)?;
-	                                let mut map = IndexMap::new();
-	                                for key_obj in keys {
-	                                    let value = args[0].get_item(&key_obj)?;
-	                                    map.insert(key_obj.to_hashable_key()?, value);
-	                                }
-	                                return Ok(PyObject::dict(map));
-	                            }
-	                            if inst.attrs.read().contains_key("__chainmap__") {
-	                                if let Some(items_method) = args[0].get_attr("items") {
-	                                    let items_obj = self.call_object(items_method, vec![])?;
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if let Some(ref ds) = inst.dict_storage {
+                                let mut map = IndexMap::new();
+                                for (k, v) in ds.read().iter() {
+                                    map.insert(k.clone(), v.clone());
+                                }
+                                return Ok(PyObject::dict(map));
+                            }
+                            if let Some(keys_method) = args[0].get_attr("keys") {
+                                let keys_obj = self.call_object(keys_method, vec![])?;
+                                let keys = self.collect_iterable(&keys_obj)?;
+                                let mut map = IndexMap::new();
+                                for key_obj in keys {
+                                    let value = args[0].get_item(&key_obj)?;
+                                    map.insert(key_obj.to_hashable_key()?, value);
+                                }
+                                return Ok(PyObject::dict(map));
+                            }
+                            if inst.attrs.read().contains_key("__chainmap__") {
+                                if let Some(items_method) = args[0].get_attr("items") {
+                                    let items_obj = self.call_object(items_method, vec![])?;
                                     let items = self.collect_iterable(&items_obj)?;
                                     let mut map = IndexMap::new();
                                     for item in &items {
@@ -6294,6 +6292,7 @@ impl VirtualMachine {
                 if let PyObjectPayload::Iterator(_)
                 | PyObjectPayload::RangeIter(..)
                 | PyObjectPayload::VecIter(_)
+                | PyObjectPayload::WeakValueIter(_)
                 | PyObjectPayload::RefIter { .. }
                 | PyObjectPayload::RevRefIter { .. } = &bbm.receiver.payload
                 {
