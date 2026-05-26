@@ -1,6 +1,8 @@
 //! Collection and functional stdlib modules
 
+mod chainmap;
 mod collections;
+mod deque;
 mod functools;
 mod itertools;
 mod operator;

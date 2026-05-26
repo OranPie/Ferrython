@@ -61,9 +61,9 @@ Last updated: 2026-05-27
   The remaining root file now keeps only shared deferred-call state plus
   submodule declarations/re-exports.
 - Phase 2 collection module mechanical splits have started. `UserDict`,
-  `UserList`, `UserString`, and their slice/copy/data helpers now live in
-  `collection_modules/user_types.rs`; `collections.rs` still owns module
-  assembly plus OrderedDict/defaultdict/Counter/namedtuple/deque/ChainMap.
+  `UserList`, `UserString`, `deque`, and `ChainMap` now live in focused
+  `collection_modules/` files; `collections.rs` still owns module assembly plus
+  OrderedDict/defaultdict/Counter/namedtuple and `_count_elements`.
 - Phase 2 filesystem/process module mechanical splits are complete at the
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
@@ -87,8 +87,9 @@ architecture concerns from compatibility fixes.
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
 - `crates/ferrython-stdlib/src/collection_modules/collections.rs` is still over
-  3k lines after the User* split and combines deque, defaultdict, Counter,
-  ChainMap, OrderedDict, namedtuple, and module assembly helpers.
+  2k lines after the User*/deque/ChainMap split and combines OrderedDict,
+  defaultdict, Counter, namedtuple, `_count_elements`, and module assembly
+  helpers.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T05:43:29+08:00
+Last updated: 2026-05-27T05:48:11+08:00
 
 ## 代码质量重构进度
 
@@ -156,6 +156,11 @@ Last updated: 2026-05-27T05:43:29+08:00
   - `collections.rs` 保留 module assembly、OrderedDict/defaultdict/Counter/namedtuple/deque/ChainMap 和 `_count_elements`。
   - `collections.rs` 从约 4879 行降到约 3407 行；`user_types.rs` 当前约 1479 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `collection_modules/collections` deque/ChainMap 拆分：
+  - 新增 `collection_modules/deque.rs`，把 `collections.deque` constructor 和全部 deque 方法闭包从 `collections.rs` 抽离。
+  - 新增 `collection_modules/chainmap.rs`，把 `ChainMap` class factory、instance/parents helper 和 map lookup/view helpers 从 `collections.rs` 抽离。
+  - `collections.rs` 从约 3407 行降到约 2447 行；后续仍保留 OrderedDict/defaultdict/Counter/namedtuple 和 `_count_elements`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 低耦合尾部拆分：
   - 新增 `fs_modules/subprocess.rs`，把 `subprocess` module factory、`run/call/check_*`、`Popen` 和 `CompletedProcess` helper 从根文件抽离。
   - 新增 `fs_modules/zlib.rs`，把 `zlib` module factory、bytes-like 提取、crc32/adler32 helper 从根文件抽离。
@@ -202,6 +207,7 @@ Last updated: 2026-05-27T05:43:29+08:00
   - math 模块第一轮批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - concurrency 尾部低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections User* 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - collections deque/ChainMap 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 subprocess/zlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -216,7 +222,7 @@ Last updated: 2026-05-27T05:43:29+08:00
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
-  - 继续评估 `collection_modules/collections.rs` 是否按 namedtuple、deque、Counter/defaultdict、ChainMap 继续内部分层。
+  - 继续评估 `collection_modules/collections.rs` 是否按 namedtuple、Counter/defaultdict、OrderedDict 继续内部分层。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
