@@ -64,9 +64,10 @@ Last updated: 2026-05-27
   `UserList`, `UserString`, and their slice/copy/data helpers now live in
   `collection_modules/user_types.rs`; `collections.rs` still owns module
   assembly plus OrderedDict/defaultdict/Counter/namedtuple/deque/ChainMap.
-- Phase 2 filesystem/process module mechanical splits have started.
-  `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, and `io` now live under
-  `fs_modules/`; the root `fs_modules.rs` still owns pathlib.
+- Phase 2 filesystem/process module mechanical splits are complete at the
+  top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
+  and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
+  small child module declaration/re-export shell.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
@@ -85,9 +86,6 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-vm/src/vm_call.rs` is over 7k lines and combines function
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
-- `crates/ferrython-stdlib/src/fs_modules.rs` is under 1k lines after the
-  subprocess/zlib/shutil/glob/tempfile/io split and now mostly owns pathlib
-  plus child module declarations.
 - `crates/ferrython-stdlib/src/collection_modules/collections.rs` is still over
   3k lines after the User* split and combines deque, defaultdict, Counter,
   ChainMap, OrderedDict, namedtuple, and module assembly helpers.
