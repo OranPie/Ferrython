@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T14:03:13+08:00
+Last updated: 2026-05-26T14:30:16+08:00
 
 ## 已提交成果
 
@@ -115,6 +115,8 @@ Last updated: 2026-05-26T14:03:13+08:00
   - `range` 保留构造时的原始 start/stop/step 对象用于属性访问，仍保留 i64 热字段用于 len/iter/contains 等快路径；`copy.deepcopy(range(I(10)))` 能复制出新的 range 并保留 int 子类 stop。
   - copy 协议对没有自定义 `__getnewargs__` / `__getnewargs_ex__` 的 builtin-value 子类按底层 `__builtin_value__` 重建，并继续尊重用户自定义 newargs 协议。
   - VM 比较路径对 builtin-value 子类代理到底层值比较，同时保留 weakref ref dead identity 语义。
+  - class call / instantiate simple-class fast path 排除 dict subclass，避免 `class C(dict): pass; C([...])` 绕过 dict 初始化。
+  - dict subclass 默认 `dict.__init__` 路径补齐 mapping / iterable-of-pairs / kwargs 填充，并避免给 dict subclass 写入会遮蔽 `dict_storage` 的空 `__builtin_value__`。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -173,6 +175,11 @@ Last updated: 2026-05-26T14:03:13+08:00
     - `run=13 pass=13 fail=0 err=0 skip=0`
   - smoke: `copy.deepcopy(I(10))` 返回新的 `I(10)` 并 deepcopy 普通 attrs；`copy.deepcopy(range(I(1), I(10), I(2)))` 保留端点类型和值，`list()` / `len()` / membership / repr 基础路径通过。
   - note: `target/debug/ferrython tools/run_cpython_tests.py -v test_range` 当前仍有既有失败：`run=24 pass=8 fail=5 err=11 skip=0`，本次只用 focused range smoke 作为回归门。
+- dict subclass / copy reduce focused 验证：
+  - smoke: `class C(dict): pass; C([('foo', [1, 2]), ('bar', 3)]).items()` 保留构造数据；`C(C(...))` 和 `C(foo=1)` 均填充 dict storage。
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_5tuple test_copy.TestCopy.test_deepcopy_dict_subclass test_copy.TestCopy.test_copy_dict`
+    - `run=3 pass=3 fail=0 err=0 skip=0`
+  - note: `timeout 15s target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_4tuple` 仍超时，作为下一候选继续分析。
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`
@@ -384,7 +391,9 @@ Last updated: 2026-05-26T14:03:13+08:00
 
 ## 当前修复候选
 
-- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range` 已关闭。下一步转向 `deque` 小批候选或继续扫描 `test_copy` 其他残留。
+- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range` 与 `test_copy.TestCopy.test_reduce_5tuple` 已关闭。
+  - 当前明确候选：`test_copy.TestCopy.test_reduce_4tuple` 单项 15s 超时，疑似 list subclass reduce 的 listiter/apply 重建路径挂起。
+  - 下一步：优先修 `test_reduce_4tuple`，或转向 `deque` 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -423,6 +432,8 @@ Last updated: 2026-05-26T14:03:13+08:00
   - 修复：weakdict copy 专用路径复制活 `(key, value)` item，底层容器 decouple，死 weak key/value 首次 `len()` 即清理。
 - `test_copy.TestCopy.test_deepcopy_weakkeydict` / `test_copy.TestCopy.test_deepcopy_weakvaluedict`
   - 修复：WeakKeyDictionary deepcopy 保留 key/deepcopy value；WeakValueDictionary deepcopy key/保留 value，并保持 weak mapping equality 与 item identity。
+- `test_copy.TestCopy.test_reduce_5tuple`
+  - 修复：dict subclass 不能走普通 simple-class fast path；默认 `dict.__init__` 继承路径按 mapping / iterable-of-pairs / kwargs 填充内部 `dict_storage`，copy reduce 5-tuple 的 dictiter 能正确重建条目。
 - runner `ModuleReport` 被 GC 清空属性
   - 修复：cycle GC candidate refinement 不再把活 list 持有的普通 instance 当作循环垃圾。
 - `test_weakref.FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors`

@@ -5118,6 +5118,7 @@ impl VirtualMachine {
                                 // Safety check: verify __new__ wasn't added after creation without invalidation.
                                 if cd.is_simple_class.get()
                                     && !cd.namespace.read().contains_key("__new__")
+                                    && !cd.is_dict_subclass
                                     && cd.builtin_base_name.is_none()
                                     && !ferrython_core::object::is_property_subclass_class(sget!(
                                         frame, func_idx

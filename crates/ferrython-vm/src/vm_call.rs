@@ -1859,6 +1859,56 @@ impl VirtualMachine {
     }
 
     /// Unified class instantiation: __new__, dataclass/namedtuple auto-init, __init__, exception attrs.
+    fn populate_dict_subclass_storage(
+        &mut self,
+        instance: &PyObjectRef,
+        pos_args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
+        let PyObjectPayload::Instance(inst) = &instance.payload else {
+            return Ok(());
+        };
+        let Some(ref ds) = inst.dict_storage else {
+            return Ok(());
+        };
+
+        let mut entries = Vec::new();
+        if !pos_args.is_empty() {
+            match &pos_args[0].payload {
+                PyObjectPayload::Dict(src) => {
+                    for (k, v) in src.read().iter() {
+                        entries.push((k.clone(), v.clone()));
+                    }
+                }
+                PyObjectPayload::Instance(src_inst) if src_inst.dict_storage.is_some() => {
+                    if let Some(src_ds) = src_inst.dict_storage.as_ref() {
+                        for (k, v) in src_ds.read().iter() {
+                            entries.push((k.clone(), v.clone()));
+                        }
+                    }
+                }
+                _ => {
+                    let items = self.collect_iterable(&pos_args[0])?;
+                    for item in &items {
+                        let pair = item.to_list()?;
+                        if pair.len() == 2 {
+                            entries.push((pair[0].to_hashable_key()?, pair[1].clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut storage = ds.write();
+        for (k, v) in entries {
+            storage.insert(k, v);
+        }
+        for (k, v) in kwargs {
+            storage.insert(HashableKey::str_key(k.clone()), v.clone());
+        }
+        Ok(())
+    }
+
     pub(crate) fn instantiate_class(
         &mut self,
         cls: &PyObjectRef,
@@ -1882,6 +1932,7 @@ impl VirtualMachine {
             if cd.is_simple_class.get()
                 && kwargs.is_empty()
                 && !cd.has_custom_new.get()
+                && !cd.is_dict_subclass
                 && cd.builtin_base_name.is_none()
             {
                 let instance = PyObject::instance(cls.clone());
@@ -2242,8 +2293,10 @@ impl VirtualMachine {
             );
             if is_builtin_new || is_native_builtin_new {
                 let inst = PyObject::instance(cls.clone());
-                // For builtin type subclasses (int, str, float), store the constructor
+                // For builtin value subclasses (int, str, float, etc.), store the constructor
                 // argument as __builtin_value__ so arithmetic/methods work correctly.
+                // Dict subclasses use dict_storage instead; a synthetic empty __builtin_value__
+                // would hide their real storage from dict methods such as items().
                 // Namedtuple uses _tuple instead and should not receive __builtin_value__.
                 if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                     if cls.get_attr("__namedtuple__").is_none() {
@@ -2252,7 +2305,6 @@ impl VirtualMachine {
                                 // No-arg defaults for builtin type subclasses
                                 match base_type.as_str() {
                                     "list" => Some(PyObject::list(vec![])),
-                                    "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
                                     "set" => {
                                         Some(PyObject::set_from_flatmap(new_fx_hashkey_flatmap()))
                                     }
@@ -2479,7 +2531,6 @@ impl VirtualMachine {
                         let value = if pos_args.is_empty() {
                             match base_type.as_str() {
                                 "list" => Some(PyObject::list(vec![])),
-                                "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
                                 "set" => Some(PyObject::set_from_flatmap(new_fx_hashkey_flatmap())),
                                 "frozenset" => Some(PyObject::frozenset(new_fx_hashkey_map())),
                                 "tuple" => Some(PyObject::tuple(vec![])),
@@ -2662,6 +2713,17 @@ impl VirtualMachine {
         };
         let is_dataclass = class_has_key(cls, "__dataclass__");
         let has_user_init = cls.get_attr("__init__").is_some();
+        let default_dict_init = cls
+            .get_attr("__init__")
+            .map(|init| match &init.payload {
+                PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "dict.__init__",
+                PyObjectPayload::BuiltinBoundMethod(bbm) => {
+                    bbm.method_name.as_str() == "__init__"
+                        && matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(name) if name.as_str() == "dict")
+                }
+                _ => false,
+            })
+            .unwrap_or(false);
 
         if is_dataclass && !has_user_init {
             // Dataclass auto-init: populate fields from args/kwargs
@@ -2916,23 +2978,11 @@ impl VirtualMachine {
                 }
             }
             // Dict subclass: populate dict_storage from pos_args/kwargs
-            if let PyObjectPayload::Instance(inst) = &instance.payload {
-                if let Some(ref ds) = inst.dict_storage {
-                    let mut storage = ds.write();
-                    // If first positional arg is a dict, copy its entries
-                    if !pos_args.is_empty() {
-                        if let PyObjectPayload::Dict(src) = &pos_args[0].payload {
-                            for (k, v) in src.read().iter() {
-                                storage.insert(k.clone(), v.clone());
-                            }
-                        }
-                    }
-                    // Populate kwargs into dict_storage
-                    for (k, v) in &kwargs {
-                        storage.insert(HashableKey::str_key(k.clone()), v.clone());
-                    }
-                }
-            }
+            self.populate_dict_subclass_storage(&instance, &pos_args, &kwargs)?;
+        }
+
+        if default_dict_init {
+            self.populate_dict_subclass_storage(&instance, &pos_args, &kwargs)?;
         }
 
         // Store kwargs as instance attrs when no user __init__ consumed them.
