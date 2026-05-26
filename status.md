@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T07:50:05+08:00
+Last updated: 2026-05-26T08:00:27+08:00
 
 ## 已提交成果
 
@@ -48,6 +48,8 @@ Last updated: 2026-05-26T07:50:05+08:00
   - `HashableKey` 增加原对象取回辅助；VM 的 custom key `__eq__` 分发遇到 `NotImplemented` 时按未处理返回，不再把 `NotImplemented` 当 truthy 导致 key 与无关对象误相等。
   - 普通 dict 与 weakdict 的 `keys()` / `values()` / `items()` / `get()` 增加 CPython 风格多余参数校验，关闭 weakdict mapping protocol 中对应 TypeError 失败。
   - `weakref.finalize` 支持真实 kwargs 打包、deprecated `obj=` / `func=` keyword 形态告警、`peek()` / `detach()` 返回 kwargs dict，以及手动调用后 disarm；关闭 `FinalizeTestCase.test_arg_errors`。
+  - `weakref.ref` 拒绝 `callback=` keyword 构造形态；保存 callback 并暴露 CPython 兼容的只读 `__callback__`，referent 存活时返回 callback，死亡后返回 `None`。
+  - VM `StoreAttr` 普通路径与热路径都保持 weakref ref 的 `__callback__` 只读不变量，避免 fast path 绕过属性语义。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -193,14 +195,15 @@ Last updated: 2026-05-26T07:50:05+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 weakref.finalize kwargs/状态兼容。
+- 当前待提交代码修复涉及 weakref.ref `__callback__` / constructor keyword 兼容。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors` 已关闭。下一步优先继续扫描 weakref finalize 自动 GC 回调、weakref ref/proxy 或 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors` 与 weakref ref callback 属性小批次已关闭。下一步优先继续扫描 weakref ref hash/equality/proxy 或 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
+    - `test_weakref.ReferencesTestCase.test_hashing` / `test_equality` 仍需把 weakref ref 的 alive hash/equality 委派给 referent 语义。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选

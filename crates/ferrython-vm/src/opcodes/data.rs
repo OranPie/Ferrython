@@ -633,6 +633,31 @@ impl VirtualMachine {
                 }
             }
         }
+        if name.as_str() == "__callback__" {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                let (call, callback) = {
+                    let attrs = inst.attrs.read();
+                    if attrs.contains_key("__weakref_ref__") {
+                        (
+                            attrs.get("__call__").cloned(),
+                            attrs
+                                .get("__weakref_callback__")
+                                .cloned()
+                                .unwrap_or_else(PyObject::none),
+                        )
+                    } else {
+                        (None, PyObject::none())
+                    }
+                };
+                if let Some(call) = call {
+                    let is_alive = self.call_object(call, vec![]).map_or(false, |referent| {
+                        !matches!(&referent.payload, PyObjectPayload::None)
+                    });
+                    self.vm_push(if is_alive { callback } else { PyObject::none() });
+                    return Ok(None);
+                }
+            }
+        }
         match obj.get_attr(name) {
             Some(v) => {
                 if ferrython_core::object::is_property_like(&v) {
@@ -809,6 +834,15 @@ impl VirtualMachine {
         obj: PyObjectRef,
         value: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        if name.as_str() == "__callback__" {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if inst.attrs.read().contains_key("__weakref_ref__") {
+                    return Err(PyException::attribute_error(
+                        "readonly attribute".to_string(),
+                    ));
+                }
+            }
+        }
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
                 if ferrython_core::object::is_property_like(&desc) {

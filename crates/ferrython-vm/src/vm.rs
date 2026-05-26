@@ -8942,6 +8942,8 @@ impl VirtualMachine {
                                     | CLASS_FLAG_HAS_DESCRIPTORS
                                     | CLASS_FLAG_HAS_SLOTS)
                                 == 0
+                                && !(name.as_str() == "__callback__"
+                                    && inst.attrs.read().contains_key("__weakref_ref__"))
                         } else {
                             false
                         }

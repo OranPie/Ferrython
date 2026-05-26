@@ -2348,8 +2348,19 @@ pub fn create_weakref_module() -> PyObjectRef {
                             "ref() requires at least 1 argument",
                         ));
                     }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error(format!(
+                            "ref() takes at most 2 arguments ({} given)",
+                            args.len()
+                        )));
+                    }
+                    if args.len() == 2 && matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
+                        return Err(PyException::type_error(
+                            "ref() takes no keyword arguments",
+                        ));
+                    }
                     let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
-                    let _callback = args.get(1).cloned(); // stored but not auto-invoked in refcount GC
+                    let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
 
                     let cls =
                         PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
@@ -2360,6 +2371,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                             CompactString::from("__weakref_ref__"),
                             PyObject::bool_val(true),
                         );
+                        attrs.insert(CompactString::from("__weakref_callback__"), callback);
 
                         // __call__() → referent or None
                         let w1 = weak.clone();
