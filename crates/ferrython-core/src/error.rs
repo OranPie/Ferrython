@@ -580,6 +580,7 @@ thread_local! {
 /// Multiple calls can be queued — they execute in order.
 pub fn request_vm_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
     PENDING_VM_CALLS.with(|c| c.borrow_mut().push((func, args)));
+    crate::object::set_intercept_pending();
 }
 
 /// Take the pending VM call request (called by the VM after NativeClosure dispatch).

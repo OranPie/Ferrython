@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T09:18:00+08:00
+Last updated: 2026-05-26T10:03:00+08:00
 
 ## 已提交成果
 
@@ -56,6 +56,8 @@ Last updated: 2026-05-26T09:18:00+08:00
   - `weakref.proxy` 的 `bool()`、VM 条件 truthiness 和 `del proxy[key]` 委派到 referent；关闭 `ReferencesTestCase.test_proxy_deletion`，并保持 `test_proxy_bool` 通过。
   - `weakref.proxy` 的 `len()`、`in`、`iter()`、`[]`、`dir()`、`bytes()`、`operator.index()`、比较运算和 `bool(proxy)` builtin 路径继续委派到 referent。
   - `collections.UserList` 原生实现补齐 slice `__setitem__` / `__delitem__`，支持普通 slice 与 extended slice，关闭 `ReferencesTestCase.test_basic_proxy` 中的 proxy slice 路径。
+  - 增加弱引用 callback registry：`weakref.ref(obj, cb)` 与 `weakref.proxy(obj, cb)` 在 referent 最后强引用删除后向 VM callback 队列登记并调用 callback。
+  - `DeleteFast` / name 删除路径结束后 drain pending callbacks，使 `del o` 后立即观察到 callback side effect；关闭 `ReferencesTestCase.test_proxy_ref`、`test_basic_callback` 和 `test_multiple_callbacks`。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -118,6 +120,11 @@ Last updated: 2026-05-26T09:18:00+08:00
     - `bool(weakref.proxy(collections.UserList()))` 与 CPython baseline 一致为 `False`；append 后 `bool(proxy)` 为 `True`。
     - `weakref.proxy(collections.UserList([2,3]))` 支持 `len`、membership、index/slice subscript 和 referent equality。
     - `collections.UserList` slice assignment/deletion smoke 通过：`L[:] = [2,3]`、`del L[:1]`、`L[::1] = [7]`。
+  - weakref callback focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_proxy_ref test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_multiple_callbacks test_weakref.ReferencesTestCase.test_multiple_selfref_callbacks`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - weakref callback smoke:
+    - `weakref.ref(o, cb)` 与 `weakref.proxy(o, cb)` 在 `del o` 后各调用一次 callback，callback 参数分别为 live weakref/proxy 对象；随后 proxy 访问抛 `ReferenceError`。
   - finalize/weakdict regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
     - `run=4 pass=4 fail=0 err=0 skip=0`
@@ -208,15 +215,16 @@ Last updated: 2026-05-26T09:18:00+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 weakref.proxy 容器/比较/bytes/operator/bool 委派，以及 `collections.UserList` slice assignment/deletion。
+- 当前待提交代码修复涉及 weakref callback registry、referent 死亡后 callback 调度，以及删除操作后的 pending callback drain。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors`、weakref ref callback 属性、weakref ref hash/equality、proxy deletion/bool/basic_proxy 小批次已关闭。下一步优先继续扫描 weakref proxy callback 或 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors`、weakref ref callback 属性、weakref ref hash/equality、proxy deletion/bool/basic_proxy/proxy_ref/basic_callback/multiple_callbacks 小批次已关闭。下一步优先继续扫描 weakref callable proxy、reuse/getweakrefs 或 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
-    - `test_weakref.ReferencesTestCase.test_proxy_ref` 仍有 proxy callback 清理计数差异。
+    - `test_weakref.ReferencesTestCase.test_callable_proxy` 仍缺 callable proxy 类型区分。
+    - `test_weakref.ReferencesTestCase.test_ref_reuse` / `test_proxy_reuse` / `getweakrefs` 仍缺按 referent 枚举和无 callback 复用语义。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选

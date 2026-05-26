@@ -121,6 +121,12 @@ impl VirtualMachine {
     }
 
     pub(crate) fn drain_pending_finalizers(&mut self) {
+        while let Some((func, args)) = ferrython_core::error::take_pending_vm_call() {
+            let hook_object = func.clone();
+            if let Err(error) = self.call_object(func, args) {
+                self.invoke_unraisablehook(error, hook_object);
+            }
+        }
         while let Some(del_fn) = ferrython_core::error::take_pending_finalizer() {
             let hook_object = match &del_fn.payload {
                 PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -497,6 +503,7 @@ impl VirtualMachine {
                 }
             }
         }
+        self.drain_pending_finalizers();
         Ok(None)
     }
 }

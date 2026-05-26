@@ -2413,7 +2413,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                             CompactString::from("__weakref_ref__"),
                             PyObject::bool_val(true),
                         );
-                        attrs.insert(CompactString::from("__weakref_callback__"), callback);
+                        attrs.insert(CompactString::from("__weakref_callback__"), callback.clone());
 
                         // __call__() → referent or None
                         let w1 = weak.clone();
@@ -2447,6 +2447,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                         );
 
                     }
+                    PyObjectRef::register_weak_callback(&args[0], &inst, callback);
                     Ok(inst)
                 }),
             ),
@@ -2461,7 +2462,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                         ));
                     }
                     let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
-                    let _callback = args.get(1).cloned();
+                    let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
 
                     let cls =
                         PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new());
@@ -2550,6 +2551,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     },
                 ));
                     }
+                    PyObjectRef::register_weak_callback(&args[0], &inst, callback);
                     Ok(inst)
                 }),
             ),

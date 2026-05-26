@@ -6,7 +6,7 @@ use crate::types::{hash_frozenset_key_iter, HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::fmt;
 use std::hash::BuildHasherDefault;
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -181,6 +181,11 @@ pub fn new_shared_fx() -> SharedFxAttrMap {
 // ClassData is created or mutated. Used by inline caches to detect staleness.
 thread_local! {
     static CLASS_VERSION_COUNTER: Cell<u64> = const { Cell::new(1) };
+}
+
+thread_local! {
+    static WEAKREF_CALLBACKS: RefCell<FxHashMap<usize, Vec<(PyWeakRef, PyObjectRef)>>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// Allocate a fresh class version number.
@@ -670,6 +675,22 @@ impl PyObjectRef {
     }
 
     #[inline(always)]
+    pub fn register_weak_callback(target: &Self, weak_obj: &Self, callback: PyObjectRef) {
+        if matches!(callback.payload, PyObjectPayload::None) {
+            return;
+        }
+        let target_ptr = Self::as_ptr(target) as usize;
+        let weak_ref = Self::downgrade(weak_obj);
+        WEAKREF_CALLBACKS.with(|registry| {
+            registry
+                .borrow_mut()
+                .entry(target_ptr)
+                .or_default()
+                .push((weak_ref, callback));
+        });
+    }
+
+    #[inline(always)]
     pub fn get_mut(this: &mut Self) -> Option<&mut PyObject> {
         unsafe {
             let p = this.0.as_ptr();
@@ -726,6 +747,18 @@ impl Drop for PyObjectRef {
             let new_strong = (*p).strong.get() - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
+                let callbacks = WEAKREF_CALLBACKS.with(|registry| {
+                    registry
+                        .borrow_mut()
+                        .remove(&(PyObjectRef::as_ptr(self) as usize))
+                });
+                if let Some(callbacks) = callbacks {
+                    for (weak_obj, callback) in callbacks {
+                        if let Some(arg) = weak_obj.upgrade() {
+                            crate::error::request_vm_call(callback, vec![arg]);
+                        }
+                    }
+                }
                 // Fast path: when no weak refs exist, skip the DROPPING_REFCOUNT
                 // guard entirely. DROPPING_REFCOUNT is only needed when drop_in_place
                 // might trigger PyWeakRef::drop on a self-referencing weak ref, which
