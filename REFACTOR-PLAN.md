@@ -15,9 +15,10 @@ Last updated: 2026-05-26
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
   Rust-AST-to-PyObject conversion, utility APIs, and unparse support.
-- Phase 2 serial module mechanical splits have started. `base64` and shared
-  bytes-like helpers, `struct`, `marshal`, and `binascii` support are being
-  separated from the large `serial_modules/other.rs` bucket.
+- Phase 2 serial module mechanical splits have retired the large
+  `serial_modules/other.rs` bucket. Serialization modules now have named files
+  for `base64`, `binascii`, `codecs`, `csv`, `dbm`, `json`, `marshal`,
+  `pickle`, `shelve`, and `struct`.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
