@@ -3,6 +3,7 @@
 mod base64_module;
 mod csv_module;
 mod json_module;
+mod marshal_module;
 mod other;
 mod struct_module;
 
@@ -13,8 +14,9 @@ pub use json_module::{
     create_json_decoder_module, create_json_encoder_module, create_json_module,
     json_dumps as json_dumps_fn,
 };
+pub use marshal_module::create_marshal_module;
 pub use other::{
-    create_binascii_module, create_codecs_module, create_dbm_module, create_marshal_module,
-    create_pickle_module, create_shelve_module,
+    create_binascii_module, create_codecs_module, create_dbm_module, create_pickle_module,
+    create_shelve_module,
 };
 pub use struct_module::create_struct_module;

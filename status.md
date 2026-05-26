@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T19:01:03+08:00
+Last updated: 2026-05-26T19:05:09+08:00
 
 ## 代码质量重构进度
 
@@ -56,9 +56,13 @@ Last updated: 2026-05-26T19:01:03+08:00
   - `5ea27eb refactor: split base64 serial module`
   - `serial_modules/base64_module.rs` 拆出 `base64` module factory、base16/base32/ascii85/base85/base64 编解码实现、bytes-like 提取 helper 和 file-like encode/decode helper。
   - `serial_modules/other.rs` 从约 6701 行降到约 5828 行；`extract_bytes` 继续经 `serial_modules` crate 级重导出供 `crypto_modules` 等复用。
-- 本批已完成待提交：
+- 已完成并提交 serial struct 拆分：
+  - `82e8fb1 refactor: split struct serial module`
   - `serial_modules/struct_module.rs` 拆出 `struct` module factory、`Struct` 对象闭包、calcsize、pack/unpack、pack_into/unpack_from、iter_unpack 和格式单元编解码 helper。
   - `serial_modules/other.rs` 从约 5828 行降到约 4931 行。
+- 本批已完成待提交：
+  - `serial_modules/marshal_module.rs` 拆出 `marshal` module factory、dumps/loads 入口和内部 encode/decode helper。
+  - `serial_modules/other.rs` 从约 4931 行降到约 4734 行。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -71,6 +75,7 @@ Last updated: 2026-05-26T19:01:03+08:00
   - regex module functions 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial base64 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial struct 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - serial marshal 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续拆 `serial_modules/other.rs`，优先拆 struct、pickle、binascii/codecs、shelve/dbm/marshal。
