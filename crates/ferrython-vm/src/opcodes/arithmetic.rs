@@ -984,6 +984,17 @@ impl VirtualMachine {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
                 let value = self.vm_pop();
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                        if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                            let referent = (nc.func)(&[])?;
+                            self.vm_push(value);
+                            self.vm_push(referent);
+                            self.vm_push(key);
+                            return self.exec_subscript_ops(instr);
+                        }
+                    }
+                }
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
@@ -1273,6 +1284,16 @@ impl VirtualMachine {
             Opcode::DeleteSubscr => {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                        if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                            let referent = (nc.func)(&[])?;
+                            self.vm_push(referent);
+                            self.vm_push(key);
+                            return self.exec_subscript_ops(instr);
+                        }
+                    }
+                }
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
                         if let PyObjectPayload::Slice(sd) = &key.payload {

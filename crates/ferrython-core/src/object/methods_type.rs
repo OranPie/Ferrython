@@ -213,6 +213,11 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
         | PyObjectPayload::DictValues { map, .. }
         | PyObjectPayload::DictItems { map, .. } => !map.read().is_empty(),
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return (nc.func)(&[]).map_or(false, |referent| referent.is_truthy());
+                }
+            }
             // Builtin base type subclass: delegate truthiness to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return bv.is_truthy();

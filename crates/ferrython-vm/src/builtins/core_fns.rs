@@ -135,6 +135,14 @@ pub(super) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::bool_val(false));
     }
+    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                let referent = (nc.func)(&[])?;
+                return Ok(PyObject::bool_val(referent.is_truthy()));
+            }
+        }
+    }
     Ok(PyObject::bool_val(args[0].is_truthy()))
 }
 

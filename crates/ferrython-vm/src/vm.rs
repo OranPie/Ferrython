@@ -8944,6 +8944,7 @@ impl VirtualMachine {
                                 == 0
                                 && !(name.as_str() == "__callback__"
                                     && inst.attrs.read().contains_key("__weakref_ref__"))
+                                && !inst.attrs.read().contains_key("__weakref_target__")
                         } else {
                             false
                         }
@@ -10709,7 +10710,13 @@ impl VirtualMachine {
     }
 
     pub(crate) fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
-        if let PyObjectPayload::Instance(_) = &obj.payload {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    let referent = (nc.func)(&[])?;
+                    return self.vm_is_truthy(&referent);
+                }
+            }
             if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__bool__") {
                 let method = self.resolve_descriptor(&raw_method, obj)?;
                 let result = self.call_object(method, vec![])?;

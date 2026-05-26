@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T08:05:59+08:00
+Last updated: 2026-05-26T08:17:05+08:00
 
 ## 已提交成果
 
@@ -52,6 +52,8 @@ Last updated: 2026-05-26T08:05:59+08:00
   - VM `StoreAttr` 普通路径与热路径都保持 weakref ref 的 `__callback__` 只读不变量，避免 fast path 绕过属性语义。
   - `weakref.ref` alive equality / inequality 委派到底层 referent；dead weakref ref 回落到 identity 语义。
   - `hash(weakref.ref(obj))` alive 时缓存 referent hash，dead 后复用已缓存 hash；dead 且从未 hash 过时抛 `TypeError`。
+  - `weakref.proxy` 的普通属性读取/写入/删除委派到 referent，`StoreAttr` 热路径不再绕过 proxy 委派。
+  - `weakref.proxy` 的 `bool()`、VM 条件 truthiness 和 `del proxy[key]` 委派到 referent；关闭 `ReferencesTestCase.test_proxy_deletion`，并保持 `test_proxy_bool` 通过。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -197,15 +199,16 @@ Last updated: 2026-05-26T08:05:59+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 weakref.ref hash/equality 兼容。
+- 当前待提交代码修复涉及 weakref.proxy 属性、truthiness 和 item deletion 委派。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors`、weakref ref callback 属性、weakref ref hash/equality 小批次已关闭。下一步优先继续扫描 weakref proxy 或 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors`、weakref ref callback 属性、weakref ref hash/equality、proxy deletion/bool 小批次已关闭。下一步优先继续扫描 weakref proxy slice/subscript 或 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
-    - `test_weakref.ReferencesTestCase.test_proxy_ref` / `test_basic_proxy` / `test_proxy_deletion` 仍有 proxy callback、属性设置和删除语义差异。
+    - `test_weakref.ReferencesTestCase.test_basic_proxy` 已推进到 `p[:] = [2, 3]` 触发 `int() argument must be a string or number, not 'slice'`，需要继续补 proxy / UserList slice subscript 路径。
+    - `test_weakref.ReferencesTestCase.test_proxy_ref` 仍有 proxy callback 清理计数差异。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选

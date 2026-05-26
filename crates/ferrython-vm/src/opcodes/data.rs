@@ -834,6 +834,14 @@ impl VirtualMachine {
         obj: PyObjectRef,
         value: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    let referent = (nc.func)(&[])?;
+                    return self.exec_store_attr(name, referent, value);
+                }
+            }
+        }
         if name.as_str() == "__callback__" {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 if inst.attrs.read().contains_key("__weakref_ref__") {
@@ -985,6 +993,14 @@ impl VirtualMachine {
         name: &CompactString,
         obj: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    let referent = (nc.func)(&[])?;
+                    return self.exec_delete_attr(name, referent);
+                }
+            }
+        }
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
                 // Check for descriptor with __delete__ or property fdel first
