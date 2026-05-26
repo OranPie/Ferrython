@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T05:39:18+08:00
+Last updated: 2026-05-27T05:41:33+08:00
 
 ## 代码质量重构进度
 
@@ -167,6 +167,10 @@ Last updated: 2026-05-27T05:39:18+08:00
   - 新增 `fs_modules/tempfile.rs`，把 `tempfile` module factory、temporary file/directory helpers 和 deterministic temp path helper 从根文件抽离。
   - `fs_modules.rs` 从约 3732 行降到约 2506 行；后续仍保留 `pathlib` 和 `io`。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `fs_modules` phase1 `io` 拆分：
+  - 新增 `fs_modules/io.rs`，把 `io` module factory、StringIO/BytesIO/TextIOWrapper、BufferedReader/BufferedWriter 和 direct native-call helper 从根文件抽离。
+  - `fs_modules.rs` 从约 2506 行降到约 983 行；后续根文件只保留 `pathlib` 和子模块声明/re-export。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -196,6 +200,7 @@ Last updated: 2026-05-27T05:39:18+08:00
   - collections User* 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 subprocess/zlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
@@ -207,7 +212,7 @@ Last updated: 2026-05-27T05:39:18+08:00
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - 继续评估 `collection_modules/collections.rs` 是否按 namedtuple、deque、Counter/defaultdict、ChainMap 继续内部分层。
-  - 继续评估 `fs_modules.rs` 是否按 `pathlib`、`io` 继续拆分。
+  - 继续评估 `fs_modules/pathlib.rs` 是否需要继续按 Path class、stat helper、glob/path matching helper 内部分层。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
