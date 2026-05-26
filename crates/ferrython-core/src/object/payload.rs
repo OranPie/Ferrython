@@ -183,8 +183,21 @@ thread_local! {
     static CLASS_VERSION_COUNTER: Cell<u64> = const { Cell::new(1) };
 }
 
+#[derive(Clone)]
+pub enum WeakObjectKind {
+    Ref,
+    Proxy,
+}
+
+#[derive(Clone)]
+struct WeakObjectEntry {
+    weak_obj: PyWeakRef,
+    callback: Option<PyObjectRef>,
+    kind: WeakObjectKind,
+}
+
 thread_local! {
-    static WEAKREF_CALLBACKS: RefCell<FxHashMap<usize, Vec<(PyWeakRef, PyObjectRef)>>> =
+    static WEAKREF_OBJECTS: RefCell<FxHashMap<usize, Vec<WeakObjectEntry>>> =
         RefCell::new(FxHashMap::default());
 }
 
@@ -603,6 +616,34 @@ unsafe impl Send for PyObjectRef {}
 unsafe impl Sync for PyObjectRef {}
 
 impl PyObjectRef {
+    fn live_weak_entries(target_ptr: usize) -> (Vec<WeakObjectEntry>, Vec<PyObjectRef>) {
+        let entries = WEAKREF_OBJECTS.with(|registry| {
+            registry
+                .borrow()
+                .get(&target_ptr)
+                .cloned()
+                .unwrap_or_default()
+        });
+        let mut live_entries = Vec::new();
+        let mut live_objects = Vec::new();
+        for entry in entries {
+            if let Some(obj) = entry.weak_obj.upgrade() {
+                live_objects.push(obj);
+                live_entries.push(entry);
+            }
+        }
+        let old_entries = WEAKREF_OBJECTS.with(|registry| {
+            let mut registry = registry.borrow_mut();
+            let old_entries = registry.remove(&target_ptr);
+            if !live_entries.is_empty() {
+                registry.insert(target_ptr, live_entries.clone());
+            }
+            old_entries
+        });
+        drop(old_entries);
+        (live_entries, live_objects)
+    }
+
     #[inline(always)]
     pub fn new(obj: PyObject) -> Self {
         Self(pool_alloc(obj))
@@ -671,23 +712,54 @@ impl PyObjectRef {
 
     #[inline(always)]
     pub fn weak_count(this: &Self) -> usize {
-        unsafe { (*this.0.as_ptr()).weak.get() as usize }
+        let target_ptr = Self::as_ptr(this) as usize;
+        Self::live_weak_entries(target_ptr).0.len()
     }
 
     #[inline(always)]
-    pub fn register_weak_callback(target: &Self, weak_obj: &Self, callback: PyObjectRef) {
-        if matches!(callback.payload, PyObjectPayload::None) {
-            return;
-        }
+    pub fn register_weak_object(
+        target: &Self,
+        weak_obj: &Self,
+        callback: Option<PyObjectRef>,
+        kind: WeakObjectKind,
+    ) {
         let target_ptr = Self::as_ptr(target) as usize;
         let weak_ref = Self::downgrade(weak_obj);
-        WEAKREF_CALLBACKS.with(|registry| {
+        WEAKREF_OBJECTS.with(|registry| {
             registry
                 .borrow_mut()
                 .entry(target_ptr)
                 .or_default()
-                .push((weak_ref, callback));
+                .push(WeakObjectEntry {
+                    weak_obj: weak_ref,
+                    callback,
+                    kind,
+                });
         });
+    }
+
+    #[inline(always)]
+    pub fn find_shared_weak_object(target: &Self, kind: WeakObjectKind) -> Option<Self> {
+        let target_ptr = Self::as_ptr(target) as usize;
+        let (entries, objects) = Self::live_weak_entries(target_ptr);
+        entries
+            .iter()
+            .zip(objects)
+            .find(|(entry, _)| {
+                entry.callback.is_none()
+                    && matches!(
+                        (&entry.kind, &kind),
+                        (WeakObjectKind::Ref, WeakObjectKind::Ref)
+                            | (WeakObjectKind::Proxy, WeakObjectKind::Proxy)
+                    )
+            })
+            .map(|(_, obj)| obj)
+    }
+
+    #[inline(always)]
+    pub fn weak_objects(this: &Self) -> Vec<Self> {
+        let target_ptr = Self::as_ptr(this) as usize;
+        Self::live_weak_entries(target_ptr).1
     }
 
     #[inline(always)]
@@ -747,15 +819,20 @@ impl Drop for PyObjectRef {
             let new_strong = (*p).strong.get() - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
-                let callbacks = WEAKREF_CALLBACKS.with(|registry| {
-                    registry
-                        .borrow_mut()
-                        .remove(&(PyObjectRef::as_ptr(self) as usize))
-                });
-                if let Some(callbacks) = callbacks {
-                    for (weak_obj, callback) in callbacks {
-                        if let Some(arg) = weak_obj.upgrade() {
-                            crate::error::request_vm_call(callback, vec![arg]);
+                let entries = WEAKREF_OBJECTS
+                    .try_with(|registry| {
+                        registry
+                            .borrow_mut()
+                            .remove(&(PyObjectRef::as_ptr(self) as usize))
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(entries) = entries {
+                    for entry in entries {
+                        if let Some(callback) = entry.callback {
+                            if let Some(arg) = entry.weak_obj.upgrade() {
+                                crate::error::request_vm_call(callback, vec![arg]);
+                            }
                         }
                     }
                 }

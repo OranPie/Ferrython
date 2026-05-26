@@ -5,7 +5,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     call_callable, call_callable_kw, check_args_min, make_builtin, make_module, CompareOp,
     FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, PyWeakRef,
-    SyncUsize, VecIterData,
+    SyncUsize, VecIterData, WeakObjectKind,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -2371,19 +2371,36 @@ pub fn create_weakref_module() -> PyObjectRef {
                             "ref() takes no keyword arguments",
                         ));
                     }
-                    let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
                     let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    let callback = if matches!(callback.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(callback)
+                    };
+                    if callback.is_none() {
+                        if let Some(existing) =
+                            PyObjectRef::find_shared_weak_object(&args[0], WeakObjectKind::Ref)
+                        {
+                            return Ok(existing);
+                        }
+                    }
+                    let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
 
                     let mut namespace = IndexMap::new();
-                    let w_eq = weak.clone();
                     namespace.insert(
                         CompactString::from("__eq__"),
                         PyObject::native_closure("weakref.__eq__", move |args| {
-                            let other = args.get(1).or_else(|| args.first());
-                            if let Some(other) = other {
-                                let Some(strong) = w_eq.upgrade() else {
+                            if let (Some(this), Some(other)) = (args.first(), args.get(1)) {
+                                if PyObjectRef::ptr_eq(this, other) {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                                let Some(this_call) = this.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(false));
                                 };
+                                let this_obj = call_callable(&this_call, &[])?;
+                                if matches!(&this_obj.payload, PyObjectPayload::None) {
+                                    return Ok(PyObject::bool_val(false));
+                                }
                                 let Some(other_call) = other.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(false));
                                 };
@@ -2391,20 +2408,25 @@ pub fn create_weakref_module() -> PyObjectRef {
                                 if matches!(&other_obj.payload, PyObjectPayload::None) {
                                     return Ok(PyObject::bool_val(false));
                                 }
-                                return strong.compare(&other_obj, CompareOp::Eq);
+                                return this_obj.compare(&other_obj, CompareOp::Eq);
                             }
                             Ok(PyObject::bool_val(false))
                         }),
                     );
-                    let w_ne = weak.clone();
                     namespace.insert(
                         CompactString::from("__ne__"),
                         PyObject::native_closure("weakref.__ne__", move |args| {
-                            let other = args.get(1).or_else(|| args.first());
-                            if let Some(other) = other {
-                                let Some(strong) = w_ne.upgrade() else {
+                            if let (Some(this), Some(other)) = (args.first(), args.get(1)) {
+                                if PyObjectRef::ptr_eq(this, other) {
+                                    return Ok(PyObject::bool_val(false));
+                                }
+                                let Some(this_call) = this.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(true));
                                 };
+                                let this_obj = call_callable(&this_call, &[])?;
+                                if matches!(&this_obj.payload, PyObjectPayload::None) {
+                                    return Ok(PyObject::bool_val(true));
+                                }
                                 let Some(other_call) = other.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(true));
                                 };
@@ -2412,7 +2434,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                                 if matches!(&other_obj.payload, PyObjectPayload::None) {
                                     return Ok(PyObject::bool_val(true));
                                 }
-                                return strong.compare(&other_obj, CompareOp::Ne);
+                                return this_obj.compare(&other_obj, CompareOp::Ne);
                             }
                             Ok(PyObject::bool_val(true))
                         }),
@@ -2428,7 +2450,10 @@ pub fn create_weakref_module() -> PyObjectRef {
                             CompactString::from("__weakref_ref__"),
                             PyObject::bool_val(true),
                         );
-                        attrs.insert(CompactString::from("__weakref_callback__"), callback.clone());
+                        attrs.insert(
+                            CompactString::from("__weakref_callback__"),
+                            callback.clone().unwrap_or_else(PyObject::none),
+                        );
 
                         // __call__() → referent or None
                         let w1 = weak.clone();
@@ -2462,7 +2487,12 @@ pub fn create_weakref_module() -> PyObjectRef {
                         );
 
                     }
-                    PyObjectRef::register_weak_callback(&args[0], &inst, callback);
+                    PyObjectRef::register_weak_object(
+                        &args[0],
+                        &inst,
+                        callback,
+                        WeakObjectKind::Ref,
+                    );
                     Ok(inst)
                 }),
             ),
@@ -2476,8 +2506,20 @@ pub fn create_weakref_module() -> PyObjectRef {
                             "proxy() requires at least 1 argument",
                         ));
                     }
-                    let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
                     let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    let callback = if matches!(callback.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(callback)
+                    };
+                    if callback.is_none() {
+                        if let Some(existing) =
+                            PyObjectRef::find_shared_weak_object(&args[0], WeakObjectKind::Proxy)
+                        {
+                            return Ok(existing);
+                        }
+                    }
+                    let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
 
                     let callable = args[0].is_callable();
                     let cls = if callable {
@@ -2602,7 +2644,12 @@ pub fn create_weakref_module() -> PyObjectRef {
                             }),
                         );
                     }
-                    PyObjectRef::register_weak_callback(&args[0], &inst, callback);
+                    PyObjectRef::register_weak_object(
+                        &args[0],
+                        &inst,
+                        callback,
+                        WeakObjectKind::Proxy,
+                    );
                     Ok(inst)
                 }),
             ),
@@ -2884,9 +2931,11 @@ pub fn create_weakref_module() -> PyObjectRef {
             // ── getweakrefs(obj) ──
             (
                 "getweakrefs",
-                make_builtin(|_args| {
-                    // Cannot enumerate all Weak pointers from an Arc — return empty list
-                    Ok(PyObject::list(vec![]))
+                make_builtin(|args| {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("getweakrefs requires 1 argument"));
+                    }
+                    Ok(PyObject::list(PyObjectRef::weak_objects(&args[0])))
                 }),
             ),
             // ── ReferenceType (the type of weak references) ──

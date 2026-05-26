@@ -6958,12 +6958,8 @@ impl VirtualMachine {
                         return Ok(PyObject::list(collected));
                     }
                 }
-                let mut last_result = None;
                 while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
-                    last_result = Some(self.call_object(method, margs)?);
-                }
-                if let Some(r) = last_result {
-                    return Ok(r);
+                    self.call_object(method, margs)?;
                 }
                 // Execute any deferred calls (e.g., HTMLParser.feed() callbacks)
                 let deferred = ferrython_stdlib::drain_deferred_calls();
@@ -6997,12 +6993,8 @@ impl VirtualMachine {
                         return Ok(PyObject::list(collected));
                     }
                 }
-                let mut last_result = None;
                 while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
-                    last_result = Some(self.call_object(method, margs)?);
-                }
-                if let Some(r) = last_result {
-                    return Ok(r);
+                    self.call_object(method, margs)?;
                 }
                 // Execute any deferred calls (e.g., Thread.start() calling Python functions)
                 let deferred = ferrython_stdlib::drain_deferred_calls();

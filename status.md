@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T10:24:00+08:00
+Last updated: 2026-05-26T11:45:00+08:00
 
 ## 已提交成果
 
@@ -59,6 +59,11 @@ Last updated: 2026-05-26T10:24:00+08:00
   - 增加弱引用 callback registry：`weakref.ref(obj, cb)` 与 `weakref.proxy(obj, cb)` 在 referent 最后强引用删除后向 VM callback 队列登记并调用 callback。
   - `DeleteFast` / name 删除路径结束后 drain pending callbacks，使 `del o` 后立即观察到 callback side effect；关闭 `ReferencesTestCase.test_proxy_ref`、`test_basic_callback` 和 `test_multiple_callbacks`。
   - `weakref.proxy(callable_obj)` 根据 referent callable 性返回共享 `CallableProxyType`，并将位置参数/关键字参数调用透传给 referent；关闭 `ReferencesTestCase.test_callable_proxy`。
+  - 增加 weakref/proxy 对象 registry，按 referent 追踪 live weakref 对象而不强保活，并支持无 callback 的 `weakref.ref(obj)` / `weakref.proxy(obj)` 复用。
+  - `weakref.getweakrefcount(obj)` / `weakref.getweakrefs(obj)` 改为枚举 live weakref/proxy 对象，删除 weakref/proxy 后计数同步下降。
+  - weakref registry 清理避免 RefCell 重入析构，并在 TLS teardown 阶段跳过 registry 访问，避免 shutdown panic。
+  - weakref equality/inequality 改为从参与比较的 weakref 实例自身取 referent，避免共享 `ReferenceType` class 被后续构造闭包污染。
+  - VM 执行 pending weakref callbacks 时不再用 callback 返回值覆盖当前 native function/closure 的返回值，修复 callback 返回 `None` 污染下一次 `weakref.ref(...)` 构造结果。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -132,6 +137,19 @@ Last updated: 2026-05-26T10:24:00+08:00
   - callable proxy smoke:
     - `type(weakref.proxy(callable_obj)) is weakref.CallableProxyType` 为 `True`。
     - `proxy('twinkies!')` 与 `proxy(x='Splat.')` 均透传到 referent `__call__`。
+  - weakref reuse/getweakrefs focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_ref_reuse test_weakref.ReferencesTestCase.test_proxy_reuse test_weakref.ReferencesTestCase.test_getweakrefcount test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.ReferencesTestCase.test_shared_ref_without_callback test_weakref.ReferencesTestCase.test_shared_proxy_without_callback`
+    - `run=6 pass=6 fail=0 err=0 skip=0`
+  - weakref equality/reuse focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_ref_reuse test_weakref.ReferencesTestCase.test_proxy_reuse test_weakref.ReferencesTestCase.test_getweakrefcount test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.ReferencesTestCase.test_shared_ref_without_callback test_weakref.ReferencesTestCase.test_shared_proxy_without_callback`
+    - `run=7 pass=7 fail=0 err=0 skip=0`
+  - weakref callback/proxy regression:
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callable_proxy test_weakref.ReferencesTestCase.test_proxy_ref test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_callback_attribute test_weakref.ReferencesTestCase.test_hashing test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_basic_proxy test_weakref.ReferencesTestCase.test_proxy_bool`
+    - `run=8 pass=8 fail=0 err=0 skip=0`
+  - weakref registry smoke:
+    - `weakref.ref(o) is weakref.ref(o, None)` 和 `weakref.proxy(o) is weakref.proxy(o, None)` 均为 `True`，带 callback 的对象不复用。
+    - ref/proxy 各自 `getweakrefcount(o)` 为 `2`，删除 callback weak object 后降为 `1`。
+    - callback 触发后再次 `weakref.ref(o, cb)` 不返回 callback 的 `None`。
   - finalize/weakdict regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
     - `run=4 pass=4 fail=0 err=0 skip=0`
