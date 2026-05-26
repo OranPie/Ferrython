@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T14:34:52+08:00
+Last updated: 2026-05-26T15:14:00+08:00
 
 ## 已提交成果
 
@@ -45,6 +45,13 @@ Last updated: 2026-05-26T14:34:52+08:00
   - focused weakdict 9-case 全部通过。
 
 ## 本轮修复成果
+
+- 2026-05-26 deque focused 追加：
+  - `collections.deque` 构造与 `__init__` 支持负 `maxlen` 校验、`maxlen=None`、重新初始化和 maxlen 裁剪。
+  - deque marker 属性分派补齐 `maxlen`、`__init__`、iterator 与 `len()` 路径，并让 VM attr/method fast path 对 deque 回落到 marker dispatcher，避免命中构造期旧闭包状态。
+  - `append` / `appendleft` 增加参数校验，避免缺参触发 Rust panic。
+  - `deque.maxlen` 写入按 CPython 抛只读 `AttributeError`。
+  - `test.support.unlink()` 兼容 Ferrython 当前 generic `OSError`，缺失测试文件不再中断 CPython 用例。
 
 - 2026-05-26 追加：
   - cycle GC 纳入 heap class、bound method、builtin bound method，并遍历 class namespace/MRO/cache/vtable、bound method receiver/function，补齐 weakref cycle tests 里 class 与 callback bound method 的可达性分析。
@@ -189,6 +196,12 @@ Last updated: 2026-05-26T14:34:52+08:00
     - `run=4 pass=4 fail=0 err=0 skip=0`
   - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -v test_copy`
     - `run=75 pass=75 fail=0 err=0 skip=0`
+- deque focused 验证：
+  - smoke: `deque(range(10), maxlen=3)` 的 `append`、`appendleft`、`extend`、`extendleft` 按 maxlen 裁剪；`append()` / `append(11, 12)` 抛 `TypeError`；`len(deque)` 返回 `_data` 长度。
+  - `target/debug/ferrython -c "from test import support; support.unlink(support.TESTFN); print('unlink ok')"`
+    - `unlink ok`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_deque.TestBasic.test_basics test_deque.TestBasic.test_maxlen test_deque.TestBasic.test_maxlen_zero test_deque.TestBasic.test_maxlen_attribute`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`

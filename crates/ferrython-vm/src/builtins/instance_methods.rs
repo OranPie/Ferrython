@@ -309,7 +309,51 @@ pub(super) fn call_deque_method(
         }
     };
     match method {
+        "__init__" => {
+            if args.len() > 2 {
+                return Err(PyException::type_error(
+                    "deque() expected at most 2 arguments",
+                ));
+            }
+            let new_maxlen =
+                if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+                    let raw = args[1].to_int()?;
+                    if raw < 0 {
+                        return Err(PyException::value_error("maxlen must be non-negative"));
+                    }
+                    Some(raw as usize)
+                } else {
+                    None
+                };
+            let mut items = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None)
+            {
+                Vec::new()
+            } else {
+                args[0].to_list()?
+            };
+            if let Some(ml) = new_maxlen {
+                if items.len() > ml {
+                    items = items[items.len() - ml..].to_vec();
+                }
+            }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                *list.write() = items;
+            }
+            inst.attrs.write().insert(
+                CompactString::from("__maxlen__"),
+                new_maxlen
+                    .map(|n| PyObject::int(n as i64))
+                    .unwrap_or_else(PyObject::none),
+            );
+            Ok(PyObject::none())
+        }
         "append" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "append() takes exactly one argument",
+                ));
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().push(args[0].clone());
@@ -318,6 +362,11 @@ pub(super) fn call_deque_method(
             Ok(PyObject::none())
         }
         "appendleft" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "appendleft() takes exactly one argument",
+                ));
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().insert(0, args[0].clone());
@@ -567,7 +616,18 @@ pub(super) fn call_deque_method(
                 "deque index out of range",
             ))
         }
-        "__iter__" => Ok(get_data()),
+        "__iter__" => {
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(ferrython_core::object::IteratorData::List {
+                        items: list.read().clone(),
+                        index: 0,
+                    }),
+                ))));
+            }
+            Ok(data)
+        }
         _ => Err(PyException::attribute_error(format!(
             "deque has no attribute '{}'",
             method

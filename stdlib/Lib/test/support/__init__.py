@@ -365,7 +365,7 @@ def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
 def unlink(filename):
     try:
         os.unlink(filename)
-    except (FileNotFoundError, PermissionError):
+    except (FileNotFoundError, PermissionError, OSError):
         pass
 
 def create_empty_file(filename):

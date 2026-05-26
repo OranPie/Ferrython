@@ -6982,7 +6982,11 @@ impl VirtualMachine {
                         match &obj.payload {
                             PyObjectPayload::Instance(inst) => {
                                 let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
-                                if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
+                                if skip_ga
+                                    && inst.dict_storage.is_none()
+                                    && !inst.is_special
+                                    && !inst.attrs.read().contains_key("__deque__")
+                                {
                                     let name = &frame.code.names[name_idx];
                                     if name.as_str() != "__class__" && name.as_str() != "__dict__" {
                                         let class = &inst.class;
@@ -8460,7 +8464,9 @@ impl VirtualMachine {
                     };
                     // Inline Instance attr fast path
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
+                            && !inst.attrs.read().contains_key("__deque__")
+                        {
                             if name.as_str() == "__class__" {
                                 Some(inst.class.clone())
                             } else {
@@ -8546,7 +8552,9 @@ impl VirtualMachine {
                     };
                     // Inline Instance attr fast path with IC
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
+                            && !inst.attrs.read().contains_key("__deque__")
+                        {
                             if let PyObjectPayload::Class(cd) = &inst.class.payload {
                                 // Check inline cache first
                                 let ip = frame.ip as u32;
@@ -8655,7 +8663,11 @@ impl VirtualMachine {
                     match &obj.payload {
                         PyObjectPayload::Instance(inst) => {
                             let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
-                            if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
+                            if skip_ga
+                                && inst.dict_storage.is_none()
+                                && !inst.is_special
+                                && !inst.attrs.read().contains_key("__deque__")
+                            {
                                 let name = &frame.code.names[name_idx];
                                 if name.as_str() != "__class__" && name.as_str() != "__dict__" {
                                     let class = &inst.class;
@@ -8854,7 +8866,9 @@ impl VirtualMachine {
                     let obj = sget!(frame, frame.stack.len() - 1);
                     // Fast path: Instance with no __getattribute__ override (cached flag)
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
+                            && !inst.attrs.read().contains_key("__deque__")
+                        {
                             // Check instance dict first (most common case — data attrs like p.x)
                             let attrs = unsafe { &*inst.attrs.data_ptr() };
                             if let Some(v) = attrs.get(name.as_str()) {
@@ -8992,6 +9006,7 @@ impl VirtualMachine {
                                 && !(name.as_str() == "__callback__"
                                     && inst.attrs.read().contains_key("__weakref_ref__"))
                                 && !inst.attrs.read().contains_key("__weakref_target__")
+                                && !inst.attrs.read().contains_key("__deque__")
                         } else {
                             false
                         }

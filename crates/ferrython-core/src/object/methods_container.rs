@@ -147,6 +147,12 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     }
                 }
             }
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                    return py_len(&data);
+                }
+                return Ok(0);
+            }
             if inst.class.get_attr("__namedtuple__").is_some() {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                     return py_len(&tup);

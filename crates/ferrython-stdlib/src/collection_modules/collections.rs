@@ -2610,19 +2610,28 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let maxlen = if has_trailing_kwargs {
         if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
             let map = map.read();
-            map.get(&HashableKey::str_key(CompactString::from("maxlen")))
-                .and_then(|v| {
-                    if matches!(&v.payload, PyObjectPayload::None) {
-                        None
-                    } else {
-                        Some(v.to_int().unwrap_or(0) as usize)
+            if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("maxlen"))) {
+                if matches!(&v.payload, PyObjectPayload::None) {
+                    None
+                } else {
+                    let n = v.to_int()?;
+                    if n < 0 {
+                        return Err(PyException::value_error("maxlen must be non-negative"));
                     }
-                })
+                    Some(n as usize)
+                }
+            } else {
+                None
+            }
         } else {
             None
         }
     } else if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
-        Some(args[1].to_int()? as usize)
+        let n = args[1].to_int()?;
+        if n < 0 {
+            return Err(PyException::value_error("maxlen must be non-negative"));
+        }
+        Some(n as usize)
     } else {
         None
     };
@@ -3032,18 +3041,6 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 None => PyObject::none(),
             },
         );
-        // Also install instance methods directly on attrs for attribute access
-        if let PyObjectPayload::Class(ref cd) = inst_data.class.payload {
-            let ns = cd.namespace.read();
-            for (name, val) in ns.iter() {
-                if !name.starts_with("_data")
-                    && !name.starts_with("__deque")
-                    && !name.starts_with("__maxlen")
-                {
-                    attrs.insert(name.clone(), val.clone());
-                }
-            }
-        }
     }
     Ok(inst)
 }

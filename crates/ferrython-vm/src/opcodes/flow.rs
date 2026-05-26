@@ -834,6 +834,7 @@ impl VirtualMachine {
                     let is_plain = skip_ga
                         && inst.dict_storage.is_none()
                         && !inst.is_special
+                        && !inst.attrs.read().contains_key("__deque__")
                         && name.as_str() != "__class__"
                         && name.as_str() != "__dict__";
 

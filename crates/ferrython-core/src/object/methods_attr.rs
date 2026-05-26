@@ -495,6 +495,7 @@ fn instance_builtin_method(
                 | "insert"
                 | "remove"
                 | "reverse"
+                | "__init__"
                 | "__iter__"
                 | "__len__"
                 | "__contains__"
@@ -708,6 +709,7 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
                 && inst.class_flags & (CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_GETATTRIBUTE)
                     == 0
                 && inst.dict_storage.is_none()
+                && !inst.attrs.read().contains_key("__deque__")
             {
                 // 1. Instance dict
                 if inst.attrs.read().contains_key(name) {
@@ -728,7 +730,8 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
                         let known = match bt_name.as_str() {
                             "list" => matches!(
                                 name,
-                                "append"
+                                "__init__"
+                                    | "append"
                                     | "extend"
                                     | "insert"
                                     | "remove"
@@ -906,6 +909,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 && inst.class_flags & (CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_GETATTRIBUTE)
                     == 0
                 && inst.dict_storage.is_none()
+                && !inst.attrs.read().contains_key("__deque__")
             {
                 // 1. Instance dict first (data attributes)
                 if let Some(v) = inst.attrs.read().get(name) {
@@ -1086,6 +1090,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             // Dict subclass: intercept dict method lookups
             if inst.dict_storage.is_some() {
+                if let Some(result) = instance_builtin_method(obj, inst, name) {
+                    return Some(result);
+                }
+            }
+            // Deque marker instances keep compatibility state in marker attrs.
+            // Prefer the marker dispatcher over constructor-installed closures
+            // so reinitialization and maxlen changes use the same backing list.
+            if inst.attrs.read().contains_key("__deque__") {
                 if let Some(result) = instance_builtin_method(obj, inst, name) {
                     return Some(result);
                 }

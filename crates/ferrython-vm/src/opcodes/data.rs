@@ -876,6 +876,15 @@ impl VirtualMachine {
                 }
             }
         }
+        if name.as_str() == "maxlen" {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if inst.attrs.read().contains_key("__deque__") {
+                    return Err(PyException::attribute_error(
+                        "attribute 'maxlen' of 'collections.deque' objects is not writable",
+                    ));
+                }
+            }
+        }
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
                 if ferrython_core::object::is_property_like(&desc) {
