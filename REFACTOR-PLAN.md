@@ -28,7 +28,8 @@ Last updated: 2026-05-26
 - Phase 2 testing/debug module mechanical splits have started. Tail modules
   such as `doctest`, `pdb`, `profile`, `cProfile`, `timeit`, `faulthandler`,
   `tracemalloc`, `pydoc`, `logging.handlers`, `logging.config`,
-  `pickletools`, and `_testcapi` now live under `testing_modules/`.
+  `pickletools`, `_testcapi`, and `unittest.mock` now live under
+  `testing_modules/`.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T19:55:00+08:00
+Last updated: 2026-05-26T20:01:14+08:00
 
 ## 代码质量重构进度
 
@@ -95,6 +95,9 @@ Last updated: 2026-05-26T19:55:00+08:00
 - 已完成待提交 `testing_modules` 尾部模块批量拆分：
   - 新增 `testing_modules/doctest.rs`、`pdb.rs`、`profile.rs`、`cprofile.rs`、`timeit.rs`、`faulthandler.rs`、`tracemalloc.rs`、`pydoc.rs`、`logging_handlers.rs`、`logging_config.rs`、`pickletools.rs` 和 `testcapi.rs`。
   - `testing_modules.rs` 从约 5483 行降到约 4187 行；剩余主要是 `logging`、`unittest` 和 `unittest.mock`。
+- 已完成待提交 `unittest.mock` 拆分：
+  - `testing_modules/unittest_mock.rs` 拆出 Mock/MagicMock 构造、patch/patch.object/patch.dict、sentinel、ANY 和 helper。
+  - `testing_modules.rs` 从约 4187 行降到约 3556 行；剩余主要是 `logging` 和 `unittest`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -115,11 +118,12 @@ Last updated: 2026-05-26T19:55:00+08:00
   - misc contextvars/ctypes 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc contextlib/dataclasses/copy/builtins 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning 和旧 Rust `copy` stub 未加载 warning。
   - testing doctest/pdb/profile/cProfile/timeit/faulthandler/tracemalloc/pydoc/logging submodule/pickletools/_testcapi 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - testing `unittest.mock` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
-  - 继续拆 `testing_modules.rs` 的 `unittest.mock`、`logging` 和 `unittest` 重块。
+  - 继续拆 `testing_modules.rs` 的 `logging` 和 `unittest` 重块。
   - 再评估 `sys_modules.rs`、`concurrency_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
