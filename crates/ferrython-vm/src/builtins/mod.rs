@@ -10,7 +10,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     call_callable, is_hidden_dict_key, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    WeakValueIterKind,
+    WeakKeyIterKind, WeakValueIterKind,
 };
 use indexmap::IndexMap;
 
@@ -750,6 +750,26 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 WeakValueIterKind::Keys => key.clone(),
                 WeakValueIterKind::Values => value,
                 WeakValueIterKind::Items => PyObject::tuple(vec![key.clone(), value]),
+            }));
+        },
+        PyObjectPayload::WeakKeyIter(data) => loop {
+            let idx = data.index.get();
+            if idx >= data.entries.len() {
+                return Ok(None);
+            }
+            data.index.set(idx + 1);
+            let (ref_obj, value) = &data.entries[idx];
+            let Some(target_fn) = ref_obj.get_attr("__weakref_target__") else {
+                continue;
+            };
+            let key = match call_callable(&target_fn, &[]) {
+                Ok(obj) if !matches!(&obj.payload, PyObjectPayload::None) => obj,
+                Ok(_) => continue,
+                Err(_) => continue,
+            };
+            return Ok(Some(match data.kind {
+                WeakKeyIterKind::Keys => key,
+                WeakKeyIterKind::Items => PyObject::tuple(vec![key, value.clone()]),
             }));
         },
         PyObjectPayload::RefIter { source, index } => {

@@ -559,6 +559,7 @@ fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         PyObjectPayload::RangeIter(_) => Some(PyObject::builtin_type_by_name("range_iterator")),
         PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => Some(PyObject::builtin_type_by_name("list_iterator")),
         PyObjectPayload::RevRefIter { .. } => {
             Some(PyObject::builtin_type_by_name("list_reverseiterator"))
@@ -1955,6 +1956,7 @@ impl VirtualMachine {
                         | PyObjectPayload::RangeIter(..)
                         | PyObjectPayload::VecIter(_)
                         | PyObjectPayload::WeakValueIter(_)
+                        | PyObjectPayload::WeakKeyIter(_)
                         | PyObjectPayload::RefIter { .. }
                         | PyObjectPayload::RevRefIter { .. }
                         | PyObjectPayload::Generator(_) => {
@@ -7511,6 +7513,7 @@ impl VirtualMachine {
                                                         | PyObjectPayload::Iterator(_)
                                                         | PyObjectPayload::VecIter(_)
                                                         | PyObjectPayload::WeakValueIter(_)
+                                                        | PyObjectPayload::WeakKeyIter(_)
                                                         | PyObjectPayload::RefIter { .. }
                                                         | PyObjectPayload::RevRefIter { .. } => {
                                                             self.collect_iterable(&a0)

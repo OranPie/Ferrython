@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T12:15:42+08:00
+Last updated: 2026-05-26T12:34:14+08:00
 
 ## 已提交成果
 
@@ -88,6 +88,9 @@ Last updated: 2026-05-26T12:15:42+08:00
   - `WeakValueDictionary.keys()` / `values()` / `items()` / `__iter__` 改用专用 weak-value iterator，迭代器只持有 key 与内部 weakref，不再强保活 value。
   - VM / builtin iterator hot paths 识别 weak-value iterator，`list()` / `for` / `next()` / `iter()` 等路径按 live weakref target 流式产出，跳过 dead value。
   - `WeakValueDictionary.__delitem__` 对 dead entry 先清理再按 CPython 抛 `KeyError`；weakdict `copy()` / `update()` / equality 对 weakdict 对象使用内部 live items accessor，避免经 view iterator 强保活或触发 core-only `to_list()`。
+  - `WeakKeyDictionary.keys()` / `items()` / `__iter__` 改用专用 weak-key iterator，迭代器只持有内部 weakref 与 value，不再强保活 key；`values()` 保持 value 快照。
+  - `WeakKeyDictionary` 删除/读取路径保持弱语义的指针索引，但查找时扫描 live key 并调用 key `__eq__`，恢复 custom equality 副作用语义并避免 HashableKey 强保活 key。
+  - 修复 weak-key 级联删除、weak-key destroy-while-iterating 和 weak-key len cycles；weakdict 9-case focused probe 全部通过。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -221,9 +224,15 @@ Last updated: 2026-05-26T12:15:42+08:00
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_keyed_cascading_deletes test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating test_weakref.MappingTestCase.test_weak_keys_destroy_while_iterating`
     - latest: `run=5 pass=3 fail=2 err=0 skip=0`; remaining: `test_weak_keyed_cascading_deletes`, `test_weak_keyed_len_cycles`
     - previous: `run=5 pass=2 fail=3 err=0 skip=0`; fixed from this probe: `test_weak_values_destroy_while_iterating`
+  - weakdict 9-case focused：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_keyed_cascading_deletes test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating test_weakref.MappingTestCase.test_weak_keys_destroy_while_iterating test_weakref.MappingTestCase.test_weak_values test_weakref.MappingTestCase.test_weak_keys test_weakref.MappingTestCase.test_weak_valued_iters test_weakref.MappingTestCase.test_weak_keyed_iters`
+    - `run=9 pass=9 fail=0 err=0 skip=0`
   - weak value destroy-while-iterating focused：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating`
     - `run=1 pass=1 fail=0 err=0 skip=0`
+  - `test_weakref` module summary：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref`
+    - `run=125 pass=116 fail=6 err=0 skip=3`; remaining: `FinalizeTestCase.test_all_freed`, `FinalizeTestCase.test_atexit`, `FinalizeTestCase.test_finalize`, `FinalizeTestCase.test_order`, `ReferencesTestCase.test_callback_in_cycle_resurrection`, `ReferencesTestCase.test_callbacks_on_callback`
   - smoke: dead `weakref.ref` equality 与 CPython identity 语义一致，`a == b` 为 `False`、`a != b` 为 `True`，共享无 callback ref 的 `a == d` 为 `True`。
   - smoke: `ref.__callback__` alive/dead、`hash(ref)` alive/dead cache、`weakref.ref(obj, callback=None)` TypeError 与 CPython 期望一致。
   - smoke: weakdict 内部 ref 计数可见，`WeakValueDictionary` 中 value 的 `getweakrefcount()` 为 1，`WeakKeyDictionary` 中 key 在同时被 weak value/key dict 持有时为 2；删除对象后两类 weakdict 长度同步下降。

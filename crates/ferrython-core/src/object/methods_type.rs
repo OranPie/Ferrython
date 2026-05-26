@@ -143,6 +143,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::RangeIter(..) => "range_iterator",
         PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => "list_iterator",
         PyObjectPayload::RevRefIter { .. } => "list_reverseiterator",
         PyObjectPayload::Iterator(iter_data) => {
@@ -732,6 +733,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         PyObjectPayload::Iterator(_) => "<iterator>".into(),
         PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
         PyObjectPayload::RevRefIter { .. } => "<iterator>".into(),
         PyObjectPayload::Range(rd) => {

@@ -8,7 +8,7 @@ use ferrython_ast::{Module as AstModule, Statement, StatementKind};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, FxAttrMap, GeneratorState, IteratorData, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, WeakValueIterKind,
+    PyObjectPayload, PyObjectRef, WeakKeyIterKind, WeakValueIterKind,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1252,6 +1252,7 @@ impl VirtualMachine {
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } = &iterable.payload
         {
@@ -1420,6 +1421,7 @@ impl VirtualMachine {
                             | PyObjectPayload::RangeIter(..)
                             | PyObjectPayload::VecIter(_)
                             | PyObjectPayload::WeakValueIter(_)
+                            | PyObjectPayload::WeakKeyIter(_)
                             | PyObjectPayload::RefIter { .. }
                             | PyObjectPayload::RevRefIter { .. }
                     ) {
@@ -1481,6 +1483,13 @@ impl VirtualMachine {
                 Ok(result)
             }
             PyObjectPayload::WeakValueIter(_) => {
+                let mut items = Vec::new();
+                while let Some(item) = self.vm_iter_next(obj)? {
+                    items.push(item);
+                }
+                Ok(items)
+            }
+            PyObjectPayload::WeakKeyIter(_) => {
                 let mut items = Vec::new();
                 while let Some(item) = self.vm_iter_next(obj)? {
                     items.push(item);
@@ -2349,6 +2358,26 @@ impl VirtualMachine {
                     WeakValueIterKind::Items => PyObject::tuple(vec![key.clone(), value]),
                 }));
             },
+            PyObjectPayload::WeakKeyIter(data) => loop {
+                let idx = data.index.get();
+                if idx >= data.entries.len() {
+                    return Ok(None);
+                }
+                data.index.set(idx + 1);
+                let (ref_obj, value) = &data.entries[idx];
+                let Some(target_fn) = ref_obj.get_attr("__weakref_target__") else {
+                    continue;
+                };
+                let key = match self.call_object(target_fn, vec![]) {
+                    Ok(obj) if !matches!(&obj.payload, PyObjectPayload::None) => obj,
+                    Ok(_) => continue,
+                    Err(_) => continue,
+                };
+                return Ok(Some(match data.kind {
+                    WeakKeyIterKind::Keys => key,
+                    WeakKeyIterKind::Items => PyObject::tuple(vec![key, value.clone()]),
+                }));
+            },
             PyObjectPayload::RefIter { source, index } => {
                 if index.get() == usize::MAX {
                     return Ok(None);
@@ -2839,6 +2868,7 @@ impl VirtualMachine {
             | PyObjectPayload::RangeIter(..)
             | PyObjectPayload::VecIter(_)
             | PyObjectPayload::WeakValueIter(_)
+            | PyObjectPayload::WeakKeyIter(_)
             | PyObjectPayload::RefIter { .. }
             | PyObjectPayload::RevRefIter { .. }
             | PyObjectPayload::Generator(_) => obj.clone(),

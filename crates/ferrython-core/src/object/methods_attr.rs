@@ -4024,6 +4024,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } => match name {
             "__next__" | "__iter__" | "__length_hint__" => Some(PyObjectRef::new(PyObject {

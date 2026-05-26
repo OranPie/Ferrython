@@ -5,7 +5,8 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     call_callable, call_callable_kw, check_args_min, make_builtin, make_module, CompareOp,
     FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, PyWeakRef,
-    SyncUsize, VecIterData, WeakObjectKind, WeakValueIterData, WeakValueIterKind,
+    SyncUsize, VecIterData, WeakKeyIterData, WeakKeyIterKind, WeakObjectKind, WeakValueIterData,
+    WeakValueIterKind,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1539,6 +1540,20 @@ pub fn create_weakref_module() -> PyObjectRef {
         )))
     }
 
+    fn weak_key_iter(storage: &WeakKeyStorage, kind: WeakKeyIterKind) -> PyObjectRef {
+        let mut store = storage.write();
+        store.retain(|_, (r, _)| weak_ref_target(r).is_some());
+        let entries = store
+            .values()
+            .map(|(ref_obj, value)| (ref_obj.clone(), value.clone()))
+            .collect();
+        PyObject::wrap(PyObjectPayload::WeakKeyIter(Box::new(WeakKeyIterData {
+            entries,
+            index: SyncUsize::new(0),
+            kind,
+        })))
+    }
+
     fn pair_from_internal_item(item: PyObjectRef) -> PyResult<(PyObjectRef, PyObjectRef)> {
         match &item.payload {
             PyObjectPayload::Tuple(items) if items.len() == 2 => {
@@ -1753,6 +1768,32 @@ pub fn create_weakref_module() -> PyObjectRef {
         Ok(())
     }
 
+    fn weak_key_lookup_ptr(
+        store: &IndexMap<usize, (PyObjectRef, PyObjectRef)>,
+        key: &PyObjectRef,
+    ) -> PyResult<Option<usize>> {
+        let key_hash = key.to_hashable_key()?;
+        for (ptr, (ref_obj, _)) in store.iter() {
+            let Some(live_key) = weak_ref_target(ref_obj) else {
+                continue;
+            };
+            if live_key.to_hashable_key()?.hash_key() != key_hash.hash_key() {
+                continue;
+            }
+            let eq_result = if let Some(eq_method) = live_key.get_attr("__eq__") {
+                call_callable(&eq_method, &[key.clone()])?
+            } else {
+                live_key.compare(key, CompareOp::Eq)?
+            };
+            if !matches!(&eq_result.payload, PyObjectPayload::NotImplemented)
+                && eq_result.is_truthy()
+            {
+                return Ok(Some(*ptr));
+            }
+        }
+        Ok(None)
+    }
+
     fn weak_key_get_alive(
         storage: &WeakKeyStorage,
         key: &PyObjectRef,
@@ -1761,18 +1802,15 @@ pub fn create_weakref_module() -> PyObjectRef {
         if strict {
             weak_key_require_weakable(key)?;
         }
-        let ptr = PyObjectRef::as_ptr(key) as usize;
         let mut store = storage.write();
-        match store
-            .get(&ptr)
-            .map(|(ref_obj, val)| (weak_ref_target(ref_obj).is_some(), val.clone()))
-        {
-            Some((true, val)) => Ok(Some(val)),
-            Some((false, _)) => {
-                store.shift_remove(&ptr);
-                Ok(None)
-            }
-            None => Ok(None),
+        store.retain(|_, (ref_obj, _)| weak_ref_target(ref_obj).is_some());
+        let Some(ptr) = weak_key_lookup_ptr(&store, key)? else {
+            return Ok(None);
+        };
+        if let Some((_, val)) = store.get(&ptr) {
+            Ok(Some(val.clone()))
+        } else {
+            Ok(None)
         }
     }
 
@@ -2466,8 +2504,11 @@ pub fn create_weakref_module() -> PyObjectRef {
                         return Err(PyException::type_error("__delitem__ requires a key"));
                     }
                     weak_key_require_weakable(&args[0])?;
-                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                     let mut store = del_storage.write();
+                    store.retain(|_, (ref_obj, _)| weak_ref_target(ref_obj).is_some());
+                    let Some(ptr) = weak_key_lookup_ptr(&store, &args[0])? else {
+                        return Err(py_default_key_error(&args[0]));
+                    };
                     match store.shift_remove(&ptr) {
                         Some((ref_obj, _)) if weak_ref_target(&ref_obj).is_some() => {
                             Ok(PyObject::none())
@@ -2500,11 +2541,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     if !args.is_empty() {
                         return Err(PyException::type_error("keys() takes no arguments"));
                     }
-                    let keys = weak_key_items(&keys_storage)
-                        .into_iter()
-                        .map(|(k, _)| k)
-                        .collect();
-                    Ok(weak_iter(keys))
+                    Ok(weak_key_iter(&keys_storage, WeakKeyIterKind::Keys))
                 }),
             );
 
@@ -2512,11 +2549,7 @@ pub fn create_weakref_module() -> PyObjectRef {
             attrs.insert(
                 CompactString::from("__iter__"),
                 PyObject::native_closure("WeakKeyDictionary.__iter__", move |_| {
-                    let keys = weak_key_items(&iter_storage)
-                        .into_iter()
-                        .map(|(k, _)| k)
-                        .collect();
-                    Ok(weak_iter(keys))
+                    Ok(weak_key_iter(&iter_storage, WeakKeyIterKind::Keys))
                 }),
             );
 
@@ -2542,11 +2575,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     if !args.is_empty() {
                         return Err(PyException::type_error("items() takes no arguments"));
                     }
-                    let items = weak_key_items(&items_storage)
-                        .into_iter()
-                        .map(|(k, v)| PyObject::tuple(vec![k, v]))
-                        .collect();
-                    Ok(weak_iter(items))
+                    Ok(weak_key_iter(&items_storage, WeakKeyIterKind::Items))
                 }),
             );
 
@@ -2587,8 +2616,14 @@ pub fn create_weakref_module() -> PyObjectRef {
                         return Err(PyException::type_error("pop expected at most 2 arguments"));
                     }
                     weak_key_require_weakable(&args[0])?;
-                    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                     let mut store = pop_storage.write();
+                    store.retain(|_, (ref_obj, _)| weak_ref_target(ref_obj).is_some());
+                    let Some(ptr) = weak_key_lookup_ptr(&store, &args[0])? else {
+                        return args
+                            .get(1)
+                            .cloned()
+                            .ok_or_else(|| py_default_key_error(&args[0]));
+                    };
                     match store.get(&ptr) {
                         Some((ref_obj, val)) if weak_ref_target(ref_obj).is_some() => {
                             let value = val.clone();

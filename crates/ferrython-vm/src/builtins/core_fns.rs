@@ -1733,6 +1733,7 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Generator(_)
@@ -1791,6 +1792,7 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     | PyObjectPayload::RangeIter(..)
                     | PyObjectPayload::VecIter(_)
                     | PyObjectPayload::WeakValueIter(_)
+                    | PyObjectPayload::WeakKeyIter(_)
                     | PyObjectPayload::RefIter { .. }
                     | PyObjectPayload::RevRefIter { .. } => Some(iter_attr.clone()),
                     // __iter__ is a bound method — call it
@@ -1988,6 +1990,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Set(_) => Ok(PyObject::dict(dict_pair_items(&args[0])?)),
