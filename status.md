@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:50:31+08:00
+Last updated: 2026-05-27T07:53:29+08:00
 
 ## 代码质量重构进度
 
@@ -50,6 +50,9 @@ Last updated: 2026-05-27T07:50:31+08:00
 - 已继续 regex pattern debug helper 内部分层：
   - 新增 `text_modules/regex_impl/pattern/debug.rs`，拆出 `re.DEBUG` dump 文本生成、stdout/file-like 写入 helper。
   - `pattern.rs` 从约 2182 行降到约 2016 行；新 `debug.rs` 约 172 行。
+- 已继续 regex pattern conversion helper 内部分层：
+  - 新增 `text_modules/regex_impl/pattern/convert.rs`，拆出 Python regex 到 Rust regex 转换、scoped ASCII flag 转换、repeat quantifier 规范化、named unicode escape 转换和 replacement template 转换 helper。
+  - `pattern.rs` 从约 2016 行降到约 1470 行；新 `convert.rs` 约 564 行。
 - 已完成并提交 regex `_sre` 拆分：
   - `59cf99a refactor: split sre module helpers`
   - `text_modules/regex_impl/sre.rs` 拆出 `_sre` module factory、大小写 helper 和 `_sre.compile` stub 校验。
@@ -243,6 +246,7 @@ Last updated: 2026-05-27T07:50:31+08:00
   - regex pattern/conversion/validation 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex pattern extract helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex pattern debug helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex pattern conversion helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex `_sre` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex module functions 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial base64 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
