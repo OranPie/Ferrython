@@ -3,8 +3,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    call_callable, check_args_min, make_builtin, make_module, CompareOp, FxHashKeyMap, PyCell,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, PyWeakRef, SyncUsize, VecIterData,
+    call_callable, call_callable_kw, check_args_min, make_builtin, make_module, CompareOp,
+    FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, PyWeakRef,
+    SyncUsize, VecIterData,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1220,6 +1221,17 @@ pub fn create_weakref_module() -> PyObjectRef {
     type WeakKeyStorage = Rc<PyCell<IndexMap<usize, (PyWeakRef, PyObjectRef)>>>;
     type WeakValueStorage = Rc<PyCell<IndexMap<HashableKey, (PyObjectRef, PyWeakRef)>>>;
 
+    let reference_type = PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
+    let proxy_type = PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new());
+    let callable_proxy_type = PyObject::class(
+        CompactString::from("weakcallableproxy"),
+        vec![],
+        IndexMap::new(),
+    );
+    let ref_constructor_type = reference_type.clone();
+    let proxy_constructor_type = proxy_type.clone();
+    let callable_proxy_constructor_type = callable_proxy_type.clone();
+
     // Helper: upgrade a PyWeakRef or return None
     fn upgrade_or_none(weak: &PyWeakRef) -> PyObjectRef {
         match weak.upgrade() {
@@ -2342,7 +2354,7 @@ pub fn create_weakref_module() -> PyObjectRef {
             // Returns a callable weak reference. Calling it returns the referent or None.
             (
                 "ref",
-                make_builtin(|args| {
+                PyObject::native_closure("weakref.ref", move |args| {
                     if args.is_empty() {
                         return Err(PyException::type_error(
                             "ref() requires at least 1 argument",
@@ -2405,7 +2417,10 @@ pub fn create_weakref_module() -> PyObjectRef {
                             Ok(PyObject::bool_val(true))
                         }),
                     );
-                    let cls = PyObject::class(CompactString::from("weakref"), vec![], namespace);
+                    let cls = ref_constructor_type.clone();
+                    if let PyObjectPayload::Class(cd) = &cls.payload {
+                        cd.namespace.write().extend(namespace);
+                    }
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                         let mut attrs = inst_data.attrs.write();
@@ -2455,7 +2470,7 @@ pub fn create_weakref_module() -> PyObjectRef {
             // Returns a proxy that auto-dereferences on attribute access.
             (
                 "proxy",
-                make_builtin(|args| {
+                PyObject::native_closure("weakref.proxy", move |args| {
                     if args.is_empty() {
                         return Err(PyException::type_error(
                             "proxy() requires at least 1 argument",
@@ -2464,8 +2479,12 @@ pub fn create_weakref_module() -> PyObjectRef {
                     let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
                     let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
 
-                    let cls =
-                        PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new());
+                    let callable = args[0].is_callable();
+                    let cls = if callable {
+                        callable_proxy_constructor_type.clone()
+                    } else {
+                        proxy_constructor_type.clone()
+                    };
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                         let mut attrs = inst_data.attrs.write();
@@ -2540,16 +2559,48 @@ pub fn create_weakref_module() -> PyObjectRef {
                             }),
                         );
 
-                        // __call__ — forward calls to the referent
+                        // __call__ — forward calls to callable referents
                         let w_c = weak.clone();
-                        attrs.insert(CompactString::from("__call__"), PyObject::native_closure(
-                    "weakproxy.__call__", move |_args| {
-                        let _referent = upgrade_or_err(&w_c)?;
-                        // Return the live object so the VM can call it
-                        // For proxy, calling the proxy attempts to call the referent
-                        Err(PyException::type_error("weakproxy object is not directly callable; access attributes instead"))
-                    },
-                ));
+                        attrs.insert(
+                            CompactString::from("__call__"),
+                            PyObject::native_closure("weakproxy.__call__", move |args| {
+                                let referent = upgrade_or_err(&w_c)?;
+                                if !referent.is_callable() {
+                                    return Err(PyException::type_error(
+                                        "weakproxy object is not directly callable; access attributes instead",
+                                    ));
+                                }
+                                let mut call_args = args.to_vec();
+                                let kwargs = match call_args.last() {
+                                    Some(last) => match &last.payload {
+                                        PyObjectPayload::Dict(map) => {
+                                            let mut kwargs = Vec::new();
+                                            for (key, value) in map.read().iter() {
+                                                if let HashableKey::Str(name) = key {
+                                                    kwargs.push((
+                                                        name.to_compact_string(),
+                                                        value.clone(),
+                                                    ));
+                                                } else {
+                                                    return Err(PyException::type_error(
+                                                        "keywords must be strings",
+                                                    ));
+                                                }
+                                            }
+                                            call_args.pop();
+                                            kwargs
+                                        }
+                                        _ => Vec::new(),
+                                    },
+                                    None => Vec::new(),
+                                };
+                                if kwargs.is_empty() {
+                                    call_callable(&referent, &call_args)
+                                } else {
+                                    call_callable_kw(&referent, &call_args, kwargs)
+                                }
+                            }),
+                        );
                     }
                     PyObjectRef::register_weak_callback(&args[0], &inst, callback);
                     Ok(inst)
@@ -2839,24 +2890,11 @@ pub fn create_weakref_module() -> PyObjectRef {
                 }),
             ),
             // ── ReferenceType (the type of weak references) ──
-            (
-                "ReferenceType",
-                PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new()),
-            ),
+            ("ReferenceType", reference_type),
             // ── ProxyType ──
-            (
-                "ProxyType",
-                PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new()),
-            ),
+            ("ProxyType", proxy_type),
             // ── CallableProxyType ──
-            (
-                "CallableProxyType",
-                PyObject::class(
-                    CompactString::from("weakcallableproxy"),
-                    vec![],
-                    IndexMap::new(),
-                ),
-            ),
+            ("CallableProxyType", callable_proxy_type),
             // ── WeakMethod(method, callback=None) ──
             (
                 "WeakMethod",
