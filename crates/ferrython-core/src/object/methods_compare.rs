@@ -554,6 +554,15 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
     let call_instance_dunder =
         |obj: &PyObjectRef, other: &PyObjectRef, name: &str| -> PyResult<Option<PyObjectRef>> {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if inst.attrs.read().contains_key("__deque__") {
+                    if let Some(method) = obj.get_attr(name) {
+                        let result = call_callable(&method, &[other.clone()])?;
+                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                            return Ok(Some(result));
+                        }
+                    }
+                    return Ok(None);
+                }
                 if let Some(method) = lookup_in_class_mro(&inst.class, name) {
                     let bound = wrap_class_attr_for_instance(obj, inst, name, method);
                     let result = call_callable(&bound, &[other.clone()])?;

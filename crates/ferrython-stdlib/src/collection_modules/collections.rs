@@ -2594,6 +2594,16 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Extract maxlen from last arg if it's a kwargs dict
     let has_trailing_kwargs =
         !args.is_empty() && matches!(&args[args.len() - 1].payload, PyObjectPayload::Dict(_));
+    let positional_count = if has_trailing_kwargs {
+        args.len().saturating_sub(1)
+    } else {
+        args.len()
+    };
+    if positional_count > 2 {
+        return Err(PyException::type_error(
+            "deque() takes at most 2 positional arguments",
+        ));
+    }
     let kwargs_idx = if has_trailing_kwargs {
         args.len() - 1
     } else {
@@ -2766,10 +2776,17 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     cls_ns.insert(
         CompactString::from("rotate"),
         PyObject::native_closure("deque.rotate", move |args: &[PyObjectRef]| {
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "rotate() takes at most one argument",
+                ));
+            }
             let n = if args.is_empty() {
                 1i64
             } else {
-                args[0].to_int()?
+                args[0]
+                    .to_int()
+                    .map_err(|_| PyException::type_error("an integer is required for rotate"))?
             };
             let mut w = d.write();
             let len = w.len();
@@ -2840,15 +2857,29 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::type_error("remove requires argument"));
             }
             let target = &args[0];
-            let mut w = d.write();
-            let pos = w.iter().position(|item| element_matches(item, target));
-            match pos {
-                Some(i) => {
-                    w.remove(i);
-                    Ok(PyObject::none())
+            let expected_len = d.read().len();
+            for i in 0..expected_len {
+                let item = {
+                    let r = d.read();
+                    if r.len() != expected_len {
+                        return Err(PyException::index_error("deque mutated during iteration"));
+                    }
+                    r[i].clone()
+                };
+                if PyObjectRef::ptr_eq(&item, target)
+                    || item.compare(target, CompareOp::Eq)?.is_truthy()
+                {
+                    if d.read().len() != expected_len {
+                        return Err(PyException::index_error("deque mutated during iteration"));
+                    }
+                    d.write().remove(i);
+                    return Ok(PyObject::none());
                 }
-                None => Err(PyException::value_error("deque.remove(x): x not in deque")),
+                if d.read().len() != expected_len {
+                    return Err(PyException::index_error("deque mutated during iteration"));
+                }
             }
+            Err(PyException::value_error("deque.remove(x): x not in deque"))
         }),
     );
 

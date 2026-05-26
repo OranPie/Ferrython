@@ -464,10 +464,17 @@ pub(super) fn call_deque_method(
             Ok(PyObject::none())
         }
         "rotate" => {
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "rotate() takes at most one argument",
+                ));
+            }
             let n = if args.is_empty() {
                 1i64
             } else {
-                args[0].as_int().unwrap_or(1)
+                args[0]
+                    .to_int()
+                    .map_err(|_| PyException::type_error("an integer is required for rotate"))?
             };
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
@@ -625,23 +632,19 @@ pub(super) fn call_deque_method(
                     let item = {
                         let v = list.read();
                         if v.len() != expected_len {
-                            return Err(PyException::runtime_error(
-                                "deque mutated during iteration",
-                            ));
+                            return Err(PyException::index_error("deque mutated during iteration"));
                         }
                         v[pos].clone()
                     };
                     if deque_item_matches(&item, &args[0])? {
                         if list.read().len() != expected_len {
-                            return Err(PyException::runtime_error(
-                                "deque mutated during iteration",
-                            ));
+                            return Err(PyException::index_error("deque mutated during iteration"));
                         }
                         list.write().remove(pos);
                         return Ok(PyObject::none());
                     }
                     if list.read().len() != expected_len {
-                        return Err(PyException::runtime_error("deque mutated during iteration"));
+                        return Err(PyException::index_error("deque mutated during iteration"));
                     }
                 }
                 return Err(PyException::new(
@@ -660,6 +663,93 @@ pub(super) fn call_deque_method(
                 list.write().reverse();
             }
             Ok(PyObject::none())
+        }
+        "__repr__" | "__str__" => {
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let items: Vec<String> = list.read().iter().map(|item| item.repr()).collect();
+                let joined = items.join(", ");
+                let text = match get_maxlen() {
+                    Some(m) => format!("deque([{}], maxlen={})", joined, m),
+                    None => format!("deque([{}])", joined),
+                };
+                return Ok(PyObject::str_val(CompactString::from(text)));
+            }
+            Ok(PyObject::str_val(CompactString::from("deque([])")))
+        }
+        "__eq__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__eq__() takes exactly one argument",
+                ));
+            }
+            if args[0].get_attr("__deque__").is_none() {
+                return Ok(PyObject::bool_val(false));
+            }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let other = args[0].to_list()?;
+                let items = list.read();
+                if items.len() != other.len() {
+                    return Ok(PyObject::bool_val(false));
+                }
+                for (left, right) in items.iter().zip(other.iter()) {
+                    if !deque_item_matches(left, right)? {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                }
+                return Ok(PyObject::bool_val(true));
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__ne__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__ne__() takes exactly one argument",
+                ));
+            }
+            let eq = call_deque_method(inst, "__eq__", args)?;
+            Ok(PyObject::bool_val(!eq.is_truthy()))
+        }
+        "__lt__" | "__le__" | "__gt__" | "__ge__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "{}() takes exactly one argument",
+                    method
+                )));
+            }
+            if args[0].get_attr("__deque__").is_none() {
+                return Ok(PyObject::not_implemented());
+            }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let left = list.read().clone();
+                let right = args[0].to_list()?;
+                let mut ordering = std::cmp::Ordering::Equal;
+                for (l, r) in left.iter().zip(right.iter()) {
+                    if deque_item_matches(l, r)? {
+                        continue;
+                    }
+                    ordering = if l.compare(r, CompareOp::Lt)?.is_truthy() {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                    break;
+                }
+                if ordering == std::cmp::Ordering::Equal {
+                    ordering = left.len().cmp(&right.len());
+                }
+                let result = match method {
+                    "__lt__" => ordering == std::cmp::Ordering::Less,
+                    "__le__" => !matches!(ordering, std::cmp::Ordering::Greater),
+                    "__gt__" => ordering == std::cmp::Ordering::Greater,
+                    "__ge__" => !matches!(ordering, std::cmp::Ordering::Less),
+                    _ => unreachable!(),
+                };
+                return Ok(PyObject::bool_val(result));
+            }
+            Ok(PyObject::not_implemented())
         }
         "maxlen" => {
             // Property-like access: return maxlen value

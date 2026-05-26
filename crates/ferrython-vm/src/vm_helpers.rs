@@ -425,6 +425,14 @@ impl VirtualMachine {
     /// Returns the method if it's a real callable (BoundMethod, Function, etc.).
     pub(crate) fn resolve_instance_dunder(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(method) = obj.get_attr(name) {
+                    if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
+                        return None;
+                    }
+                    return Some(method);
+                }
+            }
             // Search the class's own namespace and MRO bases for this dunder.
             // We need to walk MRO ourselves so we can detect descriptors that
             // require __get__ invocation (e.g. _ProxyLookup in werkzeug).

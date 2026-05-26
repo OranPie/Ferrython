@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T15:37:53+08:00
+Last updated: 2026-05-26T16:02:08+08:00
 
 ## 已提交成果
 
@@ -45,6 +45,14 @@ Last updated: 2026-05-26T15:37:53+08:00
   - focused weakdict 9-case 全部通过。
 
 ## 本轮修复成果
+
+- 2026-05-26 deque 协议继续修复：
+  - `collections.deque` 构造器补齐多余位置参数校验，`hash(deque(...))` 按不可哈希对象抛 `TypeError`。
+  - `rotate()` 补齐多余参数校验，并把非整数参数错误归一为 CPython 期望的 `TypeError`。
+  - `remove()` 在元素比较期间传播用户 `__eq__` 异常；比较导致 deque 变异时按 CPython 用例抛 `IndexError`，且不再持有容器 borrow 执行用户代码。
+  - deque marker 分派补齐 `__repr__` / `__str__` / `__eq__` / `__ne__` / `__lt__` / `__le__` / `__gt__` / `__ge__`，repr、字节码比较和 core 比较都优先读取 `_data` 当前状态，避免构造期闭包 stale backing。
+  - focused 验证：`test_deque.TestBasic.test_rotate`、`test_remove`、`test_hash`、`test_init`、`test_comparisons`、`test_repr`，合计 `run=6 pass=6 fail=0 err=0 skip=0`。
+  - deque 回归合并验证：基础序列 11 项 + 本批 6 项，合计 `run=17 pass=17 fail=0 err=0 skip=0`。
 
 - 2026-05-26 deque 继续修复：
   - `collections.deque` 的 `__getitem__`、`__setitem__`、`__delitem__`、`count`、`index`、`remove`、`__contains__`、`extend`、`extendleft`、`insert`、`reverse` 补齐 CPython 风格参数校验和负索引/负 start-stop 处理。

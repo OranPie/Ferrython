@@ -708,6 +708,9 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
     if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        if inst.attrs.read().contains_key("__deque__") {
+            return Err(PyException::type_error("unhashable type: 'deque'"));
+        }
         let is_weak_method = inst.attrs.read().contains_key("__weakmethod__");
         let weak_call = {
             let attrs = inst.attrs.read();
