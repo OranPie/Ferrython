@@ -127,6 +127,14 @@ Last updated: 2026-05-26T20:36:46+08:00
   - `concurrency_modules.rs` 保留共享 deferred call 状态、`threading` 和 `weakref` 主体，并继续 re-export 原有 module factory API。
   - `signal` 的 handler thread-local 状态随模块迁移；`signal.raise_signal()` 改为调用共享 `push_deferred_call()` helper，避免跨子模块直接访问 deferred queue。
   - `concurrency_modules.rs` 从约 5354 行降到约 3439 行；新增子文件最大为 `multiprocessing.rs`，约 784 行。
+- 已开始 `concurrency_modules` 第二轮拆分：
+  - 新增 `concurrency_modules/threading.rs`，把 `threading` module factory 与 `Thread` / `Lock` / `RLock` / `Condition` / `Semaphore` / `Timer` 等实现从根文件抽离。
+  - `concurrency_modules.rs` 现在只保留共享 deferred call 状态和 `weakref` 主体，并继续通过 root re-export `create_threading_module()`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `concurrency_modules` 第三轮拆分：
+  - 新增 `concurrency_modules/weakref/mod.rs`、`reference.rs`、`finalize.rs` 和 `mappings.rs`，把 `weakref` 的 reference/proxy/WeakMethod、finalize、WeakKey/WeakValueDictionary/WeakSet 逻辑拆到独立子模块。
+  - `concurrency_modules.rs` 进一步降为共享 deferred call 状态加子模块声明/re-export 薄壳；`weakref/mod.rs` 负责模块装配，子文件负责具体实现。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -161,7 +169,7 @@ Last updated: 2026-05-26T20:36:46+08:00
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
   - 继续评估 `network_modules/http_module.rs` 是否按 urllib.parse、urllib.request、http.client、http.server 进一步拆分。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
-  - 继续评估 `concurrency_modules.rs` 中剩余 `threading` 和 `weakref` 是否按同步原语、Thread/Timer/local、weakref object/Weak* 容器继续内部分层。
+  - 继续评估 `concurrency_modules/weakref/mappings.rs` 是否还值得把 weakdict 与 WeakSet 再拆开，或把 `reference.rs` 中 proxy / WeakMethod 再细分。
   - 再评估 `fs_modules.rs`、`collection_modules/collections.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 

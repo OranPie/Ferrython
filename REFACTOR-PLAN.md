@@ -49,8 +49,11 @@ Last updated: 2026-05-26
 - Phase 2 concurrency module mechanical splits have started. The low-coupling
   tail of `concurrency_modules.rs` now lives under `concurrency_modules/`:
   `gc`, `_thread`, `signal`, `multiprocessing`, `selectors`, and `select`.
-  The remaining root file keeps shared deferred-call state plus the larger
-  `threading` and `weakref` implementations.
+  `threading` has now also been extracted into `concurrency_modules/threading.rs`.
+  `weakref` has now been split into `concurrency_modules/weakref/` with
+  separate `mod.rs`, `reference.rs`, `finalize.rs`, and `mappings.rs`.
+  The remaining root file now keeps only shared deferred-call state plus
+  submodule declarations/re-exports.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
