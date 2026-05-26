@@ -1,6 +1,6 @@
 # Ferrython Code Quality Refactor Plan
 
-Last updated: 2026-05-26
+Last updated: 2026-05-27
 
 ## Progress Snapshot
 
@@ -60,6 +60,10 @@ Last updated: 2026-05-26
   `weakref/mappings/`.
   The remaining root file now keeps only shared deferred-call state plus
   submodule declarations/re-exports.
+- Phase 2 collection module mechanical splits have started. `UserDict`,
+  `UserList`, `UserString`, and their slice/copy/data helpers now live in
+  `collection_modules/user_types.rs`; `collections.rs` still owns module
+  assembly plus OrderedDict/defaultdict/Counter/namedtuple/deque/ChainMap.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
@@ -78,14 +82,11 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-vm/src/vm_call.rs` is over 7k lines and combines function
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
-- `crates/ferrython-stdlib/src/collection_modules/collections.rs` is near 5k
-  lines and combines deque, defaultdict, Counter, ChainMap, OrderedDict, named
-  tuple, and collection ABC helpers.
 - `crates/ferrython-stdlib/src/fs_modules.rs` is near 5k lines and combines
   path, file, tempfile, glob, fnmatch-style helpers, and filesystem operations.
-- `crates/ferrython-stdlib/src/concurrency_modules.rs` is still over 3k lines
-  after the first tail split and combines shared deferred-call state,
-  `threading`, and `weakref`.
+- `crates/ferrython-stdlib/src/collection_modules/collections.rs` is still over
+  3k lines after the User* split and combines deque, defaultdict, Counter,
+  ChainMap, OrderedDict, namedtuple, and module assembly helpers.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

@@ -5,6 +5,7 @@ mod functools;
 mod itertools;
 mod operator;
 mod other;
+mod user_types;
 
 pub use collections::create_collections_module;
 pub(crate) use collections::{namedtuple_rebuild_field, namedtuple_rebuild_instance};
