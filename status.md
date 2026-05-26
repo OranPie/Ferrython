@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T12:38:00+08:00
+Last updated: 2026-05-26T10:10:06+08:00
 
 ## 已提交成果
 
@@ -70,6 +70,10 @@ Last updated: 2026-05-26T12:38:00+08:00
   - `WeakKeyDictionary` / `WeakValueDictionary` update 的 iterable-of-pairs 路径优先识别 tuple/list 二元 pair，避免把 key 本身误当可迭代 pair。
   - `dict(mapping)` 与 `dict.update(mapping)` 对普通 mapping 实例按 `keys()` + `__getitem__` 复制；无 `keys()` 的实例 fallback 到 iterable-of-pairs，并保留用户迭代/取值异常传播。
   - `dict.update()` 空调用成为 no-op；tuple/list pair 长度不为 2 时抛 `ValueError`。
+  - `weakref.WeakMethod` 改为弱持有 bound method 的 receiver/function 组件，而不是弱持有临时 bound method 对象；`r()` 存活时重建 method，receiver/function 任一死亡后返回 `None`。
+  - `WeakMethod` callback 注册到 receiver 与 function 两侧，并用 one-shot guard 保证任一侧死亡只调用用户 callback 一次。
+  - `WeakMethod` live equality 按 function identity + receiver equality 判定，dead weak method 回落为不相等；hash alive 时按 receiver hash 与 function identity 组合并缓存。
+  - VM `isinstance` 快路径补齐 `method` / `builtin_method`，`isinstance(r(), type(obj.method))` 不再被热路径误判为 false。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -175,6 +179,12 @@ Last updated: 2026-05-26T12:38:00+08:00
   - finalize/weakdict regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
     - `run=4 pass=4 fail=0 err=0 skip=0`
+  - WeakMethod focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakMethodTestCase.test_alive test_weakref.WeakMethodTestCase.test_object_dead test_weakref.WeakMethodTestCase.test_method_dead test_weakref.WeakMethodTestCase.test_callback_when_method_dead test_weakref.WeakMethodTestCase.test_callback_when_object_dead test_weakref.WeakMethodTestCase.test_equality test_weakref.WeakMethodTestCase.test_hashing`
+    - `run=7 pass=7 fail=0 err=0 skip=0`
+  - WeakMethod 后 weakref registry/proxy regression：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_ref_reuse test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_callable_proxy test_weakref.ReferencesTestCase.test_basic_proxy`
+    - `run=6 pass=6 fail=0 err=0 skip=0`
   - smoke: `WeakKeyDictionary({custom_hash_object: value})` 后 `list(keys)`、`contains`、`get` 均保留同一 key identity。
   - smoke: custom key `__eq__` 返回 `NotImplemented` 时，`'__weakdict_kwargs__' in {custom_key: value}` 为 `False`。
   - smoke: `dict.keys(None)` / `dict.values(None)` / `dict.items(None)` / `dict.get(1, 2, 3)` 均抛 `TypeError`。

@@ -35,6 +35,50 @@ pub fn drain_deferred_calls() -> Vec<(PyObjectRef, Vec<PyObjectRef>)> {
     DEFERRED_CALLS.with(|dc| std::mem::take(&mut *dc.borrow_mut()))
 }
 
+fn is_weak_method_ref(obj: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        inst.attrs.read().contains_key("__weakmethod__")
+    } else {
+        false
+    }
+}
+
+fn weak_method_parts(obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyObjectRef)>> {
+    let Some(call) = obj.get_attr("__call__") else {
+        return Ok(None);
+    };
+    let bound = call_callable(&call, &[])?;
+    if matches!(&bound.payload, PyObjectPayload::None) {
+        return Ok(None);
+    }
+    if let PyObjectPayload::BoundMethod { receiver, method } = &bound.payload {
+        Ok(Some((receiver.clone(), method.clone())))
+    } else {
+        Ok(None)
+    }
+}
+
+fn compare_weak_methods(
+    this: &PyObjectRef,
+    other: &PyObjectRef,
+    op: CompareOp,
+) -> PyResult<PyObjectRef> {
+    let eq = match (weak_method_parts(this)?, weak_method_parts(other)?) {
+        (Some((this_receiver, this_func)), Some((other_receiver, other_func))) => {
+            PyObjectRef::ptr_eq(&this_func, &other_func)
+                && this_receiver
+                    .compare(&other_receiver, CompareOp::Eq)?
+                    .is_truthy()
+        }
+        _ => false,
+    };
+    Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
+        eq
+    } else {
+        !eq
+    }))
+}
+
 // ── logging module ──
 
 pub fn create_threading_module() -> PyObjectRef {
@@ -1324,11 +1368,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 }
                 if let Some(items_fn) = obj.get_attr("items") {
                     let items = call_callable(&items_fn, &[])?;
-                    return items
-                        .to_list()?
-                        .into_iter()
-                        .map(pair_from_object)
-                        .collect();
+                    return items.to_list()?.into_iter().map(pair_from_object).collect();
                 }
                 if let Some(keys_fn) = obj.get_attr("keys") {
                     let keys = call_callable(&keys_fn, &[])?;
@@ -1342,10 +1382,7 @@ pub fn create_weakref_module() -> PyObjectRef {
             }
             _ => {}
         }
-        obj.to_list()?
-            .into_iter()
-            .map(pair_from_object)
-            .collect()
+        obj.to_list()?.into_iter().map(pair_from_object).collect()
     }
 
     fn weak_key_update_from_dict_storage(
@@ -2371,9 +2408,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                         )));
                     }
                     if args.len() == 2 && matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
-                        return Err(PyException::type_error(
-                            "ref() takes no keyword arguments",
-                        ));
+                        return Err(PyException::type_error("ref() takes no keyword arguments"));
                     }
                     let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
                     let callback = if matches!(callback.payload, PyObjectPayload::None) {
@@ -2397,6 +2432,12 @@ pub fn create_weakref_module() -> PyObjectRef {
                             if let (Some(this), Some(other)) = (args.first(), args.get(1)) {
                                 if PyObjectRef::ptr_eq(this, other) {
                                     return Ok(PyObject::bool_val(true));
+                                }
+                                if is_weak_method_ref(this) || is_weak_method_ref(other) {
+                                    if !is_weak_method_ref(this) || !is_weak_method_ref(other) {
+                                        return Ok(PyObject::bool_val(false));
+                                    }
+                                    return compare_weak_methods(this, other, CompareOp::Eq);
                                 }
                                 let Some(this_call) = this.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(false));
@@ -2423,6 +2464,12 @@ pub fn create_weakref_module() -> PyObjectRef {
                             if let (Some(this), Some(other)) = (args.first(), args.get(1)) {
                                 if PyObjectRef::ptr_eq(this, other) {
                                     return Ok(PyObject::bool_val(false));
+                                }
+                                if is_weak_method_ref(this) || is_weak_method_ref(other) {
+                                    if !is_weak_method_ref(this) || !is_weak_method_ref(other) {
+                                        return Ok(PyObject::bool_val(true));
+                                    }
+                                    return compare_weak_methods(this, other, CompareOp::Ne);
                                 }
                                 let Some(this_call) = this.get_attr("__call__") else {
                                     return Ok(PyObject::bool_val(true));
@@ -2501,7 +2548,6 @@ pub fn create_weakref_module() -> PyObjectRef {
                                 Ok(PyObject::bool_val(w_bool.upgrade().is_some()))
                             }),
                         );
-
                     }
                     PyObjectRef::register_weak_object(
                         &args[0],
@@ -2955,7 +3001,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 }),
             ),
             // ── ReferenceType (the type of weak references) ──
-            ("ReferenceType", reference_type),
+            ("ReferenceType", reference_type.clone()),
             // ── ProxyType ──
             ("ProxyType", proxy_type),
             // ── CallableProxyType ──
@@ -2963,32 +3009,130 @@ pub fn create_weakref_module() -> PyObjectRef {
             // ── WeakMethod(method, callback=None) ──
             (
                 "WeakMethod",
-                make_builtin(|args| {
+                PyObject::native_closure("weakref.WeakMethod", move |args| {
                     if args.is_empty() {
                         return Err(PyException::type_error(
                             "WeakMethod requires at least 1 argument",
                         ));
                     }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error(
+                            "WeakMethod expected at most 2 arguments",
+                        ));
+                    }
                     let method = args[0].clone();
-                    let weak: PyWeakRef = PyObjectRef::downgrade(&method);
-                    let cls =
-                        PyObject::class(CompactString::from("WeakMethod"), vec![], IndexMap::new());
+                    let (receiver, func) = match &method.payload {
+                        PyObjectPayload::BoundMethod { receiver, method } => {
+                            (receiver.clone(), method.clone())
+                        }
+                        PyObjectPayload::BuiltinBoundMethod(bbm) => (
+                            bbm.receiver.clone(),
+                            PyObject::str_val(bbm.method_name.clone()),
+                        ),
+                        _ => {
+                            let receiver = method.get_attr("__self__").ok_or_else(|| {
+                                PyException::type_error(
+                                    "argument should be a bound method, not other callable",
+                                )
+                            })?;
+                            let func = method.get_attr("__func__").ok_or_else(|| {
+                                PyException::type_error(
+                                    "argument should be a bound method, not other callable",
+                                )
+                            })?;
+                            (receiver, func)
+                        }
+                    };
+                    let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                    let callback = if matches!(callback.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(callback)
+                    };
+                    let weak_receiver = PyObjectRef::downgrade(&receiver);
+                    let weak_func = PyObjectRef::downgrade(&func);
+                    let cls = PyObject::class(
+                        CompactString::from("WeakMethod"),
+                        vec![reference_type.clone()],
+                        IndexMap::new(),
+                    );
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref d) = inst.payload {
                         let mut w = d.attrs.write();
-                        let w1 = weak.clone();
+                        w.insert(
+                            CompactString::from("__weakref_ref__"),
+                            PyObject::bool_val(true),
+                        );
+                        w.insert(
+                            CompactString::from("__weakmethod__"),
+                            PyObject::bool_val(true),
+                        );
+                        w.insert(
+                            CompactString::from("__weakref_callback__"),
+                            callback.clone().unwrap_or_else(PyObject::none),
+                        );
+                        let call_receiver = weak_receiver.clone();
+                        let call_func = weak_func.clone();
                         w.insert(
                             CompactString::from("__call__"),
                             PyObject::native_closure("WeakMethod.__call__", move |_| {
-                                Ok(upgrade_or_none(&w1))
+                                let Some(receiver) = call_receiver.upgrade() else {
+                                    return Ok(PyObject::none());
+                                };
+                                let Some(func) = call_func.upgrade() else {
+                                    return Ok(PyObject::none());
+                                };
+                                Ok(PyObject::wrap(PyObjectPayload::BoundMethod {
+                                    receiver,
+                                    method: func,
+                                }))
                             }),
                         );
-                        let w2 = weak.clone();
+                        let bool_receiver = weak_receiver.clone();
+                        let bool_func = weak_func.clone();
                         w.insert(
                             CompactString::from("__bool__"),
                             PyObject::native_closure("WeakMethod.__bool__", move |_| {
-                                Ok(PyObject::bool_val(w2.upgrade().is_some()))
+                                Ok(PyObject::bool_val(
+                                    bool_receiver.upgrade().is_some()
+                                        && bool_func.upgrade().is_some(),
+                                ))
                             }),
+                        );
+                    }
+                    if let Some(callback) = callback {
+                        let fired = Rc::new(Cell::new(false));
+                        let cb1 = callback.clone();
+                        let weak_method = inst.clone();
+                        let fired1 = fired.clone();
+                        let callback_wrapper =
+                            PyObject::native_closure("WeakMethod.callback", move |_| {
+                                if !fired1.replace(true) {
+                                    call_callable(&cb1, &[weak_method.clone()])?;
+                                }
+                                Ok(PyObject::none())
+                            });
+                        PyObjectRef::register_weak_object(
+                            &receiver,
+                            &inst,
+                            Some(callback_wrapper.clone()),
+                            WeakObjectKind::Ref,
+                        );
+                        let cb2 = callback;
+                        let weak_method = inst.clone();
+                        let fired2 = fired;
+                        let callback_wrapper =
+                            PyObject::native_closure("WeakMethod.callback", move |_| {
+                                if !fired2.replace(true) {
+                                    call_callable(&cb2, &[weak_method.clone()])?;
+                                }
+                                Ok(PyObject::none())
+                            });
+                        PyObjectRef::register_weak_object(
+                            &func,
+                            &inst,
+                            Some(callback_wrapper),
+                            WeakObjectKind::Ref,
                         );
                     }
                     Ok(inst)

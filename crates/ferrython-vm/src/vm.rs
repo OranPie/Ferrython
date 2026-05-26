@@ -5424,6 +5424,14 @@ impl VirtualMachine {
                                                             "type",
                                                         ) => true,
                                                         (PyObjectPayload::Class(_), "type") => true,
+                                                        (
+                                                            PyObjectPayload::BoundMethod { .. },
+                                                            "method",
+                                                        ) => true,
+                                                        (
+                                                            PyObjectPayload::BuiltinBoundMethod(_),
+                                                            "builtin_method",
+                                                        ) => true,
                                                         (_, "object") => true,
                                                         _ => false,
                                                     };
@@ -6436,6 +6444,14 @@ impl VirtualMachine {
                                                 PyObjectPayload::BuiltinType(_)
                                                     | PyObjectPayload::Class(_)
                                             )),
+                                            "method" => Some(matches!(
+                                                &obj.payload,
+                                                PyObjectPayload::BoundMethod { .. }
+                                            )),
+                                            "builtin_method" => Some(matches!(
+                                                &obj.payload,
+                                                PyObjectPayload::BuiltinBoundMethod(_)
+                                            )),
                                             "object" => Some(true),
                                             _ => None,
                                         }
@@ -6782,87 +6798,95 @@ impl VirtualMachine {
                                                 if fn_name.as_str() == "isinstance" {
                                                     let obj = sget!(frame, stack_len - 1);
                                                     let fast_result = match &func_obj.payload {
-                                                        PyObjectPayload::BuiltinType(bt) => {
-                                                            match bt.as_str() {
-                                                                "int" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Int(_)
-                                                                        | PyObjectPayload::Bool(_)
-                                                                )),
-                                                                "float" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Float(_)
-                                                                )),
-                                                                "str" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Str(_)
-                                                                )),
-                                                                "bool" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Bool(_)
-                                                                )),
-                                                                "list" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::List(_)
-                                                                )),
-                                                                "dict" => Some(matches!(
+                                                        PyObjectPayload::BuiltinType(bt) => match bt
+                                                            .as_str()
+                                                        {
+                                                            "int" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Int(_)
+                                                                    | PyObjectPayload::Bool(_)
+                                                            )),
+                                                            "float" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Float(_)
+                                                            )),
+                                                            "str" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Str(_)
+                                                            )),
+                                                            "bool" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Bool(_)
+                                                            )),
+                                                            "list" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::List(_)
+                                                            )),
+                                                            "dict" => Some(matches!(
                                                                 &obj.payload,
                                                                 PyObjectPayload::Dict(_)
                                                                     | PyObjectPayload::InstanceDict(
                                                                         _
                                                                     )
                                                             )),
-                                                                "tuple" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Tuple(_)
-                                                                )),
-                                                                "set" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Set(_)
-                                                                )),
-                                                                "bytes" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Bytes(_)
-                                                                )),
-                                                                "bytearray" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::ByteArray(_)
-                                                                )),
-                                                                "NoneType" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::None
-                                                                )),
-                                                                "generator" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Generator(_)
-                                                                )),
-                                                                "coroutine" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Coroutine(_)
-                                                                )),
-                                                                "async_generator" => {
-                                                                    Some(matches!(
+                                                            "tuple" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Tuple(_)
+                                                            )),
+                                                            "set" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Set(_)
+                                                            )),
+                                                            "bytes" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Bytes(_)
+                                                            )),
+                                                            "bytearray" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::ByteArray(_)
+                                                            )),
+                                                            "NoneType" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::None
+                                                            )),
+                                                            "generator" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Generator(_)
+                                                            )),
+                                                            "coroutine" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Coroutine(_)
+                                                            )),
+                                                            "async_generator" => Some(matches!(
                                                                 &obj.payload,
                                                                 PyObjectPayload::AsyncGenerator(_)
-                                                            ))
-                                                                }
-                                                                "frozenset" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::FrozenSet(_)
-                                                                )),
-                                                                "range" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::Range(_)
-                                                                )),
-                                                                "type" => Some(matches!(
-                                                                    &obj.payload,
-                                                                    PyObjectPayload::BuiltinType(_)
-                                                                        | PyObjectPayload::Class(_)
-                                                                )),
-                                                                "object" => Some(true),
-                                                                _ => None,
-                                                            }
-                                                        }
+                                                            )),
+                                                            "frozenset" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::FrozenSet(_)
+                                                            )),
+                                                            "range" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::Range(_)
+                                                            )),
+                                                            "type" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::BuiltinType(_)
+                                                                    | PyObjectPayload::Class(_)
+                                                            )),
+                                                            "method" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::BoundMethod { .. }
+                                                            )),
+                                                            "builtin_method" => Some(matches!(
+                                                                &obj.payload,
+                                                                PyObjectPayload::BuiltinBoundMethod(
+                                                                    _
+                                                                )
+                                                            )),
+                                                            "object" => Some(true),
+                                                            _ => None,
+                                                        },
                                                         PyObjectPayload::Class(cd) => {
                                                             if let PyObjectPayload::Instance(inst) =
                                                                 &obj.payload

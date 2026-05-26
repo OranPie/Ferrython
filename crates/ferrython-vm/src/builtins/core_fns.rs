@@ -708,6 +708,7 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
     if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        let is_weak_method = inst.attrs.read().contains_key("__weakmethod__");
         let weak_call = {
             let attrs = inst.attrs.read();
             if attrs.contains_key("__weakref_ref__") {
@@ -726,8 +727,20 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     "weak object has gone away".to_string(),
                 ));
             }
-            let key = referent.to_hashable_key()?;
-            let hash = PyObject::int(hash_key_like_python(&key));
+            let hash = if is_weak_method {
+                if let PyObjectPayload::BoundMethod { receiver, method } = &referent.payload {
+                    let receiver_key = receiver.to_hashable_key()?;
+                    let receiver_hash = hash_key_like_python(&receiver_key);
+                    let method_ptr = PyObjectRef::as_ptr(method) as i64;
+                    PyObject::int(receiver_hash ^ method_ptr)
+                } else {
+                    let key = referent.to_hashable_key()?;
+                    PyObject::int(hash_key_like_python(&key))
+                }
+            } else {
+                let key = referent.to_hashable_key()?;
+                PyObject::int(hash_key_like_python(&key))
+            };
             inst.attrs
                 .write()
                 .insert(CompactString::from("__weakref_hash__"), hash.clone());
@@ -878,6 +891,9 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             false
         }
         PyObjectPayload::Class(target_cd) => {
+            if obj.type_name() == target_cd.name.as_str() {
+                return true;
+            }
             if matches!(
                 target_cd.name.as_str(),
                 "Num" | "Str" | "Bytes" | "NameConstant" | "Ellipsis"
@@ -1944,9 +1960,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
-        | PyObjectPayload::Set(_) => {
-            Ok(PyObject::dict(dict_pair_items(&args[0])?))
-        }
+        | PyObjectPayload::Set(_) => Ok(PyObject::dict(dict_pair_items(&args[0])?)),
         _ => {
             // Try to handle instances with dict_storage (OrderedDict, dict subclasses)
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
