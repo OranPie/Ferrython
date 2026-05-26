@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T20:05:31+08:00
+Last updated: 2026-05-26T20:16:39+08:00
 
 ## 代码质量重构进度
 
@@ -82,26 +82,36 @@ Last updated: 2026-05-26T20:05:31+08:00
   - `aafeb8d refactor: split more misc modules`
   - `misc_modules/mimetypes.rs`、`cmd.rs`、`plistlib.rs`、`curses.rs` 拆出中等耦合 misc 模块。
   - `misc_modules.rs` 从约 4605 行降到约 3295 行；剩余主要是 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`copy` 和 `ctypes`。
-- 已完成待提交 misc context/ctypes 批量拆分：
+- 已完成并提交 misc context/ctypes 批量拆分：
+  - `08d0726 refactor: split context misc modules`
   - `misc_modules/contextvars.rs` 拆出 `contextvars` module factory、`ContextVar`、`Context` 和 `Token` stub 逻辑。
   - `misc_modules/ctypes.rs` 拆出 `ctypes` module factory、C 类型包装、`CDLL`/`dlsym` bridge、`pythonapi.PyBytes_FromFormat` 和 errno helpers。
   - `misc_modules.rs` 从约 3295 行降到约 2208 行；剩余主要是 `contextlib`、`dataclasses`、`copy` 和 `builtins`。
-- 已完成待提交 misc 剩余模块批量拆分：
+- 已完成并提交 misc 剩余模块批量拆分：
+  - `b29aaa3 refactor: split remaining misc modules`
   - `misc_modules/contextlib.rs` 拆出 `contextlib` context manager helpers。
   - `misc_modules/dataclasses.rs` 拆出 `dataclasses` decorator、field metadata、generated dunder helpers。
   - `misc_modules/copy_module.rs` 拆出旧 Rust copy/deepcopy stub，保留现有未加载状态。
   - `misc_modules/builtins.rs` 拆出 `builtins` module factory 和 exception/type/function 导出表。
   - `misc_modules.rs` 从约 2208 行降到约 37 行，只保留子模块声明和 re-export；`misc_modules.rs` 已退出健康基线最长 Rust 文件列表。
-- 已完成待提交 `testing_modules` 尾部模块批量拆分：
+- 已完成并提交 `testing_modules` 尾部模块批量拆分：
+  - `2225c21 refactor: split testing helper modules`
   - 新增 `testing_modules/doctest.rs`、`pdb.rs`、`profile.rs`、`cprofile.rs`、`timeit.rs`、`faulthandler.rs`、`tracemalloc.rs`、`pydoc.rs`、`logging_handlers.rs`、`logging_config.rs`、`pickletools.rs` 和 `testcapi.rs`。
   - `testing_modules.rs` 从约 5483 行降到约 4187 行；剩余主要是 `logging`、`unittest` 和 `unittest.mock`。
-- 已完成待提交 `unittest.mock` 拆分：
+- 已完成并提交 `unittest.mock` 拆分：
+  - `b1ddfa7 refactor: split unittest mock module`
   - `testing_modules/unittest_mock.rs` 拆出 Mock/MagicMock 构造、patch/patch.object/patch.dict、sentinel、ANY 和 helper。
   - `testing_modules.rs` 从约 4187 行降到约 3556 行；剩余主要是 `logging` 和 `unittest`。
-- 已完成待提交 `testing_modules` 最后大块拆分：
+- 已完成并提交 `testing_modules` 最后大块拆分：
+  - `9fefed6 refactor: split testing core modules`
   - `testing_modules/logging.rs` 拆出 logging module factory、logger registry、formatter/handler/log record 和 root logger helpers。
   - `testing_modules/unittest.rs` 拆出 unittest `TestCase` assertion helpers、assertLogs、TestSuite/TestLoader/TextTestRunner 和 skip helpers。
   - `testing_modules.rs` 从约 3556 行降到约 33 行，只保留子模块声明和 re-export；该顶层文件已退出健康基线最长 Rust 文件列表。
+- 已完成并提交 `sys_modules` 后半段低耦合模块批量拆分：
+  - 新增 `sys_modules/platform.rs`、`locale.rs`、`getpass.rs`、`errno.rs`、`atexit.rs`、`site.rs`、`sched.rs`、`mmap.rs`、`resource.rs`、`fcntl.rs`、`sysconfig.rs`、`grp.rs` 和 `pwd.rs`。
+  - `locale` 的 `CURRENT_CTYPE_LOCALE` 状态随模块迁移，并通过 `sys_modules` root 继续 re-export `get_current_ctype_locale()`。
+  - `atexit` callback 状态和 `register_atexit_callback` / `unregister_atexit_callback` 随模块迁移，并保持原 public API 给 `concurrency_modules` 使用。
+  - `sys_modules.rs` 从约 5971 行降到约 3608 行；剩余主体主要是 `sys`、`os` 和 `os.path`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -124,12 +134,14 @@ Last updated: 2026-05-26T20:05:31+08:00
   - testing doctest/pdb/profile/cProfile/timeit/faulthandler/tracemalloc/pydoc/logging submodule/pickletools/_testcapi 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - testing `unittest.mock` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - testing `logging`/`unittest` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - sys 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 和 `unittest.rs` 是否需要内部分层。
-  - 再评估 `sys_modules.rs`、`concurrency_modules.rs` 等 stdlib 热点。
+  - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
+  - 再评估 `concurrency_modules.rs`、`network_modules/http_module.rs`、`math_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果

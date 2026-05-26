@@ -30,6 +30,12 @@ Last updated: 2026-05-26
   `cProfile`, `timeit`, `faulthandler`, `tracemalloc`, `pydoc`,
   `logging.handlers`, `logging.config`, `pickletools`, and `_testcapi` now
   live under `testing_modules/`.
+- Phase 2 system module mechanical splits have started. The low-coupling back
+  half of `sys_modules.rs` now lives under `sys_modules/`: `platform`, `locale`,
+  `getpass`, `errno`, `atexit`, `site`, `sched`, `mmap`, `resource`, `fcntl`,
+  `sysconfig`, `grp`, and `pwd`. The remaining top-level `sys_modules.rs` still
+  owns `sys`, `os`, and `os.path`, which are more tightly coupled to process
+  state and path/file-descriptor helpers.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
