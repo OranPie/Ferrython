@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T12:02:00+08:00
+Last updated: 2026-05-26T12:38:00+08:00
 
 ## 已提交成果
 
@@ -66,6 +66,10 @@ Last updated: 2026-05-26T12:02:00+08:00
   - VM 执行 pending weakref callbacks 时不再用 callback 返回值覆盖当前 native function/closure 的返回值，修复 callback 返回 `None` 污染下一次 `weakref.ref(...)` 构造结果。
   - `weakref.proxy` 的二元/inplace 算术 dunder 分发透明解引用 referent，覆盖 float subclass 加法、floor-div 和 matrix-multiply proxy 路径。
   - VM arithmetic 对 builtin-value subclass 补齐 `__add__` / `__radd__` fallback，使 `weakref.proxy(F(2.0)) + 1.0` 和 `1.0 + proxy` 与 referent 行为一致。
+  - weakref ref 实例补齐 no-op `__init__`，重复初始化保留 CPython 参数校验语义。
+  - `WeakKeyDictionary` / `WeakValueDictionary` update 的 iterable-of-pairs 路径优先识别 tuple/list 二元 pair，避免把 key 本身误当可迭代 pair。
+  - `dict(mapping)` 与 `dict.update(mapping)` 对普通 mapping 实例按 `keys()` + `__getitem__` 复制；无 `keys()` 的实例 fallback 到 iterable-of-pairs，并保留用户迭代/取值异常传播。
+  - `dict.update()` 空调用成为 no-op；tuple/list pair 长度不为 2 时抛 `ValueError`。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -158,6 +162,16 @@ Last updated: 2026-05-26T12:02:00+08:00
   - weakproxy regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_basic_proxy test_weakref.ReferencesTestCase.test_proxy_deletion test_weakref.ReferencesTestCase.test_proxy_bool test_weakref.ReferencesTestCase.test_proxy_index test_weakref.ReferencesTestCase.test_proxy_unicode test_weakref.ReferencesTestCase.test_newstyle_number_ops test_weakref.ReferencesTestCase.test_proxy_div test_weakref.ReferencesTestCase.test_proxy_matmul`
     - `run=8 pass=8 fail=0 err=0 skip=0`
+  - weakref/dict mapping focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_dict.DictTest.test_update test_weakref.ReferencesTestCase.test_init test_weakref.WeakKeyDictionaryTestCase.test_write test_weakref.WeakValueDictionaryTestCase.test_write`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - weakdict mapping regression:
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakKeyDictionaryTestCase.test_items test_weakref.WeakKeyDictionaryTestCase.test_keys test_weakref.WeakKeyDictionaryTestCase.test_values test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_items test_weakref.WeakValueDictionaryTestCase.test_keys test_weakref.WeakValueDictionaryTestCase.test_values test_weakref.WeakKeyDictionaryTestCase.test_write test_weakref.WeakValueDictionaryTestCase.test_write`
+    - `run=10 pass=10 fail=0 err=0 skip=0`
+  - dict/mapping smoke:
+    - `dict(custom_mapping)` 与 `{}.update(custom_mapping)` 使用 `keys()`/`__getitem__`。
+    - `{}.update()` no-op；`{}.update([(1,2,3)])` 抛 `ValueError`。
+    - 保留强引用时 `dict(WeakValueDictionary)` / `dict(WeakKeyDictionary)` 复制 live 项。
   - finalize/weakdict regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
     - `run=4 pass=4 fail=0 err=0 skip=0`

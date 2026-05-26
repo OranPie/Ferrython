@@ -818,11 +818,13 @@ pub(crate) fn call_dict_method(
         }
         "copy" => Ok(PyObject::dict(map.read().clone())),
         "update" => {
-            check_args_min("update", args, 1)?;
             if args.len() > 1 {
                 return Err(PyException::type_error(
                     "update expected at most 1 positional argument",
                 ));
+            }
+            if args.is_empty() {
+                return Ok(PyObject::none());
             }
             // Check if this is a Counter (has __counter__ key)
             let is_counter = map
@@ -876,6 +878,47 @@ pub(crate) fn call_dict_method(
                             w.insert(k, v);
                         }
                     }
+                    PyObjectPayload::Instance(_) => {
+                        if let Some(keys_method) = args[0].get_attr("keys") {
+                            let keys_obj = ferrython_core::object::call_callable(&keys_method, &[])?;
+                            let keys = keys_obj.to_list()?;
+                            let mut w = map.write();
+                            for key_obj in keys {
+                                let value = args[0].get_item(&key_obj)?;
+                                w.insert(key_obj.to_hashable_key()?, value);
+                            }
+                        } else {
+                            let items = args[0].to_list()?;
+                            let mut w = map.write();
+                            for item in &items {
+                                match &item.payload {
+                                    PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
+                                        let key = pair[0].to_hashable_key()?;
+                                        w.insert(key, pair[1].clone());
+                                    }
+                                    PyObjectPayload::Tuple(pair) => {
+                                        return Err(PyException::value_error(
+                                            format!("dictionary update sequence element has length {}; 2 is required", pair.len())
+                                        ));
+                                    }
+                                    PyObjectPayload::List(pair_items) => {
+                                        let pair = pair_items.read();
+                                        if pair.len() == 2 {
+                                            let key = pair[0].to_hashable_key()?;
+                                            w.insert(key, pair[1].clone());
+                                        } else {
+                                            return Err(PyException::value_error(
+                                                format!("dictionary update sequence element has length {}; 2 is required", pair.len())
+                                            ));
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     PyObjectPayload::List(items) => {
                         let items = items.read().clone();
                         let mut w = map.write();
@@ -884,6 +927,11 @@ pub(crate) fn call_dict_method(
                                 PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
                                     let key = pair[0].to_hashable_key()?;
                                     w.insert(key, pair[1].clone());
+                                }
+                                PyObjectPayload::Tuple(pair) => {
+                                    return Err(PyException::value_error(
+                                        format!("dictionary update sequence element has length {}; 2 is required", pair.len())
+                                    ));
                                 }
                                 PyObjectPayload::List(pair_items) => {
                                     let pair = pair_items.read();

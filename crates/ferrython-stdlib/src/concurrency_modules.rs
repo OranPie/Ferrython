@@ -1276,6 +1276,26 @@ pub fn create_weakref_module() -> PyObjectRef {
     }
 
     fn weak_mapping_items(obj: &PyObjectRef) -> PyResult<Vec<(PyObjectRef, PyObjectRef)>> {
+        fn pair_from_object(item: PyObjectRef) -> PyResult<(PyObjectRef, PyObjectRef)> {
+            match &item.payload {
+                PyObjectPayload::Tuple(items) if items.len() == 2 => {
+                    return Ok((items[0].clone(), items[1].clone()));
+                }
+                PyObjectPayload::List(items) if items.read().len() == 2 => {
+                    let items = items.read();
+                    return Ok((items[0].clone(), items[1].clone()));
+                }
+                _ => {}
+            }
+            let pair = item.to_list()?;
+            if pair.len() != 2 {
+                return Err(PyException::value_error(
+                    "dictionary update sequence element has length other than 2",
+                ));
+            }
+            Ok((pair[0].clone(), pair[1].clone()))
+        }
+
         match &obj.payload {
             PyObjectPayload::Dict(map) => {
                 return Ok(map
@@ -1307,15 +1327,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     return items
                         .to_list()?
                         .into_iter()
-                        .map(|item| {
-                            let pair = item.to_list()?;
-                            if pair.len() != 2 {
-                                return Err(PyException::value_error(
-                                    "dictionary update sequence element has length other than 2",
-                                ));
-                            }
-                            Ok((pair[0].clone(), pair[1].clone()))
-                        })
+                        .map(pair_from_object)
                         .collect();
                 }
                 if let Some(keys_fn) = obj.get_attr("keys") {
@@ -1332,15 +1344,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         }
         obj.to_list()?
             .into_iter()
-            .map(|item| {
-                let pair = item.to_list()?;
-                if pair.len() != 2 {
-                    return Err(PyException::value_error(
-                        "dictionary update sequence element has length other than 2",
-                    ));
-                }
-                Ok((pair[0].clone(), pair[1].clone()))
-            })
+            .map(pair_from_object)
             .collect()
     }
 
@@ -2453,6 +2457,18 @@ pub fn create_weakref_module() -> PyObjectRef {
                         attrs.insert(
                             CompactString::from("__weakref_callback__"),
                             callback.clone().unwrap_or_else(PyObject::none),
+                        );
+                        attrs.insert(
+                            CompactString::from("__init__"),
+                            PyObject::native_closure("weakref.__init__", move |args| {
+                                if args.len() > 2 {
+                                    return Err(PyException::type_error(format!(
+                                        "__init__() takes at most 2 arguments ({} given)",
+                                        args.len()
+                                    )));
+                                }
+                                Ok(PyObject::none())
+                            }),
                         );
 
                         // __call__() → referent or None

@@ -1874,6 +1874,45 @@ pub(super) fn builtin_tuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    fn dict_pair_items(obj: &PyObjectRef) -> PyResult<FxHashKeyMap> {
+        let pairs = obj.to_list()?;
+        let mut map: FxHashKeyMap = new_fx_hashkey_map();
+        for pair in &pairs {
+            let kv = match &pair.payload {
+                PyObjectPayload::Tuple(items) if items.len() == 2 => {
+                    vec![items[0].clone(), items[1].clone()]
+                }
+                PyObjectPayload::List(items) if items.read().len() == 2 => {
+                    let items = items.read();
+                    vec![items[0].clone(), items[1].clone()]
+                }
+                _ => pair.to_list()?,
+            };
+            if kv.len() != 2 {
+                return Err(PyException::value_error(format!(
+                    "dictionary update sequence element has length {}; 2 is required",
+                    kv.len()
+                )));
+            }
+            let key = kv[0].to_hashable_key()?;
+            map.insert(key, kv[1].clone());
+        }
+        Ok(map)
+    }
+
+    fn dict_from_mapping(obj: &PyObjectRef) -> PyResult<Option<FxHashKeyMap>> {
+        let Some(keys_fn) = obj.get_attr("keys") else {
+            return Ok(None);
+        };
+        let keys = ferrython_core::object::call_callable(&keys_fn, &[])?;
+        let mut map: FxHashKeyMap = new_fx_hashkey_map();
+        for key_obj in keys.to_list()? {
+            let value = obj.get_item(&key_obj)?;
+            map.insert(key_obj.to_hashable_key()?, value);
+        }
+        Ok(Some(map))
+    }
+
     if args.is_empty() {
         return Ok(PyObject::dict(new_fx_hashkey_map()));
     }
@@ -1906,20 +1945,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Set(_) => {
-            let pairs = args[0].to_list()?;
-            let mut map = IndexMap::new();
-            for pair in &pairs {
-                let kv = pair.to_list()?;
-                if kv.len() != 2 {
-                    return Err(PyException::value_error(format!(
-                        "dictionary update sequence element has length {}; 2 is required",
-                        kv.len()
-                    )));
-                }
-                let key = kv[0].to_hashable_key()?;
-                map.insert(key, kv[1].clone());
-            }
-            Ok(PyObject::dict(map))
+            Ok(PyObject::dict(dict_pair_items(&args[0])?))
         }
         _ => {
             // Try to handle instances with dict_storage (OrderedDict, dict subclasses)
@@ -1929,21 +1955,11 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     return Ok(PyObject::dict(read.clone()));
                 }
             }
-            // Fall back to iterating as pairs
-            let pairs = args[0].to_list()?;
-            let mut map: FxHashKeyMap = new_fx_hashkey_map();
-            for pair in &pairs {
-                let kv = pair.to_list()?;
-                if kv.len() != 2 {
-                    return Err(PyException::value_error(format!(
-                        "dictionary update sequence element has length {}; 2 is required",
-                        kv.len()
-                    )));
-                }
-                let key = kv[0].to_hashable_key()?;
-                map.insert(key, kv[1].clone());
+            if let Some(map) = dict_from_mapping(&args[0])? {
+                return Ok(PyObject::dict(map));
             }
-            Ok(PyObject::dict(map))
+            // Fall back to iterating as pairs
+            Ok(PyObject::dict(dict_pair_items(&args[0])?))
         }
     }
 }
