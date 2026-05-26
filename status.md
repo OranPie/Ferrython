@@ -74,7 +74,8 @@ Last updated: 2026-05-26T19:31:32+08:00
   - `serial_modules/dbm_module.rs` 拆出 `dbm` module factory 和长度前缀磁盘存储 stub。
   - `serial_modules/shelve_module.rs` 拆出 `shelve` module factory，并通过 `pickle_module` 的 `pub(super)` helper 复用序列化/反序列化。
   - `serial_modules/other.rs` 移除，剩余 pickle 代码改为职责明确的 `serial_modules/pickle_module.rs`，当前约 2909 行。
-- 本批已完成待提交：
+- 已完成并提交 misc 小模块拆分：
+  - `8891bae refactor: split small misc modules`
   - `misc_modules/future.rs`、`readline.rs`、`runpy.rs`、`compileall.rs`、`pstats.rs`、`quopri.rs`、`stringprep.rs` 拆出低耦合 misc 小模块。
   - `misc_modules.rs` 从约 5412 行降到约 4605 行；保留 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`mimetypes`、`cmd`、`plistlib`、`curses`、`ctypes` 等较重模块供后续分批拆。
 - 当前验证：
