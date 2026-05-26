@@ -11,8 +11,8 @@ Last updated: 2026-05-27
   has been split internally into match objects, compiled/scanner methods,
   classes/flags, pattern conversion/validation helpers, `_sre` helpers, and
   module-level `re.*` functions. The regex pattern helper hotspot has started
-  another internal layer with object/subject/pattern extraction helpers split
-  under `regex_impl/pattern/`.
+  another internal layer with object/subject/pattern extraction helpers and
+  debug dump/output helpers split under `regex_impl/pattern/`.
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
