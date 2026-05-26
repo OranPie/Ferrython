@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T19:49:53+08:00
+Last updated: 2026-05-26T19:55:00+08:00
 
 ## 代码质量重构进度
 
@@ -92,6 +92,9 @@ Last updated: 2026-05-26T19:49:53+08:00
   - `misc_modules/copy_module.rs` 拆出旧 Rust copy/deepcopy stub，保留现有未加载状态。
   - `misc_modules/builtins.rs` 拆出 `builtins` module factory 和 exception/type/function 导出表。
   - `misc_modules.rs` 从约 2208 行降到约 37 行，只保留子模块声明和 re-export；`misc_modules.rs` 已退出健康基线最长 Rust 文件列表。
+- 已完成待提交 `testing_modules` 尾部模块批量拆分：
+  - 新增 `testing_modules/doctest.rs`、`pdb.rs`、`profile.rs`、`cprofile.rs`、`timeit.rs`、`faulthandler.rs`、`tracemalloc.rs`、`pydoc.rs`、`logging_handlers.rs`、`logging_config.rs`、`pickletools.rs` 和 `testcapi.rs`。
+  - `testing_modules.rs` 从约 5483 行降到约 4187 行；剩余主要是 `logging`、`unittest` 和 `unittest.mock`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -111,11 +114,13 @@ Last updated: 2026-05-26T19:49:53+08:00
   - misc mimetypes/cmd/plistlib/curses 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc contextvars/ctypes 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc contextlib/dataclasses/copy/builtins 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning 和旧 Rust `copy` stub 未加载 warning。
+  - testing doctest/pdb/profile/cProfile/timeit/faulthandler/tracemalloc/pydoc/logging submodule/pickletools/_testcapi 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
-  - 再评估 `sys_modules.rs`、`testing_modules.rs`、`concurrency_modules.rs` 等 stdlib 热点。
+  - 继续拆 `testing_modules.rs` 的 `unittest.mock`、`logging` 和 `unittest` 重块。
+  - 再评估 `sys_modules.rs`、`concurrency_modules.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
