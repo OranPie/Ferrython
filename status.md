@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T05:34:41+08:00
+Last updated: 2026-05-27T05:39:18+08:00
 
 ## 代码质量重构进度
 
@@ -161,6 +161,12 @@ Last updated: 2026-05-27T05:34:41+08:00
   - 新增 `fs_modules/zlib.rs`，把 `zlib` module factory、bytes-like 提取、crc32/adler32 helper 从根文件抽离。
   - `fs_modules.rs` 从约 4727 行降到约 3732 行；后续仍保留 `pathlib`、`shutil`、`glob`、`tempfile` 和 `io`。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `fs_modules` phase1 utility 拆分：
+  - 新增 `fs_modules/shutil.rs`，把 `shutil` module factory、copy/copytree/rmtree/move/disk_usage helpers 从根文件抽离。
+  - 新增 `fs_modules/glob.rs`，把 `glob` module factory 和 `glob_match` helper 从根文件抽离，并保留 crate 内重导出供 `text_modules` 复用。
+  - 新增 `fs_modules/tempfile.rs`，把 `tempfile` module factory、temporary file/directory helpers 和 deterministic temp path helper 从根文件抽离。
+  - `fs_modules.rs` 从约 3732 行降到约 2506 行；后续仍保留 `pathlib` 和 `io`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -189,6 +195,7 @@ Last updated: 2026-05-27T05:34:41+08:00
   - concurrency 尾部低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections User* 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 subprocess/zlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
@@ -200,7 +207,7 @@ Last updated: 2026-05-27T05:34:41+08:00
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - 继续评估 `collection_modules/collections.rs` 是否按 namedtuple、deque、Counter/defaultdict、ChainMap 继续内部分层。
-  - 继续评估 `fs_modules.rs` 是否按 `pathlib`、`shutil`、`glob`、`tempfile`、`io` 继续拆分。
+  - 继续评估 `fs_modules.rs` 是否按 `pathlib`、`io` 继续拆分。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
