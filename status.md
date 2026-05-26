@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:12:08+08:00
+Last updated: 2026-05-27T07:16:36+08:00
 
 ## 代码质量重构进度
 
@@ -180,6 +180,10 @@ Last updated: 2026-05-27T07:12:08+08:00
 - 已完成 `compression_modules` 顶层机械拆分：
   - 新增 `compression_modules/gzip.rs`、`zipfile.rs`、`bz2.rs`、`lzma.rs` 和 `tarfile.rs`。
   - `compression_modules.rs` 从约 2320 行降到约 25 行，只保留子模块声明/re-export 和共享 bytes-like 提取 helper。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `config_modules` 顶层机械拆分：
+  - 新增 `config_modules/argparse.rs` 和 `config_modules/configparser.rs`。
+  - `config_modules.rs` 从约 2256 行降到约 6 行，只保留子模块声明和已加载 `configparser` factory re-export；Rust `argparse` 继续保持未加载状态，实际 `argparse` 由 Python stdlib 提供。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 低耦合尾部拆分：
   - 新增 `fs_modules/subprocess.rs`，把 `subprocess` module factory、`run/call/check_*`、`Popen` 和 `CompletedProcess` helper 从根文件抽离。

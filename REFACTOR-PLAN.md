@@ -77,6 +77,10 @@ Last updated: 2026-05-27
   bucket. `gzip`, `zipfile`, `bz2`, `lzma`, and `tarfile` now live under
   `compression_modules/`; the root `compression_modules.rs` is a small
   declaration/re-export shell plus the shared bytes-like extractor.
+- Phase 2 config module mechanical splits are complete at the top-level bucket.
+  `argparse` and `configparser` now live under `config_modules/`; the root
+  `config_modules.rs` only declares child modules and re-exports the loaded
+  `configparser` factory.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
