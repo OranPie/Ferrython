@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T18:34:38+08:00
+Last updated: 2026-05-26T18:36:54+08:00
 
 ## 代码质量重构进度
 
@@ -28,13 +28,18 @@ Last updated: 2026-05-26T18:34:38+08:00
 - 已完成并提交 regex match helper 兼容补丁：
   - `6175572 fix: re-export regex match helpers`
   - `cargo check -p ferrython-vm` 确认 VM 仍可访问 `text_modules::match_*_fn`。
-- 本批已完成待提交：
+- 已完成并提交 regex Match 对象拆分：
+  - `30abb21 refactor: split regex match objects`
   - `text_modules/regex_impl/match_object.rs` 拆出 Match 对象构造、group/span/expand 方法和 VM 需要的 match wrapper。
   - `regex_impl.rs` 从约 5414 行降到约 4600 行。
+- 本批已完成待提交：
+  - `text_modules/regex_impl/compiled.rs` 拆出 compiled Pattern 方法、Scanner 方法和 pattern window 参数处理。
+  - `regex_impl.rs` 进一步降到约 4128 行。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex match object 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex compiled/scanner 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续拆 `text_modules/regex_impl.rs`，优先拆 regex flags/class、pattern conversion/validation、module functions、compiled pattern/scanner methods。
   - 再评估 `serial_modules/other.rs`、`misc_modules.rs`、`sys_modules.rs` 等 stdlib 热点。
