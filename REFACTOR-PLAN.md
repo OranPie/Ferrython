@@ -52,6 +52,9 @@ Last updated: 2026-05-26
   `threading` has now also been extracted into `concurrency_modules/threading.rs`.
   `weakref` has now been split into `concurrency_modules/weakref/` with
   separate `mod.rs`, `reference.rs`, `finalize.rs`, and `mappings.rs`.
+  The larger `reference.rs` and `mappings.rs` internals have now also been
+  mechanically split into nested helpers under `weakref/reference/` and
+  `weakref/mappings/`.
   The remaining root file now keeps only shared deferred-call state plus
   submodule declarations/re-exports.
 - Latest focused validation for these mechanical Rust moves:

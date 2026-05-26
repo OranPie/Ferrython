@@ -135,6 +135,14 @@ Last updated: 2026-05-26T20:36:46+08:00
   - 新增 `concurrency_modules/weakref/mod.rs`、`reference.rs`、`finalize.rs` 和 `mappings.rs`，把 `weakref` 的 reference/proxy/WeakMethod、finalize、WeakKey/WeakValueDictionary/WeakSet 逻辑拆到独立子模块。
   - `concurrency_modules.rs` 进一步降为共享 deferred call 状态加子模块声明/re-export 薄壳；`weakref/mod.rs` 负责模块装配，子文件负责具体实现。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `weakref` 第四轮内部拆分：
+  - 新增 `concurrency_modules/weakref/mappings/weak_value_dictionary.rs`、`weak_key_dictionary.rs` 和 `weak_set.rs`，把 `mappings.rs` 降为 shared helper + 子模块 re-export 壳。
+  - 新增 `concurrency_modules/weakref/reference/proxy.rs` 和 `weak_method.rs`，把 `reference.rs` 降为 reference-type helper + 子模块 re-export 壳。
+  - 最近 3 个连续提交：
+    - `06913db refactor: split concurrency weakref modules`
+    - `5646b05 refactor: split weakref mapping modules`
+    - `407b2e4 refactor: split weakref reference modules`
+  - focused 验证：每次拆分后均执行 `cargo fmt --all` 和 `cargo check -p ferrython-stdlib`。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -169,7 +177,8 @@ Last updated: 2026-05-26T20:36:46+08:00
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
   - 继续评估 `network_modules/http_module.rs` 是否按 urllib.parse、urllib.request、http.client、http.server 进一步拆分。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
-  - 继续评估 `concurrency_modules/weakref/mappings.rs` 是否还值得把 weakdict 与 WeakSet 再拆开，或把 `reference.rs` 中 proxy / WeakMethod 再细分。
+  - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
+  - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - 再评估 `fs_modules.rs`、`collection_modules/collections.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
