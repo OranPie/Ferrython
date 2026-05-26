@@ -2004,6 +2004,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let alive_state = Rc::new(Cell::new(true));
+            let atexit_handle: Rc<RefCell<Option<PyObjectRef>>> = Rc::new(RefCell::new(None));
             let attrs_ref = inst_data.attrs.clone();
             {
                 let mut attrs = attrs_ref.write();
@@ -2019,11 +2020,15 @@ pub fn create_weakref_module() -> PyObjectRef {
                 let k_det = kwargs_obj.clone();
                 let alive_det = alive_state.clone();
                 let attrs_det = attrs_ref.clone();
+                let atexit_det = atexit_handle.clone();
                 attrs.insert(
                     CompactString::from("detach"),
                     PyObject::native_closure("finalize.detach", move |_| {
                         if !alive_det.replace(false) {
                             return Ok(PyObject::none());
+                        }
+                        if let Some(callback) = atexit_det.borrow_mut().take() {
+                            crate::sys_modules::unregister_atexit_callback(&callback);
                         }
                         attrs_det
                             .write()
@@ -2068,9 +2073,13 @@ pub fn create_weakref_module() -> PyObjectRef {
                 let k_call = kwargs_for_call.clone();
                 let alive_call = alive_state.clone();
                 let attrs_call = attrs_ref.clone();
+                let atexit_call = atexit_handle.clone();
                 attrs.insert(
                     CompactString::from("__call__"),
                     PyObject::native_closure("finalize.__call__", move |_| {
+                        if let Some(callback) = atexit_call.borrow_mut().take() {
+                            crate::sys_modules::unregister_atexit_callback(&callback);
+                        }
                         finalize_call_from_state(
                             &alive_call,
                             &attrs_call,
@@ -2094,16 +2103,37 @@ pub fn create_weakref_module() -> PyObjectRef {
                 );
             }
 
+            let f_exit = func.clone();
+            let e_exit = extra.clone();
+            let k_exit = kwargs_for_call.clone();
+            let alive_exit = alive_state.clone();
+            let attrs_exit = attrs_ref.clone();
+            let inst_exit = inst.clone();
+            let atexit_callback = PyObject::native_closure("finalize.__atexit__", move |_| {
+                if let Some(atexit) = inst_exit.get_attr("atexit") {
+                    if !atexit.is_truthy() {
+                        return Ok(PyObject::none());
+                    }
+                }
+                finalize_call_from_state(&alive_exit, &attrs_exit, &f_exit, &e_exit, &k_exit)
+            });
+            *atexit_handle.borrow_mut() = Some(atexit_callback.clone());
+            crate::sys_modules::register_atexit_callback(atexit_callback, Vec::new(), Vec::new());
+
             let f_auto = func;
             let e_auto = extra;
             let k_auto = kwargs_for_call;
             let alive_auto = alive_state;
             let attrs_auto = attrs_ref;
+            let atexit_auto = atexit_handle;
             let inst_keepalive = inst.clone();
             let weak_keepalive = weak_inst.clone();
             let callback = Some(PyObject::native_closure(
                 "finalize.__callback__",
                 move |_| {
+                    if let Some(callback) = atexit_auto.borrow_mut().take() {
+                        crate::sys_modules::unregister_atexit_callback(&callback);
+                    }
                     let _keepalive_inst = &inst_keepalive;
                     let _keepalive = &weak_keepalive;
                     finalize_call_from_state(&alive_auto, &attrs_auto, &f_auto, &e_auto, &k_auto)

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T12:56:03+08:00
+Last updated: 2026-05-26T13:10:19+08:00
 
 ## 已提交成果
 
@@ -101,6 +101,10 @@ Last updated: 2026-05-26T12:56:03+08:00
   - finalizer 触发后清理 `_func` / `_args` / `_kwargs` 和闭包自引用，避免 callback 函数与 finalizer 实例在 `test_all_freed` 后残留。
   - weakref drop-time callbacks 改为逆序派发，符合 CPython “最近创建 weakref 先清理”的 callback 顺序，也修复 finalize 多个注册项的 LIFO 顺序。
   - VM kwargs marker 支持 `finalize.__new__`，`z=...`、deprecated `obj=` / `func=` keyword form 不再被误当位置参数。
+  - `atexit` Rust builtin 改为真实 registry，支持 LIFO `_run_exitfuncs()`、`unregister()`、`_clear()`、位置参数和 keyword marker。
+  - CLI 正常脚本结束后调用 `atexit._run_exitfuncs()`，普通 `atexit.register(print, ...)` 和 `weakref.finalize(..., atexit=True)` 能在进程退出时执行。
+  - `weakref.finalize` 的 atexit callback 在手动调用、detach 或 referent 自动触发后同步注销，避免 `test_all_freed` 中 callback/finalizer 被退出 registry 残留。
+  - `stdlib/Lib/test/test_weakref.py` 增加代理模块，让子进程中的 `from test.test_weakref import FinalizeTestCase` 能加载 vendored CPython 测试。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -146,7 +150,7 @@ Last updated: 2026-05-26T12:56:03+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 58.90s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 1m 19s`
 - weakdict focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_valued_dict_popitem test_weakref.MappingTestCase.test_weak_keyed_dict_popitem test_weakref.MappingTestCase.test_weak_valued_dict_setdefault test_weakref.MappingTestCase.test_weak_keyed_dict_setdefault test_weakref.MappingTestCase.test_weak_valued_dict_update test_weakref.MappingTestCase.test_weak_keyed_dict_update test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_weak_keyed_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_weak_valued_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_misc test_weakref.MappingTestCase.test_weak_keyed_delitem test_weakref.MappingTestCase.test_weak_valued_delitem test_weakref.MappingTestCase.test_weak_keyed_bad_delitem test_weakref.MappingTestCase.test_make_weak_valued_dict_repr test_weakref.MappingTestCase.test_make_weak_keyed_dict_repr test_weakref.MappingTestCase.test_weak_keyed_iters test_weakref.MappingTestCase.test_weak_valued_iters`
     - `run=18 pass=18 fail=0 err=0 skip=0`
@@ -240,11 +244,15 @@ Last updated: 2026-05-26T12:56:03+08:00
   - finalize focused 验证：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.FinalizeTestCase.test_finalize test_weakref.FinalizeTestCase.test_order test_weakref.FinalizeTestCase.test_all_freed test_weakref.FinalizeTestCase.test_arg_errors`
     - `run=4 pass=4 fail=0 err=0 skip=0`
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.FinalizeTestCase.test_finalize test_weakref.FinalizeTestCase.test_order test_weakref.FinalizeTestCase.test_all_freed test_weakref.FinalizeTestCase.test_arg_errors test_weakref.FinalizeTestCase.test_atexit`
+    - `run=5 pass=5 fail=0 err=0 skip=0`
   - weakref callback order/regression：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_multiple_callbacks test_weakref.ReferencesTestCase.test_multiple_selfref_callbacks test_weakref.ReferencesTestCase.test_getweakrefs`
     - `run=4 pass=4 fail=0 err=0 skip=0`
   - finalize release smoke：
     - `MyFinalizer(weakref.finalize)` 在 referent 删除前保持 callback/finalizer 可见，referent 删除和 `gc.collect()` 后 `wr_callback()` / `wr_f()` 均为 `None`，且 `res == [123]`。
+  - atexit smoke：
+    - `target/debug/ferrython -c "import atexit; atexit.register(print, 'bye'); print('body')"` 输出 `body` 后输出 `bye`。
   - weak value destroy-while-iterating focused：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating`
     - `run=1 pass=1 fail=0 err=0 skip=0`
@@ -343,16 +351,15 @@ Last updated: 2026-05-26T12:56:03+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 `weakref.finalize` class/auto-callback 语义、weakref callback 逆序派发和 VM kwargs marker。
+- 当前待提交代码修复涉及 `atexit` registry/CLI exit hook、`weakref.finalize` atexit 注销和 vendored `test.test_weakref` 代理模块。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict focused 批次已通过；`FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors` 已关闭。下一步优先继续扫描 `test_weakref` 剩余 cycle-callback / atexit 失败，或转向 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict focused 批次已通过；`FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors` / `test_atexit` 已关闭。下一步优先继续扫描 `test_weakref` 剩余 cycle-callback 失败，或转向 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
     - `test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection` / `test_callbacks_on_callback` 仍与 cycle GC 弱回调清理语义有关。
-    - `test_weakref.FinalizeTestCase.test_atexit` 仍可能受 subprocess import path / atexit finalizer 顺序影响。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选
@@ -395,6 +402,8 @@ Last updated: 2026-05-26T12:56:03+08:00
   - 修复：cycle GC candidate refinement 不再把活 list 持有的普通 instance 当作循环垃圾。
 - `test_weakref.FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors`
   - 修复：`weakref.finalize` 变为可子类化 class，支持 kwargs/deprecated keyword form，referent 死亡自动触发，多个 finalizer 按 LIFO 顺序执行，并在触发后释放 callback/finalizer 引用。
+- `test_weakref.FinalizeTestCase.test_atexit`
+  - 修复：子进程可导入 vendored `test.test_weakref`，CLI 退出时执行 atexit registry，`weakref.finalize` 的 `atexit` 属性控制退出期回调并按 LIFO 顺序运行。
 
 ## 修复原则
 

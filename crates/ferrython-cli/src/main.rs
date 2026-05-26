@@ -507,7 +507,10 @@ fn execute_pipeline(
         .map_err(|e| (PipelineError::from(e), None))?;
     let mut vm = ferrython_vm::VirtualMachine::new();
     match vm.execute(code) {
-        Ok(_) => Ok(()),
+        Ok(_) => vm
+            .run_atexit()
+            .map(|_| ())
+            .map_err(|e| (PipelineError::Runtime(e), Some(vm))),
         Err(e) => Err((PipelineError::Runtime(e), Some(vm))),
     }
 }

@@ -694,6 +694,14 @@ impl VirtualMachine {
         self.builtins.clone()
     }
 
+    pub fn run_atexit(&mut self) -> PyResult<PyObjectRef> {
+        let module = self.import_module_simple("atexit", 0)?;
+        let Some(run_exitfuncs) = module.get_attr("_run_exitfuncs") else {
+            return Ok(PyObject::none());
+        };
+        self.call_object(run_exitfuncs, Vec::new())
+    }
+
     fn keep_frame_objects_alive(exc: &mut PyException, frame: &Frame) {
         exc.keepalive.extend(frame.stack.iter().cloned());
         exc.keepalive
