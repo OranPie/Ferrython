@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:37:57+08:00
+Last updated: 2026-05-27T07:40:58+08:00
 
 ## 代码质量重构进度
 
@@ -184,6 +184,10 @@ Last updated: 2026-05-27T07:37:57+08:00
   - 新增 `time_modules/datetime.rs`，把 `datetime`/`date`/`time`/`timedelta`/`timezone` module factory 与实例方法从根文件抽离。
   - `time_modules.rs` 从约 3706 行降到约 647 行；`datetime.rs` 当前约 2601 行，`shared.rs` 当前约 272 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已开始 `time_modules/datetime.rs` 内部分层：
+  - 新增 `time_modules/datetime/timedelta.rs`，拆出 `timedelta` 构造、算术、比较，以及 datetime +/- timedelta 和 datetime 比较 helper。
+  - `datetime.rs` 从约 2601 行降到约 1989 行；新 `timedelta.rs` 约 629 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `compression_modules` 顶层机械拆分：
   - 新增 `compression_modules/gzip.rs`、`zipfile.rs`、`bz2.rs`、`lzma.rs` 和 `tarfile.rs`。
   - `compression_modules.rs` 从约 2320 行降到约 25 行，只保留子模块声明/re-export 和共享 bytes-like 提取 helper。
@@ -252,6 +256,7 @@ Last updated: 2026-05-27T07:37:57+08:00
   - collections namedtuple 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections Counter/defaultdict 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time zoneinfo/_strptime 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - time datetime/timedelta 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 subprocess/zlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。

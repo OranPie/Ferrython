@@ -75,7 +75,10 @@ Last updated: 2026-05-27
 - Phase 2 time module mechanical splits have advanced. `zoneinfo`, `_strptime`,
   `datetime`, and shared calendar/format helpers now live under
   `time_modules/`; the root `time_modules.rs` now owns only the `time` module
-  implementation and child module declarations/re-exports.
+  implementation and child module declarations/re-exports. The larger
+  `time_modules/datetime.rs` file has started internal layering with
+  timedelta construction/arithmetic/comparison helpers split under
+  `time_modules/datetime/`.
 - Phase 2 compression module mechanical splits are complete at the top-level
   bucket. `gzip`, `zipfile`, `bz2`, `lzma`, and `tarfile` now live under
   `compression_modules/`; the root `compression_modules.rs` is a small
