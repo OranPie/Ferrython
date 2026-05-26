@@ -46,6 +46,11 @@ Last updated: 2026-05-26
   `statistics`, `numbers`, `decimal`, `random`, `heapq`, `bisect`,
   `fractions`, and `cmath` now live under `math_modules/`; the root file keeps
   the real `math` module and numeric conversion helpers.
+- Phase 2 concurrency module mechanical splits have started. The low-coupling
+  tail of `concurrency_modules.rs` now lives under `concurrency_modules/`:
+  `gc`, `_thread`, `signal`, `multiprocessing`, `selectors`, and `select`.
+  The remaining root file keeps shared deferred-call state plus the larger
+  `threading` and `weakref` implementations.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
@@ -64,12 +69,14 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-vm/src/vm_call.rs` is over 7k lines and combines function
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
-- `crates/ferrython-stdlib/src/text_modules.rs` is nearly 10k lines and hosts
-  many unrelated modules such as `string`, `re`, `_sre`, `textwrap`, `fnmatch`,
-  `html`, `shlex`, `unicodedata`, `pprint`, and `encodings`.
-- `crates/ferrython-stdlib/src/introspection_modules.rs` is nearly 8k lines and
-  combines `warnings`, `traceback`, `inspect`, `dis`, `_ast`, `linecache`,
-  `token`, `tokenize`, and `symtable`.
+- `crates/ferrython-stdlib/src/collection_modules/collections.rs` is near 5k
+  lines and combines deque, defaultdict, Counter, ChainMap, OrderedDict, named
+  tuple, and collection ABC helpers.
+- `crates/ferrython-stdlib/src/fs_modules.rs` is near 5k lines and combines
+  path, file, tempfile, glob, fnmatch-style helpers, and filesystem operations.
+- `crates/ferrython-stdlib/src/concurrency_modules.rs` is still over 3k lines
+  after the first tail split and combines shared deferred-call state,
+  `threading`, and `weakref`.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.
