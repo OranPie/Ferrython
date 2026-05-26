@@ -1777,11 +1777,19 @@ impl ClassData {
             }
             found
         };
+        let inherits_custom_new = bases.iter().any(|base| {
+            if let PyObjectPayload::Class(cd) = &base.payload {
+                cd.has_custom_new.get()
+            } else {
+                false
+            }
+        });
         let is_simple_class = metaclass.is_none()
             && !has_abstract
             && !namespace.contains_key("__enum__")
             && !namespace.contains_key("__dataclass__")
             && !namespace.contains_key("__new__")
+            && !inherits_custom_new
             && !namespace.contains_key("__namedtuple__");
 
         // Pre-compute exception subclass flag (avoids recursive base walk per instantiation)
@@ -1817,7 +1825,7 @@ impl ClassData {
             instance_flags |= CLASS_FLAG_HAS_GETATTR;
         }
 
-        let has_custom_new = namespace.contains_key("__new__");
+        let has_custom_new = namespace.contains_key("__new__") || inherits_custom_new;
 
         Self {
             name,

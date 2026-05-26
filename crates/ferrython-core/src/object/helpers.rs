@@ -910,6 +910,11 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             if PyObjectRef::ptr_eq(a, b) {
                 return Some(std::cmp::Ordering::Equal);
             }
+            if inst_a.attrs.read().contains_key("__weakref_ref__")
+                || inst_b.attrs.read().contains_key("__weakref_ref__")
+            {
+                return None;
+            }
             // Dict subclass: compare dict_storage contents
             if let (Some(ref ds_a), Some(ref ds_b)) = (&inst_a.dict_storage, &inst_b.dict_storage) {
                 let a_r = ds_a.read();

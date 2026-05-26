@@ -541,7 +541,15 @@ impl VirtualMachine {
     ) -> Result<Option<PyObjectRef>, PyException> {
         // Transparent weakref.proxy delegation: upgrade and substitute referent
         if let PyObjectPayload::Instance(inst) = &obj.payload {
-            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            let target_fn = {
+                let attrs = inst.attrs.read();
+                if attrs.contains_key("__weakref_ref__") {
+                    None
+                } else {
+                    attrs.get("__weakref_target__").cloned()
+                }
+            };
+            if let Some(target_fn) = target_fn {
                 if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
                     let referent = (nc.func)(&[])?;
                     return self.exec_load_attr(name, referent);
@@ -842,7 +850,15 @@ impl VirtualMachine {
         value: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
-            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            let target_fn = {
+                let attrs = inst.attrs.read();
+                if attrs.contains_key("__weakref_ref__") {
+                    None
+                } else {
+                    attrs.get("__weakref_target__").cloned()
+                }
+            };
+            if let Some(target_fn) = target_fn {
                 if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
                     let referent = (nc.func)(&[])?;
                     return self.exec_store_attr(name, referent, value);
@@ -1001,7 +1017,15 @@ impl VirtualMachine {
         obj: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
-            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            let target_fn = {
+                let attrs = inst.attrs.read();
+                if attrs.contains_key("__weakref_ref__") {
+                    None
+                } else {
+                    attrs.get("__weakref_target__").cloned()
+                }
+            };
+            if let Some(target_fn) = target_fn {
                 if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
                     let referent = (nc.func)(&[])?;
                     return self.exec_delete_attr(name, referent);

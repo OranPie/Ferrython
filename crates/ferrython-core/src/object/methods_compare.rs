@@ -270,6 +270,9 @@ fn compare_dict_objects(
 
 fn instance_dict_storage(obj: &PyObjectRef) -> Option<&std::rc::Rc<PyCell<FxHashKeyMap>>> {
     if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.read().contains_key("__weakref_ref__") {
+            return None;
+        }
         inst.dict_storage.as_ref()
     } else {
         None

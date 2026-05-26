@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T10:10:06+08:00
+Last updated: 2026-05-26T11:13:48+08:00
 
 ## 已提交成果
 
@@ -74,6 +74,12 @@ Last updated: 2026-05-26T10:10:06+08:00
   - `WeakMethod` callback 注册到 receiver 与 function 两侧，并用 one-shot guard 保证任一侧死亡只调用用户 callback 一次。
   - `WeakMethod` live equality 按 function identity + receiver equality 判定，dead weak method 回落为不相等；hash alive 时按 receiver hash 与 function identity 组合并缓存。
   - VM `isinstance` 快路径补齐 `method` / `builtin_method`，`isinstance(r(), type(obj.method))` 不再被热路径误判为 false。
+  - `weakref.ref` 改为可子类化的 class object，补齐 `__new__` / no-op `__init__` / `__call__` / `__eq__` / `__ne__`，`weakref.ReferenceType` 与 `weakref.ref` 同一类对象。
+  - class 构造路径继承 custom `__new__` 时关闭 simple-class 快路径，避免 `weakref.ref` 子类实例绕过弱引用初始化。
+  - `weakref.ref` 子类支持 `__slots__`、cycle 场景保留实例属性，并且 `weakref.ref(o)` 不再复用已有的 ref 子类实例。
+  - VM attr/proxy 委派明确区分 weakref ref 与 weakref proxy，weakref ref 子类的普通属性读写不再错误转发到 referent。
+  - weakref ref 比较路径避免把 ref 当成 proxy 解引用；alive ref 委派 referent equality，dead ref 按 identity 语义比较。
+  - VM dict-storage、partial comparison、enum value fallback 和指针相等 fast path 排除 weakref ref，避免 dead ref 因内部属性或 `None` referent 被误判相等。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -185,6 +191,14 @@ Last updated: 2026-05-26T10:10:06+08:00
   - WeakMethod 后 weakref registry/proxy regression：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_ref_reuse test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_callable_proxy test_weakref.ReferencesTestCase.test_basic_proxy`
     - `run=6 pass=6 fail=0 err=0 skip=0`
+  - weakref subclass focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.SubclassableWeakrefTestCase.test_subclass_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_replace_standard_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_conflate_callbacks test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_slots test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_cycle`
+    - `run=5 pass=5 fail=0 err=0 skip=0`
+  - weakref subclass/equality/WeakMethod regression：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_ref_reuse test_weakref.ReferencesTestCase.test_getweakrefs test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_callable_proxy test_weakref.ReferencesTestCase.test_basic_proxy test_weakref.SubclassableWeakrefTestCase.test_subclass_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_replace_standard_refs test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_dont_conflate_callbacks test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_slots test_weakref.SubclassableWeakrefTestCase.test_subclass_refs_with_cycle test_weakref.WeakMethodTestCase.test_alive test_weakref.WeakMethodTestCase.test_equality test_weakref.WeakMethodTestCase.test_hashing`
+    - `run=14 pass=14 fail=0 err=0 skip=0`
+  - smoke: dead `weakref.ref` equality 与 CPython identity 语义一致，`a == b` 为 `False`、`a != b` 为 `True`，共享无 callback ref 的 `a == d` 为 `True`。
+  - known noise: `SubclassableWeakrefTestCase.test_subclass_refs` 仍会输出一次 unraisable `TypeError: 'dict' object is not callable`，当前不影响 focused 通过，后续可单独清理。
   - smoke: `WeakKeyDictionary({custom_hash_object: value})` 后 `list(keys)`、`contains`、`get` 均保留同一 key identity。
   - smoke: custom key `__eq__` 返回 `NotImplemented` 时，`'__weakdict_kwargs__' in {custom_key: value}` 为 `False`。
   - smoke: `dict.keys(None)` / `dict.values(None)` / `dict.items(None)` / `dict.get(1, 2, 3)` 均抛 `TypeError`。

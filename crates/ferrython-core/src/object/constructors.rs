@@ -1013,6 +1013,9 @@ fn verify_all_refs_in_garbage(
 fn break_cycles(payload: &PyObjectPayload) {
     match payload {
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__weakref_ref__") {
+                return;
+            }
             inst.finalizer_state.set(inst.finalizer_state.get() | 2);
             inst.attrs.write().clear();
             if let Some(storage) = inst.dict_storage.as_ref() {

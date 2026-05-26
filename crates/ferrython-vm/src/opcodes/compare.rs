@@ -18,7 +18,13 @@ fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
 }
 
 fn has_dict_storage(obj: &PyObjectRef) -> bool {
-    matches!(&obj.payload, PyObjectPayload::Instance(inst) if inst.dict_storage.is_some())
+    matches!(&obj.payload, PyObjectPayload::Instance(inst)
+        if inst.dict_storage.is_some() && !inst.attrs.read().contains_key("__weakref_ref__"))
+}
+
+fn is_weak_ref_instance(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(inst)
+        if inst.attrs.read().contains_key("__weakref_ref__"))
 }
 
 fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
@@ -40,9 +46,14 @@ impl VirtualMachine {
         let PyObjectPayload::Instance(inst) = &obj.payload else {
             return Ok(None);
         };
-        let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() else {
+        let attrs = inst.attrs.read();
+        if attrs.contains_key("__weakref_ref__") {
+            return Ok(None);
+        }
+        let Some(target_fn) = attrs.get("__weakref_target__").cloned() else {
             return Ok(None);
         };
+        drop(attrs);
         Ok(Some(self.call_object(target_fn, vec![])?))
     }
 
@@ -456,36 +467,38 @@ impl VirtualMachine {
                 }
             }
             // IntEnum/enum value-based comparison fallback
-            if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
-                (&a.payload, &b.payload)
-            {
-                let va = inst_a.attrs.read().get("value").cloned();
-                let vb = inst_b.attrs.read().get("value").cloned();
-                if let (Some(av), Some(bv)) = (va, vb) {
-                    if matches!(
-                        av.payload,
-                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
-                    ) && matches!(
-                        bv.payload,
-                        PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
-                    ) {
-                        let cmp_op = match cmp {
-                            0 => CompareOp::Lt,
-                            1 => CompareOp::Le,
-                            2 => CompareOp::Eq,
-                            3 => CompareOp::Ne,
-                            4 => CompareOp::Gt,
-                            5 => CompareOp::Ge,
-                            _ => unreachable!(),
-                        };
-                        let result = av.compare(&bv, cmp_op)?;
-                        self.vm_push(result);
-                        return Ok(None);
+            if !is_weak_ref_instance(&a) && !is_weak_ref_instance(&b) {
+                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
+                    (&a.payload, &b.payload)
+                {
+                    let va = inst_a.attrs.read().get("value").cloned();
+                    let vb = inst_b.attrs.read().get("value").cloned();
+                    if let (Some(av), Some(bv)) = (va, vb) {
+                        if matches!(
+                            av.payload,
+                            PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                        ) && matches!(
+                            bv.payload,
+                            PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+                        ) {
+                            let cmp_op = match cmp {
+                                0 => CompareOp::Lt,
+                                1 => CompareOp::Le,
+                                2 => CompareOp::Eq,
+                                3 => CompareOp::Ne,
+                                4 => CompareOp::Gt,
+                                5 => CompareOp::Ge,
+                                _ => unreachable!(),
+                            };
+                            let result = av.compare(&bv, cmp_op)?;
+                            self.vm_push(result);
+                            return Ok(None);
+                        }
                     }
                 }
             }
             // IntEnum vs plain int/float comparison
-            {
+            if !is_weak_ref_instance(&a) && !is_weak_ref_instance(&b) {
                 let (enum_val, other) = if let PyObjectPayload::Instance(inst) = &a.payload {
                     (inst.attrs.read().get("value").cloned(), Some(&b))
                 } else if let PyObjectPayload::Instance(inst) = &b.payload {
