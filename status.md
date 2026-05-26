@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:09:03+08:00
+Last updated: 2026-05-27T07:12:08+08:00
 
 ## 代码质量重构进度
 
@@ -176,6 +176,10 @@ Last updated: 2026-05-27T07:09:03+08:00
   - 新增 `time_modules/shared.rs`，把月份/星期名称、日期换算、Unix timestamp 分解和 strftime 格式化 helper 抽离，供 `time` 与 `datetime` 复用。
   - 新增 `time_modules/datetime.rs`，把 `datetime`/`date`/`time`/`timedelta`/`timezone` module factory 与实例方法从根文件抽离。
   - `time_modules.rs` 从约 3706 行降到约 647 行；`datetime.rs` 当前约 2601 行，`shared.rs` 当前约 272 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `compression_modules` 顶层机械拆分：
+  - 新增 `compression_modules/gzip.rs`、`zipfile.rs`、`bz2.rs`、`lzma.rs` 和 `tarfile.rs`。
+  - `compression_modules.rs` 从约 2320 行降到约 25 行，只保留子模块声明/re-export 和共享 bytes-like 提取 helper。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 低耦合尾部拆分：
   - 新增 `fs_modules/subprocess.rs`，把 `subprocess` module factory、`run/call/check_*`、`Popen` 和 `CompletedProcess` helper 从根文件抽离。

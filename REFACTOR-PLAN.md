@@ -73,6 +73,10 @@ Last updated: 2026-05-27
   `datetime`, and shared calendar/format helpers now live under
   `time_modules/`; the root `time_modules.rs` now owns only the `time` module
   implementation and child module declarations/re-exports.
+- Phase 2 compression module mechanical splits are complete at the top-level
+  bucket. `gzip`, `zipfile`, `bz2`, `lzma`, and `tarfile` now live under
+  `compression_modules/`; the root `compression_modules.rs` is a small
+  declaration/re-export shell plus the shared bytes-like extractor.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
