@@ -2143,7 +2143,20 @@ pub(crate) fn builtin_dir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::list(vec![]));
     }
-    let names = args[0].dir();
+    let target = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                Some((nc.func)(&[])?)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let names = target.as_ref().unwrap_or(&args[0]).dir();
     let items: Vec<PyObjectRef> = names.into_iter().map(|n| PyObject::str_val(n)).collect();
     Ok(PyObject::list(items))
 }

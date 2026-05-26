@@ -853,12 +853,25 @@ impl VirtualMachine {
         }
 
         if !mutable {
+            let source = if let PyObjectPayload::Instance(inst) = &source.payload {
+                if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                    if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                        (nc.func)(&[])?
+                    } else {
+                        source.clone()
+                    }
+                } else {
+                    source.clone()
+                }
+            } else {
+                source.clone()
+            };
             if let PyObjectPayload::Instance(_) = &source.payload {
-                if let Some(method) = Self::resolve_instance_dunder(source, "__bytes__") {
+                if let Some(method) = Self::resolve_instance_dunder(&source, "__bytes__") {
                     let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
                         vec![]
                     } else {
-                        vec![source.clone()]
+                        vec![source]
                     };
                     let result = self.call_object(method, ca)?;
                     if let PyObjectPayload::Bytes(b) = &result.payload {
@@ -3483,6 +3496,16 @@ impl VirtualMachine {
                                 return Ok(PyObject::bool_val(false));
                             }
                             let obj = &pos_args[0];
+                            if let ferrython_core::object::PyObjectPayload::Instance(inst) =
+                                &obj.payload
+                            {
+                                if let Some(target_fn) =
+                                    inst.attrs.read().get("__weakref_target__").cloned()
+                                {
+                                    let referent = self.call_object(target_fn, vec![])?;
+                                    return Ok(PyObject::bool_val(self.vm_is_truthy(&referent)?));
+                                }
+                            }
                             // Instance with __bool__: call it and enforce return type == bool
                             if let ferrython_core::object::PyObjectPayload::Instance(_) =
                                 &obj.payload
@@ -5463,6 +5486,16 @@ impl VirtualMachine {
                     "bool" => {
                         if args.len() == 1 {
                             let obj = &args[0];
+                            if let ferrython_core::object::PyObjectPayload::Instance(inst) =
+                                &obj.payload
+                            {
+                                if let Some(target_fn) =
+                                    inst.attrs.read().get("__weakref_target__").cloned()
+                                {
+                                    let referent = self.call_object(target_fn, vec![])?;
+                                    return Ok(PyObject::bool_val(self.vm_is_truthy(&referent)?));
+                                }
+                            }
                             // Instance with __bool__: call it and enforce return type == bool
                             if let ferrython_core::object::PyObjectPayload::Instance(_) =
                                 &obj.payload

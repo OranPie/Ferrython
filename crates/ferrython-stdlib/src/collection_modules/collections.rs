@@ -18,6 +18,122 @@ fn element_matches(item: &PyObjectRef, target: &PyObjectRef) -> bool {
             .map_or(false, |v| v.is_truthy())
 }
 
+fn slice_bounds(
+    len: i64,
+    start: &Option<PyObjectRef>,
+    stop: &Option<PyObjectRef>,
+    step: &Option<PyObjectRef>,
+) -> PyResult<(i64, i64, i64)> {
+    let step_val = step.as_ref().map(|v| v.to_int()).transpose()?.unwrap_or(1);
+    if step_val == 0 {
+        return Err(PyException::value_error("slice step cannot be zero"));
+    }
+    let start_default = if step_val > 0 { 0 } else { len - 1 };
+    let stop_default = if step_val > 0 { len } else { -len - 1 };
+    let start_val = start
+        .as_ref()
+        .map(|v| v.to_int())
+        .transpose()?
+        .unwrap_or(start_default);
+    let stop_val = stop
+        .as_ref()
+        .map(|v| v.to_int())
+        .transpose()?
+        .unwrap_or(stop_default);
+    let start_idx = if start_val < 0 {
+        (len + start_val).max(if step_val > 0 { 0 } else { -1 })
+    } else {
+        start_val.min(len)
+    };
+    let stop_idx = if stop_val < 0 {
+        (len + stop_val).max(if step_val > 0 { 0 } else { -1 })
+    } else {
+        stop_val.min(len)
+    };
+    Ok((start_idx, stop_idx, step_val))
+}
+
+fn userlist_set_slice(
+    items: &mut Vec<PyObjectRef>,
+    sd: &ferrython_core::object::SliceData,
+    value: &PyObjectRef,
+) -> PyResult<()> {
+    let len = items.len() as i64;
+    let (start, stop, step) = slice_bounds(len, &sd.start, &sd.stop, &sd.step)?;
+    let new_items = value.to_list()?;
+    if step == 1 {
+        let s = start.max(0).min(len) as usize;
+        let e = stop.max(start).min(len) as usize;
+        items.splice(s..e, new_items);
+        return Ok(());
+    }
+
+    let mut indices = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < stop {
+            if i >= 0 && i < len {
+                indices.push(i as usize);
+            }
+            i += step;
+        }
+    } else {
+        while i > stop {
+            if i >= 0 && i < len {
+                indices.push(i as usize);
+            }
+            i += step;
+        }
+    }
+    if indices.len() != new_items.len() {
+        return Err(PyException::value_error(format!(
+            "attempt to assign sequence of size {} to extended slice of size {}",
+            new_items.len(),
+            indices.len()
+        )));
+    }
+    for (idx, val) in indices.into_iter().zip(new_items.into_iter()) {
+        items[idx] = val;
+    }
+    Ok(())
+}
+
+fn userlist_delete_slice(
+    items: &mut Vec<PyObjectRef>,
+    sd: &ferrython_core::object::SliceData,
+) -> PyResult<()> {
+    let len = items.len() as i64;
+    let (start, stop, step) = slice_bounds(len, &sd.start, &sd.stop, &sd.step)?;
+    if step == 1 {
+        let s = start.max(0).min(len) as usize;
+        let e = stop.max(start).min(len) as usize;
+        items.drain(s..e);
+        return Ok(());
+    }
+    let mut indices = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < stop {
+            if i >= 0 && i < len {
+                indices.push(i as usize);
+            }
+            i += step;
+        }
+    } else {
+        while i > stop {
+            if i >= 0 && i < len {
+                indices.push(i as usize);
+            }
+            i += step;
+        }
+    }
+    indices.sort_unstable_by(|a, b| b.cmp(a));
+    for idx in indices {
+        items.remove(idx);
+    }
+    Ok(())
+}
+
 fn is_python_keyword(name: &str) -> bool {
     matches!(
         name,
@@ -3837,6 +3953,10 @@ fn make_user_list_class() -> PyObjectRef {
             }
             let data = get_user_data(&args[0], "data")?;
             if let PyObjectPayload::List(l) = &data.payload {
+                if let PyObjectPayload::Slice(sd) = &args[1].payload {
+                    userlist_set_slice(&mut l.write(), sd, &args[2])?;
+                    return Ok(PyObject::none());
+                }
                 let idx = args[1].to_int()? as i64;
                 let mut w = l.write();
                 let len = w.len() as i64;
@@ -3903,6 +4023,10 @@ fn make_user_list_class() -> PyObjectRef {
             }
             let data = get_user_data(&args[0], "data")?;
             if let PyObjectPayload::List(l) = &data.payload {
+                if let PyObjectPayload::Slice(sd) = &args[1].payload {
+                    userlist_delete_slice(&mut l.write(), sd)?;
+                    return Ok(PyObject::none());
+                }
                 let idx = args[1].to_int()? as i64;
                 let mut w = l.write();
                 let len = w.len() as i64;

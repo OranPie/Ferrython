@@ -14,6 +14,14 @@ fn call_dunder(
     name: &str,
     args: &[PyObjectRef],
 ) -> PyResult<Option<PyObjectRef>> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+            if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                let referent = (nc.func)(&[])?;
+                return call_dunder(&referent, name, args);
+            }
+        }
+    }
     if let Some(method) = obj.get_attr(name) {
         let result = ferrython_core::object::call_callable(&method, args)?;
         if matches!(&result.payload, PyObjectPayload::NotImplemented) {

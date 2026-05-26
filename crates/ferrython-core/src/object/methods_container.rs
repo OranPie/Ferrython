@@ -119,6 +119,11 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             Ok(map.len() - hidden)
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return py_len(&(nc.func)(&[])?);
+                }
+            }
             if inst.attrs.read().contains_key("__chainmap__") {
                 if let Some(len_method) = inst.class.get_attr("__len__") {
                     let result = match &len_method.payload {
@@ -545,6 +550,11 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             Ok(m.read().contains_key(&hk))
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return py_contains(&(nc.func)(&[])?, item);
+                }
+            }
             if let Some(bv) = chainmap_builtin_value(inst)? {
                 return py_contains(&bv, item);
             }
@@ -820,6 +830,11 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             ))))
         }
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return py_get_iter(&(nc.func)(&[])?);
+                }
+            }
             if inst.attrs.read().contains_key("__chainmap__") {
                 if let Some(iter_method) = inst.class.get_attr("__iter__") {
                     let result = match &iter_method.payload {

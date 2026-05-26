@@ -33,6 +33,19 @@ fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
 }
 
 impl VirtualMachine {
+    fn unwrap_weak_proxy_for_compare(
+        &mut self,
+        obj: &PyObjectRef,
+    ) -> Result<Option<PyObjectRef>, PyException> {
+        let PyObjectPayload::Instance(inst) = &obj.payload else {
+            return Ok(None);
+        };
+        let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() else {
+            return Ok(None);
+        };
+        Ok(Some(self.call_object(target_fn, vec![])?))
+    }
+
     /// Derive a missing comparison from total_ordering root method
     fn derive_total_ordering(
         &mut self,
@@ -228,6 +241,14 @@ impl VirtualMachine {
         };
 
         if let cmp @ 0..=5 = op {
+            let unwrapped_a = self.unwrap_weak_proxy_for_compare(&a)?;
+            let unwrapped_b = self.unwrap_weak_proxy_for_compare(&b)?;
+            if unwrapped_a.is_some() || unwrapped_b.is_some() {
+                let left = unwrapped_a.unwrap_or_else(|| a.clone());
+                let right = unwrapped_b.unwrap_or_else(|| b.clone());
+                return self.exec_compare_op(cmp, left, right);
+            }
+
             // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup
             match (&a.payload, &b.payload) {
                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {

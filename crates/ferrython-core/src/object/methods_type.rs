@@ -1298,6 +1298,11 @@ pub(super) fn py_to_int(obj: &PyObjectRef) -> PyResult<i64> {
             .parse::<i64>()
             .map_err(|_| PyException::value_error(format!("invalid literal for int(): '{}'", s))),
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return (nc.func)(&[])?.to_int();
+                }
+            }
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return bv.to_int();
             }
@@ -1329,6 +1334,11 @@ pub(super) fn py_to_index(obj: &PyObjectRef) -> PyResult<PyInt> {
         PyObjectPayload::Int(n) => Ok(n.clone()),
         PyObjectPayload::Bool(b) => Ok(PyInt::Small(if *b { 1 } else { 0 })),
         PyObjectPayload::Instance(inst) => {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    return (nc.func)(&[])?.to_index();
+                }
+            }
             if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return value.to_index();
             }

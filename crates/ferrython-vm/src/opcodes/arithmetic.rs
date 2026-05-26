@@ -772,6 +772,16 @@ impl VirtualMachine {
             Opcode::BinarySubscr => {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                        if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                            let referent = (nc.func)(&[])?;
+                            self.vm_push(referent);
+                            self.vm_push(key);
+                            return self.exec_subscript_ops(instr);
+                        }
+                    }
+                }
                 // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(cls, int)
                 if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                     if let Some(cgi) = obj.get_attr("__class_getitem__") {
