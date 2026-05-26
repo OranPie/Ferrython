@@ -42,6 +42,10 @@ Last updated: 2026-05-26
   `poplib`, `cgi`, `xmlrpc`, and `socketserver`. The remaining file keeps
   urllib, urllib.parse, http.client, and http.server plus shared URL/HTTP
   helpers.
+- Phase 2 math module mechanical splits are complete at the top-level bucket.
+  `statistics`, `numbers`, `decimal`, `random`, `heapq`, `bisect`,
+  `fractions`, and `cmath` now live under `math_modules/`; the root file keeps
+  the real `math` module and numeric conversion helpers.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 

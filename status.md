@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T20:22:10+08:00
+Last updated: 2026-05-26T20:29:16+08:00
 
 ## 代码质量重构进度
 
@@ -113,10 +113,15 @@ Last updated: 2026-05-26T20:22:10+08:00
   - `locale` 的 `CURRENT_CTYPE_LOCALE` 状态随模块迁移，并通过 `sys_modules` root 继续 re-export `get_current_ctype_locale()`。
   - `atexit` callback 状态和 `register_atexit_callback` / `unregister_atexit_callback` 随模块迁移，并保持原 public API 给 `concurrency_modules` 使用。
   - `sys_modules.rs` 从约 5971 行降到约 3608 行；剩余主体主要是 `sys`、`os` 和 `os.path`。
-- 已完成待提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
+- 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
+  - `ff25b3c refactor: split network helper modules`
   - 新增 `http_module/cookiejar.rs`、`cookies.rs`、`ssl.rs`、`smtplib.rs`、`ftplib.rs`、`imaplib.rs`、`poplib.rs`、`cgi.rs`、`xmlrpc.rs` 和 `socketserver.rs`。
   - `http_module.rs` 保留 urllib、urllib.parse、http.client 和 http.server 主体，以及共享 HTTP/url helper。
   - `http_module.rs` 从约 5642 行降到约 3388 行，`network_modules/http_module.rs` 不再是当前最长 stdlib Rust 文件。
+- 已完成并提交 `math_modules` 第一轮模块批量拆分：
+  - 新增 `math_modules/statistics.rs`、`numbers.rs`、`decimal.rs`、`random.rs`、`heapq.rs`、`bisect.rs`、`fractions.rs` 和 `cmath.rs`。
+  - `math_modules.rs` 保留真正的 `math` module factory、数值转换 helper 和 libm bridge。
+  - `math_modules.rs` 从约 5620 行降到约 1245 行，已退出健康基线最长 Rust 文件列表。
 - 当前验证：
   - 每个已提交拆分批次均通过 `cargo check -p ferrython-stdlib`。
   - AST 内部拆分后再次通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -141,6 +146,7 @@ Last updated: 2026-05-26T20:22:10+08:00
   - testing `logging`/`unittest` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - sys 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - network/http 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - math 模块第一轮批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
   - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
@@ -148,7 +154,8 @@ Last updated: 2026-05-26T20:22:10+08:00
   - 继续评估 `testing_modules/logging.rs` 和 `unittest.rs` 是否需要内部分层。
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
   - 继续评估 `network_modules/http_module.rs` 是否按 urllib.parse、urllib.request、http.client、http.server 进一步拆分。
-  - 再评估 `concurrency_modules.rs`、`math_modules.rs` 等 stdlib 热点。
+  - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
+  - 再评估 `concurrency_modules.rs`、`fs_modules.rs`、`collection_modules/collections.rs` 等 stdlib 热点。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
