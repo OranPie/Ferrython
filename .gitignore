@@ -29,3 +29,4 @@ Thumbs.db
 coverage/
 _test_*.zip
 build_output.txt
+.codex-work/
