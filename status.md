@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T14:33:14+08:00
+Last updated: 2026-05-26T14:34:52+08:00
 
 ## 已提交成果
 
@@ -187,6 +187,8 @@ Last updated: 2026-05-26T14:33:14+08:00
   - smoke: list subclass reduce 4-tuple `copy.copy()` 保持元素浅共享，`copy.deepcopy()` 深拷贝元素，均不再重复元素或挂起。
   - regression: `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_reduce_5tuple test_copy.TestCopy.test_deepcopy_dict_subclass test_copy.TestCopy.test_copy_dict test_copy.TestCopy.test_deepcopy_range`
     - `run=4 pass=4 fail=0 err=0 skip=0`
+  - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -v test_copy`
+    - `run=75 pass=75 fail=0 err=0 skip=0`
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`
@@ -398,8 +400,8 @@ Last updated: 2026-05-26T14:33:14+08:00
 
 ## 当前修复候选
 
-- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range`、`test_copy.TestCopy.test_reduce_5tuple`、`test_copy.TestCopy.test_reduce_4tuple` 已关闭。
-  - 下一步：继续小批扫描 `test_copy` 剩余 case，或转向 `deque` 小批候选。
+- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy` 当前模块级通过：`run=75 pass=75 fail=0 err=0 skip=0`。
+  - 下一步：转向 `deque` 小批候选，或扫描新的低成本 CPython 模块。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
