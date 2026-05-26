@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:33:46+08:00
+Last updated: 2026-05-27T07:37:57+08:00
 
 ## 代码质量重构进度
 
@@ -110,6 +110,9 @@ Last updated: 2026-05-27T07:33:46+08:00
   - `9fefed6 refactor: split testing core modules`
   - `testing_modules/logging.rs` 拆出 logging module factory、logger registry、formatter/handler/log record 和 root logger helpers。
   - `testing_modules/unittest.rs` 拆出 unittest `TestCase` assertion helpers、assertLogs、TestSuite/TestLoader/TextTestRunner 和 skip helpers。
+- 已推进 `logging` 内部分层：
+  - 新增 `testing_modules/logging/format.rs`，拆出 asctime/datefmt、日志格式模板替换和 Python `%` 风格消息格式化 helper。
+  - `testing_modules/logging.rs` 保留 logger registry、module factory、handler/log record 和 dispatch 逻辑。
   - `testing_modules.rs` 从约 3556 行降到约 33 行，只保留子模块声明和 re-export；该顶层文件已退出健康基线最长 Rust 文件列表。
 - 已完成并提交 `sys_modules` 后半段低耦合模块批量拆分：
   - `9c3aaed refactor: split system helper modules`
@@ -239,6 +242,7 @@ Last updated: 2026-05-27T07:33:46+08:00
   - testing doctest/pdb/profile/cProfile/timeit/faulthandler/tracemalloc/pydoc/logging submodule/pickletools/_testcapi 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - testing `unittest.mock` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - testing `logging`/`unittest` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - logging format helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - sys 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - network/http 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - math 模块第一轮批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
