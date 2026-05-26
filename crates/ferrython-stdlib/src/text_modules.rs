@@ -21,7 +21,10 @@ mod pprint;
 mod regex_impl;
 pub use difflib::create_difflib_module;
 pub use pprint::create_pprint_module;
-pub use regex_impl::{create_re_module, create_sre_module};
+pub use regex_impl::{
+    create_re_module, create_sre_module, match_end_fn, match_group_fn, match_groupdict_fn,
+    match_groups_fn, match_span_fn, match_start_fn,
+};
 mod fnmatch;
 mod html;
 mod html_parser;
