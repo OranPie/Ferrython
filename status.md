@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T12:34:14+08:00
+Last updated: 2026-05-26T12:56:03+08:00
 
 ## 已提交成果
 
@@ -38,6 +38,11 @@ Last updated: 2026-05-26T12:34:14+08:00
 - `c323207 fix: release exhausted sequence iterables`
   - 旧序列协议 `SeqIter` 在真实耗尽后释放源对象强引用，允许 iterable 被 GC/finalizer 回收。
   - 保持 exhausted sink-state，重复 `next()` 不再重新访问源对象。
+
+- `f5b8b1d fix: preserve weak key dictionary liveness`
+  - `WeakKeyDictionary.keys()` / `items()` / `__iter__` 改用专用 weak-key iterator，不再强保活 key。
+  - weak-key lookup/delete 以弱语义保留指针索引，同时扫描 live key 并调用 `__eq__`，恢复 custom equality 副作用。
+  - focused weakdict 9-case 全部通过。
 
 ## 本轮修复成果
 
@@ -91,6 +96,11 @@ Last updated: 2026-05-26T12:34:14+08:00
   - `WeakKeyDictionary.keys()` / `items()` / `__iter__` 改用专用 weak-key iterator，迭代器只持有内部 weakref 与 value，不再强保活 key；`values()` 保持 value 快照。
   - `WeakKeyDictionary` 删除/读取路径保持弱语义的指针索引，但查找时扫描 live key 并调用 key `__eq__`，恢复 custom equality 副作用语义并避免 HashableKey 强保活 key。
   - 修复 weak-key 级联删除、weak-key destroy-while-iterating 和 weak-key len cycles；weakdict 9-case focused probe 全部通过。
+  - `weakref.finalize` 改为模块级可子类化 class object，`weakref.finalize` 子类实例通过继承的 `__new__` 初始化，修复 `MyFinalizer(...).alive` 缺失。
+  - `weakref.finalize` 注册内部 weakref callback，referent 死亡时自动 one-shot 执行 finalizer，并通过 callback 捕获保持 finalizer/func/args 活到触发。
+  - finalizer 触发后清理 `_func` / `_args` / `_kwargs` 和闭包自引用，避免 callback 函数与 finalizer 实例在 `test_all_freed` 后残留。
+  - weakref drop-time callbacks 改为逆序派发，符合 CPython “最近创建 weakref 先清理”的 callback 顺序，也修复 finalize 多个注册项的 LIFO 顺序。
+  - VM kwargs marker 支持 `finalize.__new__`，`z=...`、deprecated `obj=` / `func=` keyword form 不再被误当位置参数。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -136,7 +146,7 @@ Last updated: 2026-05-26T12:34:14+08:00
 - `target/release/ferrython tools/run_cpython_tests.py -v test_exceptions test_grammar test_compile test_print`
 - 本轮按用户要求优先使用 debug/dev 构建加快修复迭代：
   - `cargo build -p ferrython-cli --bin ferrython -j6`
-  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 48.42s`
+  - 最近一次 dev build: `Finished dev profile [optimized + debuginfo] target(s) in 58.90s`
 - weakdict focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_valued_dict_popitem test_weakref.MappingTestCase.test_weak_keyed_dict_popitem test_weakref.MappingTestCase.test_weak_valued_dict_setdefault test_weakref.MappingTestCase.test_weak_keyed_dict_setdefault test_weakref.MappingTestCase.test_weak_valued_dict_update test_weakref.MappingTestCase.test_weak_keyed_dict_update test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_weak_keyed_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_from_weak_valued_dict test_weakref.MappingTestCase.test_make_weak_valued_dict_misc test_weakref.MappingTestCase.test_weak_keyed_delitem test_weakref.MappingTestCase.test_weak_valued_delitem test_weakref.MappingTestCase.test_weak_keyed_bad_delitem test_weakref.MappingTestCase.test_make_weak_valued_dict_repr test_weakref.MappingTestCase.test_make_weak_keyed_dict_repr test_weakref.MappingTestCase.test_weak_keyed_iters test_weakref.MappingTestCase.test_weak_valued_iters`
     - `run=18 pass=18 fail=0 err=0 skip=0`
@@ -227,12 +237,21 @@ Last updated: 2026-05-26T12:34:14+08:00
   - weakdict 9-case focused：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_keyed_cascading_deletes test_weakref.MappingTestCase.test_weak_keyed_len_cycles test_weakref.MappingTestCase.test_weak_valued_len_cycles test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating test_weakref.MappingTestCase.test_weak_keys_destroy_while_iterating test_weakref.MappingTestCase.test_weak_values test_weakref.MappingTestCase.test_weak_keys test_weakref.MappingTestCase.test_weak_valued_iters test_weakref.MappingTestCase.test_weak_keyed_iters`
     - `run=9 pass=9 fail=0 err=0 skip=0`
+  - finalize focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.FinalizeTestCase.test_finalize test_weakref.FinalizeTestCase.test_order test_weakref.FinalizeTestCase.test_all_freed test_weakref.FinalizeTestCase.test_arg_errors`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - weakref callback order/regression：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_basic_callback test_weakref.ReferencesTestCase.test_multiple_callbacks test_weakref.ReferencesTestCase.test_multiple_selfref_callbacks test_weakref.ReferencesTestCase.test_getweakrefs`
+    - `run=4 pass=4 fail=0 err=0 skip=0`
+  - finalize release smoke：
+    - `MyFinalizer(weakref.finalize)` 在 referent 删除前保持 callback/finalizer 可见，referent 删除和 `gc.collect()` 后 `wr_callback()` / `wr_f()` 均为 `None`，且 `res == [123]`。
   - weak value destroy-while-iterating focused：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.MappingTestCase.test_weak_values_destroy_while_iterating`
     - `run=1 pass=1 fail=0 err=0 skip=0`
   - `test_weakref` module summary：
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref`
     - `run=125 pass=116 fail=6 err=0 skip=3`; remaining: `FinalizeTestCase.test_all_freed`, `FinalizeTestCase.test_atexit`, `FinalizeTestCase.test_finalize`, `FinalizeTestCase.test_order`, `ReferencesTestCase.test_callback_in_cycle_resurrection`, `ReferencesTestCase.test_callbacks_on_callback`
+    - note: finalize 4 项随后已通过 focused 验证；未重跑整模块以节省迭代时间。
   - smoke: dead `weakref.ref` equality 与 CPython identity 语义一致，`a == b` 为 `False`、`a != b` 为 `True`，共享无 callback ref 的 `a == d` 为 `True`。
   - smoke: `ref.__callback__` alive/dead、`hash(ref)` alive/dead cache、`weakref.ref(obj, callback=None)` TypeError 与 CPython 期望一致。
   - smoke: weakdict 内部 ref 计数可见，`WeakValueDictionary` 中 value 的 `getweakrefcount()` 为 1，`WeakKeyDictionary` 中 key 在同时被 weak value/key dict 持有时为 2；删除对象后两类 weakdict 长度同步下降。
@@ -324,15 +343,16 @@ Last updated: 2026-05-26T12:34:14+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 callable weak proxy 类型选择和 call/kwargs 转发。
+- 当前待提交代码修复涉及 `weakref.finalize` class/auto-callback 语义、weakref callback 逆序派发和 VM kwargs marker。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
-- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict mapping focused 批次已通过；`FinalizeTestCase.test_arg_errors`、weakref ref callback 属性、weakref ref hash/equality、proxy deletion/bool/basic_proxy/proxy_ref/basic_callback/multiple_callbacks/callable_proxy 小批次已关闭。下一步优先继续扫描 weakref reuse/getweakrefs 或 deque 小批候选。
+- `test_copy` 已关闭 weakref ref、bound method、weak key/value dict copy/deepcopy；`test_weakref.MappingTestCase` weakdict focused 批次已通过；`FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors` 已关闭。下一步优先继续扫描 `test_weakref` 剩余 cycle-callback / atexit 失败，或转向 deque 小批候选。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
   - 已知残留：
-    - `test_weakref.ReferencesTestCase.test_ref_reuse` / `test_proxy_reuse` / `getweakrefs` 仍缺按 referent 枚举和无 callback 复用语义。
+    - `test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection` / `test_callbacks_on_callback` 仍与 cycle GC 弱回调清理语义有关。
+    - `test_weakref.FinalizeTestCase.test_atexit` 仍可能受 subprocess import path / atexit finalizer 顺序影响。
     - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选
@@ -373,6 +393,8 @@ Last updated: 2026-05-26T12:34:14+08:00
   - 修复：WeakKeyDictionary deepcopy 保留 key/deepcopy value；WeakValueDictionary deepcopy key/保留 value，并保持 weak mapping equality 与 item identity。
 - runner `ModuleReport` 被 GC 清空属性
   - 修复：cycle GC candidate refinement 不再把活 list 持有的普通 instance 当作循环垃圾。
+- `test_weakref.FinalizeTestCase.test_finalize` / `test_order` / `test_all_freed` / `test_arg_errors`
+  - 修复：`weakref.finalize` 变为可子类化 class，支持 kwargs/deprecated keyword form，referent 死亡自动触发，多个 finalizer 按 LIFO 顺序执行，并在触发后释放 callback/finalizer 引用。
 
 ## 修复原则
 

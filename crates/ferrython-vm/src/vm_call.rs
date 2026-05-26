@@ -4167,7 +4167,10 @@ impl VirtualMachine {
                                 PyObject::bool_val(true),
                             ));
                         }
-                        if !adjusted_kwargs.is_empty() && nc.name.as_str() == "finalize" {
+                        if !adjusted_kwargs.is_empty()
+                            && (nc.name.as_str() == "finalize"
+                                || nc.name.as_str() == "finalize.__new__")
+                        {
                             finalize_kw_marker = true;
                             adjusted_kwargs.push((
                                 CompactString::from("__finalize_kwargs__"),

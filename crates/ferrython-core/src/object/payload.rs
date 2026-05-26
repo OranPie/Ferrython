@@ -828,7 +828,7 @@ impl Drop for PyObjectRef {
                     .ok()
                     .flatten();
                 if let Some(entries) = entries {
-                    for entry in entries {
+                    for entry in entries.into_iter().rev() {
                         if let Some(callback) = entry.callback {
                             if let Some(arg) = entry.weak_obj.upgrade() {
                                 crate::error::request_vm_call(callback, vec![arg]);
