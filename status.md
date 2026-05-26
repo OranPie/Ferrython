@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T11:45:00+08:00
+Last updated: 2026-05-26T12:02:00+08:00
 
 ## 已提交成果
 
@@ -64,6 +64,8 @@ Last updated: 2026-05-26T11:45:00+08:00
   - weakref registry 清理避免 RefCell 重入析构，并在 TLS teardown 阶段跳过 registry 访问，避免 shutdown panic。
   - weakref equality/inequality 改为从参与比较的 weakref 实例自身取 referent，避免共享 `ReferenceType` class 被后续构造闭包污染。
   - VM 执行 pending weakref callbacks 时不再用 callback 返回值覆盖当前 native function/closure 的返回值，修复 callback 返回 `None` 污染下一次 `weakref.ref(...)` 构造结果。
+  - `weakref.proxy` 的二元/inplace 算术 dunder 分发透明解引用 referent，覆盖 float subclass 加法、floor-div 和 matrix-multiply proxy 路径。
+  - VM arithmetic 对 builtin-value subclass 补齐 `__add__` / `__radd__` fallback，使 `weakref.proxy(F(2.0)) + 1.0` 和 `1.0 + proxy` 与 referent 行为一致。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -150,6 +152,12 @@ Last updated: 2026-05-26T11:45:00+08:00
     - `weakref.ref(o) is weakref.ref(o, None)` 和 `weakref.proxy(o) is weakref.proxy(o, None)` 均为 `True`，带 callback 的对象不复用。
     - ref/proxy 各自 `getweakrefcount(o)` 为 `2`，删除 callback weak object 后降为 `1`。
     - callback 触发后再次 `weakref.ref(o, cb)` 不返回 callback 的 `None`。
+  - weakproxy arithmetic focused 验证：
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_newstyle_number_ops test_weakref.ReferencesTestCase.test_proxy_div test_weakref.ReferencesTestCase.test_proxy_matmul`
+    - `run=3 pass=3 fail=0 err=0 skip=0`
+  - weakproxy regression:
+    - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_basic_proxy test_weakref.ReferencesTestCase.test_proxy_deletion test_weakref.ReferencesTestCase.test_proxy_bool test_weakref.ReferencesTestCase.test_proxy_index test_weakref.ReferencesTestCase.test_proxy_unicode test_weakref.ReferencesTestCase.test_newstyle_number_ops test_weakref.ReferencesTestCase.test_proxy_div test_weakref.ReferencesTestCase.test_proxy_matmul`
+    - `run=8 pass=8 fail=0 err=0 skip=0`
   - finalize/weakdict regression:
     - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.WeakKeyDictionaryTestCase.test_get test_weakref.WeakValueDictionaryTestCase.test_get test_weakref.MappingTestCase.test_make_weak_keyed_dict_from_dict test_weakref.MappingTestCase.test_weak_keyed_dict_update`
     - `run=4 pass=4 fail=0 err=0 skip=0`

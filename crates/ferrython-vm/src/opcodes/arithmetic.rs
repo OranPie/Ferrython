@@ -55,6 +55,19 @@ fn format_percent_radix_arg(
 
 // ── Group 4: Unary operations ────────────────────────────────────────
 impl VirtualMachine {
+    fn unwrap_weak_proxy_for_arithmetic(
+        &mut self,
+        obj: &PyObjectRef,
+    ) -> Result<Option<PyObjectRef>, PyException> {
+        let PyObjectPayload::Instance(inst) = &obj.payload else {
+            return Ok(None);
+        };
+        let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() else {
+            return Ok(None);
+        };
+        Ok(Some(self.call_object(target_fn, vec![])?))
+    }
+
     pub(crate) fn exec_unary_ops(
         &mut self,
         instr: Instruction,
@@ -159,6 +172,12 @@ impl VirtualMachine {
         dunder: &str,
         rdunder: Option<&str>,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        if let Some(unwrapped_a) = self.unwrap_weak_proxy_for_arithmetic(a)? {
+            return self.try_binary_dunder(&unwrapped_a, b, dunder, rdunder);
+        }
+        if let Some(unwrapped_b) = self.unwrap_weak_proxy_for_arithmetic(b)? {
+            return self.try_binary_dunder(a, &unwrapped_b, dunder, rdunder);
+        }
         // Look up dunder via class MRO (not instance get_attr) for proper inheritance
         if let PyObjectPayload::Instance(inst) = &a.payload {
             if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
@@ -171,10 +190,12 @@ impl VirtualMachine {
             }
             if matches!(
                 dunder,
-                "__and__"
+                "__add__"
+                    | "__and__"
                     | "__or__"
                     | "__sub__"
                     | "__xor__"
+                    | "__radd__"
                     | "__rand__"
                     | "__ror__"
                     | "__rsub__"
@@ -182,6 +203,7 @@ impl VirtualMachine {
             ) {
                 if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                     let result = match dunder {
+                        "__add__" | "__radd__" => bv.add(b),
                         "__and__" | "__rand__" => bv.bit_and(b),
                         "__or__" | "__ror__" => bv.bit_or(b),
                         "__sub__" | "__rsub__" => bv.sub(b),
@@ -203,10 +225,12 @@ impl VirtualMachine {
                 }
                 if matches!(
                     rd,
-                    "__and__"
+                    "__add__"
+                        | "__and__"
                         | "__or__"
                         | "__sub__"
                         | "__xor__"
+                        | "__radd__"
                         | "__rand__"
                         | "__ror__"
                         | "__rsub__"
@@ -214,6 +238,7 @@ impl VirtualMachine {
                 ) {
                     if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                         let result = match rd {
+                            "__radd__" | "__add__" => a.add(&bv),
                             "__rand__" | "__and__" => a.bit_and(&bv),
                             "__ror__" | "__or__" => a.bit_or(&bv),
                             "__rsub__" | "__sub__" => a.sub(&bv),
@@ -249,6 +274,12 @@ impl VirtualMachine {
         idunder: &str,
         dunder: &str,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        if let Some(unwrapped_a) = self.unwrap_weak_proxy_for_arithmetic(a)? {
+            return self.try_inplace_dunder(&unwrapped_a, b, idunder, dunder);
+        }
+        if let Some(unwrapped_b) = self.unwrap_weak_proxy_for_arithmetic(b)? {
+            return self.try_inplace_dunder(a, &unwrapped_b, idunder, dunder);
+        }
         if let PyObjectPayload::Instance(inst) = &a.payload {
             let method = lookup_in_class_mro(&inst.class, idunder)
                 .or_else(|| lookup_in_class_mro(&inst.class, dunder));
