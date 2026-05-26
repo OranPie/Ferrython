@@ -19,10 +19,12 @@ Last updated: 2026-05-26
   `serial_modules/other.rs` bucket. Serialization modules now have named files
   for `base64`, `binascii`, `codecs`, `csv`, `dbm`, `json`, `marshal`,
   `pickle`, `shelve`, and `struct`.
-- Phase 2 misc module mechanical splits have started. Low/medium-coupling
+- Phase 2 misc module mechanical splits are now complete at the top-level bucket.
+  Low/medium-coupling
   `__future__`, `readline`, `runpy`, `compileall`, `pstats`, `quopri`,
   `stringprep`, `mimetypes`, `cmd`, `plistlib`, `curses`, `contextvars`, and
-  `ctypes` implementations now live under `misc_modules/`.
+  `ctypes` implementations now live under `misc_modules/`, along with the
+  remaining `contextlib`, `dataclasses`, `copy`, and `builtins` implementations.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
