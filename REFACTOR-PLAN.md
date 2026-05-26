@@ -85,6 +85,10 @@ Last updated: 2026-05-27
   package, DOM/minidom, SAX, and expat helpers now live under `xml_modules/`;
   the root `xml_modules.rs` still owns the ElementTree parser/object
   implementation plus the `xml.etree.ElementTree` factory.
+- Phase 2 database module internal splits are complete for sqlite3. The root
+  `db_modules.rs` is now a sqlite3 module assembly shell, while storage,
+  parser helpers, SQL execution, row objects, cursor objects, and connection
+  objects live under `db_modules/`.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 

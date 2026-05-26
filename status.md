@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:20:21+08:00
+Last updated: 2026-05-27T07:28:29+08:00
 
 ## 代码质量重构进度
 
@@ -188,6 +188,10 @@ Last updated: 2026-05-27T07:20:21+08:00
 - 已开始 `xml_modules` 机械拆分：
   - 新增 `xml_modules/packages.rs`、`dom.rs`、`sax.rs` 和 `expat.rs`，抽离 `xml`/`xml.etree` package shell、`xml.dom`/`minidom`、`xml.sax` helper modules 和 `xml.parsers.expat`。
   - `xml_modules.rs` 从约 2064 行降到约 1310 行；根文件仍保留 ElementTree parser/object helper 和 `xml.etree.ElementTree` factory。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `db_modules` sqlite3 内部拆分：
+  - 新增 `db_modules/storage.rs`、`parser.rs`、`sql.rs`、`row.rs`、`cursor.rs` 和 `connection.rs`。
+  - `db_modules.rs` 从约 1877 行降到约 64 行，只保留 sqlite3 module assembly；最大新子文件为 `db_modules/sql.rs`，约 821 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 低耦合尾部拆分：
   - 新增 `fs_modules/subprocess.rs`，把 `subprocess` module factory、`run/call/check_*`、`Popen` 和 `CompletedProcess` helper 从根文件抽离。
