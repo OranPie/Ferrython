@@ -1320,6 +1320,17 @@ pub fn create_weakref_module() -> PyObjectRef {
                 "ref.__new__ requires type and object",
             ));
         }
+        let has_kwargs_marker = args.last().is_some_and(|arg| {
+            if let PyObjectPayload::Dict(map) = &arg.payload {
+                let marker = HashableKey::str_key(CompactString::from("__weakref_ref_kwargs__"));
+                map.read().contains_key(&marker)
+            } else {
+                false
+            }
+        });
+        if has_kwargs_marker {
+            return Err(PyException::type_error("ref() takes no keyword arguments"));
+        }
         if args.len() > 3 {
             return Err(PyException::type_error(format!(
                 "ref() takes at most 2 arguments ({} given)",

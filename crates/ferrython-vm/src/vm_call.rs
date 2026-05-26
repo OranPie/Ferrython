@@ -3140,6 +3140,9 @@ impl VirtualMachine {
                 self.call_object_kw(method.clone(), bound_args, kwargs)
             }
             PyObjectPayload::Class(cd) => {
+                if cd.name.as_str() == "weakref" && !kwargs.is_empty() {
+                    return Err(PyException::type_error("ref() takes no keyword arguments"));
+                }
                 // If the metaclass defines its own __call__ (not just type.__call__),
                 // dispatch through it.
                 if let Some(meta) = &cd.metaclass {
@@ -3675,6 +3678,16 @@ impl VirtualMachine {
                                 for (k, v) in kwargs {
                                     kw_map.insert(HashableKey::str_key(k), v);
                                 }
+                                if matches!(&func.payload, PyObjectPayload::NativeFunction(nf)
+                                    if nf.name.as_str() == "weakref.__new__")
+                                {
+                                    kw_map.insert(
+                                        HashableKey::str_key(CompactString::from(
+                                            "__weakref_ref_kwargs__",
+                                        )),
+                                        PyObject::bool_val(true),
+                                    );
+                                }
                                 all_args.push(PyObject::dict(kw_map));
                                 return self.call_object(func, all_args);
                             }
@@ -4158,6 +4171,14 @@ impl VirtualMachine {
                             finalize_kw_marker = true;
                             adjusted_kwargs.push((
                                 CompactString::from("__finalize_kwargs__"),
+                                PyObject::bool_val(true),
+                            ));
+                        }
+                        if !adjusted_kwargs.is_empty()
+                            && nc.name.as_str() == "weakref.__new__"
+                        {
+                            adjusted_kwargs.push((
+                                CompactString::from("__weakref_ref_kwargs__"),
                                 PyObject::bool_val(true),
                             ));
                         }

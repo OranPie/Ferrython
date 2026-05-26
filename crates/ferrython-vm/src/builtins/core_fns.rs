@@ -711,8 +711,10 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let is_weak_method = inst.attrs.read().contains_key("__weakmethod__");
         let weak_call = {
             let attrs = inst.attrs.read();
-            if attrs.contains_key("__weakref_ref__") {
+            if is_weak_method {
                 attrs.get("__call__").cloned()
+            } else if attrs.contains_key("__weakref_ref__") {
+                attrs.get("__weakref_target__").cloned()
             } else {
                 None
             }
@@ -727,16 +729,39 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     "weak object has gone away".to_string(),
                 ));
             }
-            let hash = if is_weak_method {
-                if let PyObjectPayload::BoundMethod { receiver, method } = &referent.payload {
-                    let receiver_key = receiver.to_hashable_key()?;
-                    let receiver_hash = hash_key_like_python(&receiver_key);
-                    let method_ptr = PyObjectRef::as_ptr(method) as i64;
-                    PyObject::int(receiver_hash ^ method_ptr)
-                } else {
-                    let key = referent.to_hashable_key()?;
-                    PyObject::int(hash_key_like_python(&key))
-                }
+            let hash = if let PyObjectPayload::BoundMethod { receiver, method } = &referent.payload
+            {
+                let receiver_key = receiver.to_hashable_key()?;
+                let receiver_hash = hash_key_like_python(&receiver_key) as u64;
+                let method_hash = match &method.payload {
+                    PyObjectPayload::Function(func) => {
+                        let mut h: u64 = 5381;
+                        for c in func.name.as_bytes() {
+                            h = h.wrapping_mul(33).wrapping_add(*c as u64);
+                        }
+                        for c in func.qualname.as_bytes() {
+                            h = h.wrapping_mul(33).wrapping_add(*c as u64);
+                        }
+                        h = h.wrapping_mul(33).wrapping_add(func.code.first_line_number as u64);
+                        h
+                    }
+                    PyObjectPayload::NativeClosure(nc) => {
+                        let mut h: u64 = 5381;
+                        for c in nc.name.as_bytes() {
+                            h = h.wrapping_mul(33).wrapping_add(*c as u64);
+                        }
+                        h
+                    }
+                    PyObjectPayload::NativeFunction(nf) => {
+                        let mut h: u64 = 5381;
+                        for c in nf.name.as_bytes() {
+                            h = h.wrapping_mul(33).wrapping_add(*c as u64);
+                        }
+                        h
+                    }
+                    _ => PyObjectRef::as_ptr(method) as u64,
+                };
+                PyObject::int((receiver_hash ^ method_hash) as i64)
             } else {
                 let key = referent.to_hashable_key()?;
                 PyObject::int(hash_key_like_python(&key))

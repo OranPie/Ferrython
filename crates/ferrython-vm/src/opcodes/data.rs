@@ -650,11 +650,11 @@ impl VirtualMachine {
         }
         if name.as_str() == "__callback__" {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
-                let (call, callback) = {
+                let (target_fn, callback) = {
                     let attrs = inst.attrs.read();
                     if attrs.contains_key("__weakref_ref__") {
                         (
-                            attrs.get("__call__").cloned(),
+                            attrs.get("__weakref_target__").cloned(),
                             attrs
                                 .get("__weakref_callback__")
                                 .cloned()
@@ -664,10 +664,12 @@ impl VirtualMachine {
                         (None, PyObject::none())
                     }
                 };
-                if let Some(call) = call {
-                    let is_alive = self.call_object(call, vec![]).map_or(false, |referent| {
-                        !matches!(&referent.payload, PyObjectPayload::None)
-                    });
+                if let Some(target_fn) = target_fn {
+                    let is_alive = self
+                        .call_object(target_fn, vec![])
+                        .map_or(false, |referent| {
+                            !matches!(&referent.payload, PyObjectPayload::None)
+                        });
                     self.vm_push(if is_alive { callback } else { PyObject::none() });
                     return Ok(None);
                 }
