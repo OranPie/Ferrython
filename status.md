@@ -118,6 +118,14 @@ Last updated: 2026-05-26T20:36:46+08:00
   - 新增 `http_module/cookiejar.rs`、`cookies.rs`、`ssl.rs`、`smtplib.rs`、`ftplib.rs`、`imaplib.rs`、`poplib.rs`、`cgi.rs`、`xmlrpc.rs` 和 `socketserver.rs`。
   - `http_module.rs` 保留 urllib、urllib.parse、http.client 和 http.server 主体，以及共享 HTTP/url helper。
   - `http_module.rs` 从约 5642 行降到约 3388 行，`network_modules/http_module.rs` 不再是当前最长 stdlib Rust 文件。
+- 已完成并提交 `network_modules/http_module` 第二轮主体拆分：
+  - `0771bef refactor: split urllib parse module`
+  - `c6648e1 refactor: split urllib request module`
+  - `46b1be2 refactor: split http client module`
+  - `80b23bf refactor: split http server module`
+  - 新增 `http_module/urllib_parse.rs`、`urllib_request.rs`、`http_client.rs` 和 `http_server.rs`。
+  - `http_module.rs` 从约 3388 行进一步降到约 330 行，只保留 shared URL parsing/encoding helper、`HTTPStatus` 构造和根模块装配；network bucket 的顶层机械拆分可视为完成。
+  - focused 验证：每次拆分后均执行 `cargo fmt --all` 和 `cargo check -p ferrython-stdlib`。
 - 已完成并提交 `math_modules` 第一轮模块批量拆分：
   - 新增 `math_modules/statistics.rs`、`numbers.rs`、`decimal.rs`、`random.rs`、`heapq.rs`、`bisect.rs`、`fractions.rs` 和 `cmath.rs`。
   - `math_modules.rs` 保留真正的 `math` module factory、数值转换 helper 和 libm bridge。
@@ -175,7 +183,7 @@ Last updated: 2026-05-26T20:36:46+08:00
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 和 `unittest.rs` 是否需要内部分层。
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
-  - 继续评估 `network_modules/http_module.rs` 是否按 urllib.parse、urllib.request、http.client、http.server 进一步拆分。
+  - 继续评估 `network_modules/http_module/{urllib_parse,urllib_request,http_client,http_server}.rs` 是否还需要按更细职责继续内部分层。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。

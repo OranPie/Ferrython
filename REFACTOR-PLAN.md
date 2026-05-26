@@ -36,12 +36,15 @@ Last updated: 2026-05-26
   `sysconfig`, `grp`, and `pwd`. The remaining top-level `sys_modules.rs` still
   owns `sys`, `os`, and `os.path`, which are more tightly coupled to process
   state and path/file-descriptor helpers.
-- Phase 2 network module mechanical splits have started. The low-coupling back
-  half of `network_modules/http_module.rs` now lives under `http_module/`:
+- Phase 2 network module mechanical splits are now complete at the top-level
+  bucket. The earlier low-coupling back half of
+  `network_modules/http_module.rs` already lived under `http_module/`:
   `http.cookiejar`, `http.cookies`, `ssl`, `smtplib`, `ftplib`, `imaplib`,
-  `poplib`, `cgi`, `xmlrpc`, and `socketserver`. The remaining file keeps
-  urllib, urllib.parse, http.client, and http.server plus shared URL/HTTP
-  helpers.
+  `poplib`, `cgi`, `xmlrpc`, and `socketserver`. `urllib.parse`,
+  `urllib.request`, `http.client`, and `http.server` have now also been split
+  into focused files under `http_module/`. The remaining root file is a small
+  shell that keeps shared URL parsing/encoding helpers plus `http` /
+  `HTTPStatus` assembly.
 - Phase 2 math module mechanical splits are complete at the top-level bucket.
   `statistics`, `numbers`, `decimal`, `random`, `heapq`, `bisect`,
   `fractions`, and `cmath` now live under `math_modules/`; the root file keeps
