@@ -1042,6 +1042,14 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             }
             Ok(combined.keys().map(|k| k.to_object()).collect())
         }
+        PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__deque__") => {
+            if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                if let PyObjectPayload::List(items) = &data.payload {
+                    return Ok(items.read().clone());
+                }
+            }
+            Ok(vec![])
+        }
         PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
             if let Some(storage) = inst.dict_storage.as_ref() {
                 let read = storage.read();

@@ -6,6 +6,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
+use ferrython_core::object::helpers::{checked_repeat_len, guard_eager_allocation};
 use ferrython_core::object::{
     check_args_min, new_fx_hashkey_map, CompareOp, FxHashKeyMap, InstanceData, NativeFunctionData,
     PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
@@ -317,6 +318,66 @@ pub(super) fn call_deque_method(
             return Ok(true);
         }
         Ok(item.compare(target, CompareOp::Eq)?.is_truthy())
+    };
+    let deque_items = |obj: &PyObjectRef| -> PyResult<Vec<PyObjectRef>> {
+        if let PyObjectPayload::Instance(other_inst) = &obj.payload {
+            if other_inst.attrs.read().contains_key("__deque__") {
+                if let Some(data) = other_inst.attrs.read().get("_data").cloned() {
+                    if let PyObjectPayload::List(list) = &data.payload {
+                        return Ok(list.read().clone());
+                    }
+                }
+            }
+        }
+        obj.to_list()
+    };
+    let trim_to_maxlen = |items: &mut Vec<PyObjectRef>| {
+        if let Some(ml) = get_maxlen() {
+            if items.len() > ml {
+                *items = items[items.len() - ml..].to_vec();
+            }
+        }
+    };
+    let build_like_self = |items: Vec<PyObjectRef>| -> PyObjectRef {
+        let new_inst = PyObject::instance(inst.class.clone());
+        if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
+            let mut attrs = new_data.attrs.write();
+            attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
+            attrs.insert(CompactString::from("_data"), PyObject::list(items));
+            attrs.insert(
+                CompactString::from("__maxlen__"),
+                inst.attrs
+                    .read()
+                    .get("__maxlen__")
+                    .cloned()
+                    .unwrap_or_else(PyObject::none),
+            );
+        }
+        new_inst
+    };
+    let repeat_deque_items = |base: &[PyObjectRef], n: usize| -> PyResult<Vec<PyObjectRef>> {
+        if base.is_empty() || n == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(ml) = get_maxlen() {
+            let total = base.len().checked_mul(n).ok_or_else(|| {
+                PyException::new(ExceptionKind::MemoryError, "deque repeat is too large")
+            })?;
+            let keep = total.min(ml);
+            guard_eager_allocation(keep, "deque repeat")?;
+            let start = total.saturating_sub(keep);
+            let mut items = Vec::with_capacity(keep);
+            for pos in start..total {
+                items.push(base[pos % base.len()].clone());
+            }
+            return Ok(items);
+        }
+        let len = checked_repeat_len(base.len(), n, "deque repeat")?;
+        let mut items = Vec::with_capacity(len);
+        for _ in 0..n {
+            items.extend(base.iter().cloned());
+        }
+        Ok(items)
     };
     // Helper: enforce maxlen by trimming from the appropriate end
     let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
@@ -750,6 +811,70 @@ pub(super) fn call_deque_method(
                 return Ok(PyObject::bool_val(result));
             }
             Ok(PyObject::not_implemented())
+        }
+        "__add__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__add__() takes exactly one argument",
+                ));
+            }
+            if args[0].get_attr("__deque__").is_none() {
+                return Ok(PyObject::not_implemented());
+            }
+            let mut items = deque_items(&get_data())?;
+            items.extend(deque_items(&args[0])?);
+            trim_to_maxlen(&mut items);
+            Ok(build_like_self(items))
+        }
+        "__mul__" | "__rmul__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "{}() takes exactly one argument",
+                    method
+                )));
+            }
+            let n = match args[0].as_int() {
+                Some(n) => n.max(0) as usize,
+                None => return Ok(PyObject::not_implemented()),
+            };
+            let base = deque_items(&get_data())?;
+            let items = repeat_deque_items(&base, n)?;
+            Ok(build_like_self(items))
+        }
+        "__iadd__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__iadd__() takes exactly one argument",
+                ));
+            }
+            let mut items = deque_items(&args[0])?;
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let mut v = list.write();
+                v.append(&mut items);
+            }
+            if let PyObjectPayload::List(list) = &data.payload {
+                enforce_maxlen_right(list);
+            }
+            Ok(PyObject::none())
+        }
+        "__imul__" => {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "__imul__() takes exactly one argument",
+                ));
+            }
+            let n = match args[0].as_int() {
+                Some(n) => n.max(0) as usize,
+                None => return Ok(PyObject::not_implemented()),
+            };
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let base = list.read().clone();
+                let items = repeat_deque_items(&base, n)?;
+                *list.write() = items;
+            }
+            Ok(PyObject::none())
         }
         "maxlen" => {
             // Property-like access: return maxlen value

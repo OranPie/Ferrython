@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T16:02:08+08:00
+Last updated: 2026-05-26T17:45:15+08:00
 
 ## 已提交成果
 
@@ -45,6 +45,14 @@ Last updated: 2026-05-26T16:02:08+08:00
   - focused weakdict 9-case 全部通过。
 
 ## 本轮修复成果
+
+- 2026-05-26 deque 加乘协议修复：
+  - deque marker 分派补齐 `__add__`、`__mul__`、`__rmul__`、`__iadd__`、`__imul__`，算术 opcode 对 deque marker 优先走实例分派，避免 class closure 和 `_data` 状态分裂。
+  - `+` 要求右侧为 deque，返回同类新 deque；`+=` 接受任意 iterable 并原地扩展；`*` / 反向 `*` 返回同类新 deque；`*=` 原地重复并保持对象身份。
+  - repeat 路径按 CPython 语义把负次数当 0，并对 `maxlen` deque 只构造最终保留窗口，避免大倍数下无意义中间分配。
+  - core `to_list()` 对 deque marker 直接读取 `_data`，减少 stale closure 干扰并降低通用迭代开销。
+  - focused 验证：`test_deque.TestBasic.test_add`、`test_iadd`、`test_mul`、`test_imul`、`test_deque.TestSequence.test_iadd`、`test_imul`、`test_deque.TestBasic.test_comparisons`、`test_repr`，合计 `run=8 pass=8 fail=0 err=0 skip=0`。
+  - note: `TestSequence.test_addmul` / `test_repeat` 中的剩余失败来自 `class subclass(deque)` 尚未继承 deque marker/方法，作为后续 subclass 修复候选。
 
 - 2026-05-26 deque 协议继续修复：
   - `collections.deque` 构造器补齐多余位置参数校验，`hash(deque(...))` 按不可哈希对象抛 `TypeError`。

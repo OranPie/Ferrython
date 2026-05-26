@@ -180,6 +180,14 @@ impl VirtualMachine {
         }
         // Look up dunder via class MRO (not instance get_attr) for proper inheritance
         if let PyObjectPayload::Instance(inst) = &a.payload {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(method) = a.get_attr(dunder) {
+                    let result = self.call_object(method, vec![b.clone()])?;
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
+                    }
+                }
+            }
             if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
                 let bound = self.bind_method(a, method);
                 let result = self.call_object(bound, vec![b.clone()])?;
@@ -216,6 +224,14 @@ impl VirtualMachine {
         }
         if let Some(rd) = rdunder {
             if let PyObjectPayload::Instance(inst) = &b.payload {
+                if inst.attrs.read().contains_key("__deque__") {
+                    if let Some(method) = b.get_attr(rd) {
+                        let result = self.call_object(method, vec![a.clone()])?;
+                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                            return Ok(Some(result));
+                        }
+                    }
+                }
                 if let Some(method) = lookup_in_class_mro(&inst.class, rd) {
                     let bound = self.bind_method(b, method);
                     let result = self.call_object(bound, vec![a.clone()])?;
@@ -281,6 +297,14 @@ impl VirtualMachine {
             return self.try_inplace_dunder(a, &unwrapped_b, idunder, dunder);
         }
         if let PyObjectPayload::Instance(inst) = &a.payload {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(method) = a.get_attr(idunder).or_else(|| a.get_attr(dunder)) {
+                    let result = self.call_object(method, vec![b.clone()])?;
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(a.clone()));
+                    }
+                }
+            }
             let method = lookup_in_class_mro(&inst.class, idunder)
                 .or_else(|| lookup_in_class_mro(&inst.class, dunder));
             if let Some(m) = method {
