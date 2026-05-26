@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:28:29+08:00
+Last updated: 2026-05-27T07:33:46+08:00
 
 ## 代码质量重构进度
 
@@ -74,6 +74,10 @@ Last updated: 2026-05-27T07:28:29+08:00
   - `serial_modules/dbm_module.rs` 拆出 `dbm` module factory 和长度前缀磁盘存储 stub。
   - `serial_modules/shelve_module.rs` 拆出 `shelve` module factory，并通过 `pickle_module` 的 `pub(super)` helper 复用序列化/反序列化。
   - `serial_modules/other.rs` 移除，剩余 pickle 代码改为职责明确的 `serial_modules/pickle_module.rs`，当前约 2909 行。
+- 已完成 pickle 内部职责拆分：
+  - `serial_modules/pickle_module.rs` 改为 `serial_modules/pickle_module/` 目录模块。
+  - 新增 `api.rs`、`read.rs`、`write.rs` 和 `shared.rs`，分别承载 pickle module factory/public API、protocol 0/2 reader、protocol 0/2 writer、异常/state/格式化等共享 helper。
+  - 根 `pickle_module/mod.rs` 缩到约 10 行；最大新子文件为 `pickle_module/read.rs`，约 1502 行。
 - 已完成并提交 misc 小模块拆分：
   - `8891bae refactor: split small misc modules`
   - `misc_modules/future.rs`、`readline.rs`、`runpy.rs`、`compileall.rs`、`pstats.rs`、`quopri.rs`、`stringprep.rs` 拆出低耦合 misc 小模块。
@@ -227,6 +231,7 @@ Last updated: 2026-05-27T07:28:29+08:00
   - serial marshal 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial binascii 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial codecs/dbm/shelve/pickle rename 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - pickle 内部 API/read/write/shared 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc 小模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc mimetypes/cmd/plistlib/curses 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - misc contextvars/ctypes 批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -249,7 +254,7 @@ Last updated: 2026-05-27T07:28:29+08:00
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
-  - 继续评估 `serial_modules/pickle_module.rs` 是否按 protocol0/protocol2/load/dump/helper 进一步拆分。
+  - 继续评估 `serial_modules/pickle_module/read.rs` 是否按 protocol0/protocol2/global reduce helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 和 `unittest.rs` 是否需要内部分层。
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。

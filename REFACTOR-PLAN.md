@@ -18,7 +18,9 @@ Last updated: 2026-05-27
 - Phase 2 serial module mechanical splits have retired the large
   `serial_modules/other.rs` bucket. Serialization modules now have named files
   for `base64`, `binascii`, `codecs`, `csv`, `dbm`, `json`, `marshal`,
-  `pickle`, `shelve`, and `struct`.
+  `pickle`, `shelve`, and `struct`. The remaining pickle hotspot has also
+  been split internally into API, protocol reader, protocol writer, and shared
+  helper files under `serial_modules/pickle_module/`.
 - Phase 2 misc module mechanical splits are now complete at the top-level bucket.
   Low/medium-coupling
   `__future__`, `readline`, `runpy`, `compileall`, `pstats`, `quopri`,
