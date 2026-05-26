@@ -69,6 +69,10 @@ Last updated: 2026-05-27
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
   small child module declaration/re-export shell.
+- Phase 2 time module mechanical splits have started. `zoneinfo` and
+  `_strptime` now live under `time_modules/`; the root `time_modules.rs` still
+  owns the `time` and `datetime` implementations plus shared calendar/format
+  helpers.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
@@ -91,6 +95,9 @@ architecture concerns from compatibility fixes.
   `namedtuple.rs`, and `user_types.rs` are medium-sized focused files after the
   top-level `collections.rs` bucket split; evaluate internal splits only if
   future changes need them.
+- `crates/ferrython-stdlib/src/time_modules.rs` is still over 3k lines after
+  the `zoneinfo`/`_strptime` split and combines the `time` and `datetime`
+  implementations with shared calendar/format helpers.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

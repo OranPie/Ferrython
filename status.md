@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T05:54:18+08:00
+Last updated: 2026-05-27T07:02:36+08:00
 
 ## 代码质量重构进度
 
@@ -170,6 +170,11 @@ Last updated: 2026-05-27T05:54:18+08:00
   - 新增 `collection_modules/counter.rs`，把 `defaultdict` class factory、`Counter` class factory、Counter module-level helpers 和 `_count_elements` 从 `collections.rs` 抽离。
   - `collections.rs` 从约 1531 行降到约 154 行，只保留 collections module assembly、ABC alias wiring 和 `OrderedDict` shim。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已开始 `time_modules` 机械拆分：
+  - 新增 `time_modules/zoneinfo.rs`，把 `zoneinfo` module factory、`ZoneInfo` class stub 和 `available_timezones()` 从根文件抽离。
+  - 新增 `time_modules/strptime.rs`，把 `_strptime` compatibility module factory 和 `_strptime_datetime/_strptime_time/_getlang` stubs 从根文件抽离。
+  - `time_modules.rs` 从约 3706 行降到约 3504 行；剩余主体仍是 `time` 和 `datetime`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 低耦合尾部拆分：
   - 新增 `fs_modules/subprocess.rs`，把 `subprocess` module factory、`run/call/check_*`、`Popen` 和 `CompletedProcess` helper 从根文件抽离。
   - 新增 `fs_modules/zlib.rs`，把 `zlib` module factory、bytes-like 提取、crc32/adler32 helper 从根文件抽离。
@@ -219,6 +224,7 @@ Last updated: 2026-05-27T05:54:18+08:00
   - collections deque/ChainMap 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections namedtuple 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections Counter/defaultdict 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - time zoneinfo/_strptime 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 subprocess/zlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
