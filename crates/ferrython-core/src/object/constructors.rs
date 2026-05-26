@@ -758,6 +758,7 @@ fn is_gc_payload(payload: &PyObjectPayload) -> bool {
             | PyObjectPayload::List(_)
             | PyObjectPayload::Dict(_)
             | PyObjectPayload::MappingProxy(_)
+            | PyObjectPayload::Range(_)
             | PyObjectPayload::Class(_)
             | PyObjectPayload::BoundMethod { .. }
             | PyObjectPayload::BuiltinBoundMethod(_)
@@ -814,6 +815,19 @@ fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
         }
         PyObjectPayload::List(items) => items.read().iter().cloned().collect(),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => dict_storage_refs(map),
+        PyObjectPayload::Range(rd) => {
+            let mut refs = Vec::new();
+            if let Some(obj) = &rd.start_obj {
+                refs.push(obj.clone());
+            }
+            if let Some(obj) = &rd.stop_obj {
+                refs.push(obj.clone());
+            }
+            if let Some(obj) = &rd.step_obj {
+                refs.push(obj.clone());
+            }
+            refs
+        }
         PyObjectPayload::Class(cd) => class_refs(cd),
         PyObjectPayload::BoundMethod { receiver, method } => {
             vec![receiver.clone(), method.clone()]
@@ -1546,6 +1560,26 @@ impl PyObject {
             start,
             stop,
             step,
+            start_obj: None,
+            stop_obj: None,
+            step_obj: None,
+        })))
+    }
+    pub fn range_with_objects(
+        start: i64,
+        stop: i64,
+        step: i64,
+        start_obj: PyObjectRef,
+        stop_obj: PyObjectRef,
+        step_obj: PyObjectRef,
+    ) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Range(Box::new(RangeData {
+            start,
+            stop,
+            step,
+            start_obj: Some(start_obj),
+            stop_obj: Some(stop_obj),
+            step_obj: Some(step_obj),
         })))
     }
     pub fn cell(cell: Rc<PyCell<Option<PyObjectRef>>>) -> PyObjectRef {

@@ -1845,12 +1845,19 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let (start, stop, step) = match args.len() {
+    let (start, stop, step, start_obj, stop_obj, step_obj) = match args.len() {
         1 => {
             let stop = args[0]
                 .as_int()
                 .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            (0i64, stop, 1i64)
+            (
+                0i64,
+                stop,
+                1i64,
+                PyObject::int(0),
+                args[0].clone(),
+                PyObject::int(1),
+            )
         }
         2 => {
             let start = args[0]
@@ -1859,7 +1866,14 @@ pub(super) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let stop = args[1]
                 .as_int()
                 .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            (start, stop, 1)
+            (
+                start,
+                stop,
+                1,
+                args[0].clone(),
+                args[1].clone(),
+                PyObject::int(1),
+            )
         }
         3 => {
             let start = args[0]
@@ -1874,11 +1888,20 @@ pub(super) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if step == 0 {
                 return Err(PyException::value_error("range() arg 3 must not be zero"));
             }
-            (start, stop, step)
+            (
+                start,
+                stop,
+                step,
+                args[0].clone(),
+                args[1].clone(),
+                args[2].clone(),
+            )
         }
         _ => return Err(PyException::type_error("range expected 1 to 3 arguments")),
     };
-    Ok(PyObject::range(start, stop, step))
+    Ok(PyObject::range_with_objects(
+        start, stop, step, start_obj, stop_obj, step_obj,
+    ))
 }
 
 pub(super) fn builtin_list(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

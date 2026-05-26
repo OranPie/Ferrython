@@ -2961,9 +2961,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
         },
         // Built-in type methods — return bound method for KNOWN methods only
         PyObjectPayload::Range(rd) => match name {
-            "start" => Some(PyObject::int(rd.start)),
-            "stop" => Some(PyObject::int(rd.stop)),
-            "step" => Some(PyObject::int(rd.step)),
+            "start" => Some(
+                rd.start_obj
+                    .clone()
+                    .unwrap_or_else(|| PyObject::int(rd.start)),
+            ),
+            "stop" => Some(
+                rd.stop_obj
+                    .clone()
+                    .unwrap_or_else(|| PyObject::int(rd.stop)),
+            ),
+            "step" => Some(
+                rd.step_obj
+                    .clone()
+                    .unwrap_or_else(|| PyObject::int(rd.step)),
+            ),
             "__class__" => Some(PyObject::builtin_type(CompactString::from("range"))),
             "count" | "index" | "__contains__" | "__iter__" | "__reversed__" | "__len__" => {
                 Some(PyObjectRef::new(PyObject {

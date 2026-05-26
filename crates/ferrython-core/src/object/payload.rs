@@ -1233,6 +1233,9 @@ pub struct RangeData {
     pub start: i64,
     pub stop: i64,
     pub step: i64,
+    pub start_obj: Option<PyObjectRef>,
+    pub stop_obj: Option<PyObjectRef>,
+    pub step_obj: Option<PyObjectRef>,
 }
 
 /// Boxed range iterator data — moved out of enum to shrink PyObjectPayload from 32→24 bytes.

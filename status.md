@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-26T13:50:36+08:00
+Last updated: 2026-05-26T14:03:13+08:00
 
 ## 已提交成果
 
@@ -112,6 +112,9 @@ Last updated: 2026-05-26T13:50:36+08:00
   - `stdlib/Lib/test/test_weakref.py` 增加代理模块，让子进程中的 `from test.test_weakref import FinalizeTestCase` 能加载 vendored CPython 测试。
   - VM native kwargs fallback 对 `weakref.__new__` / `weakref.__init__` 保留内部 marker；精确 `weakref.ref(..., callback=...)` 和默认继承 init 的 ref 子类按 CPython 拒绝 keyword，而自定义 `__init__` 的 ref 子类可消费额外 kwargs。
   - `weakref.__new__` 不再把子类构造 kwargs dict 误当 callback 注册，清除 `SubclassableWeakrefTestCase.test_subclass_refs` 的 unraisable `TypeError: 'dict' object is not callable` 输出噪音。
+  - `range` 保留构造时的原始 start/stop/step 对象用于属性访问，仍保留 i64 热字段用于 len/iter/contains 等快路径；`copy.deepcopy(range(I(10)))` 能复制出新的 range 并保留 int 子类 stop。
+  - copy 协议对没有自定义 `__getnewargs__` / `__getnewargs_ex__` 的 builtin-value 子类按底层 `__builtin_value__` 重建，并继续尊重用户自定义 newargs 协议。
+  - VM 比较路径对 builtin-value 子类代理到底层值比较，同时保留 weakref ref dead identity 语义。
 
 - 2026-05-25 追加：
   - 基础 iterator 按 CPython 语义暴露 `__setstate__`，覆盖 list/tuple/str iterator 和旧序列协议 `SeqIter`。
@@ -165,6 +168,11 @@ Last updated: 2026-05-26T13:50:36+08:00
     - `run=9 pass=9 fail=0 err=0 skip=0`
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref`
     - `run=125 pass=122 fail=0 err=0 skip=3`，无 `dict object is not callable` unraisable 噪音
+- copy/range focused 验证：
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_copy.TestCopy.test_deepcopy_range test_copy.TestCopy.test_copy_inst_getnewargs test_copy.TestCopy.test_copy_inst_getnewargs_ex test_copy.TestCopy.test_deepcopy_inst_getnewargs test_copy.TestCopy.test_deepcopy_inst_getnewargs_ex test_copy.TestCopy.test_reconstruct_state test_copy.TestCopy.test_reconstruct_reflexive test_copy.TestCopy.test_deepcopy_bound_method test_copy.TestCopy.test_copy_weakref test_copy.TestCopy.test_deepcopy_weakref test_weakref.ReferencesTestCase.test_equality test_weakref.ReferencesTestCase.test_hashing test_weakref.SubclassableWeakrefTestCase.test_subclass_refs`
+    - `run=13 pass=13 fail=0 err=0 skip=0`
+  - smoke: `copy.deepcopy(I(10))` 返回新的 `I(10)` 并 deepcopy 普通 attrs；`copy.deepcopy(range(I(1), I(10), I(2)))` 保留端点类型和值，`list()` / `len()` / membership / repr 基础路径通过。
+  - note: `target/debug/ferrython tools/run_cpython_tests.py -v test_range` 当前仍有既有失败：`run=24 pass=8 fail=5 err=11 skip=0`，本次只用 focused range smoke 作为回归门。
 - weakref cycle GC focused 验证：
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_weakref.ReferencesTestCase.test_callback_in_cycle_resurrection test_weakref.ReferencesTestCase.test_callbacks_on_callback`
     - `run=2 pass=2 fail=0 err=0 skip=0`
@@ -376,10 +384,8 @@ Last updated: 2026-05-26T13:50:36+08:00
 
 ## 当前修复候选
 
-- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；下一步转向 `test_copy` 残留或 `deque` 小批候选。
+- `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy.TestCopy.test_deepcopy_range` 已关闭。下一步转向 `deque` 小批候选或继续扫描 `test_copy` 其他残留。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
-  - 已知残留：
-    - `test_copy.TestCopy.test_deepcopy_range` 仍受 RangeData 只保存 i64、无法保留 int subclass endpoint 限制影响。
 
 ## 已关闭候选
 

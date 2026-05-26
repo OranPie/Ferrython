@@ -27,6 +27,49 @@ fn is_weak_ref_instance(obj: &PyObjectRef) -> bool {
         if inst.attrs.read().contains_key("__weakref_ref__"))
 }
 
+fn builtin_value_compare_operands(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+) -> Option<(PyObjectRef, PyObjectRef)> {
+    if is_weak_ref_instance(a) || is_weak_ref_instance(b) {
+        return None;
+    }
+    let a_value = match &a.payload {
+        PyObjectPayload::Instance(inst) => inst.attrs.read().get("__builtin_value__").cloned(),
+        _ => None,
+    };
+    let b_value = match &b.payload {
+        PyObjectPayload::Instance(inst) => inst.attrs.read().get("__builtin_value__").cloned(),
+        _ => None,
+    };
+    match (a_value, b_value) {
+        (Some(left), Some(right)) => Some((left, right)),
+        (Some(left), None)
+            if matches!(
+                b.payload,
+                PyObjectPayload::Int(_)
+                    | PyObjectPayload::Bool(_)
+                    | PyObjectPayload::Float(_)
+                    | PyObjectPayload::Str(_)
+            ) =>
+        {
+            Some((left, b.clone()))
+        }
+        (None, Some(right))
+            if matches!(
+                a.payload,
+                PyObjectPayload::Int(_)
+                    | PyObjectPayload::Bool(_)
+                    | PyObjectPayload::Float(_)
+                    | PyObjectPayload::Str(_)
+            ) =>
+        {
+            Some((a.clone(), right))
+        }
+        _ => None,
+    }
+}
+
 fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
     if PyObjectRef::ptr_eq(child, parent) {
         return false;
@@ -533,6 +576,20 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
+            }
+            if let Some((left, right)) = builtin_value_compare_operands(&a, &b) {
+                let cmp_op = match cmp {
+                    0 => CompareOp::Lt,
+                    1 => CompareOp::Le,
+                    2 => CompareOp::Eq,
+                    3 => CompareOp::Ne,
+                    4 => CompareOp::Gt,
+                    5 => CompareOp::Ge,
+                    _ => unreachable!(),
+                };
+                let result = left.compare(&right, cmp_op)?;
+                self.vm_push(result);
+                return Ok(None);
             }
             if matches!(cmp, 2 | 3)
                 && (matches!(&a.payload, PyObjectPayload::Instance(_))

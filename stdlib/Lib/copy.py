@@ -341,6 +341,11 @@ def _copy_instance(x, memo=None):
             if deep:
                 args = deepcopy(args, memo)
             y = new(cls, *args)
+        elif "__builtin_value__" in getattr(x, "__dict__", {}):
+            value = x.__dict__["__builtin_value__"]
+            if deep:
+                value = deepcopy(value, memo)
+            y = cls(value)
         else:
             y = new(cls)
         if deep:
