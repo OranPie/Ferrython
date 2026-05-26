@@ -4,6 +4,7 @@ mod base64_module;
 mod csv_module;
 mod json_module;
 mod other;
+mod struct_module;
 
 pub use base64_module::create_base64_module;
 pub(crate) use base64_module::extract_bytes;
@@ -14,5 +15,6 @@ pub use json_module::{
 };
 pub use other::{
     create_binascii_module, create_codecs_module, create_dbm_module, create_marshal_module,
-    create_pickle_module, create_shelve_module, create_struct_module,
+    create_pickle_module, create_shelve_module,
 };
+pub use struct_module::create_struct_module;

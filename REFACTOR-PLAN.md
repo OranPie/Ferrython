@@ -16,8 +16,8 @@ Last updated: 2026-05-26
 - `_ast` implementation is being split internally into node/class helpers,
   Rust-AST-to-PyObject conversion, utility APIs, and unparse support.
 - Phase 2 serial module mechanical splits have started. `base64` and shared
-  bytes-like helpers are being separated from the large `serial_modules/other.rs`
-  bucket.
+  bytes-like helpers plus `struct` support are being separated from the large
+  `serial_modules/other.rs` bucket.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
