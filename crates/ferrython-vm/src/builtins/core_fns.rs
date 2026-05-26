@@ -699,6 +699,33 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
+    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        let weak_call = {
+            let attrs = inst.attrs.read();
+            if attrs.contains_key("__weakref_ref__") {
+                attrs.get("__call__").cloned()
+            } else {
+                None
+            }
+        };
+        if let Some(call) = weak_call {
+            let referent = ferrython_core::object::call_callable(&call, &[])?;
+            if matches!(&referent.payload, PyObjectPayload::None) {
+                if let Some(cached) = inst.attrs.read().get("__weakref_hash__").cloned() {
+                    return Ok(cached);
+                }
+                return Err(PyException::type_error(
+                    "weak object has gone away".to_string(),
+                ));
+            }
+            let key = referent.to_hashable_key()?;
+            let hash = PyObject::int(hash_key_like_python(&key));
+            inst.attrs
+                .write()
+                .insert(CompactString::from("__weakref_hash__"), hash.clone());
+            return Ok(hash);
+        }
+    }
     if let PyObjectPayload::FrozenSet(items) = &args[0].payload {
         return Ok(PyObject::int(items.py_hash()));
     }

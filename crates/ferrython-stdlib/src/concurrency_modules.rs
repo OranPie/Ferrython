@@ -2362,8 +2362,50 @@ pub fn create_weakref_module() -> PyObjectRef {
                     let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
                     let callback = args.get(1).cloned().unwrap_or_else(PyObject::none);
 
-                    let cls =
-                        PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
+                    let mut namespace = IndexMap::new();
+                    let w_eq = weak.clone();
+                    namespace.insert(
+                        CompactString::from("__eq__"),
+                        PyObject::native_closure("weakref.__eq__", move |args| {
+                            let other = args.get(1).or_else(|| args.first());
+                            if let Some(other) = other {
+                                let Some(strong) = w_eq.upgrade() else {
+                                    return Ok(PyObject::bool_val(false));
+                                };
+                                let Some(other_call) = other.get_attr("__call__") else {
+                                    return Ok(PyObject::bool_val(false));
+                                };
+                                let other_obj = call_callable(&other_call, &[])?;
+                                if matches!(&other_obj.payload, PyObjectPayload::None) {
+                                    return Ok(PyObject::bool_val(false));
+                                }
+                                return strong.compare(&other_obj, CompareOp::Eq);
+                            }
+                            Ok(PyObject::bool_val(false))
+                        }),
+                    );
+                    let w_ne = weak.clone();
+                    namespace.insert(
+                        CompactString::from("__ne__"),
+                        PyObject::native_closure("weakref.__ne__", move |args| {
+                            let other = args.get(1).or_else(|| args.first());
+                            if let Some(other) = other {
+                                let Some(strong) = w_ne.upgrade() else {
+                                    return Ok(PyObject::bool_val(true));
+                                };
+                                let Some(other_call) = other.get_attr("__call__") else {
+                                    return Ok(PyObject::bool_val(true));
+                                };
+                                let other_obj = call_callable(&other_call, &[])?;
+                                if matches!(&other_obj.payload, PyObjectPayload::None) {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                                return strong.compare(&other_obj, CompareOp::Ne);
+                            }
+                            Ok(PyObject::bool_val(true))
+                        }),
+                    );
+                    let cls = PyObject::class(CompactString::from("weakref"), vec![], namespace);
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                         let mut attrs = inst_data.attrs.write();
@@ -2404,21 +2446,6 @@ pub fn create_weakref_module() -> PyObjectRef {
                             }),
                         );
 
-                        // __eq__: two refs are equal if they point to the same object
-                        let w_eq = weak.clone();
-                        attrs.insert(
-                            CompactString::from("__eq__"),
-                            PyObject::native_closure("weakref.__eq__", move |args| {
-                                if let Some(other) = args.first() {
-                                    if let Some(strong) = w_eq.upgrade() {
-                                        return Ok(PyObject::bool_val(PyObjectRef::ptr_eq(
-                                            &strong, other,
-                                        )));
-                                    }
-                                }
-                                Ok(PyObject::bool_val(false))
-                            }),
-                        );
                     }
                     Ok(inst)
                 }),
