@@ -81,6 +81,10 @@ Last updated: 2026-05-27
   `argparse` and `configparser` now live under `config_modules/`; the root
   `config_modules.rs` only declares child modules and re-exports the loaded
   `configparser` factory.
+- Phase 2 XML module mechanical splits have started. The lower-coupling
+  package, DOM/minidom, SAX, and expat helpers now live under `xml_modules/`;
+  the root `xml_modules.rs` still owns the ElementTree parser/object
+  implementation plus the `xml.etree.ElementTree` factory.
 - Latest focused validation for these mechanical Rust moves:
   `cargo check -p ferrython-stdlib`.
 
