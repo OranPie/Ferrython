@@ -78,7 +78,8 @@ Last updated: 2026-05-26T19:35:46+08:00
   - `8891bae refactor: split small misc modules`
   - `misc_modules/future.rs`、`readline.rs`、`runpy.rs`、`compileall.rs`、`pstats.rs`、`quopri.rs`、`stringprep.rs` 拆出低耦合 misc 小模块。
   - `misc_modules.rs` 从约 5412 行降到约 4605 行；保留 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`mimetypes`、`cmd`、`plistlib`、`curses`、`ctypes` 等较重模块供后续分批拆。
-- 本批已完成待提交：
+- 已完成并提交 misc 中等模块拆分：
+  - `aafeb8d refactor: split more misc modules`
   - `misc_modules/mimetypes.rs`、`cmd.rs`、`plistlib.rs`、`curses.rs` 拆出中等耦合 misc 模块。
   - `misc_modules.rs` 从约 4605 行降到约 3295 行；剩余主要是 `contextlib`、`dataclasses`、`builtins`、`contextvars`、`copy` 和 `ctypes`。
 - 当前验证：
