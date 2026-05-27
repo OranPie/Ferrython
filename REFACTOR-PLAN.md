@@ -289,6 +289,18 @@ real import-resolution cost.
 Keep the main opcode dispatch loop direct, but move bulky arm bodies into
 specialized helpers:
 
+Status:
+
+- Ready to start after Phase 3 registry file splitting. `vm.rs` still owns the
+  hot loop, dispatch macros, superinstructions, exception unwind, tracing, and
+  fallback `execute_one` router.
+- First safe commit should extract dispatch macro/helper boundaries without
+  changing opcode behavior. Then move hot but coherent opcode groups one at a
+  time.
+- Validation must build the CLI before running interpreter smoke tests:
+  `cargo build -p ferrython-cli --bin ferrython`, then run focused smoke through
+  the freshly built `target/debug/ferrython`.
+
 - `dispatch/stack.rs`
 - `dispatch/iter.rs`
 - `dispatch/call.rs`
@@ -314,6 +326,16 @@ Validation:
 ## Phase 5: VM Call Architecture
 
 Split `vm_call.rs` into modules with clearer boundaries:
+
+Status:
+
+- Ready after or in parallel with Phase 4 boundary work. `vm_call.rs` is still
+  the main concentration of call semantics, descriptor handling, class
+  instantiation, native call shims, `super()`, and frameless shortcuts.
+- Start mechanically: move existing helper groups into child files while keeping
+  public VM methods and call behavior stable. Introduce `PreparedCall`/
+  `CallTarget`/`CallArgs` only after repeated branching is isolated enough to
+  justify it.
 
 - `call/object.rs`: public `call_object` entry and shared orchestration.
 - `call/function.rs`: Python function and frame preparation.

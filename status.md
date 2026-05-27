@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T18:56:08+08:00
+Last updated: 2026-05-27T19:01:54+08:00
 
 ## 代码质量重构进度
 
@@ -446,6 +446,11 @@ Last updated: 2026-05-27T18:56:08+08:00
   - `registry/aliases` 和 `registry/extras` 也已继续拆成内部 resolver 文件，例如 `aliases/{internal,compatibility,binary_encoding,html_unicode,network_extended,xml_dom}.rs` 和 `extras/{testing,introspection,serialization,misc,network_stubs,dbm_xmlrpc,additional,system_config,encodings,unix_terminal,import_resources}.rs`。
   - `CODE_HEALTH_BASELINE.md` 已刷新；`registry.rs` 已退出 match-density 和 item-density 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`、新构建后的 `target/debug/ferrython -c "import ...; print('registry smoke ok')"` 和 pure-Python fallback smoke。
+- 已准备进入 Phase4/Phase5：
+  - Phase3 registry 文件拆分已基本完成；`registry` root 和各聚合器只保留 resolver 顺序或薄 wrapper，具体 factory mapping 已分散到小文件。
+  - Phase4 首批目标：从 `vm.rs` 先拆 dispatch macro/helper 边界，再拆 `ForIter`/`ForIterStoreFast`、call/attr/compare superinstruction 热路径，保持 opcode dispatch loop 直接。
+  - Phase5 首批目标：按 `vm_call.rs` 当前自然边界拆出 `call/object`、`call/function`、`call/native`、`call/class`、`call/descriptor`、`call/frameless`、`call/super_object`，先做机械分层，避免提前改变 call semantics。
+  - 注意：Phase4/5 需要 `cargo build -p ferrython-cli --bin ferrython` 后再跑 `target/debug/ferrython` smoke，不能只用旧二进制。
 - 后续重构队列：
   - `text_modules/regex_impl/functions.rs` 已聚合化；后续只在修改 matching/substitution 逻辑时继续细分对应子文件。
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
@@ -458,7 +463,8 @@ Last updated: 2026-05-27T18:56:08+08:00
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；`counter.rs`、`operator.rs` 和 `user_types.rs` 已完成当前低风险内部分层，后续只在需要时评估 `namedtuple.rs` 或剩余 Counter class body 是否继续细分。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
-  - Phase3 registry 文件拆分已基本完成；暂缓 `ModuleSpec` 静态表和 `phf`，除非 import-resolution profile 证明有必要。下一步转入 Phase4/Phase5 的 VM dispatch / VM call 架构准备。
+  - Phase3 registry 文件拆分已基本完成；暂缓 `ModuleSpec` 静态表和 `phf`，除非 import-resolution profile 证明有必要。
+  - 转入 Phase4/Phase5：先提交 VM dispatch macro/helper 边界或 `vm_call.rs` 低风险 helper 拆分，再逐步处理热路径 arm。
 
 ## 已提交成果
 
