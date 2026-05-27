@@ -9,7 +9,6 @@ use indexmap::IndexMap;
 use std::rc::Rc;
 
 use crate::builtins;
-use crate::frame::ScopeKind;
 use crate::vm_call::str_fast::fast_exact_str;
 use crate::VirtualMachine;
 
@@ -38,6 +37,9 @@ impl VirtualMachine {
         if matches!(name.as_str(), "getattr" | "setattr" | "delattr") {
             return self.call_attr_builtin(name.as_str(), args);
         }
+        if matches!(name.as_str(), "globals" | "locals" | "vars" | "dir") {
+            return self.call_scope_builtin(name.as_str(), args);
+        }
         if matches!(
             name.as_str(),
             "map" | "filter" | "iter" | "next" | "reversed" | "enumerate" | "zip"
@@ -63,50 +65,6 @@ impl VirtualMachine {
         }
         // VM-aware builtins that need to call user-defined methods
         match name.as_str() {
-            "globals" => {
-                // Return an InstanceDict that shares the frame's globals Arc.
-                // This means mutations via globals()['key'] = value propagate directly.
-                if let Some(frame) = self.call_stack.last() {
-                    if let Some(globals_obj) = &frame.exec_globals {
-                        return Ok(globals_obj.clone());
-                    }
-                    let globals_arc = frame.globals.clone();
-                    return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
-                }
-                return Ok(PyObject::dict(new_fx_hashkey_map()));
-            }
-            "locals" => {
-                if let Some(frame) = self.call_stack.last() {
-                    if let Some(locals) = &frame.exec_locals {
-                        return Ok(locals.clone());
-                    }
-                    if matches!(frame.scope_kind, ScopeKind::Module) {
-                        if let Some(globals_obj) = &frame.exec_globals {
-                            return Ok(globals_obj.clone());
-                        }
-                    }
-                    let mut map = IndexMap::new();
-                    // Include function-scope locals (varnames → locals array)
-                    for (i, name) in frame.code.varnames.iter().enumerate() {
-                        if let Some(Some(val)) = frame.locals.get(i) {
-                            map.insert(HashableKey::str_key(name.clone()), val.clone());
-                        }
-                    }
-                    // If no varnames (module scope), include globals + local_names
-                    if frame.code.varnames.is_empty() {
-                        let g = frame.globals.read();
-                        for (k, v) in g.iter() {
-                            map.insert(HashableKey::str_key(k.clone()), v.clone());
-                        }
-                        drop(g);
-                        for (k, v) in frame.local_names_iter() {
-                            map.insert(HashableKey::str_key(k.clone()), v.clone());
-                        }
-                    }
-                    return Ok(PyObject::dict(map));
-                }
-                return Ok(PyObject::dict(new_fx_hashkey_map()));
-            }
             "print" => {
                 return self.vm_print(&args, None, None, None, false);
             }
@@ -179,52 +137,6 @@ impl VirtualMachine {
                     ));
                 }
             }
-            "dir" => {
-                if args.is_empty() {
-                    if let Some(locals) = self.call_stack.last().and_then(|f| f.exec_locals.clone())
-                    {
-                        let mut names: Vec<String> = self
-                            .exec_locals_keys(&locals)?
-                            .into_iter()
-                            .map(|key| key.py_to_string())
-                            .collect();
-                        names.sort();
-                        let items = names
-                            .into_iter()
-                            .map(|n| PyObject::str_val(CompactString::from(n)))
-                            .collect();
-                        return Ok(PyObject::list(items));
-                    }
-                    // dir() with no args: return sorted local variable names
-                    let locals = self.collect_locals_dict()?;
-                    if let PyObjectPayload::Dict(map) = &locals.payload {
-                        let mut names: Vec<String> = map
-                            .read()
-                            .keys()
-                            .map(|k| k.to_object().py_to_string())
-                            .collect();
-                        names.sort();
-                        let items = names
-                            .into_iter()
-                            .map(|n| PyObject::str_val(CompactString::from(n)))
-                            .collect();
-                        return Ok(PyObject::list(items));
-                    }
-                }
-                if args.len() == 1 {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__dir__") {
-                            let ca =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            return self.call_object(method, ca);
-                        }
-                    }
-                }
-            }
             "super" => {
                 return self.make_super(&args);
             }
@@ -250,12 +162,6 @@ impl VirtualMachine {
                     0
                 };
                 return self.import_module_simple(&name, level);
-            }
-            "vars" => {
-                if args.is_empty() {
-                    return self.collect_locals_dict();
-                }
-                // vars(obj) — fall through to static builtin_vars
             }
             "NamedTuple" => {
                 // typing.NamedTuple('Point', [('x', int), ('y', int)]) or NamedTuple('Point', x=int, y=int)
