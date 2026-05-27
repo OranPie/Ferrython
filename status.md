@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T01:55:28+08:00
+Last updated: 2026-05-28T01:58:02+08:00
 
 ## 代码质量重构进度
 
@@ -1022,6 +1022,7 @@ Last updated: 2026-05-28T01:55:28+08:00
   - commit：`d08c99f refactor: split native keyword helpers`。
   - 第二十六批拆出 `builtin_kw_scope.rs`、`builtin_kw_collections.rs`、`builtin_kw_primitives.rs` 和 `builtin_kw_fallback.rs`：scope/print、sorted/dict/enumerate、primitive constructor kwargs 与 generic trailing-dict fallback 从 `builtin_kw.rs` 移出，`builtin_kw.rs` 从约 418 行降到约 86 行；新文件分别约 79、116、184 和 73 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin kw smoke。
+  - commit：`bfe3806 refactor: split builtin keyword dispatch`。
 
 ## 修复原则
 
