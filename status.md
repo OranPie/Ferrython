@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:51:12+08:00
+Last updated: 2026-05-28T02:53:51+08:00
 
 ## 代码质量重构进度
 
@@ -1040,6 +1040,7 @@ Last updated: 2026-05-28T02:51:12+08:00
   - commit：`ceae1e3 refactor: split computation helpers`。
   - 第三十二批拆出 `object_native_special.rs`、`object_native_iter.rs` 和 `object_native_finish.rs`：AST/type/property native special cases、regex/itertools/path/generator native adaptations、NativeClosure/deferred-result flushing 从 `object_native_call.rs` 移出，`object_native_call.rs` 从约 256 行降到约 34 行；新文件分别约 93、124 和 54 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 native object smoke。
+  - commit：`3ecfad3 refactor: split native object call helpers`。
 
 ## 修复原则
 
