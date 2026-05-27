@@ -372,8 +372,10 @@ Status:
   `function_fast.rs` owns the one-arg borrowed-frame fast path.
   `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
   builtins, `builtin_computation.rs` owns computation builtin routing,
-  `builtin_sum.rs` owns `sum()` fast paths, and
-  `builtin_computation_order.rs` owns `sorted` / `min` / `max` helpers,
+  `builtin_sum.rs` owns `sum()` routing, while `builtin_sum_sequence.rs`,
+  `builtin_sum_range.rs`, and `builtin_sum_generator.rs` own sequence,
+  range/range-iterator, and generator fast paths. `builtin_computation_order.rs`
+  owns `sorted` / `min` / `max` helpers,
   `builtin_numeric.rs` owns numeric builtin routing,
   `builtin_numeric_complex.rs` owns `complex()` instance/dunder coercion,
   `builtin_numeric_scalar.rs` owns `int` / `float` / `round` / `bool`
@@ -383,7 +385,10 @@ Status:
   `builtin_kw_collections.rs` owns `sorted` / `dict` / `enumerate` keyword helpers,
   `builtin_kw_primitives.rs` owns primitive constructor keyword helpers,
   `builtin_kw_fallback.rs` owns `type` and generic trailing-dict keyword fallback,
-  `native_kw.rs` owns json/type/property native-function keyword special cases,
+  `native_kw.rs` owns native keyword dispatch ordering,
+  `native_kw_special.rs` owns AST/property/type native-function keyword special
+  cases, `native_kw_json.rs` owns JSON hook/default keyword handling, and
+  `native_kw_generic.rs` owns trailing-dict native fallback.
   `native_kw_collections.rs` owns collections/partial native kwargs,
   `native_kw_regex_iter.rs` owns regex and itertools native kwargs,
   `native_closure_kw.rs` owns NativeClosure keyword marker dispatch, and
