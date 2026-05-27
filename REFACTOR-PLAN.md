@@ -378,7 +378,11 @@ Status:
   primitive-receiver bound-method fast paths, `builtin_bound_iter.rs` owns
   iterator/range bound methods, and `builtin_bound_generators.rs` now owns
   generator / coroutine / async-generator bound methods and AsyncGenAwaitable
-  driving. `builtin_collections.rs` now owns `list` / `tuple` / `set` /
+  driving. `builtin_bound_join.rs`, `builtin_bound_class.rs`,
+  `builtin_bound_delegate.rs`, `builtin_bound_list.rs`, and
+  `builtin_bound_format.rs` now own join, class/property, delegated
+  namedtuple/deque/hashlib, list, and format bound-method helpers.
+  `builtin_collections.rs` now owns `list` / `tuple` / `set` /
   `frozenset` / `dict` collection constructor builtins. `builtin_predicates.rs`
   now owns `any` / `all` / `isinstance` / `issubclass`.
   `builtin_computation.rs` now owns `sum` / `sorted` / `min` / `max`.

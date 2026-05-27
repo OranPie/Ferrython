@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:09:01+08:00
+Last updated: 2026-05-28T02:18:13+08:00
 
 ## 代码质量重构进度
 
@@ -1026,6 +1026,8 @@ Last updated: 2026-05-28T02:09:01+08:00
   - 第二十七批拆出 `class_dataclass.rs`、`class_namedtuple_init.rs` 和 `class_post_init.rs`：dataclass auto-init、namedtuple field population、user `__init__` / constructor fallback attrs 从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 422 行降到约 114 行；新文件分别约 171、93 和 104 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class instantiation smoke。
   - commit：`ec45846 refactor: split class instantiation helpers`。
+  - 第二十八批拆出 `builtin_bound_join.rs`、`builtin_bound_class.rs`、`builtin_bound_delegate.rs`、`builtin_bound_list.rs` 和 `builtin_bound_format.rs`：join、class/property、namedtuple/deque/hashlib delegate、list extend/sort 与 format/format_map bound-method helper 从 `builtin_bound_call.rs` 移出，`builtin_bound_call.rs` 从约 382 行降到约 44 行；新文件分别约 58、81、135、103 和 37 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin bound smoke。
 
 ## 修复原则
 
