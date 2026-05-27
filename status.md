@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T03:27:49+08:00
+Last updated: 2026-05-28T03:35:33+08:00
 
 ## 代码质量重构进度
 
@@ -1053,6 +1053,8 @@ Last updated: 2026-05-28T03:27:49+08:00
   - 第三十六批拆出 `builtin_sum_sequence.rs`、`builtin_sum_range.rs` 和 `builtin_sum_generator.rs`：`sum()` 的 list/tuple/collected iterator int fast path、range/range-iterator 闭式求和、generator resume fast path 从 `builtin_sum.rs` 移出，`builtin_sum.rs` 从约 221 行降到约 47 行；新文件分别约 40、58 和 49 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 sum split smoke，覆盖 list/tuple、float fallback、range、range iterator、普通 iterator、generator 和 list concatenation fallback。
   - commit：`104f26a refactor: split sum builtin helpers`。
+  - 第三十七批拆出 `builtin_iterables_map_filter.rs`、`builtin_iterables_iter_next.rs`、`builtin_iterables_reversed.rs` 和 `builtin_iterables_enumerate_zip.rs`：map/filter、iter/next、reversed、enumerate/zip helper 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 207 行降到约 50 行；新文件分别约 50、83、37 和 48 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 iterable split smoke，覆盖 map/filter、多源 map、iter/next、generator next default、old sequence protocol、reversed dunder、enumerate 和 zip strict。
 
 ## 修复原则
 

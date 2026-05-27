@@ -370,8 +370,11 @@ Status:
   `function_call.rs` owns positional Python function
   calls, `function_kw_call.rs` owns Python function keyword binding, and
   `function_fast.rs` owns the one-arg borrowed-frame fast path.
-  `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
-  builtins, `builtin_computation.rs` owns computation builtin routing,
+  `builtin_iterables.rs` now owns iterable builtin routing, while
+  `builtin_iterables_map_filter.rs`, `builtin_iterables_iter_next.rs`,
+  `builtin_iterables_reversed.rs`, and `builtin_iterables_enumerate_zip.rs`
+  own map/filter, iter/next, reversed, and enumerate/zip helpers.
+  `builtin_computation.rs` owns computation builtin routing,
   `builtin_sum.rs` owns `sum()` routing, while `builtin_sum_sequence.rs`,
   `builtin_sum_range.rs`, and `builtin_sum_generator.rs` own sequence,
   range/range-iterator, and generator fast paths. `builtin_computation_order.rs`
