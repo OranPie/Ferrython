@@ -134,10 +134,11 @@ Last updated: 2026-05-27
   `email_modules/`; the root `email_modules.rs` keeps shared Message helpers,
   the top-level `email` package factory, and message parsing entry points. The
   root file has dropped out of the current longest-file list.
-- Phase 2 XML module mechanical splits have started. The lower-coupling
+- Phase 2 XML module mechanical splits have advanced. The lower-coupling
   package, DOM/minidom, SAX, and expat helpers now live under `xml_modules/`;
-  the root `xml_modules.rs` still owns the ElementTree parser/object
-  implementation plus the `xml.etree.ElementTree` factory.
+  the ElementTree XML text parser core now lives in `xml_modules/parser.rs`.
+  The root `xml_modules.rs` keeps ElementTree PyObject binding methods plus
+  the `xml.etree.ElementTree` factory.
 - Phase 2 database module internal splits are complete for sqlite3. The root
   `db_modules.rs` is now a sqlite3 module assembly shell, while storage,
   parser helpers, SQL execution, row objects, cursor objects, and connection

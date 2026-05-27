@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:59:48+08:00
+Last updated: 2026-05-27T10:06:04+08:00
 
 ## 代码质量重构进度
 
@@ -326,6 +326,11 @@ Last updated: 2026-05-27T09:59:48+08:00
 - 已开始 `xml_modules` 机械拆分：
   - 新增 `xml_modules/packages.rs`、`dom.rs`、`sax.rs` 和 `expat.rs`，抽离 `xml`/`xml.etree` package shell、`xml.dom`/`minidom`、`xml.sax` helper modules 和 `xml.parsers.expat`。
   - `xml_modules.rs` 从约 2064 行降到约 1310 行；根文件仍保留 ElementTree parser/object helper 和 `xml.etree.ElementTree` factory。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `xml_modules` ElementTree 内部分层：
+  - 新增 `xml_modules/parser.rs`，拆出 `XmlElement`、`XmlParser`、XML entity escape/unescape 和文档/节点解析核心。
+  - `xml_modules.rs` 从约 1310 行降到约 1032 行；根文件聚焦 ElementTree PyObject binding、对象方法闭包和 module factory。
+  - `CODE_HEALTH_BASELINE.md` 已刷新，`xml_modules.rs` 退出当前 item-density 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `db_modules` sqlite3 内部拆分：
   - 新增 `db_modules/storage.rs`、`parser.rs`、`sql.rs`、`row.rs`、`cursor.rs` 和 `connection.rs`。
