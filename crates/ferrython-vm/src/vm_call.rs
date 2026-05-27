@@ -23,6 +23,7 @@ mod inline_simple;
 mod iterator_state;
 mod json_hooks;
 mod locals;
+mod native_kw;
 mod object_call;
 mod object_kw;
 mod print_format;
