@@ -115,6 +115,9 @@ Last updated: 2026-05-27
   `configparser` factory. The Rust `argparse` compatibility module is split
   internally into Namespace helpers, ArgumentParser setup/bridge methods, and
   parse core files.
+- Phase 2 serialization module internals have started. `json_module.rs` now
+  keeps module assembly plus dump/load hooks, while JSON value parsing lives in
+  `serial_modules/json_module/parser.rs`.
 - Phase 2 type module mechanical splits have advanced. `typing`, `enum`,
   `types`, and `abc` now live under `type_modules/`; the root
   `type_modules.rs` keeps shared imports plus the remaining `collections.abc`
