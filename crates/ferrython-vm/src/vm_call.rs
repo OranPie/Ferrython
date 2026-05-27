@@ -44,6 +44,8 @@ mod locals;
 mod native_closure_kw;
 mod native_fallback_kw;
 mod native_kw;
+mod native_kw_collections;
+mod native_kw_regex_iter;
 mod object_call;
 mod object_kw;
 mod object_native_call;

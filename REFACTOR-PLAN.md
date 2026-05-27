@@ -360,7 +360,9 @@ Status:
   `builtin_numeric.rs` owns numeric conversion / dunder-aware truthiness
   builtins, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /
   `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
-  `native_kw.rs` owns native-function keyword special cases,
+  `native_kw.rs` owns json/type/property native-function keyword special cases,
+  `native_kw_collections.rs` owns collections/partial native kwargs,
+  `native_kw_regex_iter.rs` owns regex and itertools native kwargs,
   `native_closure_kw.rs` owns NativeClosure keyword marker dispatch, and
   `native_fallback_kw.rs` owns partial/exception/instance/final fallback keyword
   calls. `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
