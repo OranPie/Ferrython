@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:25:24+08:00
+Last updated: 2026-05-27T08:30:01+08:00
 
 ## 代码质量重构进度
 
@@ -161,6 +161,12 @@ Last updated: 2026-05-27T08:25:24+08:00
   - 新增 `sys_modules/os/terminal.rs`，拆出 `terminal_size` class 和 instance 构造。
   - 新增 `sys_modules/os/stat.rs`，拆出 `stat_result` 构造、`os.stat` 和 `os.scandir` helper。
   - `sys_modules/os.rs` 从约 2024 行降到约 1761 行；`CODE_HEALTH_BASELINE.md` 已刷新，当前仍列为可继续拆分热点。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `sys_modules/os` 低耦合 helper 批量拆分：
+  - 新增 `sys_modules/os/environ.rs`，拆出 `_Environ` object 构造和 env mapping dunder/method 闭包。
+  - 新增 `sys_modules/os/pathlike.rs`，拆出 `PathLike` class factory 和 `os.fspath` helper。
+  - 新增 `sys_modules/os/walk.rs`，拆出 `os.walk` 和递归目录遍历 helper。
+  - `sys_modules/os.rs` 从约 1761 行降到约 1491 行，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
   - `ff25b3c refactor: split network helper modules`
