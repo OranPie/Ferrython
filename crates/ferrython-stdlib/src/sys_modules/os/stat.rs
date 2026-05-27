@@ -79,6 +79,24 @@ pub(super) fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     build_stat_result_from_meta(&meta)
 }
 
+pub(super) fn os_lstat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("os.lstat requires path"));
+    }
+    let path = args[0].py_to_string();
+    let meta = std::fs::symlink_metadata(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    crate::fs_modules::build_stat_result(meta)
+}
+
+pub(super) fn make_stat_result_class(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::class(
+        CompactString::from("stat_result"),
+        vec![],
+        IndexMap::new(),
+    ))
+}
+
 pub(super) fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = if args.is_empty() {
         ".".to_string()

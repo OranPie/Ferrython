@@ -26,6 +26,71 @@ pub(super) fn os_getpid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::int(std::process::id() as i64))
 }
 
+pub(super) fn os_getppid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        Ok(PyObject::int(unsafe { libc::getppid() } as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::os_error(
+            "getppid() is not supported on this platform",
+        ))
+    }
+}
+
+pub(super) fn os_getuid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        Ok(PyObject::int(unsafe { libc::getuid() } as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::os_error(
+            "getuid() is not supported on this platform",
+        ))
+    }
+}
+
+pub(super) fn os_getgid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        Ok(PyObject::int(unsafe { libc::getgid() } as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::os_error(
+            "getgid() is not supported on this platform",
+        ))
+    }
+}
+
+pub(super) fn os_geteuid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        Ok(PyObject::int(unsafe { libc::geteuid() } as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::os_error(
+            "geteuid() is not supported on this platform",
+        ))
+    }
+}
+
+pub(super) fn os_getegid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        Ok(PyObject::int(unsafe { libc::getegid() } as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::os_error(
+            "getegid() is not supported on this platform",
+        ))
+    }
+}
+
 pub(super) fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -79,4 +144,93 @@ pub(super) fn os_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         );
     }
     Ok(inst)
+}
+
+pub(super) fn os_kill(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("os.kill requires pid and signal"));
+    }
+    let pid = args[0]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("pid must be int"))?;
+    let sig = args[1]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("signal must be int"))?;
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::kill(pid as i32, sig as i32) };
+        if ret != 0 {
+            return Err(PyException::os_error(format!("kill failed: errno {}", ret)));
+        }
+    }
+    Ok(PyObject::none())
+}
+
+pub(super) fn os_waitpid(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "os.waitpid requires pid and options",
+        ));
+    }
+    let pid = args[0]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("pid must be int"))? as i32;
+    let options = args[1]
+        .as_int()
+        .ok_or_else(|| PyException::type_error("options must be int"))? as i32;
+    #[cfg(unix)]
+    {
+        let mut status: i32 = 0;
+        let ret = unsafe { libc::waitpid(pid, &mut status, options) };
+        if ret < 0 {
+            return Err(PyException::os_error("waitpid failed".to_string()));
+        }
+        Ok(PyObject::tuple(vec![
+            PyObject::int(ret as i64),
+            PyObject::int(status as i64),
+        ]))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, options);
+        Err(PyException::not_implemented_error(
+            "os.waitpid not available",
+        ))
+    }
+}
+
+pub(super) fn os_wifexited(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WIFEXITED", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::bool_val(libc::WIFEXITED(status)))
+}
+
+pub(super) fn os_wexitstatus(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WEXITSTATUS", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::int(libc::WEXITSTATUS(status) as i64))
+}
+
+pub(super) fn os_wifsignaled(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WIFSIGNALED", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::bool_val(libc::WIFSIGNALED(status)))
+}
+
+pub(super) fn os_wtermsig(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WTERMSIG", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::int(libc::WTERMSIG(status) as i64))
+}
+
+pub(super) fn os_wifstopped(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WIFSTOPPED", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::bool_val(libc::WIFSTOPPED(status)))
+}
+
+pub(super) fn os_wstopsig(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.WSTOPSIG", args, 1)?;
+    let status = args[0].as_int().unwrap_or(0) as i32;
+    Ok(PyObject::int(libc::WSTOPSIG(status) as i64))
 }
