@@ -359,7 +359,11 @@ Status:
   builtins,
   `builtin_numeric.rs` owns numeric conversion / dunder-aware truthiness
   builtins, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /
-  `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
+  `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call routing,
+  `builtin_kw_scope.rs` owns `globals` / `locals` / `print` keyword-aware helpers,
+  `builtin_kw_collections.rs` owns `sorted` / `dict` / `enumerate` keyword helpers,
+  `builtin_kw_primitives.rs` owns primitive constructor keyword helpers,
+  `builtin_kw_fallback.rs` owns `type` and generic trailing-dict keyword fallback,
   `native_kw.rs` owns json/type/property native-function keyword special cases,
   `native_kw_collections.rs` owns collections/partial native kwargs,
   `native_kw_regex_iter.rs` owns regex and itertools native kwargs,
