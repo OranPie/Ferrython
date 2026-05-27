@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T19:01:54+08:00
+Last updated: 2026-05-27T19:42:42+08:00
 
 ## 代码质量重构进度
 
@@ -949,6 +949,13 @@ Last updated: 2026-05-27T19:01:54+08:00
   - 修复：`weakref.finalize` 变为可子类化 class，支持 kwargs/deprecated keyword form，referent 死亡自动触发，多个 finalizer 按 LIFO 顺序执行，并在触发后释放 callback/finalizer 引用。
 - `test_weakref.FinalizeTestCase.test_atexit`
   - 修复：子进程可导入 vendored `test.test_weakref`，CLI 退出时执行 atexit registry，`weakref.finalize` 的 `atexit` 属性控制退出期回调并按 LIFO 顺序运行。
+
+
+- 已开始 Phase4/Phase5 VM 拆分：
+  - `vm.rs` 顶部 dispatch 宏移入 `vm_dispatch/macros.rs`，通过提前声明 `vm_dispatch` 保持宏作用域和原 call site 不变。
+  - `vm_call.rs` 首批低风险 helper 移入 `vm_call/` 子模块：`frameless.rs`、`iterator_state.rs`、`exception_group.rs`、`exception_build.rs`、`class_inline.rs`、`str_fast.rs`、`sort_helpers.rs`、`json_hooks.rs`。
+  - `vm.rs` 从健康基线 10989 行降到 10806 行；`vm_call.rs` 从 7620 行降到 6860 行；`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare smoke。
 
 ## 修复原则
 

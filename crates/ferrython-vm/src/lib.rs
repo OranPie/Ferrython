@@ -3,6 +3,8 @@
 pub mod builtins;
 pub mod frame;
 pub(crate) mod opcodes;
+#[macro_use]
+mod vm_dispatch;
 pub mod vm;
 mod vm_call;
 mod vm_class;

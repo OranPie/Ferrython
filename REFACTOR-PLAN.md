@@ -291,15 +291,18 @@ specialized helpers:
 
 Status:
 
-- Ready to start after Phase 3 registry file splitting. `vm.rs` still owns the
-  hot loop, dispatch macros, superinstructions, exception unwind, tracing, and
-  fallback `execute_one` router.
-- First safe commit should extract dispatch macro/helper boundaries without
-  changing opcode behavior. Then move hot but coherent opcode groups one at a
-  time.
+- Started. Dispatch macros now live under `crates/ferrython-vm/src/vm_dispatch/`
+  and are loaded before `vm.rs`, preserving the direct opcode loop and existing
+  macro call sites. `vm.rs` dropped from the previous health-baseline 10989 lines
+  to 10806 lines.
+- Next Phase 4 commits should move coherent opcode groups one at a time, starting
+  with iteration/call/attr/compare helpers only after the macro boundary remains
+  stable.
 - Validation must build the CLI before running interpreter smoke tests:
   `cargo build -p ferrython-cli --bin ferrython`, then run focused smoke through
-  the freshly built `target/debug/ferrython`.
+  the freshly built `target/debug/ferrython`. Latest validation for the macro
+  boundary used `cargo check -p ferrython-vm`, debug CLI build, and two focused
+  dispatch/call smoke snippets.
 
 - `dispatch/stack.rs`
 - `dispatch/iter.rs`
@@ -329,11 +332,14 @@ Split `vm_call.rs` into modules with clearer boundaries:
 
 Status:
 
-- Ready after or in parallel with Phase 4 boundary work. `vm_call.rs` is still
-  the main concentration of call semantics, descriptor handling, class
-  instantiation, native call shims, `super()`, and frameless shortcuts.
-- Start mechanically: move existing helper groups into child files while keeping
-  public VM methods and call behavior stable. Introduce `PreparedCall`/
+- Started in parallel with Phase 4. Low-risk helper groups now live under
+  `crates/ferrython-vm/src/vm_call/`: frameless recursion guard, iterator
+  `__setstate__`, ExceptionGroup method installation, builtin exception
+  instance construction, trivial `__init__` analysis, fast exact `str()`
+  conversion, sort/min/max helpers, and JSON hook/default helpers. `vm_call.rs`
+  dropped from the previous health-baseline 7620 lines to 6860 lines.
+- Continue mechanically: move existing helper groups into child files while
+  keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to
   justify it.
 
