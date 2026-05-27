@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:40:16+08:00
+Last updated: 2026-05-27T08:44:42+08:00
 
 ## 代码质量重构进度
 
@@ -194,6 +194,11 @@ Last updated: 2026-05-27T08:40:16+08:00
   - 新增 `http_module/urllib_parse.rs`、`urllib_request.rs`、`http_client.rs` 和 `http_server.rs`。
   - `http_module.rs` 从约 3388 行进一步降到约 330 行，只保留 shared URL parsing/encoding helper、`HTTPStatus` 构造和根模块装配；network bucket 的顶层机械拆分可视为完成。
   - focused 验证：每次拆分后均执行 `cargo fmt --all` 和 `cargo check -p ferrython-stdlib`。
+- 已继续 `network_modules/socket_module` 内部分层：
+  - 新增 `socket_module/object.rs`，拆出 `SocketInner`、地址解析/lock helper、socket constructor 和 socket object 方法闭包。
+  - 新增 `socket_module/functions.rs`，拆出 gethostname/getfqdn/gethostbyname/getaddrinfo/create_connection 等 module-level helper。
+  - `socket_module.rs` 从约 1695 行降到约 306 行，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `math_modules` 第一轮模块批量拆分：
   - 新增 `math_modules/statistics.rs`、`numbers.rs`、`decimal.rs`、`random.rs`、`heapq.rs`、`bisect.rs`、`fractions.rs` 和 `cmath.rs`。
   - `math_modules.rs` 保留真正的 `math` module factory、数值转换 helper 和 libm bridge。

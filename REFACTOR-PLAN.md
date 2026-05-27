@@ -56,7 +56,10 @@ Last updated: 2026-05-27
   `urllib.request`, `http.client`, and `http.server` have now also been split
   into focused files under `http_module/`. The remaining root file is a small
   shell that keeps shared URL parsing/encoding helpers plus `http` /
-  `HTTPStatus` assembly.
+  `HTTPStatus` assembly. The `socket` module has also started internal
+  layering with socket object state/method closures and module-level DNS /
+  connection helpers split under `network_modules/socket_module/`; the root
+  socket file has dropped out of the current longest-file list.
 - Phase 2 math module mechanical splits are complete at the top-level bucket.
   `statistics`, `numbers`, `decimal`, `random`, `heapq`, `bisect`,
   `fractions`, and `cmath` now live under `math_modules/`; the root file keeps
