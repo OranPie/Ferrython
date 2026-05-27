@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:36:52+08:00
+Last updated: 2026-05-28T02:39:09+08:00
 
 ## 代码质量重构进度
 
@@ -1034,6 +1034,7 @@ Last updated: 2026-05-28T02:36:52+08:00
   - commit：`f4217cb refactor: split function call paths`。
   - 第三十批拆出 `builtin_numeric_complex.rs` 和 `builtin_numeric_scalar.rs`：`complex()` instance/dunder coercion 与 `int/float/round/bool` scalar dunder handling 从 `builtin_numeric.rs` 移出，`builtin_numeric.rs` 从约 348 行降到约 32 行；新文件分别约 170 和 134 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 numeric dunder smoke。
+  - commit：`ee84af5 refactor: split numeric dunder helpers`。
 
 ## 修复原则
 
