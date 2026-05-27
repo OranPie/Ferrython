@@ -1049,6 +1049,7 @@ Last updated: 2026-05-28T03:18:54+08:00
   - commit：`99f1ea0 refactor: split ast print call helpers`。
   - 第三十五批拆出 `native_kw_special.rs`、`native_kw_json.rs` 和 `native_kw_generic.rs`：AST/property/type special native kwargs、JSON hook/default VM-aware kwargs、native trailing-dict fallback 从 `native_kw.rs` 移出，`native_kw.rs` 从约 238 行降到约 49 行；新文件分别约 64、136 和 37 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 native kw split smoke，覆盖 AST/property/type、json loads/dumps hooks、OrderedDict/deque、re.sub、itertools.groupby/accumulate kwargs。
+  - commit：`18ff0f7 refactor: split native keyword dispatch helpers`。
 
 ## 修复原则
 
