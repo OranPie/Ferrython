@@ -396,7 +396,11 @@ Status:
   `native_kw_regex_iter.rs` owns regex and itertools native kwargs,
   `native_closure_kw.rs` owns NativeClosure keyword marker dispatch, and
   `native_fallback_kw.rs` owns partial/exception/instance/final fallback keyword
-  calls. `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
+  calls. Property support now separates descriptor receiver checks,
+  trailing-kwargs splitting, property `__init__` attribute population, and
+  property clone/doc helpers across `property_receiver.rs`,
+  `property_kwargs.rs`, `property_init.rs`, and `property_helpers.rs`.
+  `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
   `class_enum.rs` and `class_storage.rs` now own enum construction/lookup and
   dict-subclass storage population. `class_dataclass.rs`, `class_namedtuple_init.rs`,
   and `class_post_init.rs` now own dataclass construction, namedtuple field

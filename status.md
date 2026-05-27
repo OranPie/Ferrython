@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T03:35:33+08:00
+Last updated: 2026-05-28T03:42:09+08:00
 
 ## 代码质量重构进度
 
@@ -1056,6 +1056,8 @@ Last updated: 2026-05-28T03:35:33+08:00
   - 第三十七批拆出 `builtin_iterables_map_filter.rs`、`builtin_iterables_iter_next.rs`、`builtin_iterables_reversed.rs` 和 `builtin_iterables_enumerate_zip.rs`：map/filter、iter/next、reversed、enumerate/zip helper 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 207 行降到约 50 行；新文件分别约 50、83、37 和 48 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 iterable split smoke，覆盖 map/filter、多源 map、iter/next、generator next default、old sequence protocol、reversed dunder、enumerate 和 zip strict。
   - commit：`ba62cf8 refactor: split iterable builtin helpers`。
+  - 第三十八批拆出 `property_receiver.rs`、`property_kwargs.rs` 和 `property_init.rs`：builtin descriptor receiver 校验、trailing kwargs dict 拆包、property `__init__` attrs/doc 初始化从 `property_helpers.rs` 移出，`property_helpers.rs` 从约 205 行降到约 84 行；新文件分别约 42、28 和 70 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 property split smoke，覆盖 property getter/setter/deleter、property getter clone/doc、bytes subclass descriptor receiver 和 bound method kwargs 拆包。
 
 ## 修复原则
 
