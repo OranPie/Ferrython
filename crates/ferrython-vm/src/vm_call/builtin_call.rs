@@ -26,17 +26,18 @@ impl VirtualMachine {
         }
         if matches!(
             name.as_str(),
+            "list" | "tuple" | "set" | "frozenset" | "dict"
+        ) {
+            return self.call_collection_builtin(name.as_str(), args);
+        }
+        if matches!(
+            name.as_str(),
             "map"
                 | "filter"
                 | "iter"
                 | "next"
-                | "list"
-                | "tuple"
                 | "sum"
                 | "sorted"
-                | "set"
-                | "frozenset"
-                | "dict"
                 | "any"
                 | "all"
                 | "isinstance"

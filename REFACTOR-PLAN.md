@@ -344,7 +344,8 @@ Status:
   builtin function/type dispatch, builtin bound-method dispatch, iterable /
   container predicate builtins, numeric/conversion dunder-aware builtins, enum
   class instantiation, dict-subclass storage population, and generator-style
-  builtin bound-method dispatch.
+  builtin bound-method dispatch. Collection constructor builtins have also
+  moved out of the iterable dispatch file.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
@@ -356,7 +357,8 @@ Status:
   `class_enum.rs` and `class_storage.rs` now own enum construction/lookup and
   dict-subclass storage population. `builtin_bound_generators.rs` now owns
   generator / coroutine / async-generator bound methods and AsyncGenAwaitable
-  driving.
+  driving. `builtin_collections.rs` now owns `list` / `tuple` / `set` /
+  `frozenset` / `dict` collection constructor builtins.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
