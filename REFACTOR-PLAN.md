@@ -340,7 +340,8 @@ Status:
   bytes/bytearray construction, AST node construction helpers, inline simple
   function helpers, print/format helpers, closure frame installation, locals
   collection, class instantiation, `super()` construction, Python function
-  argument binding/frame setup, keyword-call dispatch, object-call dispatch,
+  positional binding/frame setup, keyword-call binding, one-arg fast fallback,
+  keyword-call dispatch, object-call dispatch,
   builtin function/type dispatch, builtin bound-method dispatch, core iterable
   builtins, numeric/conversion dunder-aware builtins, enum
   class instantiation, builtin-subclass value materialization,
@@ -355,7 +356,10 @@ Status:
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 193
   lines, with VM-aware native function/closure calls moved to
-  `object_native_call.rs`. `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
+  `object_native_call.rs`. `function_call.rs` owns positional Python function
+  calls, `function_kw_call.rs` owns Python function keyword binding, and
+  `function_fast.rs` owns the one-arg borrowed-frame fast path.
+  `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
   builtins,
   `builtin_numeric.rs` owns numeric conversion / dunder-aware truthiness
   builtins, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /

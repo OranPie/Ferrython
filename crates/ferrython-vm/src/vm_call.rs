@@ -49,6 +49,8 @@ mod exception_group;
 mod frame_run;
 mod frameless;
 mod function_call;
+mod function_fast;
+mod function_kw_call;
 mod inline_simple;
 mod iterator_state;
 mod json_hooks;
