@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T07:22:20+08:00
+Last updated: 2026-05-28T07:29:10+08:00
 
 ## 代码质量重构进度
 
@@ -1106,6 +1106,9 @@ Last updated: 2026-05-28T07:22:20+08:00
   - 第四十九批继续 core object attribute lookup 分层：新增 `object/methods_attr/exception_attrs.rs`，拆出 `ExceptionType` / `ExceptionInstance` 属性解析和 builtin exception base method resolver；`methods_attr.rs` 从约 3555 行降到约 2912 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 exception type attrs/MRO、ImportError instance attrs、exception note/with_traceback、super exception base method 和普通 class/function attribute smoke。
   - commit：`0876a0e refactor: split exception attribute handlers`。
+  - 第五十批继续 core object attribute lookup 分层：新增 `object/methods_attr/builtin_type.rs`，拆出 builtin type attribute dispatch、type/object mappingproxy descriptors、dict.fromkeys、str.maketrans、bytes/bytearray.fromhex、object dunder methods 和 builtin type unbound method table；`methods_attr.rs` 从约 2912 行降到约 2338 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin type attrs/MRO、type `__dict__` descriptors、dict.fromkeys、str.maketrans、bytes/bytearray.fromhex、unbound str/list/int methods 和 object setattr/getattribute/delattr smoke。
+  - commit：`52b8d3b refactor: split builtin type attributes`。
 
 ## 修复原则
 
