@@ -1,6 +1,6 @@
 //! Comparison operations: ==, !=, <, <=, >, >=, is, is not, in, not in
 
-use crate::vm::exception_kind_matches;
+use crate::vm_truth::exception_kind_matches;
 use crate::VirtualMachine;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};

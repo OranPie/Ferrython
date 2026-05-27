@@ -1,7 +1,6 @@
 //! Truthiness, dunder dispatch, and exception matching helpers.
 
 use crate::builtins;
-use crate::vm::exception_kind_matches;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObjectMethods, PyObjectPayload, PyObjectRef};
@@ -182,5 +181,121 @@ impl VirtualMachine {
             _ => {}
         }
         Ok(None)
+    }
+}
+
+/// Check if `actual` exception kind matches `expected` (including inheritance).
+pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &ExceptionKind) -> bool {
+    if std::mem::discriminant(actual) == std::mem::discriminant(expected) {
+        return true;
+    }
+    // Walk the exception hierarchy
+    match expected {
+        ExceptionKind::BaseException => true, // catches everything
+        ExceptionKind::Exception => !matches!(
+            actual,
+            ExceptionKind::SystemExit
+                | ExceptionKind::KeyboardInterrupt
+                | ExceptionKind::GeneratorExit
+                | ExceptionKind::BaseExceptionGroup
+        ),
+        ExceptionKind::ArithmeticError => matches!(
+            actual,
+            ExceptionKind::ArithmeticError
+                | ExceptionKind::FloatingPointError
+                | ExceptionKind::OverflowError
+                | ExceptionKind::ZeroDivisionError
+        ),
+        ExceptionKind::LookupError => matches!(
+            actual,
+            ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
+        ),
+        ExceptionKind::OSError => matches!(
+            actual,
+            ExceptionKind::OSError
+                | ExceptionKind::BlockingIOError
+                | ExceptionKind::BrokenPipeError
+                | ExceptionKind::FileExistsError
+                | ExceptionKind::FileNotFoundError
+                | ExceptionKind::PermissionError
+                | ExceptionKind::TimeoutError
+                | ExceptionKind::IsADirectoryError
+                | ExceptionKind::NotADirectoryError
+                | ExceptionKind::ProcessLookupError
+                | ExceptionKind::ConnectionError
+                | ExceptionKind::ConnectionResetError
+                | ExceptionKind::ConnectionAbortedError
+                | ExceptionKind::ConnectionRefusedError
+                | ExceptionKind::InterruptedError
+                | ExceptionKind::ChildProcessError
+        ),
+        ExceptionKind::ConnectionError => matches!(
+            actual,
+            ExceptionKind::ConnectionError
+                | ExceptionKind::ConnectionResetError
+                | ExceptionKind::ConnectionAbortedError
+                | ExceptionKind::ConnectionRefusedError
+        ),
+        ExceptionKind::UnicodeError => matches!(
+            actual,
+            ExceptionKind::UnicodeError
+                | ExceptionKind::UnicodeDecodeError
+                | ExceptionKind::UnicodeEncodeError
+                | ExceptionKind::UnicodeTranslateError
+        ),
+        ExceptionKind::ValueError => matches!(
+            actual,
+            ExceptionKind::ValueError
+                | ExceptionKind::UnicodeError
+                | ExceptionKind::UnicodeDecodeError
+                | ExceptionKind::UnicodeEncodeError
+                | ExceptionKind::UnicodeTranslateError
+                | ExceptionKind::JSONDecodeError
+        ),
+        ExceptionKind::Warning => matches!(
+            actual,
+            ExceptionKind::Warning
+                | ExceptionKind::DeprecationWarning
+                | ExceptionKind::RuntimeWarning
+                | ExceptionKind::UserWarning
+                | ExceptionKind::SyntaxWarning
+                | ExceptionKind::FutureWarning
+                | ExceptionKind::ImportWarning
+                | ExceptionKind::UnicodeWarning
+                | ExceptionKind::EncodingWarning
+                | ExceptionKind::BytesWarning
+                | ExceptionKind::ResourceWarning
+                | ExceptionKind::PendingDeprecationWarning
+        ),
+        ExceptionKind::ImportError => matches!(
+            actual,
+            ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
+        ),
+        ExceptionKind::RuntimeError => matches!(
+            actual,
+            ExceptionKind::RuntimeError
+                | ExceptionKind::NotImplementedError
+                | ExceptionKind::RecursionError
+                | ExceptionKind::ReError
+        ),
+        ExceptionKind::NameError => matches!(
+            actual,
+            ExceptionKind::NameError | ExceptionKind::UnboundLocalError
+        ),
+        ExceptionKind::SyntaxError => matches!(
+            actual,
+            ExceptionKind::SyntaxError | ExceptionKind::IndentationError | ExceptionKind::TabError
+        ),
+        ExceptionKind::SubprocessError => matches!(
+            actual,
+            ExceptionKind::SubprocessError
+                | ExceptionKind::CalledProcessError
+                | ExceptionKind::TimeoutExpired
+        ),
+        ExceptionKind::BaseExceptionGroup => matches!(
+            actual,
+            ExceptionKind::BaseExceptionGroup | ExceptionKind::ExceptionGroup
+        ),
+        _ => false,
     }
 }
