@@ -963,6 +963,8 @@ Last updated: 2026-05-27T20:34:43+08:00
   - 第六批拆出 `builtin_iterables.rs`：`map/filter/iter/next/list/tuple/sum/sorted/set/frozenset/dict/any/all/isinstance/issubclass/min/max/reversed/enumerate/zip` 从 `builtin_call.rs` 移出，`builtin_call.rs` 降到约 967 行，VM call 子文件全部退出当前 `CODE_HEALTH_BASELINE.md` top 25 longest Rust files。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 iterable/container/predicate builtin smoke。
   - commit：`200abdf refactor: split iterable builtin calls`。
+  - 第七批拆出 `builtin_kw.rs`：`BuiltinFunction/BuiltinType` keyword-call 分支从 `object_kw.rs` 移出，`object_kw.rs` 从约 1186 行降到约 764 行；`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 builtin keyword iterable/meta/conversion smoke；保留既有 `str(object=...)` / `bytes(..., encoding=...)` keyword 兼容差异，不混入本次纯拆分修复。
 
 ## 修复原则
 
