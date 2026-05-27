@@ -345,8 +345,8 @@ Status:
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
-  lines; the largest remaining call files are `builtin_call.rs` and
-  `object_kw.rs`.
+  lines. `builtin_iterables.rs` now owns iterable/container predicate builtins,
+  and VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to

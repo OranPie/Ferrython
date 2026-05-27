@@ -960,6 +960,8 @@ Last updated: 2026-05-27T20:34:43+08:00
   - 第五批继续拆出 `builtin_call.rs` 和 `builtin_bound_call.rs`：内置函数/类型调用分支、BuiltinBoundMethod 分支从 `object_call.rs` 移出，`object_call.rs` 从约 2891 行降到约 450 行，当前 call 子文件主要剩余 `builtin_call.rs` 约 1596 行、`object_kw.rs` 约 1186 行、`builtin_bound_call.rs` 约 701 行；`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare、property/bytes/print、json/minmax/format、class/call、super/locals、function/object/keyword dispatch smoke；第五批拆分补充覆盖 builtins、builtin bound methods、property/class/iterator smoke。
   - commit：`9c350db refactor: split vm builtin call dispatch`。
+  - 第六批拆出 `builtin_iterables.rs`：`map/filter/iter/next/list/tuple/sum/sorted/set/frozenset/dict/any/all/isinstance/issubclass/min/max/reversed/enumerate/zip` 从 `builtin_call.rs` 移出，`builtin_call.rs` 降到约 967 行，VM call 子文件全部退出当前 `CODE_HEALTH_BASELINE.md` top 25 longest Rust files。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 iterable/container/predicate builtin smoke。
 
 ## 修复原则
 

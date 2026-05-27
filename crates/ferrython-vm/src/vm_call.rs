@@ -9,6 +9,7 @@ use std::rc::Rc;
 mod ast_nodes;
 mod builtin_bound_call;
 mod builtin_call;
+mod builtin_iterables;
 mod bytes_constructor;
 mod class_inline;
 mod class_instantiate;
