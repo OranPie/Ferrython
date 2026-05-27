@@ -269,9 +269,10 @@ Status:
   factory calls and fallback behavior. The registry root has been split into
   `registry/{core,platform,protocols,aliases,extras}.rs`, leaving the top-level
   registry file as resolver ordering only. `core`, `platform`, and `protocols`
-  have also been split into fine-grained resolver files. Next, evaluate
-  splitting the remaining `extras`/`aliases` buckets or static `ModuleSpec`
-  slices once the boundary is stable.
+  have also been split into fine-grained resolver files. `aliases` and `extras`
+  have now been split into fine-grained resolver files as well. Treat Phase 3
+  mechanical registry splitting as substantially complete; defer static
+  `ModuleSpec` slices until profiling or future registry edits justify them.
 
 Initial target:
 
