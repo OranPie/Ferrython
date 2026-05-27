@@ -120,6 +120,9 @@ Last updated: 2026-05-27
 - Phase 2 serialization module internals have started. `json_module.rs` now
   keeps module assembly plus dump/load hooks, while JSON value parsing lives in
   `serial_modules/json_module/parser.rs`.
+- Phase 2 crypto module internals have started. `crypto_modules.rs` still owns
+  hashlib/HMAC shared digest logic, while `secrets` and `uuid` now live under
+  `crypto_modules/`.
 - Phase 2 type module mechanical splits have advanced. `typing`, `enum`,
   `types`, and `abc` now live under `type_modules/`; the root
   `type_modules.rs` keeps shared imports plus the remaining `collections.abc`
