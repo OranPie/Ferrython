@@ -9,6 +9,7 @@ pub mod vm;
 mod vm_call;
 mod vm_class;
 pub(crate) mod vm_dataclass_utils;
+mod vm_entry;
 mod vm_exception;
 pub(crate) mod vm_exec_compile;
 mod vm_execute_one;
