@@ -1061,6 +1061,7 @@ Last updated: 2026-05-28T03:49:04+08:00
   - commit：`27f1858 refactor: split property call helpers`。
   - 第三十九批拆出 `object_call_trace.rs`、`object_call_class.rs` 和 `object_call_instance.rs`：call_object current-frame trace/profile 包装、class/metaclass `__call__` 分支、partial/callable instance/lru_cache wrapper 从 `object_call.rs` 移出，`object_call.rs` 从约 193 行降到约 66 行；新文件分别约 33、30 和 118 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 object call split smoke，覆盖普通函数、普通 partial、bound method、metaclass call、callable instance、lru_cache hit/miss 和不可调用对象 TypeError。探测到 `partial(f, 2, b=4)` 仍有既有兼容差异，本次纯拆分未混入语义修复。
+  - commit：`0f395a7 refactor: split object call helpers`。
 
 ## 修复原则
 
