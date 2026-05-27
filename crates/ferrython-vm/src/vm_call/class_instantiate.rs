@@ -1,68 +1,16 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::CompareOp;
 use ferrython_core::object::{
     get_builtin_base_type_name, new_fx_hashkey_flatmap, new_fx_hashkey_map, PyObject,
     PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
-use indexmap::IndexMap;
 
 use crate::VirtualMachine;
 
 impl VirtualMachine {
     /// Unified class instantiation: __new__, dataclass/namedtuple auto-init, __init__, exception attrs.
-    pub(super) fn populate_dict_subclass_storage(
-        &mut self,
-        instance: &PyObjectRef,
-        pos_args: &[PyObjectRef],
-        kwargs: &[(CompactString, PyObjectRef)],
-    ) -> PyResult<()> {
-        let PyObjectPayload::Instance(inst) = &instance.payload else {
-            return Ok(());
-        };
-        let Some(ref ds) = inst.dict_storage else {
-            return Ok(());
-        };
-
-        let mut entries = Vec::new();
-        if !pos_args.is_empty() {
-            match &pos_args[0].payload {
-                PyObjectPayload::Dict(src) => {
-                    for (k, v) in src.read().iter() {
-                        entries.push((k.clone(), v.clone()));
-                    }
-                }
-                PyObjectPayload::Instance(src_inst) if src_inst.dict_storage.is_some() => {
-                    if let Some(src_ds) = src_inst.dict_storage.as_ref() {
-                        for (k, v) in src_ds.read().iter() {
-                            entries.push((k.clone(), v.clone()));
-                        }
-                    }
-                }
-                _ => {
-                    let items = self.collect_iterable(&pos_args[0])?;
-                    for item in &items {
-                        let pair = item.to_list()?;
-                        if pair.len() == 2 {
-                            entries.push((pair[0].to_hashable_key()?, pair[1].clone()));
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut storage = ds.write();
-        for (k, v) in entries {
-            storage.insert(k, v);
-        }
-        for (k, v) in kwargs {
-            storage.insert(HashableKey::str_key(k.clone()), v.clone());
-        }
-        Ok(())
-    }
-
     pub(crate) fn instantiate_class(
         &mut self,
         cls: &PyObjectRef,
@@ -85,110 +33,8 @@ impl VirtualMachine {
             return Ok(instance);
         }
         self.check_abstract_class_instantiation(cls)?;
-        // ── STANDARD PATH ──
-        // Enum lookup: Color(2) returns the member with that value
-        // Also handle Enum functional API: Enum("Name", "mem1 mem2") or Enum("Name", ["mem1", "mem2"])
-        if let PyObjectPayload::Class(cd) = &cls.payload {
-            let is_enum_base = cd.name.as_str() == "Enum"
-                || cd.name.as_str() == "Flag"
-                || cd.name.as_str() == "IntEnum"
-                || cd.name.as_str() == "IntFlag"
-                || cd.name.as_str() == "StrEnum";
-            // Functional API: Enum("Name", "member1 member2") or Enum("Name", [...])
-            if is_enum_base && pos_args.len() >= 2 {
-                if let PyObjectPayload::Str(ref name_str) = pos_args[0].payload {
-                    // Collect (name, value) pairs from different input formats
-                    let members: Vec<(String, PyObjectRef)> = match &pos_args[1].payload {
-                        PyObjectPayload::Str(s) => {
-                            // "member1 member2" or "member1,member2"
-                            s.replace(',', " ")
-                                .split_whitespace()
-                                .enumerate()
-                                .map(|(i, n)| (n.to_string(), PyObject::int((i + 1) as i64)))
-                                .collect()
-                        }
-                        PyObjectPayload::List(items) => items
-                            .read()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, item)| (item.py_to_string(), PyObject::int((i + 1) as i64)))
-                            .collect(),
-                        PyObjectPayload::Tuple(items) => items
-                            .iter()
-                            .enumerate()
-                            .map(|(i, item)| (item.py_to_string(), PyObject::int((i + 1) as i64)))
-                            .collect(),
-                        PyObjectPayload::Dict(map) => map
-                            .read()
-                            .iter()
-                            .map(|(k, v)| {
-                                let name = match k {
-                                    HashableKey::Str(s) => s.to_string(),
-                                    _ => format!("{:?}", k),
-                                };
-                                (name, v.clone())
-                            })
-                            .collect(),
-                        _ => vec![],
-                    };
-                    if !members.is_empty() {
-                        let mut ns = IndexMap::new();
-                        ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
-                        let new_cls =
-                            PyObject::class(name_str.to_compact_string(), vec![cls.clone()], ns);
-                        if let PyObjectPayload::Class(ref new_cd) = new_cls.payload {
-                            let mut new_ns = new_cd.namespace.write();
-                            for (member_name, member_value) in &members {
-                                let member = PyObject::instance_with_attrs(new_cls.clone(), {
-                                    let mut m = IndexMap::new();
-                                    m.insert(
-                                        CompactString::from("name"),
-                                        PyObject::str_val(CompactString::from(
-                                            member_name.as_str(),
-                                        )),
-                                    );
-                                    m.insert(CompactString::from("value"), member_value.clone());
-                                    m.insert(
-                                        CompactString::from("_name_"),
-                                        PyObject::str_val(CompactString::from(
-                                            member_name.as_str(),
-                                        )),
-                                    );
-                                    m.insert(CompactString::from("_value_"), member_value.clone());
-                                    m
-                                });
-                                new_ns.insert(CompactString::from(member_name.as_str()), member);
-                            }
-                        }
-                        return Ok(new_cls);
-                    }
-                }
-            }
-            if cd.namespace.read().contains_key("__enum__")
-                && pos_args.len() == 1
-                && kwargs.is_empty()
-            {
-                let target_val = &pos_args[0];
-                let ns = cd.namespace.read();
-                for (_, member) in ns.iter() {
-                    if let PyObjectPayload::Instance(inst) = &member.payload {
-                        if let Some(val) = inst.attrs.read().get("value") {
-                            if val
-                                .compare(target_val, CompareOp::Eq)
-                                .map(|r| r.is_truthy())
-                                .unwrap_or(false)
-                            {
-                                return Ok(member.clone());
-                            }
-                        }
-                    }
-                }
-                return Err(PyException::value_error(format!(
-                    "{} is not a valid {}",
-                    target_val.repr(),
-                    cd.name
-                )));
-            }
+        if let Some(instance) = self.try_instantiate_enum(cls, &pos_args, &kwargs)? {
+            return Ok(instance);
         }
         // __new__
         let instance = if cls.get_attr("__namedtuple__").is_some() {
