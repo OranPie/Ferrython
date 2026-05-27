@@ -357,8 +357,9 @@ Status:
   lines, with VM-aware native function/closure calls moved to
   `object_native_call.rs`. `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
   builtins,
-  `builtin_numeric.rs` owns `len` / numeric conversion / dunder-aware truthiness
-  builtins, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
+  `builtin_numeric.rs` owns numeric conversion / dunder-aware truthiness
+  builtins, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /
+  `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
   `native_kw.rs` owns native-function keyword special cases,
   `native_closure_kw.rs` owns NativeClosure keyword marker dispatch, and
   `native_fallback_kw.rs` owns partial/exception/instance/final fallback keyword

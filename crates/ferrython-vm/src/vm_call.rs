@@ -20,6 +20,7 @@ mod builtin_iterables;
 mod builtin_kw;
 mod builtin_namedtuple;
 mod builtin_numeric;
+mod builtin_numeric_protocol;
 mod builtin_predicates;
 mod builtin_scope;
 mod builtin_text;

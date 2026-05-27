@@ -2,7 +2,6 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
-use crate::builtins;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -12,123 +11,10 @@ impl VirtualMachine {
         name: &CompactString,
         args: Vec<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
+        if let Some(result) = self.call_numeric_protocol_builtin(func, name.as_str(), &args)? {
+            return Ok(result);
+        }
         match name.as_str() {
-            "len" => {
-                if args.len() == 1 {
-                    if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                        if inst.attrs.read().contains_key("__chainmap__") {
-                            if let Some(method) = args[0].get_attr("__len__") {
-                                let result = self.call_object(method, vec![])?;
-                                return Ok(result);
-                            }
-                        }
-                        // Dict subclass: use dict_storage length
-                        if let Some(ref ds) = inst.dict_storage {
-                            return Ok(PyObject::int(ds.read().len() as i64));
-                        }
-                        // Namedtuple: delegate to call_namedtuple_method
-                        if inst.class.get_attr("__namedtuple__").is_some() {
-                            return builtins::call_method(&args[0], "__len__", &[]);
-                        }
-                        // Check for custom __len__ (skip BuiltinBoundMethod from BuiltinType base)
-                        if let Some(method) = args[0].get_attr("__len__") {
-                            if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
-                                let ca = if matches!(
-                                    &method.payload,
-                                    PyObjectPayload::BoundMethod { .. }
-                                ) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                                return self.call_object(method, ca);
-                            }
-                        }
-                        // Builtin base type subclass (list, tuple, etc.)
-                        if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
-                            if let Ok(n) = bv.py_len() {
-                                return Ok(PyObject::int(n as i64));
-                            }
-                        }
-                    }
-                }
-            }
-            "abs" => {
-                if args.len() == 1 {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__abs__") {
-                            let call_args =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            return self.call_object(method, call_args);
-                        }
-                    }
-                }
-            }
-            "hash" => {
-                if args.len() == 1 {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__hash__") {
-                            let ca =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            return self.call_object(method, ca);
-                        }
-                    }
-                }
-            }
-            "bin" | "oct" | "hex" => {
-                if args.len() == 1 {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__index__") {
-                            let ca =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            let idx_val = self.call_object(method, ca)?;
-                            // Re-call bin/oct/hex with the resolved int
-                            return self.call_object(func.clone(), vec![idx_val]);
-                        }
-                    }
-                }
-            }
-            "format" => {
-                if !args.is_empty() {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__format__")
-                        {
-                            let spec = if args.len() > 1 {
-                                args[1].clone()
-                            } else {
-                                PyObject::str_val(CompactString::from(""))
-                            };
-                            let mut ca =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            ca.push(spec);
-                            return self.call_object(method, ca);
-                        }
-                        // No __format__: use __str__ for empty/no spec (CPython default __format__)
-                        let has_spec = args.len() > 1 && !args[1].py_to_string().is_empty();
-                        if !has_spec {
-                            let s = self.vm_str(&args[0])?;
-                            return Ok(PyObject::str_val(CompactString::from(s)));
-                        }
-                    }
-                    // Fall through to native format
-                }
-            }
             "complex" => {
                 if args.len() == 1 {
                     if let PyObjectPayload::Instance(inst) = &args[0].payload {
