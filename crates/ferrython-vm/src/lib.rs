@@ -10,6 +10,7 @@ mod vm_call;
 mod vm_class;
 pub(crate) mod vm_dataclass_utils;
 mod vm_exception;
+pub(crate) mod vm_exec_compile;
 mod vm_execute_one;
 mod vm_fast_paths;
 mod vm_helpers;
