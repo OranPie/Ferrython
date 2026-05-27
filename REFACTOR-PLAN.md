@@ -389,7 +389,8 @@ Status:
   `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call routing,
   `builtin_kw_scope.rs` owns `globals` / `locals` / `print` keyword-aware helpers,
   `builtin_kw_collections.rs` owns `sorted` / `dict` / `enumerate` keyword helpers,
-  `builtin_kw_primitives.rs` owns primitive constructor keyword helpers,
+  `builtin_kw_numeric.rs`, `builtin_kw_truth.rs`, and `builtin_kw_misc.rs`
+  own primitive numeric, truthiness, and open/property keyword helpers,
   `builtin_kw_fallback.rs` owns `type` and generic trailing-dict keyword fallback,
   `native_kw.rs` owns native keyword dispatch ordering,
   `native_kw_special.rs` owns AST/property/type native-function keyword special
