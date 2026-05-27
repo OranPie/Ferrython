@@ -968,6 +968,7 @@ Last updated: 2026-05-27T20:34:43+08:00
   - commit：`ffb63c4 refactor: split builtin keyword calls`。
   - 第八批拆出 `native_kw.rs`：`NativeFunction` / `NativeClosure` / `Partial` / `ExceptionType` / callable `Instance` keyword fallback 从 `object_kw.rs` 移出，`object_kw.rs` 降到约 174 行，成为 keyword-call 分派壳。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 OrderedDict/deque、Python function partial、re/itertools、json keyword smoke；保留既有 `Counter(a=...)` / `defaultdict(int, mapping)` 构造器差异，不混入本次纯拆分修复。
+  - commit：`4639bdf refactor: split native keyword calls`。
 
 ## 修复原则
 
