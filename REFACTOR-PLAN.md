@@ -359,6 +359,10 @@ Status:
   `object_native_special.rs` owns AST/type/property native special cases,
   `object_native_iter.rs` owns iterable/regex/path native adaptations, and
   `object_native_finish.rs` owns NativeClosure calls and deferred-result flushing.
+  Native keyword-call dispatch now keeps `native_kw.rs` as a thin dispatcher,
+  with AST/property/type special cases in `native_kw_special.rs`, JSON
+  hook/default handling in `native_kw_json.rs`, and trailing-dict fallback in
+  `native_kw_generic.rs`.
   AST node call support now separates lookup/legacy-name helpers,
   attribute-population validation, and the AST instantiation entry.
   Print and format-map helpers are split between `print_file.rs` and

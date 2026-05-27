@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T03:11:09+08:00
+Last updated: 2026-05-28T03:18:54+08:00
 
 ## 代码质量重构进度
 
@@ -1047,6 +1047,8 @@ Last updated: 2026-05-28T03:11:09+08:00
   - 第三十四批拆出 `ast_nodes_lookup.rs`、`ast_nodes_populate.rs`、`print_file.rs` 和 `print_format_map.rs`：AST legacy/class lookup 与 attribute population 从 `ast_nodes.rs` 移出，`ast_nodes.rs` 从约 227 行降到约 72 行；print target/file-like output 与 `format_map` helper 从 `print_format.rs` 拆成 focused modules，并删除空壳 `print_format.rs`。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 AST constructor/duplicate-arg、print file-like 和 `format_map` dict smoke。探测到 `defaultdict(lambda: 'Y')` 构造仍有既有兼容差异，本次纯拆分未混入语义修复。
   - commit：`99f1ea0 refactor: split ast print call helpers`。
+  - 第三十五批拆出 `native_kw_special.rs`、`native_kw_json.rs` 和 `native_kw_generic.rs`：AST/property/type special native kwargs、JSON hook/default VM-aware kwargs、native trailing-dict fallback 从 `native_kw.rs` 移出，`native_kw.rs` 从约 238 行降到约 49 行；新文件分别约 64、136 和 37 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 native kw split smoke，覆盖 AST/property/type、json loads/dumps hooks、OrderedDict/deque、re.sub、itertools.groupby/accumulate kwargs。
 
 ## 修复原则
 
