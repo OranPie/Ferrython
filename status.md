@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:25:34+08:00
+Last updated: 2026-05-27T09:34:28+08:00
 
 ## 代码质量重构进度
 
@@ -200,6 +200,11 @@ Last updated: 2026-05-27T09:25:34+08:00
   - 新增 `collection_modules/operator/helpers.rs`，拆出 dunder 调用、in-place fallback、iterator count/index 和 `__index__` 结果规范化 helper。
   - `operator.rs` 从约 1410 行降到约 1222 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `collection_modules/counter` 内部分层：
+  - 新增 `collection_modules/counter/defaultdict.rs`，拆出 defaultdict class factory、factory/storage/repr/deepcopy/init helper。
+  - 新增 `collection_modules/counter/standalone.rs`，拆出 module-level Counter helper、legacy dict-style helper 和 `_count_elements`。
+  - `counter.rs` 从约 1389 行降到约 811 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已开始 `type_modules` 顶层模块拆分：
   - 新增 `type_modules/typing.rs`，拆出 `typing` module factory 和 TypeVar/GenericAlias/Sentinel 等 helper。
   - 新增 `type_modules/enum_module.rs`，拆出 `enum` module factory、Enum/IntEnum/Flag/IntFlag/StrEnum 和 auto/unique/sentinel helper。
@@ -380,6 +385,7 @@ Last updated: 2026-05-27T09:25:34+08:00
   - collections deque/ChainMap 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections namedtuple 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections Counter/defaultdict 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - collections Counter 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time zoneinfo/_strptime 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time datetime/timedelta 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time datetime/date 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -397,7 +403,7 @@ Last updated: 2026-05-27T09:25:34+08:00
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
-  - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；后续只在需要时评估 `counter.rs`、`namedtuple.rs` 或 `user_types.rs` 的内部细分。
+  - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；`counter.rs`、`operator.rs` 和 `user_types.rs` 已完成当前低风险内部分层，后续只在需要时评估 `namedtuple.rs` 或剩余 Counter class body 是否继续细分。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
   - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 

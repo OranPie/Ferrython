@@ -86,8 +86,9 @@ Last updated: 2026-05-27
   `collection_modules/` files; `collections.rs` is a small assembly shell plus
   the remaining `OrderedDict` shim. `user_types.rs` has also been split
   internally into `UserDict`, `UserList`, and `UserString` child modules, and
-  `operator.rs` has started internal layering with shared dunder/iterator/index
-  helpers split under `collection_modules/operator/`.
+  `operator.rs` and `counter.rs` have started internal layering with shared
+  operator helpers plus defaultdict/standalone Counter helpers split under
+  nested `collection_modules/*/` directories.
 - Phase 2 filesystem/process module mechanical splits are complete at the
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
@@ -151,10 +152,10 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-vm/src/vm_call.rs` is over 7k lines and combines function
   calls, native calls, class instantiation, descriptors, `super()`, and
   frameless call optimizations.
-- `crates/ferrython-stdlib/src/collection_modules/counter.rs` and
-  `namedtuple.rs` are medium-sized focused files after the top-level
-  `collections.rs` bucket split; `user_types.rs` has dropped out of the current
-  top 25 after its internal `UserDict` / `UserList` / `UserString` split.
+- `crates/ferrython-stdlib/src/collection_modules/counter.rs`, `operator.rs`,
+  and `user_types.rs` have dropped out of the current top 25 after internal
+  splits; `namedtuple.rs` remains a medium-sized focused file after the
+  top-level `collections.rs` bucket split.
 - `crates/ferrython-stdlib/src/time_modules/datetime.rs` has dropped out of the
   current top 25 after focused date/timedelta/classmethod/instance/time/timezone
   internal splits; evaluate more datetime splits only if future edits need them.
