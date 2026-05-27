@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T23:36:24+08:00
+Last updated: 2026-05-27T23:48:51+08:00
 
 ## 代码质量重构进度
 
@@ -987,6 +987,8 @@ Last updated: 2026-05-27T23:36:24+08:00
   - 第十四批拆出 `builtin_predicates.rs`：`any/all/isinstance/issubclass` predicate/check builtins 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 571 行降到约 472 行；新 `builtin_predicates.rs` 约 115 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 predicate builtin、predicate metaclass 和 predicate protocol smoke。
   - commit：`e4d8813 refactor: split predicate builtin calls`。
+  - 第十五批拆出 `builtin_computation.rs`：`sum/sorted/min/max` computation builtins 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 472 行降到约 207 行；新 `builtin_computation.rs` 约 285 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 sum computation、sort/minmax 和 computation fallback smoke。
 
 ## 修复原则
 

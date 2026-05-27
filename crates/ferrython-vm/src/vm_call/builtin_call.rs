@@ -33,19 +33,12 @@ impl VirtualMachine {
         if matches!(name.as_str(), "any" | "all" | "isinstance" | "issubclass") {
             return self.call_predicate_builtin(name.as_str(), args);
         }
+        if matches!(name.as_str(), "sum" | "sorted" | "min" | "max") {
+            return self.call_computation_builtin(name.as_str(), args);
+        }
         if matches!(
             name.as_str(),
-            "map"
-                | "filter"
-                | "iter"
-                | "next"
-                | "sum"
-                | "sorted"
-                | "min"
-                | "max"
-                | "reversed"
-                | "enumerate"
-                | "zip"
+            "map" | "filter" | "iter" | "next" | "reversed" | "enumerate" | "zip"
         ) {
             return self.call_iterable_builtin(name, args);
         }

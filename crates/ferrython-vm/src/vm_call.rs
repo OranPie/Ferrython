@@ -11,6 +11,7 @@ mod builtin_bound_call;
 mod builtin_bound_generators;
 mod builtin_call;
 mod builtin_collections;
+mod builtin_computation;
 mod builtin_iterables;
 mod builtin_kw;
 mod builtin_numeric;
