@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T07:29:10+08:00
+Last updated: 2026-05-28T07:36:23+08:00
 
 ## 代码质量重构进度
 
@@ -1109,6 +1109,9 @@ Last updated: 2026-05-28T07:29:10+08:00
   - 第五十批继续 core object attribute lookup 分层：新增 `object/methods_attr/builtin_type.rs`，拆出 builtin type attribute dispatch、type/object mappingproxy descriptors、dict.fromkeys、str.maketrans、bytes/bytearray.fromhex、object dunder methods 和 builtin type unbound method table；`methods_attr.rs` 从约 2912 行降到约 2338 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin type attrs/MRO、type `__dict__` descriptors、dict.fromkeys、str.maketrans、bytes/bytearray.fromhex、unbound str/list/int methods 和 object setattr/getattribute/delattr smoke。
   - commit：`52b8d3b refactor: split builtin type attributes`。
+  - 第五十一批继续 core object attribute lookup 分层：新增 `object/methods_attr/class_attrs.rs` 和 `callable_attrs.rs`，分别拆出 class/metaclass/MRO namespace lookup、object fallback dunder synthesis，以及 function/native-function/builtin-function/classmethod/staticmethod/bound-method 属性解析；`methods_attr.rs` 从约 2338 行降到约 1904 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class attrs/MRO/metaclass lookup、classmethod/staticmethod、function metadata/annotations/bound method、builtin function attrs/call 和 heapq native function attrs smoke；`BuiltinFunction.__get__` 仍是既有不支持行为，本次纯拆分未混入语义修复。
+  - commit：`08c0977 refactor: split class and callable attributes`。
 
 ## 修复原则
 
