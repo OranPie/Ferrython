@@ -10,9 +10,12 @@ mod vm_call;
 mod vm_class;
 pub(crate) mod vm_dataclass_utils;
 mod vm_exception;
+mod vm_fast_paths;
 mod vm_helpers;
 mod vm_import;
+mod vm_init;
 mod vm_iter_fast;
+mod vm_method_cache;
 mod vm_trace;
 mod vm_truth;
 

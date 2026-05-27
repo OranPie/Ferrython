@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T04:09:16+08:00
+Last updated: 2026-05-28T04:18:50+08:00
 
 ## 代码质量重构进度
 
@@ -1068,6 +1068,8 @@ Last updated: 2026-05-28T04:09:16+08:00
   - 第四十一批拆出 VM 尾部运行时 helper：新增 `vm_trace.rs`、`vm_exception.rs`、`vm_iter_fast.rs` 和 `vm_truth.rs`，分别承载 trace/profile/breakpoint/excepthook、traceback/unwind、inline iterator advance、truthiness/dunder/exception matching helper；`vm.rs` 从约 10806 行降到约 10128 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 trace/profile、exception traceback、iterator fast path 和 truthiness/dunder smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
   - commit：`c089ceb refactor: split vm runtime helpers`。
+  - 第四十二批拆出 VM 顶部 fast-path/init helper：新增 `vm_method_cache.rs`、`vm_fast_paths.rs` 和 `vm_init.rs`，分别承载 interned method-name cache、dispatch loop small fast-path helpers、VM construction/shared callback registration；`vm.rs` 从约 10128 行降到约 9664 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 method cache、fast paths 和 VM init smoke；探测到 Python `threading.Thread(target=python_func)` 在当前 smoke 中未执行 target 输出/闭包 side-effect，视为既有行为候选，本次纯拆分未混入语义修复。
 
 ## 修复原则
 
