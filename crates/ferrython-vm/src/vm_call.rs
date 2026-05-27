@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 mod ast_nodes;
 mod builtin_bound_call;
+mod builtin_bound_generators;
 mod builtin_call;
 mod builtin_iterables;
 mod builtin_kw;
