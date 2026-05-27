@@ -1067,6 +1067,7 @@ Last updated: 2026-05-28T04:09:16+08:00
   - commit：`b40a864 refactor: split primitive keyword helpers`。
   - 第四十一批拆出 VM 尾部运行时 helper：新增 `vm_trace.rs`、`vm_exception.rs`、`vm_iter_fast.rs` 和 `vm_truth.rs`，分别承载 trace/profile/breakpoint/excepthook、traceback/unwind、inline iterator advance、truthiness/dunder/exception matching helper；`vm.rs` 从约 10806 行降到约 10128 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 trace/profile、exception traceback、iterator fast path 和 truthiness/dunder smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
+  - commit：`c089ceb refactor: split vm runtime helpers`。
 
 ## 修复原则
 
