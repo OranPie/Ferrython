@@ -355,8 +355,11 @@ Status:
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 193
-  lines, with VM-aware native function/closure calls moved to
-  `object_native_call.rs`. `function_call.rs` owns positional Python function
+  lines. `object_native_call.rs` owns VM-aware native-function routing,
+  `object_native_special.rs` owns AST/type/property native special cases,
+  `object_native_iter.rs` owns iterable/regex/path native adaptations, and
+  `object_native_finish.rs` owns NativeClosure calls and deferred-result flushing.
+  `function_call.rs` owns positional Python function
   calls, `function_kw_call.rs` owns Python function keyword binding, and
   `function_fast.rs` owns the one-arg borrowed-frame fast path.
   `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
