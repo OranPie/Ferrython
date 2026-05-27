@@ -21,7 +21,8 @@ Last updated: 2026-05-27
   Rust-AST-to-PyObject conversion, PyObject-to-Rust AST conversion helpers,
   utility APIs, and unparse support. The `ast_convert` path now separates
   context/argument validation from constant/operator/argument conversion
-  helpers.
+  helpers. The Rust-AST-to-PyObject `to_py` path now separates statement
+  conversion and shared conversion helpers under `ast/to_py/`.
 - Phase 2 serial module mechanical splits have retired the large
   `serial_modules/other.rs` bucket. Serialization modules now have named files
   for `base64`, `binascii`, `codecs`, `csv`, `dbm`, `json`, `marshal`,
