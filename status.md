@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:03:26+08:00
+Last updated: 2026-05-28T02:09:01+08:00
 
 ## 代码质量重构进度
 
@@ -1025,6 +1025,7 @@ Last updated: 2026-05-28T02:03:26+08:00
   - commit：`bfe3806 refactor: split builtin keyword dispatch`。
   - 第二十七批拆出 `class_dataclass.rs`、`class_namedtuple_init.rs` 和 `class_post_init.rs`：dataclass auto-init、namedtuple field population、user `__init__` / constructor fallback attrs 从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 422 行降到约 114 行；新文件分别约 171、93 和 104 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class instantiation smoke。
+  - commit：`ec45846 refactor: split class instantiation helpers`。
 
 ## 修复原则
 
