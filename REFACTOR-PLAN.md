@@ -361,8 +361,10 @@ Status:
   `function_fast.rs` owns the one-arg borrowed-frame fast path.
   `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
   builtins,
-  `builtin_numeric.rs` owns numeric conversion / dunder-aware truthiness
-  builtins, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /
+  `builtin_numeric.rs` owns numeric builtin routing,
+  `builtin_numeric_complex.rs` owns `complex()` instance/dunder coercion,
+  `builtin_numeric_scalar.rs` owns `int` / `float` / `round` / `bool`
+  instance/dunder helpers, `builtin_numeric_protocol.rs` owns `len` / `abs` / `hash` /
   `bin` / `oct` / `hex` / `format` protocol hooks, `builtin_kw.rs` owns builtin/type keyword-call routing,
   `builtin_kw_scope.rs` owns `globals` / `locals` / `print` keyword-aware helpers,
   `builtin_kw_collections.rs` owns `sorted` / `dict` / `enumerate` keyword helpers,
