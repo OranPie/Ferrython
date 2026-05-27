@@ -989,6 +989,7 @@ Last updated: 2026-05-27T23:48:51+08:00
   - commit：`e4d8813 refactor: split predicate builtin calls`。
   - 第十五批拆出 `builtin_computation.rs`：`sum/sorted/min/max` computation builtins 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 472 行降到约 207 行；新 `builtin_computation.rs` 约 285 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 sum computation、sort/minmax 和 computation fallback smoke。
+  - commit：`c6b3a55 refactor: split computation builtin calls`。
 
 ## 修复原则
 
