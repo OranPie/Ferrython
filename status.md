@@ -969,6 +969,8 @@ Last updated: 2026-05-27T20:34:43+08:00
   - 第八批拆出 `native_kw.rs`：`NativeFunction` / `NativeClosure` / `Partial` / `ExceptionType` / callable `Instance` keyword fallback 从 `object_kw.rs` 移出，`object_kw.rs` 降到约 174 行，成为 keyword-call 分派壳。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 OrderedDict/deque、Python function partial、re/itertools、json keyword smoke；保留既有 `Counter(a=...)` / `defaultdict(int, mapping)` 构造器差异，不混入本次纯拆分修复。
   - commit：`4639bdf refactor: split native keyword calls`。
+  - 第九批拆出 `class_simple.rs` 和 `class_abstract.rs`：简单类 fast path 与 ABC abstract guard 从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 1195 行降到约 953 行；`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用 `target/debug/ferrython` 通过 simple class、ABC abstract、namedtuple、dataclass class smoke；保留手写 `__abstractmethods__` 普通类不触发 abstract guard 的既有兼容差异。
 
 ## 修复原则
 

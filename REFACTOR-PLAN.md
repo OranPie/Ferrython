@@ -347,8 +347,9 @@ Status:
   `object_call.rs` is now only the top-level callable dispatcher, about 450
   lines. `builtin_iterables.rs` now owns iterable/container predicate builtins,
   `builtin_kw.rs` owns builtin/type keyword-call dispatch, `native_kw.rs` owns
-  native/closure/partial keyword fallback dispatch, and VM call child files have
-  fallen out of the top-25 longest Rust baseline.
+  native/closure/partial keyword fallback dispatch, and `class_simple.rs` /
+  `class_abstract.rs` own simple-class and ABC guard helpers. VM call child files
+  have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to
