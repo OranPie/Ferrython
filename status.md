@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:39:55+08:00
+Last updated: 2026-05-27T09:51:04+08:00
 
 ## 代码质量重构进度
 
@@ -209,6 +209,11 @@ Last updated: 2026-05-27T09:39:55+08:00
   - 新增 `serial_modules/json_module/parser.rs`，拆出 JSON value/string/number/array/object parser 和 whitespace scanner。
   - `json_module.rs` 从约 1112 行降到约 889 行，保留 module assembly、dump/load hooks 和 encoder/decoder submodule factories；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `network_modules/socket_module/object` 内部分层：
+  - 新增 `socket_module/object/io.rs`，拆出 send/sendall/recv、UDP sendto/recvfrom 和 makefile wrapper 方法安装。
+  - 新增 `socket_module/object/lifecycle.rs`，拆出 close/shutdown、timeout/blocking、socket option、name lookup、repr 和 context manager 方法安装。
+  - `socket_module/object.rs` 从约 1189 行降到约 454 行，并退出当前 `CODE_HEALTH_BASELINE.md` match-density 热点列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已开始 `type_modules` 顶层模块拆分：
   - 新增 `type_modules/typing.rs`，拆出 `typing` module factory 和 TypeVar/GenericAlias/Sentinel 等 helper。
   - 新增 `type_modules/enum_module.rs`，拆出 `enum` module factory、Enum/IntEnum/Flag/IntFlag/StrEnum 和 auto/unique/sentinel helper。
@@ -391,6 +396,7 @@ Last updated: 2026-05-27T09:39:55+08:00
   - collections Counter/defaultdict 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections Counter 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial json parser 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - network socket object I/O/lifecycle 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time zoneinfo/_strptime 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time datetime/timedelta 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time datetime/date 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。

@@ -64,7 +64,9 @@ Last updated: 2026-05-27
   `HTTPStatus` assembly. The `socket` module has also started internal
   layering with socket object state/method closures and module-level DNS /
   connection helpers split under `network_modules/socket_module/`; the root
-  socket file has dropped out of the current longest-file list.
+  socket file has dropped out of the current longest-file list. The socket
+  object implementation has now also split I/O/makefile and lifecycle/option
+  method installers under `network_modules/socket_module/object/`.
 - Phase 2 math module mechanical splits are complete at the top-level bucket.
   `statistics`, `numbers`, `decimal`, `random`, `heapq`, `bisect`,
   `fractions`, and `cmath` now live under `math_modules/`; the root file keeps
