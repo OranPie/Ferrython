@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T04:35:57+08:00
+Last updated: 2026-05-28T04:43:34+08:00
 
 ## 代码质量重构进度
 
@@ -1077,6 +1077,9 @@ Last updated: 2026-05-28T04:35:57+08:00
   - 第四十四批拆出 VM exec/eval/compile helper：新增 `vm_exec_compile.rs` 承载 `builtin_exec`、`builtin_eval`、`builtin_compile`、exec/eval locals mapping helper、source encoding helper 和 SyntaxError/compile error 转换 helper；`vm_helpers.rs` 从约 4120 行降到约 3139 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 exec/eval/compile code object 和 SyntaxError location smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
   - commit：`bb969a4 refactor: split vm exec compile helpers`。
+  - 第四十五批拆出 VM execution entry helper：新增 `vm_entry.rs` 承载 `run_atexit`、异常状态保存/恢复、builtins module lookup、顶层 `execute*` frame lifecycle、`call_function_standalone` 和冷 NameError helper；`vm.rs` 从约 9372 行降到约 9155 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 entry execution、`__main__`/`sys.modules` 注册、exec locals 和 atexit smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
+  - commit：`93b8e34 refactor: split vm entry helpers`。
 
 ## 修复原则
 
