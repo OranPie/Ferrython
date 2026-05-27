@@ -42,9 +42,9 @@ Last updated: 2026-05-27
 - Phase 2 system module mechanical splits have started. The low-coupling back
   half of `sys_modules.rs` now lives under `sys_modules/`: `platform`, `locale`,
   `getpass`, `errno`, `atexit`, `site`, `sched`, `mmap`, `resource`, `fcntl`,
-  `sysconfig`, `grp`, and `pwd`. The remaining top-level `sys_modules.rs` still
-  owns `sys`, `os`, and `os.path`, which are more tightly coupled to process
-  state and path/file-descriptor helpers.
+  `sysconfig`, `grp`, `pwd`, and `os.path`. The remaining top-level
+  `sys_modules.rs` still owns `sys` and `os`, which are more tightly coupled to
+  process state and path/file-descriptor helpers.
 - Phase 2 network module mechanical splits are now complete at the top-level
   bucket. The earlier low-coupling back half of
   `network_modules/http_module.rs` already lived under `http_module/`:

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:07:21+08:00
+Last updated: 2026-05-27T08:11:15+08:00
 
 ## 代码质量重构进度
 
@@ -145,6 +145,10 @@ Last updated: 2026-05-27T08:07:21+08:00
   - `locale` 的 `CURRENT_CTYPE_LOCALE` 状态随模块迁移，并通过 `sys_modules` root 继续 re-export `get_current_ctype_locale()`。
   - `atexit` callback 状态和 `register_atexit_callback` / `unregister_atexit_callback` 随模块迁移，并保持原 public API 给 `concurrency_modules` 使用。
   - `sys_modules.rs` 从约 5971 行降到约 3608 行；剩余主体主要是 `sys`、`os` 和 `os.path`。
+- 已继续 `sys_modules` 路径 helper 拆分：
+  - 新增 `sys_modules/os_path.rs`，拆出 `os.path` module factory 和 join/exists/isfile/isdir/islink/basename/dirname/abspath/split/splitext/normpath/expanduser/expandvars/commonpath/commonprefix/samefile 等 helper。
+  - `sys_modules.rs` 从约 3608 行降到约 3155 行；剩余主体主要是 `sys` module factory、stdio helpers 和 `os` module/file-descriptor/process helpers。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
   - `ff25b3c refactor: split network helper modules`
   - 新增 `http_module/cookiejar.rs`、`cookies.rs`、`ssl.rs`、`smtplib.rs`、`ftplib.rs`、`imaplib.rs`、`poplib.rs`、`cgi.rs`、`xmlrpc.rs` 和 `socketserver.rs`。
@@ -284,6 +288,7 @@ Last updated: 2026-05-27T08:07:21+08:00
   - logging factory helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - logging handler/formatter helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - sys 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - sys `os.path` helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - network/http 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - math 模块第一轮批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - concurrency 尾部低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -303,7 +308,7 @@ Last updated: 2026-05-27T08:07:21+08:00
   - 继续评估 `serial_modules/pickle_module/read.rs` 是否按 protocol0/protocol2/global reduce helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig 是否继续分层，以及 `unittest.rs` 是否需要内部分层。
-  - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
+  - 继续评估 `sys_modules.rs` 中 `sys`、`os` 是否按职责拆成核心系统状态、stdio、文件描述符、目录/进程 helper。
   - 继续评估 `network_modules/http_module/{urllib_parse,urllib_request,http_client,http_server}.rs` 是否还需要按更细职责继续内部分层。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。
