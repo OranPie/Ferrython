@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T04:58:17+08:00
+Last updated: 2026-05-28T05:03:20+08:00
 
 ## 代码质量重构进度
 
@@ -1086,6 +1086,9 @@ Last updated: 2026-05-28T04:58:17+08:00
   - 第四十七批开始 core object attribute lookup 分层：新增 `object/methods_attr_helpers.rs`，拆出 MRO/cache lookup、descriptor detection、class attr wrapping、AST Constant alias、bytes.fromhex data parser、code `co_code` builder、iterator `__setstate__` guard 和 special instance builtin-bound method routing；`methods_attr.rs` 从约 4255 行降到约 3555 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 MRO/class attribute、property descriptor/hasattr、`bytes.fromhex`、code `co_code` 和 iterator `__setstate__` smoke；`cargo check`/build 仅剩既有 VM `IndexMap::remove` deprecated 与 `field_names` unused warning。
   - commit：`dfdf588 refactor: split attribute lookup helpers`。
+  - 第四十八批拆出 builtin ABC/type-check helper：新增 `builtins/core_abc.rs`，承载 `isinstance`、`issubclass`、`is_instance_of`、`check_subclass`、Exception subclass helper、collections.abc structural helper 和 AST legacy Constant type matching；`core_fns.rs` 从约 3298 行降到约 2522 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class inheritance、builtin bool/int relation、collections.abc structural checks、exception subclass checks 和 runtime-checkable Protocol smoke；`cargo check`/build 仅剩既有 VM `IndexMap::remove` deprecated 与 `field_names` unused warning。
+  - commit：`9e81622 refactor: split builtin abc checks`。
 
 ## 修复原则
 
