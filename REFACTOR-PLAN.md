@@ -348,7 +348,8 @@ Status:
   class-check builtins have also moved out of the iterable dispatch file, along
   with computation builtins such as `sum`, `sorted`, `min`, and `max`. Attribute
   protocol builtins and scope/introspection builtins have moved out of the
-  generic builtin dispatch file, along with text/wrapper builtins.
+  generic builtin dispatch file, along with text/wrapper builtins, exec/import
+  builtins, and NamedTuple construction.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
@@ -368,6 +369,8 @@ Status:
   `builtin_attrs.rs` now owns `getattr` / `setattr` / `delattr`.
   `builtin_scope.rs` now owns `globals` / `locals` / `vars` / `dir`.
   `builtin_text.rs` now owns `str` / `repr` / `mappingproxy`.
+  `builtin_exec_import.rs` now owns `exec` / `eval` / `compile` / `__import__`,
+  and `builtin_namedtuple.rs` owns the `typing.NamedTuple` function builder.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/

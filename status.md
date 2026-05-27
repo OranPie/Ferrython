@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T00:28:20+08:00
+Last updated: 2026-05-28T00:41:48+08:00
 
 ## 代码质量重构进度
 
@@ -999,6 +999,8 @@ Last updated: 2026-05-28T00:28:20+08:00
   - 第十八批拆出 `builtin_text.rs`：`str/repr/mappingproxy` text/wrapper builtins 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 274 行降到约 211 行；新 `builtin_text.rs` 约 91 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 text builtin 和 mappingproxy smoke。
   - commit：`d0235ba refactor: split text builtin calls`。
+  - 第十九批拆出 `builtin_exec_import.rs` 和 `builtin_namedtuple.rs`：`exec/eval/compile/__import__` 与 `typing.NamedTuple` builder 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 211 行降到约 109 行；新文件分别约 33 行和 102 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 exec/import builtin 和 namedtuple builtin smoke。
 
 ## 修复原则
 
