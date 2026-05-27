@@ -438,6 +438,11 @@ Last updated: 2026-05-27T17:54:26+08:00
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - base64 serial module 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - warning cleanup 后 `cargo check -p ferrython-stdlib` 通过且 warning 输出为 0。
+- 已开始 Phase3 stdlib registry 分组：
+  - 新增 `crates/ferrython-stdlib/src/registry.rs`，`lib.rs` 的 `load_module()` 现在委托到 registry 边界。
+  - `lib.rs` 从约 405 行降到约 95 行；registry 先按 math/system/text/serialization/network/testing 等 bucket 拆成私有 resolver，保持原 factory 调用和 pure-Python fallback 行为。
+  - `CODE_HEALTH_BASELINE.md` 已刷新；新 `registry.rs` 是下一批按 bucket 文件继续拆分的明确候选。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`target/debug/ferrython -c "import ...; print('registry smoke ok')"` 和 pure-Python fallback smoke。
 - 后续重构队列：
   - `text_modules/regex_impl/functions.rs` 已聚合化；后续只在修改 matching/substitution 逻辑时继续细分对应子文件。
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
@@ -450,7 +455,7 @@ Last updated: 2026-05-27T17:54:26+08:00
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；`counter.rs`、`operator.rs` 和 `user_types.rs` 已完成当前低风险内部分层，后续只在需要时评估 `namedtuple.rs` 或剩余 Counter class body 是否继续细分。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
-  - stdlib 机械拆分稳定、warning baseline 已清理后，下一阶段进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
+  - Phase3 下一步：把 `registry.rs` 继续拆成 `registry/{math,system,text,collections,serialization,fs,time,types,introspection,concurrency,network,import,misc}.rs` 等 bucket 文件，再评估 `ModuleSpec` 静态表。
 
 ## 已提交成果
 

@@ -260,6 +260,16 @@ Validation:
 Replace the central `load_module()` mega-match with a grouped registry while
 preserving module names and creation functions.
 
+Status:
+
+- Started with `crates/ferrython-stdlib/src/registry.rs`: `lib.rs` now delegates
+  `load_module()` to a registry boundary and has dropped from about 405 lines to
+  about 95 lines.
+- Current registry functions are grouped resolvers that preserve the previous
+  factory calls and fallback behavior. The next step is splitting this new
+  registry file into per-bucket files and then evaluating static `ModuleSpec`
+  slices once the boundary is stable.
+
 Initial target:
 
 - `stdlib::registry::{math, system, text, collections, serialization, fs, time,
