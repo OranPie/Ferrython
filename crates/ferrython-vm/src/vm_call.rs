@@ -23,6 +23,7 @@ mod builtin_scope;
 mod builtin_text;
 mod bytes_constructor;
 mod class_abstract;
+mod class_builtin_subclass;
 mod class_enum;
 mod class_inline;
 mod class_instantiate;

@@ -343,8 +343,9 @@ Status:
   argument binding/frame setup, keyword-call dispatch, object-call dispatch,
   builtin function/type dispatch, builtin bound-method dispatch, core iterable
   builtins, numeric/conversion dunder-aware builtins, enum
-  class instantiation, dict-subclass storage population, and generator-style
-  builtin bound-method dispatch. Collection constructor builtins and predicate /
+  class instantiation, builtin-subclass value materialization,
+  dict-subclass storage population, and generator-style builtin bound-method
+  dispatch. Collection constructor builtins and predicate /
   class-check builtins have also moved out of the iterable dispatch file, along
   with computation builtins such as `sum`, `sorted`, `min`, and `max`. Attribute
   protocol builtins and scope/introspection builtins have moved out of the
@@ -371,6 +372,9 @@ Status:
   `builtin_text.rs` now owns `str` / `repr` / `mappingproxy`.
   `builtin_exec_import.rs` now owns `exec` / `eval` / `compile` / `__import__`,
   and `builtin_namedtuple.rs` owns the `typing.NamedTuple` function builder.
+  `class_builtin_subclass.rs` now owns builtin-base subclass `__builtin_value__`
+  construction and post-`__new__` value completion, dropping
+  `class_instantiate.rs` to about 422 lines.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/

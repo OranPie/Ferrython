@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T00:47:59+08:00
+Last updated: 2026-05-28T00:55:54+08:00
 
 ## 代码质量重构进度
 
@@ -1002,6 +1002,8 @@ Last updated: 2026-05-28T00:47:59+08:00
   - 第十九批拆出 `builtin_exec_import.rs` 和 `builtin_namedtuple.rs`：`exec/eval/compile/__import__` 与 `typing.NamedTuple` builder 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 211 行降到约 109 行；新文件分别约 33 行和 102 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 exec/import builtin 和 namedtuple builtin smoke。
   - commit：`77c658a refactor: split exec import builtin calls`。
+  - 第二十批拆出 `class_builtin_subclass.rs`：builtin-base subclass 的 `__builtin_value__` 构造、默认值和 post-`__new__` 补全逻辑从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 799 行降到约 422 行；新文件约 256 行，`CODE_HEALTH_BASELINE.md` 已刷新，`class_instantiate.rs` 退出 match 热点列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin subclass 和 class instantiate smoke。
 
 ## 修复原则
 
