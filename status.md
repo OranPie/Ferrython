@@ -1055,6 +1055,7 @@ Last updated: 2026-05-28T03:35:33+08:00
   - commit：`104f26a refactor: split sum builtin helpers`。
   - 第三十七批拆出 `builtin_iterables_map_filter.rs`、`builtin_iterables_iter_next.rs`、`builtin_iterables_reversed.rs` 和 `builtin_iterables_enumerate_zip.rs`：map/filter、iter/next、reversed、enumerate/zip helper 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 207 行降到约 50 行；新文件分别约 50、83、37 和 48 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 iterable split smoke，覆盖 map/filter、多源 map、iter/next、generator next default、old sequence protocol、reversed dunder、enumerate 和 zip strict。
+  - commit：`ba62cf8 refactor: split iterable builtin helpers`。
 
 ## 修复原则
 
