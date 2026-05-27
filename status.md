@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T04:43:34+08:00
+Last updated: 2026-05-28T04:50:32+08:00
 
 ## 代码质量重构进度
 
@@ -1080,6 +1080,9 @@ Last updated: 2026-05-28T04:43:34+08:00
   - 第四十五批拆出 VM execution entry helper：新增 `vm_entry.rs` 承载 `run_atexit`、异常状态保存/恢复、builtins module lookup、顶层 `execute*` frame lifecycle、`call_function_standalone` 和冷 NameError helper；`vm.rs` 从约 9372 行降到约 9155 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 entry execution、`__main__`/`sys.modules` 注册、exec locals 和 atexit smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
   - commit：`93b8e34 refactor: split vm entry helpers`。
+  - 第四十六批拆出 VM native bridge helper：新增 `vm_regex_bridge.rs`、`vm_itertools_bridge.rs` 和 `vm_rawio.rs`，分别承载 callable `re.sub/subn`、VM-aware itertools native bridge、RawIOBase read/readall bridge；`vm_helpers.rs` 从约 3139 行降到约 2799 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 callable `re.sub/subn`、`itertools.accumulate/filterfalse/starmap/groupby` smoke；探测到当前 `RawIOBase.read` 公开调用仍命中既有 `requires VM intercept` stub，本次纯拆分未混入语义修复。
+  - commit：`9f52a0d refactor: split vm native bridge helpers`。
 
 ## 修复原则
 
