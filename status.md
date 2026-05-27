@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T07:36:23+08:00
+Last updated: 2026-05-28T07:42:47+08:00
 
 ## 代码质量重构进度
 
@@ -1112,6 +1112,9 @@ Last updated: 2026-05-28T07:36:23+08:00
   - 第五十一批继续 core object attribute lookup 分层：新增 `object/methods_attr/class_attrs.rs` 和 `callable_attrs.rs`，分别拆出 class/metaclass/MRO namespace lookup、object fallback dunder synthesis，以及 function/native-function/builtin-function/classmethod/staticmethod/bound-method 属性解析；`methods_attr.rs` 从约 2338 行降到约 1904 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class attrs/MRO/metaclass lookup、classmethod/staticmethod、function metadata/annotations/bound method、builtin function attrs/call 和 heapq native function attrs smoke；`BuiltinFunction.__get__` 仍是既有不支持行为，本次纯拆分未混入语义修复。
   - commit：`08c0977 refactor: split class and callable attributes`。
+  - 第五十二批完成 core object attribute lookup 主要分支拆分：新增 `object/methods_attr/super_attrs.rs`，拆出 `super()` attribute proxy、`super.__getattribute__`、runtime MRO walk、descriptor binding、builtin/exception base method fallback 和 object fallback dunder synthesis；`methods_attr.rs` 从约 1904 行降到约 1418 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 normal `super()` method binding、classmethod/staticmethod binding、builtin list base append、exception base `__str__`、`super.__getattribute__`、object `__setattr__`/`__delattr__` 和 metaclass super smoke。
+  - commit：`92d3408 refactor: split super attribute handling`。
 
 ## 修复原则
 
