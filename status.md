@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T20:11:12+08:00
+Last updated: 2026-05-27T20:34:43+08:00
 
 ## 代码质量重构进度
 
@@ -956,8 +956,9 @@ Last updated: 2026-05-27T20:11:12+08:00
   - `vm_call.rs` 首批低风险 helper 移入 `vm_call/` 子模块：`frameless.rs`、`iterator_state.rs`、`exception_group.rs`、`exception_build.rs`、`class_inline.rs`、`str_fast.rs`、`sort_helpers.rs`、`json_hooks.rs`。
   - 第二批低风险 helper 已继续移入 `vm_call/` 子模块：`property_helpers.rs`、`bytes_constructor.rs`、`ast_nodes.rs`、`inline_simple.rs`、`print_format.rs`、`frame_run.rs`。
   - 第三批自然边界已继续移入 `vm_call/` 子模块：`class_instantiate.rs`、`super_object.rs`、`locals.rs`，保留 `self.instantiate_class()`、`self.make_super()`、`self.collect_locals_dict()` 原调用形状。
-  - `vm.rs` 从健康基线 10989 行降到 10806 行；`vm_call.rs` 从 7620 行降到 4510 行；`CODE_HEALTH_BASELINE.md` 已刷新。
-  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare、property/bytes/print、json/minmax/format、class/call、super/locals smoke。
+  - 第四批主入口已拆出：`function_call.rs` 承载 Python function/frame 参数绑定，`object_call.rs` 承载普通 object dispatch，`object_kw.rs` 承载 keyword-call dispatch；`vm_call.rs` 现在是约 120 行模块入口壳。
+  - `vm.rs` 从健康基线 10989 行降到 10806 行；`vm_call.rs` 从 7620 行降到 120 行；当前最大 call 子文件是 `object_call.rs`，约 2891 行；`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare、property/bytes/print、json/minmax/format、class/call、super/locals、function/object/keyword dispatch smoke。
 
 ## 修复原则
 

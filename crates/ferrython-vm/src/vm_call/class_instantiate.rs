@@ -11,7 +11,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 use crate::frame::{Frame, ScopeKind};
-use crate::vm_call::analyze_trivial_init;
+use crate::vm_call::class_inline::analyze_trivial_init;
 use crate::VirtualMachine;
 
 impl VirtualMachine {

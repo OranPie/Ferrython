@@ -339,8 +339,10 @@ Status:
   conversion, sort/min/max helpers, JSON hook/default helpers, property helpers,
   bytes/bytearray construction, AST node construction helpers, inline simple
   function helpers, print/format helpers, closure frame installation, locals
-  collection, class instantiation, and `super()` construction. `vm_call.rs`
-  dropped from the previous health-baseline 7620 lines to 4510 lines.
+  collection, class instantiation, `super()` construction, Python function
+  argument binding/frame setup, keyword-call dispatch, and object-call dispatch.
+  `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
+  120 lines and now acts as the module-entry shell.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to
