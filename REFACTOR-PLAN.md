@@ -18,7 +18,10 @@ Last updated: 2026-05-27
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
-  Rust-AST-to-PyObject conversion, utility APIs, and unparse support.
+  Rust-AST-to-PyObject conversion, PyObject-to-Rust AST conversion helpers,
+  utility APIs, and unparse support. The `ast_convert` path now separates
+  context/argument validation from constant/operator/argument conversion
+  helpers.
 - Phase 2 serial module mechanical splits have retired the large
   `serial_modules/other.rs` bucket. Serialization modules now have named files
   for `base64`, `binascii`, `codecs`, `csv`, `dbm`, `json`, `marshal`,

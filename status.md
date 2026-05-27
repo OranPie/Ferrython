@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:48:28+08:00
+Last updated: 2026-05-27T08:55:55+08:00
 
 ## 代码质量重构进度
 
@@ -25,6 +25,11 @@ Last updated: 2026-05-27T08:48:28+08:00
   - `bfaf38f refactor: split ast introspection internals`
   - `introspection_modules/ast.rs` 继续拆为入口、`ast/nodes.rs`、`ast/to_py.rs`、`ast/tools.rs`、`ast/unparse.rs`。
   - `ast.rs` 从约 3274 行降到约 754 行，最大 AST 子文件约 1084 行。
+- 已继续 `_ast` PyObject-to-Rust AST 转换内部分层：
+  - 新增 `introspection_modules/ast_convert/helpers.rs`，拆出 constant/operator/context/arguments/keyword/alias/comprehension 转换 helper。
+  - 新增 `introspection_modules/ast_convert/validation.rs`，拆出 Load/Store/Del context、arguments 和 comprehension 校验。
+  - `ast_convert.rs` 从约 1486 行降到约 950 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 regex match helper 兼容补丁：
   - `6175572 fix: re-export regex match helpers`
   - `cargo check -p ferrython-vm` 确认 VM 仍可访问 `text_modules::match_*_fn`。
