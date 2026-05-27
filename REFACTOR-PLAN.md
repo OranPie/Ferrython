@@ -355,7 +355,10 @@ Status:
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 193
-  lines. `object_native_call.rs` owns VM-aware native-function routing,
+  lines. It now delegates trace/profile current-frame handling, class/metaclass
+  object calls, and partial/callable-instance/lru-cache wrappers to
+  `object_call_trace.rs`, `object_call_class.rs`, and
+  `object_call_instance.rs`. `object_native_call.rs` owns VM-aware native-function routing,
   `object_native_special.rs` owns AST/type/property native special cases,
   `object_native_iter.rs` owns iterable/regex/path native adaptations, and
   `object_native_finish.rs` owns NativeClosure calls and deferred-result flushing.
