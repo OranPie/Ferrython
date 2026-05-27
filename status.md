@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T04:50:32+08:00
+Last updated: 2026-05-28T04:58:17+08:00
 
 ## 代码质量重构进度
 
@@ -1083,6 +1083,9 @@ Last updated: 2026-05-28T04:50:32+08:00
   - 第四十六批拆出 VM native bridge helper：新增 `vm_regex_bridge.rs`、`vm_itertools_bridge.rs` 和 `vm_rawio.rs`，分别承载 callable `re.sub/subn`、VM-aware itertools native bridge、RawIOBase read/readall bridge；`vm_helpers.rs` 从约 3139 行降到约 2799 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 callable `re.sub/subn`、`itertools.accumulate/filterfalse/starmap/groupby` smoke；探测到当前 `RawIOBase.read` 公开调用仍命中既有 `requires VM intercept` stub，本次纯拆分未混入语义修复。
   - commit：`9f52a0d refactor: split vm native bridge helpers`。
+  - 第四十七批开始 core object attribute lookup 分层：新增 `object/methods_attr_helpers.rs`，拆出 MRO/cache lookup、descriptor detection、class attr wrapping、AST Constant alias、bytes.fromhex data parser、code `co_code` builder、iterator `__setstate__` guard 和 special instance builtin-bound method routing；`methods_attr.rs` 从约 4255 行降到约 3555 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 MRO/class attribute、property descriptor/hasattr、`bytes.fromhex`、code `co_code` 和 iterator `__setstate__` smoke；`cargo check`/build 仅剩既有 VM `IndexMap::remove` deprecated 与 `field_names` unused warning。
+  - commit：`dfdf588 refactor: split attribute lookup helpers`。
 
 ## 修复原则
 
