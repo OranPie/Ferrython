@@ -319,7 +319,7 @@ pub(crate) fn call_frozenset_method(
             let mut result = m.clone();
             for arg in args {
                 for (key, _) in collect_hash_entries(arg)? {
-                    result.remove(&key);
+                    result.shift_remove(&key);
                     check_key_error()?;
                 }
             }
@@ -343,7 +343,7 @@ pub(crate) fn call_frozenset_method(
                 check_key_error()?;
             }
             for (key, value) in other {
-                if result.remove(&key).is_none() {
+                if result.shift_remove(&key).is_none() {
                     result.insert(key, value);
                 }
                 check_key_error()?;
