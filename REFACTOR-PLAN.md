@@ -341,15 +341,17 @@ Status:
   function helpers, print/format helpers, closure frame installation, locals
   collection, class instantiation, `super()` construction, Python function
   argument binding/frame setup, keyword-call dispatch, object-call dispatch,
-  builtin function/type dispatch, and builtin bound-method dispatch.
+  builtin function/type dispatch, builtin bound-method dispatch, iterable /
+  container predicate builtins, and numeric/conversion dunder-aware builtins.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
   lines. `builtin_iterables.rs` now owns iterable/container predicate builtins,
-  `builtin_kw.rs` owns builtin/type keyword-call dispatch, `native_kw.rs` owns
-  native/closure/partial keyword fallback dispatch, and `class_simple.rs` /
-  `class_abstract.rs` own simple-class and ABC guard helpers. VM call child files
-  have fallen out of the top-25 longest Rust baseline.
+  `builtin_numeric.rs` owns `len` / numeric conversion / dunder-aware truthiness
+  builtins, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
+  `native_kw.rs` owns native/closure/partial keyword fallback dispatch, and
+  `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
+  VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to

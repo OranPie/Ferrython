@@ -11,6 +11,7 @@ mod builtin_bound_call;
 mod builtin_call;
 mod builtin_iterables;
 mod builtin_kw;
+mod builtin_numeric;
 mod bytes_constructor;
 mod class_abstract;
 mod class_inline;
