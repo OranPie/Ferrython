@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T01:13:57+08:00
+Last updated: 2026-05-28T01:15:52+08:00
 
 ## 代码质量重构进度
 
@@ -1010,6 +1010,7 @@ Last updated: 2026-05-28T01:13:57+08:00
   - commit：`0ec9a3d refactor: split native keyword fallbacks`。
   - 第二十二批拆出 `builtin_bound_fast.rs` 和 `builtin_bound_iter.rs`：primitive receiver bound-method fast path 与 iterator/range bound methods 从 `builtin_bound_call.rs` 移出，`builtin_bound_call.rs` 从约 528 行降到约 382 行；新文件分别约 105 行和 88 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 bound fast/iterator/range smoke 和 join/sort/format remaining smoke。
+  - commit：`c76060d refactor: split builtin bound fast paths`。
 
 ## 修复原则
 
