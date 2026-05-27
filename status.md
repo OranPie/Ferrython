@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:25:33+08:00
+Last updated: 2026-05-28T02:27:55+08:00
 
 ## 代码质量重构进度
 
@@ -1031,6 +1031,7 @@ Last updated: 2026-05-28T02:25:33+08:00
   - commit：`ab1dec4 refactor: split builtin bound helpers`。
   - 第二十九批拆出 `function_kw_call.rs` 和 `function_fast.rs`：Python function keyword 参数绑定与 one-arg fast fallback 从 `function_call.rs` 移出，`function_call.rs` 从约 349 行降到约 126 行；新文件分别约 163 和 58 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 function call smoke。
+  - commit：`f4217cb refactor: split function call paths`。
 
 ## 修复原则
 
