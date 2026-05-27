@@ -360,7 +360,9 @@ Status:
   calls, `function_kw_call.rs` owns Python function keyword binding, and
   `function_fast.rs` owns the one-arg borrowed-frame fast path.
   `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
-  builtins,
+  builtins, `builtin_computation.rs` owns computation builtin routing,
+  `builtin_sum.rs` owns `sum()` fast paths, and
+  `builtin_computation_order.rs` owns `sorted` / `min` / `max` helpers,
   `builtin_numeric.rs` owns numeric builtin routing,
   `builtin_numeric_complex.rs` owns `complex()` instance/dunder coercion,
   `builtin_numeric_scalar.rs` owns `int` / `float` / `round` / `bool`
