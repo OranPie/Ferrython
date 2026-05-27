@@ -6,7 +6,6 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 
 use crate::builtins;
-use crate::vm_call::iterator_state::set_iterator_state;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -15,118 +14,15 @@ impl VirtualMachine {
         bbm: &BuiltinBoundMethodData,
         args: Vec<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
-        // Fast path: common receiver types (Str, List, Dict, Tuple, Set, Int, Float, Bool, Bytes)
-        // go directly to builtins::call_method, skipping 15+ special-case checks for
-        // Generator, Iterator, Range, Class, Property, Instance, BuiltinType, etc.
-        // Exception: list.extend with a generator/lazy iterator must go through
-        // collect_iterable first (builtins::call_method can't drive a generator).
-        match &bbm.receiver.payload {
-            PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
-                if !args.is_empty()
-                    && matches!(
-                        bbm.method_name.as_str(),
-                        "union"
-                            | "intersection"
-                            | "difference"
-                            | "symmetric_difference"
-                            | "update"
-                            | "intersection_update"
-                            | "difference_update"
-                            | "symmetric_difference_update"
-                            | "issubset"
-                            | "issuperset"
-                            | "isdisjoint"
-                            | "__or__"
-                            | "__and__"
-                            | "__sub__"
-                            | "__xor__"
-                    )
-                    && matches!(
-                        args[0].payload,
-                        PyObjectPayload::Generator(_)
-                            | PyObjectPayload::Instance(_)
-                            | PyObjectPayload::Iterator(_)
-                    ) =>
-            {
-                let mut resolved = Vec::with_capacity(args.len());
-                resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
-                resolved.extend_from_slice(&args[1..]);
-                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &resolved);
-            }
-            PyObjectPayload::List(_)
-                if bbm.method_name.as_str() == "extend"
-                    && !args.is_empty()
-                    && (matches!(
-                        args[0].payload,
-                        PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
-                    ) || matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
-                        let data = d.read();
-                        matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
-                            | IteratorData::MapOne { .. }
-                            | IteratorData::Map { .. } | IteratorData::Filter { .. }
-                            | IteratorData::FilterFalse { .. }
-                            | IteratorData::Sentinel { .. })
-                    })) =>
-            {
-                let items = self.collect_iterable(&args[0])?;
-                return builtins::call_method(&bbm.receiver, "extend", &[PyObject::list(items)]);
-            }
-            PyObjectPayload::Str(_)
-            | PyObjectPayload::List(_)
-            | PyObjectPayload::Dict(_)
-            | PyObjectPayload::Tuple(_)
-            | PyObjectPayload::Set(_)
-            | PyObjectPayload::Int(_)
-            | PyObjectPayload::Float(_)
-            | PyObjectPayload::Bool(_)
-            | PyObjectPayload::Range(_)
-            | PyObjectPayload::Bytes(_)
-            | PyObjectPayload::ByteArray(_)
-            | PyObjectPayload::FrozenSet(_)
-                if !(matches!(&bbm.receiver.payload, PyObjectPayload::List(_))
-                    && bbm.method_name.as_str() == "sort")
-                    && !(bbm.method_name.as_str() == "join"
-                        && matches!(
-                            &bbm.receiver.payload,
-                            PyObjectPayload::Str(_)
-                                | PyObjectPayload::Bytes(_)
-                                | PyObjectPayload::ByteArray(_)
-                        )) =>
-            {
-                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
-            }
-            _ => {}
+        if let Some(result) = self.call_builtin_bound_fast_path(bbm, &args)? {
+            return Ok(result);
         }
         if let Some(result) = self.call_generator_bound_method(bbm, &args)? {
             return Ok(result);
         }
 
-        // ── Iterator protocol dispatch ──
-        if let PyObjectPayload::Iterator(_)
-        | PyObjectPayload::RangeIter(..)
-        | PyObjectPayload::VecIter(_)
-        | PyObjectPayload::WeakValueIter(_)
-        | PyObjectPayload::WeakKeyIter(_)
-        | PyObjectPayload::RefIter { .. }
-        | PyObjectPayload::RevRefIter { .. } = &bbm.receiver.payload
-        {
-            match bbm.method_name.as_str() {
-                "__next__" => match self.vm_iter_next(&bbm.receiver)? {
-                    Some(value) => return Ok(value),
-                    None => return Err(ferrython_core::error::PyException::stop_iteration()),
-                },
-                "__iter__" => {
-                    return Ok(bbm.receiver.clone());
-                }
-                "__length_hint__" => {
-                    let len = bbm.receiver.py_len().unwrap_or(0);
-                    return Ok(PyObject::int(len as i64));
-                }
-                "__setstate__" => {
-                    return set_iterator_state(&bbm.receiver, &args);
-                }
-                _ => {}
-            }
+        if let Some(result) = self.call_iterator_or_range_bound_method(bbm, &args)? {
+            return Ok(result);
         }
 
         // VM-level methods that need iterable collection
@@ -191,48 +87,6 @@ impl VirtualMachine {
                     *items.write() = items_vec;
                 }
                 return Ok(PyObject::none());
-            }
-        }
-        // Range methods
-        if let PyObjectPayload::Range(rd) = &bbm.receiver.payload {
-            let (rs, re, rst) = (rd.start, rd.stop, rd.step);
-            match bbm.method_name.as_str() {
-                "count" => {
-                    if args.is_empty() {
-                        return Err(PyException::type_error(
-                            "count() takes exactly one argument",
-                        ));
-                    }
-                    let val = args[0].to_int().unwrap_or(i64::MIN);
-                    let found = if rst > 0 {
-                        val >= rs && val < re && (val - rs) % rst == 0
-                    } else if rst < 0 {
-                        val <= rs && val > re && (rs - val) % (-rst) == 0
-                    } else {
-                        false
-                    };
-                    return Ok(PyObject::int(if found { 1 } else { 0 }));
-                }
-                "index" => {
-                    if args.is_empty() {
-                        return Err(PyException::type_error(
-                            "index() takes exactly one argument",
-                        ));
-                    }
-                    let val = args[0].to_int().unwrap_or(i64::MIN);
-                    let in_range = if rst > 0 {
-                        val >= rs && val < re && (val - rs) % rst == 0
-                    } else if rst < 0 {
-                        val <= rs && val > re && (rs - val) % (-rst) == 0
-                    } else {
-                        false
-                    };
-                    if in_range {
-                        return Ok(PyObject::int((val - rs) / rst));
-                    }
-                    return Err(PyException::value_error(format!("{} is not in range", val)));
-                }
-                _ => {}
             }
         }
         // Class introspection methods
