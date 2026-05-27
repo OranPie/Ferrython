@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:20:58+08:00
+Last updated: 2026-05-27T09:25:34+08:00
 
 ## 代码质量重构进度
 
@@ -195,6 +195,10 @@ Last updated: 2026-05-27T09:20:58+08:00
   - 新增 `collection_modules/user_types/user_list.rs`，拆出 UserList class factory、slice/copy helper 和 list instance method 安装。
   - 新增 `collection_modules/user_types/user_string.rs`，拆出 UserString class factory 和 string instance method 安装。
   - `user_types.rs` 从约 1479 行降到约 45 行共享/re-export 壳，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `collection_modules/operator` 内部分层：
+  - 新增 `collection_modules/operator/helpers.rs`，拆出 dunder 调用、in-place fallback、iterator count/index 和 `__index__` 结果规范化 helper。
+  - `operator.rs` 从约 1410 行降到约 1222 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已开始 `type_modules` 顶层模块拆分：
   - 新增 `type_modules/typing.rs`，拆出 `typing` module factory 和 TypeVar/GenericAlias/Sentinel 等 helper。

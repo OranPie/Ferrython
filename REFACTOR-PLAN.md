@@ -85,7 +85,9 @@ Last updated: 2026-05-27
   `namedtuple`, `defaultdict`, and `Counter` now live in focused
   `collection_modules/` files; `collections.rs` is a small assembly shell plus
   the remaining `OrderedDict` shim. `user_types.rs` has also been split
-  internally into `UserDict`, `UserList`, and `UserString` child modules.
+  internally into `UserDict`, `UserList`, and `UserString` child modules, and
+  `operator.rs` has started internal layering with shared dunder/iterator/index
+  helpers split under `collection_modules/operator/`.
 - Phase 2 filesystem/process module mechanical splits are complete at the
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
