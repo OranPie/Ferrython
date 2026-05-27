@@ -43,8 +43,10 @@ Last updated: 2026-05-27
   half of `sys_modules.rs` now lives under `sys_modules/`: `platform`, `locale`,
   `getpass`, `errno`, `atexit`, `site`, `sched`, `mmap`, `resource`, `fcntl`,
   `sysconfig`, `grp`, `pwd`, `os.path`, sys stdio objects, and the `os` module
-  body. The remaining top-level `sys_modules.rs` owns `sys` state, sys module
-  assembly, and exception/traceback display helpers.
+  body. The extracted `os` module has started internal layering with
+  `terminal_size`, `stat_result`, and `scandir` helpers split under
+  `sys_modules/os/`. The remaining top-level `sys_modules.rs` owns `sys` state,
+  sys module assembly, and exception/traceback display helpers.
 - Phase 2 network module mechanical splits are now complete at the top-level
   bucket. The earlier low-coupling back half of
   `network_modules/http_module.rs` already lived under `http_module/`:
@@ -127,6 +129,9 @@ architecture concerns from compatibility fixes.
   after the top-level time split plus focused date/timedelta internal splits;
   evaluate more datetime/time/timezone splits only if further edits in that
   area justify the risk.
+- `crates/ferrython-stdlib/src/sys_modules/os.rs` is about 1.8k lines after
+  the first internal split; good next targets are environment/PathLike helpers
+  and directory walking.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

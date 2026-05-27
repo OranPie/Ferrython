@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:18:37+08:00
+Last updated: 2026-05-27T08:25:24+08:00
 
 ## 代码质量重构进度
 
@@ -156,6 +156,11 @@ Last updated: 2026-05-27T08:18:37+08:00
 - 已继续 `sys_modules` os module 主体拆分：
   - 新增 `sys_modules/os.rs`，拆出 `os` module factory、`os.environ`/`PathLike`/terminal_size 构造、文件/目录/process/fd helper、`stat_result` 构造和 `scandir` helper。
   - `sys_modules.rs` 从约 2880 行降到约 859 行；剩余根文件聚焦 sys 状态、`sys` module assembly、trace/profile/excepthook 和 traceback display helper。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `sys_modules/os` 内部分层：
+  - 新增 `sys_modules/os/terminal.rs`，拆出 `terminal_size` class 和 instance 构造。
+  - 新增 `sys_modules/os/stat.rs`，拆出 `stat_result` 构造、`os.stat` 和 `os.scandir` helper。
+  - `sys_modules/os.rs` 从约 2024 行降到约 1761 行；`CODE_HEALTH_BASELINE.md` 已刷新，当前仍列为可继续拆分热点。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
   - `ff25b3c refactor: split network helper modules`
