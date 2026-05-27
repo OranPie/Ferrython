@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:36:43+08:00
+Last updated: 2026-05-27T08:40:16+08:00
 
 ## 代码质量重构进度
 
@@ -174,6 +174,12 @@ Last updated: 2026-05-27T08:36:43+08:00
   - 新增 `type_modules/types_module.rs`，拆出 `types` module factory 和 SimpleNamespace 比较 helper。
   - 新增 `type_modules/abc.rs`，拆出 `abc` module factory、ABC/ABCMeta 和 abstract* helper。
   - `type_modules.rs` 从约 3293 行降到约 1232 行，只保留 `collections.abc` 主体和子模块声明/re-export，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已完成 `email_modules` 顶层模块拆分：
+  - 新增 `email_modules/message.rs`，拆出 `email.message` module factory。
+  - 新增 `email_modules/mime.rs`，拆出 `email.mime` package 以及 `email.mime.text`、`multipart`、`base`、`application`、`image` factories。
+  - 新增 `email_modules/policy.rs`、`contentmanager.rs`、`charset.rs`、`utils.rs` 和 `errors.rs`，按对应 email 子模块拆分。
+  - `email_modules.rs` 从约 1524 行降到约 580 行，只保留共享 Message 构造/序列化 helper、top-level `email` package factory 和 message_from_string/bytes 入口，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
   - `ff25b3c refactor: split network helper modules`

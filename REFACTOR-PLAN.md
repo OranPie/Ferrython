@@ -101,6 +101,12 @@ Last updated: 2026-05-27
   `type_modules.rs` keeps shared imports plus the remaining `collections.abc`
   implementation and re-exports the public module factories. The root file has
   dropped out of the current longest-file list.
+- Phase 2 email module mechanical splits are complete at the top-level bucket.
+  `email.message`, `email.mime.*`, `email.policy`, `email.contentmanager`,
+  `email.charset`, `email.utils`, and `email.errors` now live under
+  `email_modules/`; the root `email_modules.rs` keeps shared Message helpers,
+  the top-level `email` package factory, and message parsing entry points. The
+  root file has dropped out of the current longest-file list.
 - Phase 2 XML module mechanical splits have started. The lower-coupling
   package, DOM/minidom, SAX, and expat helpers now live under `xml_modules/`;
   the root `xml_modules.rs` still owns the ElementTree parser/object
