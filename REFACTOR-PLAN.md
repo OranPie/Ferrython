@@ -340,9 +340,13 @@ Status:
   bytes/bytearray construction, AST node construction helpers, inline simple
   function helpers, print/format helpers, closure frame installation, locals
   collection, class instantiation, `super()` construction, Python function
-  argument binding/frame setup, keyword-call dispatch, and object-call dispatch.
+  argument binding/frame setup, keyword-call dispatch, object-call dispatch,
+  builtin function/type dispatch, and builtin bound-method dispatch.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
+  `object_call.rs` is now only the top-level callable dispatcher, about 450
+  lines; the largest remaining call files are `builtin_call.rs` and
+  `object_kw.rs`.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to

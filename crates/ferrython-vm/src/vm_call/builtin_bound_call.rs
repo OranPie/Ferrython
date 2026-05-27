@@ -1,0 +1,701 @@
+use compact_str::CompactString;
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::{
+    AsyncGenAction, BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
+};
+use ferrython_core::types::HashableKey;
+
+use crate::builtins;
+use crate::vm_call::iterator_state::set_iterator_state;
+use crate::VirtualMachine;
+
+impl VirtualMachine {
+    pub(super) fn call_builtin_bound_method(
+        &mut self,
+        bbm: &BuiltinBoundMethodData,
+        args: Vec<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
+        // Fast path: common receiver types (Str, List, Dict, Tuple, Set, Int, Float, Bool, Bytes)
+        // go directly to builtins::call_method, skipping 15+ special-case checks for
+        // Generator, Iterator, Range, Class, Property, Instance, BuiltinType, etc.
+        // Exception: list.extend with a generator/lazy iterator must go through
+        // collect_iterable first (builtins::call_method can't drive a generator).
+        match &bbm.receiver.payload {
+            PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                if !args.is_empty()
+                    && matches!(
+                        bbm.method_name.as_str(),
+                        "union"
+                            | "intersection"
+                            | "difference"
+                            | "symmetric_difference"
+                            | "update"
+                            | "intersection_update"
+                            | "difference_update"
+                            | "symmetric_difference_update"
+                            | "issubset"
+                            | "issuperset"
+                            | "isdisjoint"
+                            | "__or__"
+                            | "__and__"
+                            | "__sub__"
+                            | "__xor__"
+                    )
+                    && matches!(
+                        args[0].payload,
+                        PyObjectPayload::Generator(_)
+                            | PyObjectPayload::Instance(_)
+                            | PyObjectPayload::Iterator(_)
+                    ) =>
+            {
+                let mut resolved = Vec::with_capacity(args.len());
+                resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                resolved.extend_from_slice(&args[1..]);
+                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &resolved);
+            }
+            PyObjectPayload::List(_)
+                if bbm.method_name.as_str() == "extend"
+                    && !args.is_empty()
+                    && (matches!(
+                        args[0].payload,
+                        PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
+                    ) || matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
+                        let data = d.read();
+                        matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                            | IteratorData::MapOne { .. }
+                            | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                            | IteratorData::FilterFalse { .. }
+                            | IteratorData::Sentinel { .. })
+                    })) =>
+            {
+                let items = self.collect_iterable(&args[0])?;
+                return builtins::call_method(&bbm.receiver, "extend", &[PyObject::list(items)]);
+            }
+            PyObjectPayload::Str(_)
+            | PyObjectPayload::List(_)
+            | PyObjectPayload::Dict(_)
+            | PyObjectPayload::Tuple(_)
+            | PyObjectPayload::Set(_)
+            | PyObjectPayload::Int(_)
+            | PyObjectPayload::Float(_)
+            | PyObjectPayload::Bool(_)
+            | PyObjectPayload::Range(_)
+            | PyObjectPayload::Bytes(_)
+            | PyObjectPayload::ByteArray(_)
+            | PyObjectPayload::FrozenSet(_)
+                if !(matches!(&bbm.receiver.payload, PyObjectPayload::List(_))
+                    && bbm.method_name.as_str() == "sort")
+                    && !(bbm.method_name.as_str() == "join"
+                        && matches!(
+                            &bbm.receiver.payload,
+                            PyObjectPayload::Str(_)
+                                | PyObjectPayload::Bytes(_)
+                                | PyObjectPayload::ByteArray(_)
+                        )) =>
+            {
+                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
+            }
+            _ => {}
+        }
+        // ── Generator / Coroutine / AsyncGenerator dispatch ──
+        // Extract gen_arc and discriminate the bbm.receiver kind for proper protocol.
+        let gen_kind = match &bbm.receiver.payload {
+            PyObjectPayload::Generator(g) => Some(("generator", g.clone())),
+            PyObjectPayload::Coroutine(g) => Some(("coroutine", g.clone())),
+            PyObjectPayload::AsyncGenerator(g) => Some(("async_generator", g.clone())),
+            _ => None,
+        };
+        if let Some((kind, ref gen_arc)) = gen_kind {
+            match bbm.method_name.as_str() {
+                "send" => {
+                    let val = if args.is_empty() {
+                        PyObject::none()
+                    } else {
+                        args[0].clone()
+                    };
+                    return self.resume_generator(gen_arc, val);
+                }
+                "throw" => {
+                    let (exc_kind, msg) = Self::parse_throw_args(&args);
+                    let original_value = Self::parse_throw_original_value(&args);
+                    return self.gen_throw_with_value(gen_arc, exc_kind, msg, original_value);
+                }
+                "close" => {
+                    // CPython: throw GeneratorExit into the frame so finally blocks run.
+                    // If generator yields during cleanup → RuntimeError.
+                    let gen = gen_arc.read();
+                    if gen.finished || !gen.has_frame() {
+                        // Already finished — nothing to clean up
+                        drop(gen);
+                        return Ok(PyObject::none());
+                    }
+                    drop(gen);
+                    match self.gen_throw(
+                        gen_arc,
+                        ExceptionKind::GeneratorExit,
+                        CompactString::new(""),
+                    ) {
+                        Ok(_yielded) => {
+                            // Generator yielded during close → RuntimeError
+                            return Err(PyException::runtime_error(
+                                "generator ignored GeneratorExit",
+                            ));
+                        }
+                        Err(e)
+                            if e.kind == ExceptionKind::GeneratorExit
+                                || e.kind == ExceptionKind::StopIteration =>
+                        {
+                            // Expected: GeneratorExit propagated out or StopIteration
+                            let mut gen = gen_arc.write();
+                            gen.finished = true;
+                            gen.clear_frame();
+                            return Ok(PyObject::none());
+                        }
+                        Err(e) => {
+                            // Other exception from finally block — propagate
+                            let mut gen = gen_arc.write();
+                            gen.finished = true;
+                            gen.clear_frame();
+                            return Err(e);
+                        }
+                    }
+                }
+                "__next__" if kind != "async_generator" => {
+                    return self.resume_generator(gen_arc, PyObject::none());
+                }
+                // Context manager protocol for generators (@contextmanager)
+                "__enter__" if kind == "generator" => {
+                    // __enter__ = next(gen) — advance to first yield
+                    return self.resume_generator(gen_arc, PyObject::none());
+                }
+                "__exit__" if kind == "generator" => {
+                    // args: exc_type, exc_val, exc_tb
+                    let has_exc =
+                        !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None);
+                    if has_exc {
+                        // Exception in with block — throw into generator
+                        let (exc_kind, msg) = Self::parse_throw_args(&args);
+                        let original_value = Self::parse_throw_original_value(&args);
+                        match self.gen_throw_with_value(gen_arc, exc_kind, msg, original_value) {
+                            Ok(_) => {
+                                // Generator caught the exception and yielded or returned
+                                return Ok(PyObject::bool_val(true)); // suppress exception
+                            }
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                return Ok(PyObject::bool_val(true));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        // Normal exit — advance generator past yield
+                        match self.resume_generator(gen_arc, PyObject::none()) {
+                            Ok(_) => {
+                                // Generator yielded again — it should have stopped
+                                return Err(PyException::runtime_error("generator didn't stop"));
+                            }
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                return Ok(PyObject::bool_val(false));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                // ── Async generator protocol methods ──
+                // __aiter__ returns self (async generator is its own async iterator)
+                "__aiter__" if kind == "async_generator" => {
+                    return Ok(bbm.receiver.clone());
+                }
+                // These return AsyncGenAwaitable objects, not direct results.
+                "__anext__" if kind == "async_generator" => {
+                    return Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::AsyncGenAwaitable {
+                            gen: gen_arc.clone(),
+                            action: Box::new(AsyncGenAction::Next),
+                        },
+                    }));
+                }
+                "asend" if kind == "async_generator" => {
+                    let val = if args.is_empty() {
+                        PyObject::none()
+                    } else {
+                        args[0].clone()
+                    };
+                    return Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::AsyncGenAwaitable {
+                            gen: gen_arc.clone(),
+                            action: Box::new(AsyncGenAction::Send(val)),
+                        },
+                    }));
+                }
+                "athrow" if kind == "async_generator" => {
+                    let (exc_kind, msg) = Self::parse_throw_args(&args);
+                    return Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::AsyncGenAwaitable {
+                            gen: gen_arc.clone(),
+                            action: Box::new(AsyncGenAction::Throw(
+                                exc_kind,
+                                CompactString::from(msg),
+                            )),
+                        },
+                    }));
+                }
+                "aclose" if kind == "async_generator" => {
+                    return Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::AsyncGenAwaitable {
+                            gen: gen_arc.clone(),
+                            action: Box::new(AsyncGenAction::Close),
+                        },
+                    }));
+                }
+                _ => {}
+            }
+        }
+
+        // ── Iterator protocol dispatch ──
+        if let PyObjectPayload::Iterator(_)
+        | PyObjectPayload::RangeIter(..)
+        | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::WeakValueIter(_)
+        | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::RefIter { .. }
+        | PyObjectPayload::RevRefIter { .. } = &bbm.receiver.payload
+        {
+            match bbm.method_name.as_str() {
+                "__next__" => match self.vm_iter_next(&bbm.receiver)? {
+                    Some(value) => return Ok(value),
+                    None => return Err(ferrython_core::error::PyException::stop_iteration()),
+                },
+                "__iter__" => {
+                    return Ok(bbm.receiver.clone());
+                }
+                "__length_hint__" => {
+                    let len = bbm.receiver.py_len().unwrap_or(0);
+                    return Ok(PyObject::int(len as i64));
+                }
+                "__setstate__" => {
+                    return set_iterator_state(&bbm.receiver, &args);
+                }
+                _ => {}
+            }
+        }
+
+        // ── AsyncGenAwaitable dispatch (driving the awaitable) ──
+        if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &bbm.receiver.payload {
+            match bbm.method_name.as_str() {
+                "send" => {
+                    let send_val = if args.is_empty() {
+                        PyObject::none()
+                    } else {
+                        args[0].clone()
+                    };
+                    return self.drive_async_gen_awaitable(gen, action, send_val);
+                }
+                "throw" => {
+                    let (exc_kind, msg) = Self::parse_throw_args(&args);
+                    let original_value = Self::parse_throw_original_value(&args);
+                    return self.gen_throw_with_value(gen, exc_kind, msg, original_value);
+                }
+                "close" => {
+                    return Ok(PyObject::none());
+                }
+                _ => {}
+            }
+        }
+        // VM-level methods that need iterable collection
+        if bbm.method_name.as_str() == "join" {
+            if let PyObjectPayload::Str(sep) = &bbm.receiver.payload {
+                if !args.is_empty() {
+                    let items = self.collect_iterable(&args[0])?;
+                    let strs: Result<Vec<String>, _> = items
+                        .iter()
+                        .map(|x| {
+                            x.as_str().map(String::from).ok_or_else(|| {
+                                ferrython_core::error::PyException::type_error(
+                                    "sequence item: expected str",
+                                )
+                            })
+                        })
+                        .collect();
+                    return Ok(PyObject::str_val(CompactString::from(
+                        strs?.join(sep.as_str()),
+                    )));
+                }
+            }
+            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) =
+                &bbm.receiver.payload
+            {
+                if !args.is_empty() {
+                    let sep = sep.clone();
+                    let mutable_result =
+                        matches!(&bbm.receiver.payload, PyObjectPayload::ByteArray(_));
+                    let items = self.collect_iterable(&args[0])?;
+                    let mut result = Vec::new();
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            result.extend_from_slice(&sep);
+                        }
+                        if let Some(data) = Self::bytes_like_data(item) {
+                            result.extend_from_slice(&data);
+                        } else {
+                            return Err(PyException::type_error(
+                                "sequence item: expected a bytes-like object",
+                            ));
+                        }
+                    }
+                    return Ok(if mutable_result {
+                        PyObject::bytearray(result)
+                    } else {
+                        PyObject::bytes(result)
+                    });
+                }
+            }
+        }
+        // VM-level list.sort with key function
+        if bbm.method_name.as_str() == "sort" {
+            if matches!(&bbm.receiver.payload, PyObjectPayload::List(_)) {
+                let mut items_vec = if let PyObjectPayload::List(items) = &bbm.receiver.payload {
+                    items.read().clone()
+                } else {
+                    Vec::new()
+                };
+                self.vm_sort(&mut items_vec)?;
+                if let PyObjectPayload::List(items) = &bbm.receiver.payload {
+                    *items.write() = items_vec;
+                }
+                return Ok(PyObject::none());
+            }
+        }
+        // Range methods
+        if let PyObjectPayload::Range(rd) = &bbm.receiver.payload {
+            let (rs, re, rst) = (rd.start, rd.stop, rd.step);
+            match bbm.method_name.as_str() {
+                "count" => {
+                    if args.is_empty() {
+                        return Err(PyException::type_error(
+                            "count() takes exactly one argument",
+                        ));
+                    }
+                    let val = args[0].to_int().unwrap_or(i64::MIN);
+                    let found = if rst > 0 {
+                        val >= rs && val < re && (val - rs) % rst == 0
+                    } else if rst < 0 {
+                        val <= rs && val > re && (rs - val) % (-rst) == 0
+                    } else {
+                        false
+                    };
+                    return Ok(PyObject::int(if found { 1 } else { 0 }));
+                }
+                "index" => {
+                    if args.is_empty() {
+                        return Err(PyException::type_error(
+                            "index() takes exactly one argument",
+                        ));
+                    }
+                    let val = args[0].to_int().unwrap_or(i64::MIN);
+                    let in_range = if rst > 0 {
+                        val >= rs && val < re && (val - rs) % rst == 0
+                    } else if rst < 0 {
+                        val <= rs && val > re && (rs - val) % (-rst) == 0
+                    } else {
+                        false
+                    };
+                    if in_range {
+                        return Ok(PyObject::int((val - rs) / rst));
+                    }
+                    return Err(PyException::value_error(format!("{} is not in range", val)));
+                }
+                _ => {}
+            }
+        }
+        // Class introspection methods
+        if let PyObjectPayload::Class(cd) = &bbm.receiver.payload {
+            match bbm.method_name.as_str() {
+                "__subclasses__" => {
+                    let subs = cd.subclasses.read();
+                    let alive: Vec<PyObjectRef> = subs.iter().filter_map(|w| w.upgrade()).collect();
+                    drop(subs);
+                    // Prune dead weak refs periodically
+                    cd.subclasses.write().retain(|w| w.strong_count() > 0);
+                    return Ok(PyObject::list(alive));
+                }
+                "mro" => {
+                    let mut mro_list = vec![bbm.receiver.clone()];
+                    mro_list.extend(cd.mro.iter().cloned());
+                    return Ok(PyObject::list(mro_list));
+                }
+                _ => {}
+            }
+        }
+        // Property descriptor methods: setter/getter/deleter
+        if ferrython_core::object::is_property_like(&bbm.receiver) {
+            if args.len() == 1 {
+                let func = args[0].clone();
+                let old_fget = Self::property_callable_field(&bbm.receiver, "fget");
+                let old_fset = Self::property_callable_field(&bbm.receiver, "fset");
+                let old_fdel = Self::property_callable_field(&bbm.receiver, "fdel");
+                let doc_from_getter = Self::property_doc_from_getter_flag(&bbm.receiver);
+                let (fget, fset, fdel, doc, new_doc_from_getter) = match bbm.method_name.as_str() {
+                    "setter" => {
+                        let doc = if doc_from_getter {
+                            ferrython_core::object::property_doc_from_getter(old_fget.as_ref())
+                        } else {
+                            ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                        };
+                        (old_fget, Some(func), old_fdel, doc, doc_from_getter)
+                    }
+                    "getter" => {
+                        let doc = if doc_from_getter {
+                            ferrython_core::object::property_doc_from_getter(Some(&func))
+                        } else {
+                            ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                        };
+                        (Some(func), old_fset, old_fdel, doc, doc_from_getter)
+                    }
+                    "deleter" => {
+                        let doc = if doc_from_getter {
+                            ferrython_core::object::property_doc_from_getter(old_fget.as_ref())
+                        } else {
+                            ferrython_core::object::property_field(&bbm.receiver, "__doc__")
+                        };
+                        (old_fget, old_fset, Some(func), doc, doc_from_getter)
+                    }
+                    _ => {
+                        return Err(PyException::attribute_error(format!(
+                            "property has no attribute '{}'",
+                            bbm.method_name
+                        )))
+                    }
+                };
+                return Self::make_property_like(
+                    &bbm.receiver,
+                    fget,
+                    fset,
+                    fdel,
+                    doc,
+                    new_doc_from_getter,
+                );
+            }
+        }
+        // namedtuple methods — delegated to builtins
+        if let PyObjectPayload::Instance(inst) = &bbm.receiver.payload {
+            if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__"))
+                || inst.attrs.read().contains_key("__deque__")
+            {
+                // deque extend/extendleft need iterable collection via VM
+                if inst.attrs.read().contains_key("__deque__")
+                    && matches!(bbm.method_name.as_str(), "extend" | "extendleft")
+                {
+                    let items = self.collect_iterable(&args[0])?;
+                    return builtins::call_method(
+                        &bbm.receiver,
+                        bbm.method_name.as_str(),
+                        &[PyObject::list(items)],
+                    );
+                }
+                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
+            }
+            // Hashlib methods — delegated to builtins
+            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.name.to_string()
+            } else {
+                String::new()
+            };
+            if matches!(
+                class_name.as_str(),
+                "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512"
+            ) {
+                return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
+            }
+        }
+        // Unbound method call: str.upper("hello") → call_method("hello", "upper", [])
+        if let PyObjectPayload::BuiltinType(tn) = &bbm.receiver.payload {
+            // type.__call__(cls, *args) → instantiate the class
+            if tn.as_str() == "type" && bbm.method_name.as_str() == "__call__" && !args.is_empty() {
+                if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                    let cls = args[0].clone();
+                    let mut rest = args[1..].to_vec();
+                    // Unpack trailing kwargs dict (produced by call_object_kw fallback)
+                    let kw = {
+                        let mut extracted = vec![];
+                        let should_pop = if let Some(last) = rest.last() {
+                            if let PyObjectPayload::Dict(map) = &last.payload {
+                                let rd = map.read();
+                                let all_str = rd.keys().all(|k| matches!(k, HashableKey::Str(_)));
+                                if all_str && !rd.is_empty() {
+                                    for (k, v) in rd.iter() {
+                                        if let HashableKey::Str(s) = k {
+                                            extracted.push((s.to_compact_string(), v.clone()));
+                                        }
+                                    }
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if should_pop {
+                            rest.pop();
+                        }
+                        extracted
+                    };
+                    return self.instantiate_class(&cls, rest, kw);
+                }
+            }
+            // Class methods (e.g., int.from_bytes, dict.fromkeys)
+            if let Some(class_method) =
+                builtins::resolve_type_class_method(tn, bbm.method_name.as_str())
+            {
+                if let PyObjectPayload::NativeFunction(nf) = &class_method.payload {
+                    if nf.name.as_str() == "dict.fromkeys"
+                        && !args.is_empty()
+                        && matches!(
+                            args[0].payload,
+                            PyObjectPayload::Generator(_)
+                                | PyObjectPayload::Instance(_)
+                                | PyObjectPayload::Iterator(_)
+                        )
+                    {
+                        let mut resolved = Vec::with_capacity(args.len());
+                        resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                        resolved.extend_from_slice(&args[1..]);
+                        return (nf.func)(&resolved);
+                    }
+                    return (nf.func)(&args);
+                }
+            }
+            if matches!(tn.as_str(), "bytes" | "bytearray") && bbm.method_name.as_str() == "hex" {
+                let (instance, rest_args) = Self::builtin_type_instance_operand(
+                    tn.as_str(),
+                    bbm.method_name.as_str(),
+                    &args,
+                )?;
+                return builtins::call_method(&instance, bbm.method_name.as_str(), &rest_args);
+            }
+            if !args.is_empty() {
+                let instance = args[0].clone();
+                let rest_args = if args.len() > 1 {
+                    args[1..].to_vec()
+                } else {
+                    vec![]
+                };
+                return builtins::call_method(&instance, bbm.method_name.as_str(), &rest_args);
+            }
+        }
+        // list.extend with generator/lazy iterator/instance needs VM-level collection
+        if bbm.method_name.as_str() == "extend" && !args.is_empty() {
+            if matches!(bbm.receiver.payload, PyObjectPayload::List(_)) {
+                if matches!(
+                    args[0].payload,
+                    PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
+                ) || (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
+                    let data = d.read();
+                    matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                        | IteratorData::MapOne { .. }
+                        | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                        | IteratorData::FilterFalse { .. }
+                        | IteratorData::Sentinel { .. })
+                })) {
+                    let items = self.collect_iterable(&args[0])?;
+                    return builtins::call_method(
+                        &bbm.receiver,
+                        "extend",
+                        &[PyObject::list(items)],
+                    );
+                }
+            }
+        }
+        // list.sort(key=, reverse=) needs VM for key function calls
+        if bbm.method_name.as_str() == "sort" {
+            if let PyObjectPayload::List(items) = &bbm.receiver.payload {
+                // Extract key and reverse from trailing kwargs dict
+                let mut key_fn: Option<PyObjectRef> = None;
+                let mut reverse = false;
+                for arg in &args {
+                    if let PyObjectPayload::Dict(d) = &arg.payload {
+                        let rd = d.read();
+                        if let Some(v) =
+                            rd.get(&HashableKey::str_key(CompactString::from("reverse")))
+                        {
+                            reverse = v.is_truthy();
+                        }
+                        if let Some(v) = rd.get(&HashableKey::str_key(CompactString::from("key"))) {
+                            if !matches!(v.payload, PyObjectPayload::None) {
+                                key_fn = Some(v.clone());
+                            }
+                        }
+                    }
+                }
+                if let Some(key) = key_fn {
+                    // Decorate-sort-undecorate (Schwartzian transform)
+                    let mut w = items.write();
+                    let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+                    for item in w.iter() {
+                        let k = self.call_object(key.clone(), vec![item.clone()])?;
+                        decorated.push((k, item.clone()));
+                    }
+                    let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
+                    let mut indices: Vec<usize> = (0..decorated.len()).collect();
+                    for i in 1..indices.len() {
+                        let mut j = i;
+                        while j > 0 {
+                            if self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])? {
+                                indices.swap(j, j - 1);
+                                j -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    w.clear();
+                    for i in indices {
+                        w.push(decorated[i].1.clone());
+                    }
+                    if reverse {
+                        w.reverse();
+                    }
+                    return Ok(PyObject::none());
+                } else {
+                    let mut w = items.write();
+                    let mut v: Vec<_> = w.drain(..).collect();
+                    self.vm_sort(&mut v)?;
+                    if reverse {
+                        v.reverse();
+                    }
+                    w.extend(v);
+                    return Ok(PyObject::none());
+                }
+            }
+        }
+        // str.format with positional args: needs VM for __str__ on instances
+        if bbm.method_name.as_str() == "format" {
+            if let PyObjectPayload::Str(s) = &bbm.receiver.payload {
+                return self.vm_str_format(s, &args);
+            }
+        }
+        // str.format_map with dict subclass: needs VM for __missing__ calls
+        if bbm.method_name.as_str() == "format_map" && !args.is_empty() {
+            if let PyObjectPayload::Str(s) = &bbm.receiver.payload {
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    if let Some(ref ds) = inst.dict_storage {
+                        return self.vm_format_map(s, &args[0], ds, &inst.class);
+                    }
+                }
+                // Handle defaultdict (Dict payload with __defaultdict_factory__)
+                if let PyObjectPayload::Dict(m) = &args[0].payload {
+                    let factory_key = ferrython_core::types::HashableKey::str_key(
+                        CompactString::from("__defaultdict_factory__"),
+                    );
+                    if m.read().contains_key(&factory_key) {
+                        return self.vm_format_map_dict(s, &args[0], m);
+                    }
+                }
+            }
+        }
+        builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args)
+    }
+}
