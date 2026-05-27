@@ -1058,6 +1058,7 @@ Last updated: 2026-05-28T03:42:09+08:00
   - commit：`ba62cf8 refactor: split iterable builtin helpers`。
   - 第三十八批拆出 `property_receiver.rs`、`property_kwargs.rs` 和 `property_init.rs`：builtin descriptor receiver 校验、trailing kwargs dict 拆包、property `__init__` attrs/doc 初始化从 `property_helpers.rs` 移出，`property_helpers.rs` 从约 205 行降到约 84 行；新文件分别约 42、28 和 70 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 property split smoke，覆盖 property getter/setter/deleter、property getter clone/doc、bytes subclass descriptor receiver 和 bound method kwargs 拆包。
+  - commit：`27f1858 refactor: split property call helpers`。
 
 ## 修复原则
 
