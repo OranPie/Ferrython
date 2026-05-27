@@ -48,8 +48,9 @@ Last updated: 2026-05-27
   `sysconfig`, `grp`, `pwd`, `os.path`, sys stdio objects, and the `os` module
   body. The extracted `os` module has started internal layering with
   `terminal_size`, `stat_result`, `scandir`, `environ`, `PathLike` / `fspath`,
-  and `walk` helpers split under `sys_modules/os/`. The remaining top-level
-  `sys_modules.rs` owns `sys` state, sys module assembly, and
+  `walk`, filesystem operation, process/environment, and permission/fd helpers
+  split under `sys_modules/os/`. The remaining top-level `sys_modules.rs` owns
+  `sys` state, sys module assembly, and
   exception/traceback display helpers.
 - Phase 2 network module mechanical splits are now complete at the top-level
   bucket. The earlier low-coupling back half of
@@ -148,17 +149,15 @@ architecture concerns from compatibility fixes.
   `namedtuple.rs`, and `user_types.rs` are medium-sized focused files after the
   top-level `collections.rs` bucket split; evaluate internal splits only if
   future changes need them.
-- `crates/ferrython-stdlib/src/time_modules/datetime.rs` is about 1.7k lines
-  after the top-level time split plus focused date/timedelta internal splits;
-  evaluate more datetime/time/timezone splits only if further edits in that
-  area justify the risk.
+- `crates/ferrython-stdlib/src/time_modules/datetime.rs` has dropped out of the
+  current top 25 after focused date/timedelta/classmethod/instance/time/timezone
+  internal splits; evaluate more datetime splits only if future edits need them.
 - `crates/ferrython-stdlib/src/type_modules.rs` has dropped out of the current
   top 25 after the first type module split; the remaining `collections.abc`
   body is about 1.2k lines and can be split internally later if needed.
-- `crates/ferrython-stdlib/src/sys_modules/os.rs` is about 1.5k lines after
+- `crates/ferrython-stdlib/src/sys_modules/os.rs` is about 1.2k lines after
   internal helper splits and has dropped out of the current top 25 longest Rust
-  files; good next targets are process/fd helpers only if future os edits need
-  them.
+  files; it now primarily acts as os module assembly plus inline one-off stubs.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.
