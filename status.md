@@ -995,6 +995,7 @@ Last updated: 2026-05-28T00:15:52+08:00
   - commit：`6bd024e refactor: split attribute builtin calls`。
   - 第十七批拆出 `builtin_scope.rs`：`globals/locals/vars/dir` scope/introspection builtins 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 368 行降到约 274 行；新 `builtin_scope.rs` 约 122 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 scope builtin 和 dir/vars object smoke。
+  - commit：`206ffff refactor: split scope builtin calls`。
 
 ## 修复原则
 
