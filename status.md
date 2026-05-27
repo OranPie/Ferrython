@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T07:42:47+08:00
+Last updated: 2026-05-28T07:56:47+08:00
 
 ## 代码质量重构进度
 
@@ -1115,6 +1115,8 @@ Last updated: 2026-05-28T07:42:47+08:00
   - 第五十二批完成 core object attribute lookup 主要分支拆分：新增 `object/methods_attr/super_attrs.rs`，拆出 `super()` attribute proxy、`super.__getattribute__`、runtime MRO walk、descriptor binding、builtin/exception base method fallback 和 object fallback dunder synthesis；`methods_attr.rs` 从约 1904 行降到约 1418 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 normal `super()` method binding、classmethod/staticmethod binding、builtin list base append、exception base `__str__`、`super.__getattribute__`、object `__setattr__`/`__delattr__` 和 metaclass super smoke。
   - commit：`92d3408 refactor: split super attribute handling`。
+  - 第五十三批继续 `sys_modules/os` 分层：新增 `os/fd.rs`、`os/misc.rs` 和 `os/system_info.rs`，并扩展 `os/process.rs`、`os/stat.rs`，把 fd/open/read/write/fdopen/fstat/ftruncate/lseek/fsync、urandom/access/env/fsencode/fsdecode、uname/times/get_terminal_size、Unix uid/gid/waitpid/W* helper 从 `os.rs` 注册表移出；`os.rs` 从约 1206 行降到约 189 行，继续保持在 `CODE_HEALTH_BASELINE.md` top 25 之外，最大新子文件为 `os/fd.rs` 约 548 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `os.open/write/read/lseek/fstat/fdopen/urandom/access/fsencode/fsdecode/getpid/getppid/remove` smoke。
 
 ## 修复原则
 
