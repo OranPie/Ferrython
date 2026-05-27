@@ -341,15 +341,16 @@ Status:
   function helpers, print/format helpers, closure frame installation, locals
   collection, class instantiation, `super()` construction, Python function
   argument binding/frame setup, keyword-call dispatch, object-call dispatch,
-  builtin function/type dispatch, builtin bound-method dispatch, iterable /
-  container predicate builtins, numeric/conversion dunder-aware builtins, enum
+  builtin function/type dispatch, builtin bound-method dispatch, core iterable
+  builtins, numeric/conversion dunder-aware builtins, enum
   class instantiation, dict-subclass storage population, and generator-style
-  builtin bound-method dispatch. Collection constructor builtins have also
-  moved out of the iterable dispatch file.
+  builtin bound-method dispatch. Collection constructor builtins and predicate /
+  class-check builtins have also moved out of the iterable dispatch file.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
-  lines. `builtin_iterables.rs` now owns iterable/container predicate builtins,
+  lines. `builtin_iterables.rs` now owns core iterator/sum/sort/min/max/reverse/
+  enumerate/zip builtins,
   `builtin_numeric.rs` owns `len` / numeric conversion / dunder-aware truthiness
   builtins, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
   `native_kw.rs` owns native/closure/partial keyword fallback dispatch, and
@@ -358,7 +359,8 @@ Status:
   dict-subclass storage population. `builtin_bound_generators.rs` now owns
   generator / coroutine / async-generator bound methods and AsyncGenAwaitable
   driving. `builtin_collections.rs` now owns `list` / `tuple` / `set` /
-  `frozenset` / `dict` collection constructor builtins.
+  `frozenset` / `dict` collection constructor builtins. `builtin_predicates.rs`
+  now owns `any` / `all` / `isinstance` / `issubclass`.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/

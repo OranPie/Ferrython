@@ -14,6 +14,7 @@ mod builtin_collections;
 mod builtin_iterables;
 mod builtin_kw;
 mod builtin_numeric;
+mod builtin_predicates;
 mod bytes_constructor;
 mod class_abstract;
 mod class_enum;

@@ -30,6 +30,9 @@ impl VirtualMachine {
         ) {
             return self.call_collection_builtin(name.as_str(), args);
         }
+        if matches!(name.as_str(), "any" | "all" | "isinstance" | "issubclass") {
+            return self.call_predicate_builtin(name.as_str(), args);
+        }
         if matches!(
             name.as_str(),
             "map"
@@ -38,10 +41,6 @@ impl VirtualMachine {
                 | "next"
                 | "sum"
                 | "sorted"
-                | "any"
-                | "all"
-                | "isinstance"
-                | "issubclass"
                 | "min"
                 | "max"
                 | "reversed"
