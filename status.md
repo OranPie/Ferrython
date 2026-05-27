@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T18:26:28+08:00
+Last updated: 2026-05-27T18:42:23+08:00
 
 ## 代码质量重构进度
 
@@ -442,8 +442,9 @@ Last updated: 2026-05-27T18:26:28+08:00
   - 新增 `crates/ferrython-stdlib/src/registry.rs`，`lib.rs` 的 `load_module()` 现在委托到 registry 边界。
   - `lib.rs` 从约 405 行降到约 95 行；registry 先按 math/system/text/serialization/network/testing 等 bucket 拆成私有 resolver，保持原 factory 调用和 pure-Python fallback 行为。
   - registry 已继续拆成 `registry/{core,platform,protocols,aliases,extras}.rs`；root `registry.rs` 只保留 resolver 顺序。
+  - `registry/core`、`registry/platform`、`registry/protocols` 已进一步拆成更细 resolver 文件，例如 `core/{math,system,text,collections,serialization,filesystem,time,type_system,misc}.rs`、`platform/{introspection,concurrency,os_level,async_modules,import_system}.rs`、`protocols/{network,xml,database,email,compression}.rs`。
   - `CODE_HEALTH_BASELINE.md` 已刷新；`registry.rs` 已退出 match-density 和 item-density 热点列表。
-  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`target/debug/ferrython -c "import ...; print('registry smoke ok')"` 和 pure-Python fallback smoke。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`、新构建后的 `target/debug/ferrython -c "import ...; print('registry smoke ok')"` 和 pure-Python fallback smoke。
 - 后续重构队列：
   - `text_modules/regex_impl/functions.rs` 已聚合化；后续只在修改 matching/substitution 逻辑时继续细分对应子文件。
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
@@ -456,7 +457,7 @@ Last updated: 2026-05-27T18:26:28+08:00
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；`counter.rs`、`operator.rs` 和 `user_types.rs` 已完成当前低风险内部分层，后续只在需要时评估 `namedtuple.rs` 或剩余 Counter class body 是否继续细分。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
-  - Phase3 下一步：评估是否把 registry bucket 进一步拆成更细 `math/system/text/...` 文件，或改为 `ModuleSpec` 静态表；不要引入 `phf`，除非 import-resolution profile 证明有必要。
+  - Phase3 下一步：评估是否拆分剩余 `registry/extras.rs` 和 `registry/aliases.rs`，或改为 `ModuleSpec` 静态表；不要引入 `phf`，除非 import-resolution profile 证明有必要。
 
 ## 已提交成果
 

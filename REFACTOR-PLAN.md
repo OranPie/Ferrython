@@ -268,8 +268,10 @@ Status:
 - Current registry functions are grouped resolvers that preserve the previous
   factory calls and fallback behavior. The registry root has been split into
   `registry/{core,platform,protocols,aliases,extras}.rs`, leaving the top-level
-  registry file as resolver ordering only. Next, evaluate finer bucket files or
-  static `ModuleSpec` slices once the boundary is stable.
+  registry file as resolver ordering only. `core`, `platform`, and `protocols`
+  have also been split into fine-grained resolver files. Next, evaluate
+  splitting the remaining `extras`/`aliases` buckets or static `ModuleSpec`
+  slices once the boundary is stable.
 
 Initial target:
 
