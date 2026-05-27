@@ -18,7 +18,10 @@ mod vm_helpers;
 mod vm_import;
 mod vm_init;
 mod vm_iter_fast;
+mod vm_itertools_bridge;
 mod vm_method_cache;
+mod vm_rawio;
+mod vm_regex_bridge;
 mod vm_trace;
 pub(crate) mod vm_truth;
 
