@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T23:48:51+08:00
+Last updated: 2026-05-28T00:05:26+08:00
 
 ## 代码质量重构进度
 
@@ -990,6 +990,8 @@ Last updated: 2026-05-27T23:48:51+08:00
   - 第十五批拆出 `builtin_computation.rs`：`sum/sorted/min/max` computation builtins 从 `builtin_iterables.rs` 移出，`builtin_iterables.rs` 从约 472 行降到约 207 行；新 `builtin_computation.rs` 约 285 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 sum computation、sort/minmax 和 computation fallback smoke。
   - commit：`c6b3a55 refactor: split computation builtin calls`。
+  - 第十六批拆出 `builtin_attrs.rs`：`getattr/setattr/delattr` attribute protocol builtins 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 535 行降到约 368 行；新 `builtin_attrs.rs` 约 182 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 basic attr builtin 和 custom setattr smoke；property/descriptor 深层语义保留既有行为，不混入本次纯拆分修复。
 
 ## 修复原则
 

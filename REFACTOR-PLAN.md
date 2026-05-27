@@ -346,7 +346,8 @@ Status:
   class instantiation, dict-subclass storage population, and generator-style
   builtin bound-method dispatch. Collection constructor builtins and predicate /
   class-check builtins have also moved out of the iterable dispatch file, along
-  with computation builtins such as `sum`, `sorted`, `min`, and `max`.
+  with computation builtins such as `sum`, `sorted`, `min`, and `max`. Attribute
+  protocol builtins have moved out of the generic builtin dispatch file.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
   `object_call.rs` is now only the top-level callable dispatcher, about 450
@@ -363,6 +364,7 @@ Status:
   `frozenset` / `dict` collection constructor builtins. `builtin_predicates.rs`
   now owns `any` / `all` / `isinstance` / `issubclass`.
   `builtin_computation.rs` now owns `sum` / `sorted` / `min` / `max`.
+  `builtin_attrs.rs` now owns `getattr` / `setattr` / `delattr`.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/

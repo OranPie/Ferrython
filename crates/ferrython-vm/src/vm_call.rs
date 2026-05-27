@@ -7,6 +7,7 @@ use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjec
 use std::rc::Rc;
 
 mod ast_nodes;
+mod builtin_attrs;
 mod builtin_bound_call;
 mod builtin_bound_generators;
 mod builtin_call;
