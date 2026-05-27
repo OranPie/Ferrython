@@ -4,6 +4,7 @@ use ferrython_core::object::{
     make_builtin, new_shared_fx, InstanceData, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 use super::{date_add, make_datetime_instance};
@@ -256,6 +257,64 @@ pub(super) fn make_timedelta(
     total_secs: f64,
 ) -> PyResult<PyObjectRef> {
     make_timedelta_with_ops(days, seconds, microseconds, total_secs)
+}
+
+pub(super) fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)
+    let mut days = 0i64;
+    let mut seconds = 0i64;
+    let mut microseconds = 0i64;
+    if !args.is_empty() {
+        days = args[0].to_int().unwrap_or(0);
+    }
+    if args.len() > 1 {
+        seconds = args[1].to_int().unwrap_or(0);
+    }
+    if args.len() > 2 {
+        microseconds = args[2].to_int().unwrap_or(0);
+    }
+    // Check for kwargs dict as last arg
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(kw) = &last.payload {
+            let r = kw.read();
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("days"))) {
+                days = v.as_int().unwrap_or(0);
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("seconds"))) {
+                seconds = v.as_int().unwrap_or(0);
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microseconds"))) {
+                microseconds = v.as_int().unwrap_or(0);
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("milliseconds"))) {
+                microseconds += v.as_int().unwrap_or(0) * 1000;
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minutes"))) {
+                seconds += v.as_int().unwrap_or(0) * 60;
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hours"))) {
+                seconds += v.as_int().unwrap_or(0) * 3600;
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("weeks"))) {
+                days += v.as_int().unwrap_or(0) * 7;
+            }
+        }
+    }
+    // Normalize: carry microseconds to seconds to days.
+    seconds += microseconds / 1_000_000;
+    microseconds %= 1_000_000;
+    if microseconds < 0 {
+        microseconds += 1_000_000;
+        seconds -= 1;
+    }
+    days += seconds / 86400;
+    seconds %= 86400;
+    if seconds < 0 {
+        seconds += 86400;
+        days -= 1;
+    }
+    let total_secs = days as f64 * 86400.0 + seconds as f64 + microseconds as f64 / 1_000_000.0;
+    make_timedelta(days, seconds, microseconds, total_secs)
 }
 
 fn timedelta_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -95,8 +95,10 @@ Last updated: 2026-05-27
   `time_modules/`; the root `time_modules.rs` now owns only the `time` module
   implementation and child module declarations/re-exports. The larger
   `time_modules/datetime.rs` file has started internal layering with
-  date and timedelta construction/arithmetic/comparison helpers split under
-  `time_modules/datetime/`.
+  date, timedelta construction/arithmetic/comparison, datetime classmethod,
+  datetime instance-method, time-object, and timezone helpers split under
+  `time_modules/datetime/`; the root datetime file is now the module assembly
+  shell.
 - Phase 2 compression module mechanical splits are complete at the top-level
   bucket. `gzip`, `zipfile`, `bz2`, `lzma`, and `tarfile` now live under
   `compression_modules/`; the root `compression_modules.rs` is a small

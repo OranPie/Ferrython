@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:55:55+08:00
+Last updated: 2026-05-27T09:02:47+08:00
 
 ## 代码质量重构进度
 
@@ -29,6 +29,12 @@ Last updated: 2026-05-27T08:55:55+08:00
   - 新增 `introspection_modules/ast_convert/helpers.rs`，拆出 constant/operator/context/arguments/keyword/alias/comprehension 转换 helper。
   - 新增 `introspection_modules/ast_convert/validation.rs`，拆出 Load/Store/Del context、arguments 和 comprehension 校验。
   - `ast_convert.rs` 从约 1486 行降到约 950 行，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `datetime` 内部分层：
+  - 新增 `time_modules/datetime/classmethods.rs`，拆出 now/today/fromtimestamp/combine/fromordinal/fromisoformat/strptime 等 classmethod helper。
+  - 新增 `time_modules/datetime/instance.rs`，拆出 datetime instance 构造和 isoformat/strftime/astimezone/replace 等 instance method 安装。
+  - 新增 `time_modules/datetime/time_obj.rs` 和 `timezone.rs`，拆出 `time` object 构造及 UTC timezone instance helper。
+  - `datetime.rs` 从约 1668 行降到约 410 行，成为 datetime/date/timezone/tzinfo module assembly shell，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 regex match helper 兼容补丁：
   - `6175572 fix: re-export regex match helpers`
