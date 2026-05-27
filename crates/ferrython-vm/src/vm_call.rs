@@ -45,6 +45,7 @@ mod native_fallback_kw;
 mod native_kw;
 mod object_call;
 mod object_kw;
+mod object_native_call;
 mod print_format;
 mod property_helpers;
 mod sort_helpers;

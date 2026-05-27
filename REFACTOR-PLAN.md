@@ -353,8 +353,9 @@ Status:
   builtins, and NamedTuple construction.
   `vm_call.rs` dropped from the previous health-baseline 7620 lines to about
   120 lines and now acts as the module-entry shell.
-  `object_call.rs` is now only the top-level callable dispatcher, about 450
-  lines. `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
+  `object_call.rs` is now only the top-level callable dispatcher, about 193
+  lines, with VM-aware native function/closure calls moved to
+  `object_native_call.rs`. `builtin_iterables.rs` now owns core iterator/reverse/enumerate/zip
   builtins,
   `builtin_numeric.rs` owns `len` / numeric conversion / dunder-aware truthiness
   builtins, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
