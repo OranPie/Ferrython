@@ -10,10 +10,11 @@ Last updated: 2026-05-27
   `text_modules.rs` is now a small module/re-export shell; `regex_impl.rs`
   has been split internally into match objects, compiled/scanner methods,
   classes/flags, pattern conversion/validation helpers, `_sre` helpers, and
-  module-level `re.*` functions. The regex pattern helper hotspot has started
-  another internal layer with object/subject/pattern extraction helpers and
-  debug dump/output helpers, regex conversion helpers, and error/group metadata
-  helpers split under `regex_impl/pattern/`.
+  module-level `re.*` functions. The regex pattern helper hotspot has been
+  split into object/subject/pattern extraction, debug dump/output, regex
+  conversion, error/group metadata, validation, and engine/flag helper files
+  under `regex_impl/pattern/`; the root pattern file is now a small aggregation
+  shell.
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
@@ -120,9 +121,10 @@ architecture concerns from compatibility fixes.
   `namedtuple.rs`, and `user_types.rs` are medium-sized focused files after the
   top-level `collections.rs` bucket split; evaluate internal splits only if
   future changes need them.
-- `crates/ferrython-stdlib/src/time_modules/datetime.rs` is about 2.6k lines
-  after the top-level time split; evaluate focused internal datetime/date/
-  timedelta splits only if further edits in that area justify the risk.
+- `crates/ferrython-stdlib/src/time_modules/datetime.rs` is about 1.7k lines
+  after the top-level time split plus focused date/timedelta internal splits;
+  evaluate more datetime/time/timezone splits only if further edits in that
+  area justify the risk.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.

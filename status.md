@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T07:56:41+08:00
+Last updated: 2026-05-27T08:01:13+08:00
 
 ## 代码质量重构进度
 
@@ -53,9 +53,14 @@ Last updated: 2026-05-27T07:56:41+08:00
 - 已继续 regex pattern conversion helper 内部分层：
   - 新增 `text_modules/regex_impl/pattern/convert.rs`，拆出 Python regex 到 Rust regex 转换、scoped ASCII flag 转换、repeat quantifier 规范化、named unicode escape 转换和 replacement template 转换 helper。
   - `pattern.rs` 从约 2016 行降到约 1470 行；新 `convert.rs` 约 564 行。
-- 已继续 regex pattern error helper 内部分层：
+- 已完成并提交 regex pattern error helper 内部分层：
+  - `47b690b refactor: split regex error helpers`
   - 新增 `text_modules/regex_impl/pattern/error.rs`，拆出 `re.error` 构造、pattern/group metadata helper 和 decimal limit parser。
   - `pattern.rs` 从约 1470 行降到约 1364 行；新 `error.rs` 约 120 行。
+- 已继续 regex pattern validation/engine helper 内部分层：
+  - 新增 `text_modules/regex_impl/pattern/validate.rs`，拆出 regex pattern 语法校验、inline flag 校验和 replacement template 校验 helper。
+  - 新增 `text_modules/regex_impl/pattern/engine.rs`，拆出 inline/global flag 处理、verbose stripping、regex/fancy-regex 构建、fancy capture helpers、offset/index 转换和 non-leading flag warning helper。
+  - `pattern.rs` 从约 1364 行降到约 16 行聚合模块；最大新子文件为 `validate.rs`，约 892 行。
 - 已完成并提交 regex `_sre` 拆分：
   - `59cf99a refactor: split sre module helpers`
   - `text_modules/regex_impl/sre.rs` 拆出 `_sre` module factory、大小写 helper 和 `_sre.compile` stub 校验。
@@ -251,6 +256,7 @@ Last updated: 2026-05-27T07:56:41+08:00
   - regex pattern debug helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex pattern conversion helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex pattern error helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex pattern validation/engine helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex `_sre` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - regex module functions 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial base64 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -283,7 +289,7 @@ Last updated: 2026-05-27T07:56:41+08:00
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
-  - 继续评估 `text_modules/regex_impl/functions.rs` 和 `pattern.rs` 内部是否还值得按 search/sub/compile/syntax 进一步分层。
+  - 继续评估 `text_modules/regex_impl/functions.rs` 是否还值得按 search/sub/compile/cache 进一步分层；`pattern.rs` 根文件已完成聚合化。
   - 继续评估 `serial_modules/pickle_module/read.rs` 是否按 protocol0/protocol2/global reduce helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 和 `unittest.rs` 是否需要内部分层。
