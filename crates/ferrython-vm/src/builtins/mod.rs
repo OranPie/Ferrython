@@ -1,5 +1,6 @@
 //! Built-in functions available in Python's builtins module.
 
+mod core_abc;
 pub(crate) mod core_fns;
 mod file_io;
 mod instance_methods;
@@ -14,6 +15,7 @@ use ferrython_core::object::{
 };
 use indexmap::IndexMap;
 
+use core_abc::{builtin_isinstance, builtin_issubclass};
 use core_fns::*;
 use file_io::*;
 use instance_methods::*;
