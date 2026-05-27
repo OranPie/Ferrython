@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T03:00:41+08:00
+Last updated: 2026-05-28T03:11:09+08:00
 
 ## 代码质量重构进度
 
@@ -1044,6 +1044,8 @@ Last updated: 2026-05-28T03:00:41+08:00
   - 第三十三批拆出 `class_builtin_values.rs`、`class_builtin_defaults.rs`、`class_builtin_numeric.rs` 和 `class_builtin_sets.rs`：builtin-base subclass 的统一 value builder、默认值、数值 coercion 与 set/frozenset materialization 从 `class_builtin_subclass.rs` 移出，`class_builtin_subclass.rs` 从约 256 行降到约 77 行；新文件分别约 82、17、53 和 45 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin subclass value smoke。探测到 builtin subclass 直接比较仍有既有兼容差异，例如 `class C(complex): pass; C(1, 2) == 1 + 2j` 当前为 false，但 `complex(C(1, 2))` 的底层值正确；本次纯拆分未混入语义修复。
   - commit：`5eb7e5b refactor: split builtin subclass value helpers`。
+  - 第三十四批拆出 `ast_nodes_lookup.rs`、`ast_nodes_populate.rs`、`print_file.rs` 和 `print_format_map.rs`：AST legacy/class lookup 与 attribute population 从 `ast_nodes.rs` 移出，`ast_nodes.rs` 从约 227 行降到约 72 行；print target/file-like output 与 `format_map` helper 从 `print_format.rs` 拆成 focused modules，并删除空壳 `print_format.rs`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 AST constructor/duplicate-arg、print file-like 和 `format_map` dict smoke。探测到 `defaultdict(lambda: 'Y')` 构造仍有既有兼容差异，本次纯拆分未混入语义修复。
 
 ## 修复原则
 

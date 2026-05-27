@@ -359,6 +359,10 @@ Status:
   `object_native_special.rs` owns AST/type/property native special cases,
   `object_native_iter.rs` owns iterable/regex/path native adaptations, and
   `object_native_finish.rs` owns NativeClosure calls and deferred-result flushing.
+  AST node call support now separates lookup/legacy-name helpers,
+  attribute-population validation, and the AST instantiation entry.
+  Print and format-map helpers are split between `print_file.rs` and
+  `print_format_map.rs`.
   `function_call.rs` owns positional Python function
   calls, `function_kw_call.rs` owns Python function keyword binding, and
   `function_fast.rs` owns the one-arg borrowed-frame fast path.

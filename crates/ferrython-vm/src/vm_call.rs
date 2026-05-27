@@ -7,6 +7,8 @@ use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjec
 use std::rc::Rc;
 
 mod ast_nodes;
+mod ast_nodes_lookup;
+mod ast_nodes_populate;
 mod builtin_attrs;
 mod builtin_bound_call;
 mod builtin_bound_class;
@@ -74,7 +76,8 @@ mod object_native_call;
 mod object_native_finish;
 mod object_native_iter;
 mod object_native_special;
-mod print_format;
+mod print_file;
+mod print_format_map;
 mod property_helpers;
 mod sort_helpers;
 mod str_fast;
