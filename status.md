@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T10:19:54+08:00
+Last updated: 2026-05-27T10:29:21+08:00
 
 ## 代码质量重构进度
 
@@ -85,6 +85,11 @@ Last updated: 2026-05-27T10:19:54+08:00
   - `5fe473c refactor: split regex module functions`
   - `text_modules/regex_impl/functions.rs` 拆出 module-level `re.match/search/fullmatch/findall/finditer/sub/subn/split/compile/escape` 实现、simple dot repeat fast path、sub/subn plain `$` helper 和 callable replacement helper。
   - `regex_impl.rs` 从约 1290 行降到约 117 行，成为常量、子模块声明、cache 和 `create_re_module()` 入口文件。
+- 已继续 regex module functions 内部分层：
+  - 新增 `text_modules/regex_impl/functions/{simple,matching,substitution,compile,escape}.rs`，分别承载 simple fast paths、match/search/find 系列、sub/subn/split、compile 和 escape 逻辑。
+  - `text_modules/regex_impl/functions.rs` 从约 1176 行降到约 12 行聚合模块；最大新子文件约 412 行。
+  - `CODE_HEALTH_BASELINE.md` 已刷新，`regex_impl/functions.rs` 退出当前 match-density 热点列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 serial base64 拆分：
   - `5ea27eb refactor: split base64 serial module`
   - `serial_modules/base64_module.rs` 拆出 `base64` module factory、base16/base32/ascii85/base85/base64 编解码实现、bytes-like 提取 helper 和 file-like encode/decode helper。
@@ -420,6 +425,7 @@ Last updated: 2026-05-27T10:19:54+08:00
   - collections Counter/defaultdict 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - collections Counter 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - serial json parser 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - regex module functions 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - network socket object I/O/lifecycle 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - crypto secrets/uuid 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - time zoneinfo/_strptime 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -430,7 +436,7 @@ Last updated: 2026-05-27T10:19:54+08:00
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
-  - 继续评估 `text_modules/regex_impl/functions.rs` 是否还值得按 search/sub/compile/cache 进一步分层；`pattern.rs` 根文件已完成聚合化。
+  - `text_modules/regex_impl/functions.rs` 已聚合化；后续只在修改 matching/substitution 逻辑时继续细分对应子文件。
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig 是否继续分层，以及 `unittest.rs` 是否需要内部分层。

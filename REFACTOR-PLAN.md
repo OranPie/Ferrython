@@ -14,7 +14,8 @@ Last updated: 2026-05-27
   split into object/subject/pattern extraction, debug dump/output, regex
   conversion, error/group metadata, validation, and engine/flag helper files
   under `regex_impl/pattern/`; the root pattern file is now a small aggregation
-  shell.
+  shell. The regex module-level function file has also been split into
+  matching, substitution, compile, escape, and simple fast-path helper files.
 - Phase 2 introspection module mechanical splits are complete. The top-level
   `introspection_modules.rs` is now a small module/re-export shell.
 - `_ast` implementation is being split internally into node/class helpers,
