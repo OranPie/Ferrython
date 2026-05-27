@@ -371,7 +371,10 @@ Status:
   `native_fallback_kw.rs` owns partial/exception/instance/final fallback keyword
   calls. `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
   `class_enum.rs` and `class_storage.rs` now own enum construction/lookup and
-  dict-subclass storage population. `builtin_bound_fast.rs` now owns direct
+  dict-subclass storage population. `class_dataclass.rs`, `class_namedtuple_init.rs`,
+  and `class_post_init.rs` now own dataclass construction, namedtuple field
+  population, and user-init/post-constructor attribute handling.
+  `builtin_bound_fast.rs` now owns direct
   primitive-receiver bound-method fast paths, `builtin_bound_iter.rs` owns
   iterator/range bound methods, and `builtin_bound_generators.rs` now owns
   generator / coroutine / async-generator bound methods and AsyncGenAwaitable
