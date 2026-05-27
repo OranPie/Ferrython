@@ -119,8 +119,9 @@ Last updated: 2026-05-27
   internally into Namespace helpers, ArgumentParser setup/bridge methods, and
   parse core files.
 - Phase 2 serialization module internals have started. `json_module.rs` now
-  keeps module assembly plus dump/load hooks, while JSON value parsing lives in
-  `serial_modules/json_module/parser.rs`.
+  keeps module assembly plus load/dump file-object hooks, while JSON value
+  parsing lives in `serial_modules/json_module/parser.rs` and dumps/encoder
+  serialization helpers live in `serial_modules/json_module/serialize.rs`.
 - Phase 2 crypto module internals have started. `crypto_modules.rs` still owns
   hashlib/HMAC shared digest logic, while `secrets` and `uuid` now live under
   `crypto_modules/`.

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T10:12:56+08:00
+Last updated: 2026-05-27T10:16:33+08:00
 
 ## 代码质量重构进度
 
@@ -213,6 +213,11 @@ Last updated: 2026-05-27T10:12:56+08:00
 - 已继续 `serial_modules/json_module` 内部分层：
   - 新增 `serial_modules/json_module/parser.rs`，拆出 JSON value/string/number/array/object parser 和 whitespace scanner。
   - `json_module.rs` 从约 1112 行降到约 889 行，保留 module assembly、dump/load hooks 和 encoder/decoder submodule factories；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `serial_modules/json_module` 序列化内部分层：
+  - 新增 `serial_modules/json_module/serialize.rs`，拆出 `json.dumps`、ensure_ascii 状态、字符串 escape、pretty/compact serializer、sort/default fallback 和 default callable helper。
+  - `json_module.rs` 从约 889 行降到约 356 行，保留 json/json.encoder/json.decoder module assembly、`loads` hooks 和 file-like `dump/load`。
+  - `CODE_HEALTH_BASELINE.md` 已刷新，`json_module.rs` 退出当前 match-density 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已继续 `network_modules/socket_module/object` 内部分层：
   - 新增 `socket_module/object/io.rs`，拆出 send/sendall/recv、UDP sendto/recvfrom 和 makefile wrapper 方法安装。
