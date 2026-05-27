@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T02:43:42+08:00
+Last updated: 2026-05-28T02:46:27+08:00
 
 ## 代码质量重构进度
 
@@ -1037,6 +1037,7 @@ Last updated: 2026-05-28T02:43:42+08:00
   - commit：`ee84af5 refactor: split numeric dunder helpers`。
   - 第三十一批拆出 `builtin_sum.rs` 和 `builtin_computation_order.rs`：`sum()` fast paths 与 `sorted/min/max` helpers 从 `builtin_computation.rs` 移出，`builtin_computation.rs` 从约 285 行降到约 20 行；新文件分别约 221 和 54 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 computation smoke。
+  - commit：`ceae1e3 refactor: split computation helpers`。
 
 ## 修复原则
 
