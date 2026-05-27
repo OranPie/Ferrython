@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:44:42+08:00
+Last updated: 2026-05-27T08:48:28+08:00
 
 ## 代码质量重构进度
 
@@ -288,6 +288,13 @@ Last updated: 2026-05-27T08:44:42+08:00
 - 已完成 `fs_modules` phase1 `io` 拆分：
   - 新增 `fs_modules/io.rs`，把 `io` module factory、StringIO/BytesIO/TextIOWrapper、BufferedReader/BufferedWriter 和 direct native-call helper 从根文件抽离。
   - `fs_modules.rs` 从约 2506 行降到约 983 行；后续根文件只保留 `pathlib` 和子模块声明/re-export。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `fs_modules/io` 内部分层：
+  - 新增 `fs_modules/io/string_io.rs`，拆出 StringIO 初始化和内存字符串流方法。
+  - 新增 `fs_modules/io/bytes_io.rs`，拆出 BytesIO 初始化和内存字节流方法。
+  - 新增 `fs_modules/io/text_io.rs`，拆出 TextIOWrapper 初始化和 buffer delegation helper。
+  - 新增 `fs_modules/io/buffered.rs`，拆出 BufferedReader/BufferedWriter wrapper。
+  - `fs_modules/io.rs` 从约 1536 行降到约 445 行，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成 `fs_modules` phase1 `pathlib` 拆分：
   - 新增 `fs_modules/pathlib.rs`，把 `pathlib` module factory、Path class helpers、stat_result 构造和 path metadata/population helper 从根文件抽离。

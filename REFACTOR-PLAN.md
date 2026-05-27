@@ -83,7 +83,10 @@ Last updated: 2026-05-27
 - Phase 2 filesystem/process module mechanical splits are complete at the
   top-level bucket. `subprocess`, `zlib`, `shutil`, `glob`, `tempfile`, `io`,
   and `pathlib` now live under `fs_modules/`; the root `fs_modules.rs` is a
-  small child module declaration/re-export shell.
+  small child module declaration/re-export shell. The `io` module has started
+  internal layering with StringIO, BytesIO, TextIOWrapper, and buffered wrapper
+  helpers split under `fs_modules/io/`; the root `io` file has dropped out of
+  the current longest-file list.
 - Phase 2 time module mechanical splits have advanced. `zoneinfo`, `_strptime`,
   `datetime`, and shared calendar/format helpers now live under
   `time_modules/`; the root `time_modules.rs` now owns only the `time` module
