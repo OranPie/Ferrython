@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:09:25+08:00
+Last updated: 2026-05-27T09:14:20+08:00
 
 ## 代码质量重构进度
 
@@ -106,6 +106,11 @@ Last updated: 2026-05-27T09:09:25+08:00
   - `serial_modules/pickle_module.rs` 改为 `serial_modules/pickle_module/` 目录模块。
   - 新增 `api.rs`、`read.rs`、`write.rs` 和 `shared.rs`，分别承载 pickle module factory/public API、protocol 0/2 reader、protocol 0/2 writer、异常/state/格式化等共享 helper。
   - 根 `pickle_module/mod.rs` 缩到约 10 行；最大新子文件为 `pickle_module/read.rs`，约 1502 行。
+- 已继续 pickle reader 内部分层：
+  - 新增 `serial_modules/pickle_module/read/protocol0.rs`，拆出 protocol 0 text opcode loop。
+  - 新增 `serial_modules/pickle_module/read/protocol2.rs`，拆出 protocol 2 binary opcode loop。
+  - `pickle_module/read.rs` 从约 1502 行降到约 670 行，只保留共享 stack/global reduce helper 和统一 auto-detect 入口，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 misc 小模块拆分：
   - `8891bae refactor: split small misc modules`
   - `misc_modules/future.rs`、`readline.rs`、`runpy.rs`、`compileall.rs`、`pstats.rs`、`quopri.rs`、`stringprep.rs` 拆出低耦合 misc 小模块。
@@ -374,7 +379,7 @@ Last updated: 2026-05-27T09:09:25+08:00
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
 - 后续重构队列：
   - 继续评估 `text_modules/regex_impl/functions.rs` 是否还值得按 search/sub/compile/cache 进一步分层；`pattern.rs` 根文件已完成聚合化。
-  - 继续评估 `serial_modules/pickle_module/read.rs` 是否按 protocol0/protocol2/global reduce helper 进一步拆分。
+  - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig 是否继续分层，以及 `unittest.rs` 是否需要内部分层。
   - 继续评估 `sys_modules.rs` 中 `sys` 是否按职责拆成核心系统状态、module assembly 和 exception/traceback display helper。
