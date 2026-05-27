@@ -1070,6 +1070,7 @@ Last updated: 2026-05-28T04:18:50+08:00
   - commit：`c089ceb refactor: split vm runtime helpers`。
   - 第四十二批拆出 VM 顶部 fast-path/init helper：新增 `vm_method_cache.rs`、`vm_fast_paths.rs` 和 `vm_init.rs`，分别承载 interned method-name cache、dispatch loop small fast-path helpers、VM construction/shared callback registration；`vm.rs` 从约 10128 行降到约 9664 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 method cache、fast paths 和 VM init smoke；探测到 Python `threading.Thread(target=python_func)` 在当前 smoke 中未执行 target 输出/闭包 side-effect，视为既有行为候选，本次纯拆分未混入语义修复。
+  - commit：`498c4d7 refactor: split vm fast path helpers`。
 
 ## 修复原则
 
