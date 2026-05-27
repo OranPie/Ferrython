@@ -1,6 +1,7 @@
 //! Logging, testing, and debugging stdlib modules
 
 mod cprofile;
+#[allow(dead_code)]
 mod doctest;
 mod faulthandler;
 mod logging;
@@ -13,11 +14,11 @@ mod pydoc;
 mod testcapi;
 mod timeit;
 mod tracemalloc;
+#[allow(dead_code)]
 mod unittest;
 mod unittest_mock;
 
 pub use cprofile::create_cprofile_module;
-pub use doctest::create_doctest_module;
 pub use faulthandler::create_faulthandler_module;
 pub use logging::create_logging_module;
 pub use logging_config::create_logging_config_module;
@@ -29,5 +30,4 @@ pub use pydoc::create_pydoc_module;
 pub use testcapi::create_testcapi_module;
 pub use timeit::create_timeit_module;
 pub use tracemalloc::create_tracemalloc_module;
-pub use unittest::create_unittest_module;
 pub use unittest_mock::create_unittest_mock_module;

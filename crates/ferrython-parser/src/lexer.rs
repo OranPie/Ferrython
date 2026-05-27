@@ -661,11 +661,6 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    fn lex_fstring(&mut self, is_raw: bool) -> Result<Token, ParseError> {
-        let start = (self.line, self.col);
-        self.lex_fstring_from(is_raw, start)
-    }
-
     fn lex_fstring_from(&mut self, is_raw: bool, start: (u32, u32)) -> Result<Token, ParseError> {
         let quote = self.peek_char();
         self.advance();

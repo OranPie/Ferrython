@@ -1,5 +1,6 @@
 //! Configuration and argument parsing stdlib modules.
 
+#[allow(dead_code)]
 mod argparse;
 mod configparser;
 

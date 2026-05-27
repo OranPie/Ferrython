@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T10:29:21+08:00
+Last updated: 2026-05-27T17:54:26+08:00
 
 ## 代码质量重构进度
 
@@ -91,9 +91,10 @@ Last updated: 2026-05-27T10:29:21+08:00
   - `CODE_HEALTH_BASELINE.md` 已刷新，`regex_impl/functions.rs` 退出当前 match-density 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 serial base64 拆分：
-  - `5ea27eb refactor: split base64 serial module`
-  - `serial_modules/base64_module.rs` 拆出 `base64` module factory、base16/base32/ascii85/base85/base64 编解码实现、bytes-like 提取 helper 和 file-like encode/decode helper。
-  - `serial_modules/other.rs` 从约 6701 行降到约 5828 行；`extract_bytes` 继续经 `serial_modules` crate 级重导出供 `crypto_modules` 等复用。
+  - `443cc68 refactor: split base64 serial module`
+  - `serial_modules/base64_module.rs` 现在只保留 `base64` module factory 和 bridge re-export；base16/base32、ascii85/base85、标准 base64 编解码、bytes-like 提取 helper 和 file-like encode/decode helper 已分到 `base64_module/{base32,base85,helpers,standard}.rs`。
+  - `extract_bytes` 继续经 `serial_modules` crate 级重导出供 `crypto_modules` 等复用；`extract_bytes_like` 和 base64 encode/decode bridge 仅暴露给 serial bucket 内部。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 serial struct 拆分：
   - `82e8fb1 refactor: split struct serial module`
   - `serial_modules/struct_module.rs` 拆出 `struct` module factory、`Struct` 对象闭包、calcsize、pack/unpack、pack_into/unpack_from、iter_unpack 和格式单元编解码 helper。
@@ -435,6 +436,8 @@ Last updated: 2026-05-27T10:29:21+08:00
   - fs phase1 shutil/glob/tempfile 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 io 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - fs phase1 pathlib 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - base64 serial module 内部分层后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - warning cleanup 后 `cargo check -p ferrython-stdlib` 通过且 warning 输出为 0。
 - 后续重构队列：
   - `text_modules/regex_impl/functions.rs` 已聚合化；后续只在修改 matching/substitution 逻辑时继续细分对应子文件。
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
@@ -447,7 +450,7 @@ Last updated: 2026-05-27T10:29:21+08:00
   - 继续评估 `concurrency_modules/weakref/mappings/` 是否需要抽出更明确的 shared weakdict helper（若后续还要继续缩小 `mappings.rs`）。
   - `collection_modules/collections.rs` 顶层 bucket 已完成主要拆分；`counter.rs`、`operator.rs` 和 `user_types.rs` 已完成当前低风险内部分层，后续只在需要时评估 `namedtuple.rs` 或剩余 Counter class body 是否继续细分。
   - `fs_modules` 顶层 bucket 已完成 phase1 拆分；后续只在需要时评估 `fs_modules/pathlib.rs` 是否继续按 Path class、stat helper、glob/path matching helper 内部分层。
-  - stdlib 机械拆分稳定后进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
+  - stdlib 机械拆分稳定、warning baseline 已清理后，下一阶段进入 `load_module()` registry 分组，随后再碰 VM/core 架构。
 
 ## 已提交成果
 

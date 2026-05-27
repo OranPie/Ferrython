@@ -409,7 +409,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                     PyObjectPayload::FrozenSet(set) => {
                         let mut w = set.items.clone();
                         for name in names {
-                            w.remove(&HashableKey::str_key(CompactString::from(*name)));
+                            w.shift_remove(&HashableKey::str_key(CompactString::from(*name)));
                         }
                         PyObject::frozenset(w)
                     }

@@ -6,6 +6,9 @@ Last updated: 2026-05-27
 
 - Phase 1 guardrails are committed: `tools/code_health.py` and
   `CODE_HEALTH_BASELINE.md`.
+- Warning baseline is clean for the focused stdlib gate:
+  `cargo check -p ferrython-stdlib` currently completes with no warning output,
+  so the next refactor phase should keep new warning noise out of review.
 - Phase 2 text module mechanical splits are mostly complete. The top-level
   `text_modules.rs` is now a small module/re-export shell; `regex_impl.rs`
   has been split internally into match objects, compiled/scanner methods,
@@ -30,7 +33,9 @@ Last updated: 2026-05-27
   `pickle`, `shelve`, and `struct`. The remaining pickle hotspot has also
   been split internally into API, protocol reader, protocol writer, and shared
   helper files under `serial_modules/pickle_module/`; the reader now separates
-  protocol 0 and protocol 2 opcode loops under `pickle_module/read/`.
+  protocol 0 and protocol 2 opcode loops under `pickle_module/read/`. The
+  base64 module now also has internal files for base16/base32, ascii85/base85,
+  standard base64 encode/decode, and shared bytes-like helpers.
 - Phase 2 misc module mechanical splits are now complete at the top-level bucket.
   Low/medium-coupling
   `__future__`, `readline`, `runpy`, `compileall`, `pstats`, `quopri`,
@@ -184,6 +189,9 @@ architecture concerns from compatibility fixes.
 - `crates/ferrython-core/src/object/methods_attr.rs` centralizes class lookup,
   descriptor rules, builtin method dispatch, weakdict special cases, and AST
   compatibility attributes.
+- With the focused stdlib warning baseline clean, start Phase 3 by splitting
+  `crates/ferrython-stdlib/src/lib.rs` `load_module()` registration into
+  registry buckets instead of continuing broad stdlib file movement by default.
 
 ## Refactor Principles
 

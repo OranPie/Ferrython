@@ -349,7 +349,6 @@ fn unicode_name_to_char(name: &str) -> Option<char> {
         "BOX DRAWINGS LIGHT UP AND RIGHT" => Some('\u{2514}'),
         "BOX DRAWINGS LIGHT UP AND LEFT" => Some('\u{2518}'),
         // Whitespace & control
-        "SPACE" => Some(' '),
         "LINE FEED" | "LINE FEED (LF)" => Some('\n'),
         "CARRIAGE RETURN" | "CARRIAGE RETURN (CR)" => Some('\r'),
         "CHARACTER TABULATION" | "HORIZONTAL TABULATION" => Some('\t'),

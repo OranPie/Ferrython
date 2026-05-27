@@ -3,8 +3,10 @@
 mod builtins;
 mod cmd;
 mod compileall;
+#[allow(dead_code)]
 mod contextlib;
 mod contextvars;
+#[allow(dead_code)]
 mod copy_module;
 mod ctypes;
 mod curses;
@@ -21,9 +23,7 @@ mod stringprep;
 pub use builtins::create_builtins_module;
 pub use cmd::create_cmd_module;
 pub use compileall::create_compileall_module;
-pub use contextlib::create_contextlib_module;
 pub use contextvars::create_contextvars_module;
-pub use copy_module::create_copy_module;
 pub use ctypes::create_ctypes_module;
 pub use curses::create_curses_module;
 pub use dataclasses::create_dataclasses_module;

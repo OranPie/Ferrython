@@ -169,20 +169,6 @@ fn heap_sift_down(heap: &PyCell<Vec<PyObjectRef>>, mut pos: usize, end: usize) -
     Ok(())
 }
 
-fn heap_sift_up_max(heap: &PyCell<Vec<PyObjectRef>>, mut pos: usize) -> PyResult<()> {
-    while pos > 0 {
-        let parent = (pos - 1) / 2;
-        let (parent_item, item, expected_len) = heap_pair(heap, parent, pos)?;
-        if heap_cmp_lt_checked(heap, &parent_item, &item, expected_len)? {
-            heap_swap(heap, pos, parent, expected_len)?;
-            pos = parent;
-        } else {
-            break;
-        }
-    }
-    Ok(())
-}
-
 fn heap_sift_down_max(heap: &PyCell<Vec<PyObjectRef>>, mut pos: usize, end: usize) -> PyResult<()> {
     loop {
         let mut child = 2 * pos + 1;

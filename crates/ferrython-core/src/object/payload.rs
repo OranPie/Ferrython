@@ -502,12 +502,12 @@ const DROPPING_REFCOUNT: u32 = u32::MAX - 1;
 
 const SLAB_SIZE: usize = 128;
 
-/// Pool state: intrusive singly-linked freelist through freed blocks.
-/// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
-/// Blocks are never individually deallocated — they're allocated as contiguous slabs
-/// and recycled indefinitely (matching CPython's obmalloc strategy).
-/// Thread-local so parallel tests (and future threading support) can each have
-/// their own independent pool without any locking overhead.
+// Pool state: intrusive singly-linked freelist through freed blocks.
+// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
+// Blocks are never individually deallocated — they're allocated as contiguous slabs
+// and recycled indefinitely (matching CPython's obmalloc strategy).
+// Thread-local so parallel tests (and future threading support) can each have
+// their own independent pool without any locking overhead.
 thread_local! {
     static POOL: std::cell::Cell<*mut PyObjectBlock> = std::cell::Cell::new(std::ptr::null_mut());
 }

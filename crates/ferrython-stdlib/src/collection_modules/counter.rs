@@ -214,34 +214,6 @@ fn counter_apply_kwds(
     Ok(())
 }
 
-fn counter_clone_like(
-    self_obj: &PyObjectRef,
-    filter: impl Fn(&HashableKey, &PyObjectRef) -> bool,
-) -> PyResult<PyObjectRef> {
-    let class = if let PyObjectPayload::Instance(inst) = &self_obj.payload {
-        inst.class.clone()
-    } else {
-        return Err(PyException::type_error(
-            "Counter operation requires an instance",
-        ));
-    };
-    let result = PyObject::instance(class);
-    if let Some(dst) = counter_instance_storage(&result) {
-        let mut w = dst.write();
-        if let Some(src) = counter_instance_storage(self_obj) {
-            for (k, v) in src.read().iter() {
-                if matches!(k, HashableKey::Str(s) if s.as_str() == "__counter_kwargs__") {
-                    continue;
-                }
-                if filter(&k, v) {
-                    w.insert(k.clone(), v.clone());
-                }
-            }
-        }
-    }
-    Ok(result)
-}
-
 fn counter_most_common_items(obj: &PyObjectRef) -> Vec<(HashableKey, PyObjectRef)> {
     let mut pairs = Vec::new();
     if let Some(storage) = counter_instance_storage(obj) {
@@ -253,46 +225,6 @@ fn counter_most_common_items(obj: &PyObjectRef) -> Vec<(HashableKey, PyObjectRef
         }
     }
     pairs
-}
-
-fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let int_factory = PyObject::builtin_type(CompactString::from("int"));
-    let factory_key = HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
-    let counter_marker = HashableKey::str_key(CompactString::from("__counter__"));
-
-    if args.is_empty() {
-        let mut map = IndexMap::new();
-        map.insert(factory_key, int_factory);
-        map.insert(counter_marker, PyObject::bool_val(true));
-        return Ok(PyObject::dict(map));
-    }
-    // Handle dict input: Counter({"red": 4, "blue": 2})
-    if let PyObjectPayload::Dict(m) = &args[0].payload {
-        let src = m.read();
-        let mut map = IndexMap::new();
-        map.insert(factory_key, int_factory);
-        map.insert(counter_marker, PyObject::bool_val(true));
-        for (k, v) in src.iter() {
-            if !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")
-            {
-                map.insert(k.clone(), v.clone());
-            }
-        }
-        return Ok(PyObject::dict(map));
-    }
-    let items = args[0].to_list()?;
-    let mut counts: IndexMap<HashableKey, i64> = IndexMap::new();
-    for item in &items {
-        let key = item.to_hashable_key()?;
-        *counts.entry(key).or_insert(0) += 1;
-    }
-    let mut map = IndexMap::new();
-    map.insert(factory_key, int_factory);
-    map.insert(counter_marker, PyObject::bool_val(true));
-    for (k, v) in counts {
-        map.insert(k.clone(), PyObject::int(v));
-    }
-    Ok(PyObject::dict(map))
 }
 
 pub(super) fn make_counter_class() -> PyObjectRef {
