@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T00:55:54+08:00
+Last updated: 2026-05-28T00:57:08+08:00
 
 ## 代码质量重构进度
 
@@ -1004,6 +1004,7 @@ Last updated: 2026-05-28T00:55:54+08:00
   - commit：`77c658a refactor: split exec import builtin calls`。
   - 第二十批拆出 `class_builtin_subclass.rs`：builtin-base subclass 的 `__builtin_value__` 构造、默认值和 post-`__new__` 补全逻辑从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 799 行降到约 422 行；新文件约 256 行，`CODE_HEALTH_BASELINE.md` 已刷新，`class_instantiate.rs` 退出 match 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin subclass 和 class instantiate smoke。
+  - commit：`3bd4b76 refactor: split builtin subclass instantiation`。
 
 ## 修复原则
 
