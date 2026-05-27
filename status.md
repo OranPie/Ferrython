@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:30:01+08:00
+Last updated: 2026-05-27T08:36:43+08:00
 
 ## 代码质量重构进度
 
@@ -167,6 +167,13 @@ Last updated: 2026-05-27T08:30:01+08:00
   - 新增 `sys_modules/os/pathlike.rs`，拆出 `PathLike` class factory 和 `os.fspath` helper。
   - 新增 `sys_modules/os/walk.rs`，拆出 `os.walk` 和递归目录遍历 helper。
   - `sys_modules/os.rs` 从约 1761 行降到约 1491 行，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已开始 `type_modules` 顶层模块拆分：
+  - 新增 `type_modules/typing.rs`，拆出 `typing` module factory 和 TypeVar/GenericAlias/Sentinel 等 helper。
+  - 新增 `type_modules/enum_module.rs`，拆出 `enum` module factory、Enum/IntEnum/Flag/IntFlag/StrEnum 和 auto/unique/sentinel helper。
+  - 新增 `type_modules/types_module.rs`，拆出 `types` module factory 和 SimpleNamespace 比较 helper。
+  - 新增 `type_modules/abc.rs`，拆出 `abc` module factory、ABC/ABCMeta 和 abstract* helper。
+  - `type_modules.rs` 从约 3293 行降到约 1232 行，只保留 `collections.abc` 主体和子模块声明/re-export，并已退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `network_modules/http_module` 后半段低耦合模块批量拆分：
   - `ff25b3c refactor: split network helper modules`

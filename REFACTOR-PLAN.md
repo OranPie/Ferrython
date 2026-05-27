@@ -96,6 +96,11 @@ Last updated: 2026-05-27
   `argparse` and `configparser` now live under `config_modules/`; the root
   `config_modules.rs` only declares child modules and re-exports the loaded
   `configparser` factory.
+- Phase 2 type module mechanical splits have advanced. `typing`, `enum`,
+  `types`, and `abc` now live under `type_modules/`; the root
+  `type_modules.rs` keeps shared imports plus the remaining `collections.abc`
+  implementation and re-exports the public module factories. The root file has
+  dropped out of the current longest-file list.
 - Phase 2 XML module mechanical splits have started. The lower-coupling
   package, DOM/minidom, SAX, and expat helpers now live under `xml_modules/`;
   the root `xml_modules.rs` still owns the ElementTree parser/object
@@ -130,10 +135,13 @@ architecture concerns from compatibility fixes.
   after the top-level time split plus focused date/timedelta internal splits;
   evaluate more datetime/time/timezone splits only if further edits in that
   area justify the risk.
+- `crates/ferrython-stdlib/src/type_modules.rs` has dropped out of the current
+  top 25 after the first type module split; the remaining `collections.abc`
+  body is about 1.2k lines and can be split internally later if needed.
 - `crates/ferrython-stdlib/src/sys_modules/os.rs` is about 1.5k lines after
   internal helper splits and has dropped out of the current top 25 longest Rust
   files; good next targets are process/fd helpers only if future os edits need
-  them, or a broader pass over `type_modules.rs`.
+  them.
 - `crates/ferrython-core/src/object/payload.rs` mixes low-level allocation,
   weakref registries, compact string representation, object references, class
   and instance data, iterator data, and the payload enum.
