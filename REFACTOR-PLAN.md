@@ -403,8 +403,11 @@ Status:
   `builtin_exec_import.rs` now owns `exec` / `eval` / `compile` / `__import__`,
   and `builtin_namedtuple.rs` owns the `typing.NamedTuple` function builder.
   `class_builtin_subclass.rs` now owns builtin-base subclass `__builtin_value__`
-  construction and post-`__new__` value completion, dropping
-  `class_instantiate.rs` to about 422 lines.
+  entry and post-`__new__` value completion, while
+  `class_builtin_values.rs`, `class_builtin_defaults.rs`,
+  `class_builtin_numeric.rs`, and `class_builtin_sets.rs` own value builder,
+  default values, numeric coercions, and set/frozenset materialization. This
+  drops `class_builtin_subclass.rs` to about 77 lines.
   VM call child files have fallen out of the top-25 longest Rust baseline.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
