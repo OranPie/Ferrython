@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T05:15:14+08:00
+Last updated: 2026-05-28T07:13:35+08:00
 
 ## 代码质量重构进度
 
@@ -15,7 +15,15 @@ Last updated: 2026-05-28T05:15:14+08:00
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
   - `type_methods.rs` 已退出 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件和 oversized candidates；最大新子文件是 `type_bytes.rs`，约 1336 行。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、两组 CLI 烟测覆盖 list/dict/set/frozenset/tuple/range/int/float/bytes/bytearray。
-  - 剩余 warning 未在本批语义外处理：`type_sets.rs` 的两处 `IndexMap::remove` deprecated warning，`instance_methods.rs` 的 `field_names` 未用变量。
+  - 后续 VM 拆分批次已清理 `type_sets.rs` 的两处 `IndexMap::remove` deprecated warning 和 `instance_methods` 拆分遗留 unused/import warning。
+- 已继续 VM builtin instance method 分层：
+  - 新增 `builtins/instance_methods/{namedtuple,deque,instance_dict,csv,hashlib,io,pathlib,datetime,queue}.rs`。
+  - `instance_methods.rs` 从约 3440 行降到约 537 行，保留 class-level builtin method resolver、`object` dunder dispatch 和子模块 re-export。
+  - `instance_methods.rs` 已退出 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件、match 热点和 oversized candidates；当前最大新子文件是 `instance_methods/deque.rs`，约 737 行。
+  - 顺手将 `type_methods/type_sets.rs` 的 frozenset `IndexMap::remove` 改为 `shift_remove`，消除 VM crate deprecated warning；普通 set 的 `HashMap` 路径保持 `remove`。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`。
+  - focused CLI 烟测通过：`deque`、`namedtuple`、`io.StringIO`、`csv.writer`、`hashlib.sha256`、`datetime.strftime`、`queue.Queue`、set/frozenset difference/symmetric difference。
+  - 观察：`pathlib.Path('/root/ferrython').exists()` 当前仍返回 `False`，但 `os.path.exists('/root/ferrython')` 返回 `True`；这更像既有 pathlib class-level 方法/路径绑定差异，不作为本次机械拆分的通过项。
 - 已完成并提交 `text_modules` 第一轮机械拆分：
   - `e2890b5 refactor: split text encoding modules`
   - `bc52d9f refactor: split small text modules`
