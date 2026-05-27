@@ -1073,6 +1073,7 @@ Last updated: 2026-05-28T04:26:24+08:00
   - commit：`498c4d7 refactor: split vm fast path helpers`。
   - 第四十三批拆出冷 fallback dispatch 和 exception-kind matching：新增 `vm_execute_one.rs` 承载 `execute_one` opcode family fallback dispatch，并将 `exception_kind_matches` 合并到 `vm_truth.rs`；`vm.rs` 从约 9664 行降到约 9372 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 execute-one fallback、exception matching、compare 和 truthiness smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
+  - commit：`6775e70 refactor: split vm cold dispatch`。
 
 ## 修复原则
 
