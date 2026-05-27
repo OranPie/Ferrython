@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T01:43:20+08:00
+Last updated: 2026-05-28T01:47:28+08:00
 
 ## 代码质量重构进度
 
@@ -1019,6 +1019,7 @@ Last updated: 2026-05-28T01:43:20+08:00
   - commit：`ac23026 refactor: split numeric protocol builtins`。
   - 第二十五批拆出 `native_kw_collections.rs` 和 `native_kw_regex_iter.rs`：collections/partial native kwargs 与 regex/itertools native kwargs 从 `native_kw.rs` 移出，`native_kw.rs` 从约 464 行降到约 238 行；新文件分别约 123 行和 144 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 native kw collections、native kw regex/iter 和 native kw json remaining smoke。
+  - commit：`d08c99f refactor: split native keyword helpers`。
 
 ## 修复原则
 
