@@ -977,6 +977,7 @@ Last updated: 2026-05-27T22:45:20+08:00
   - commit：`b604389 refactor: split numeric builtin calls`。
   - 第十一批拆出 `class_enum.rs` 和 `class_storage.rs`：Enum functional API / value lookup 与 dict-subclass storage 填充从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 953 行降到约 799 行；新 `class_enum.rs` 约 115 行，`class_storage.rs` 约 58 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 enum class split、dict subclass storage 和 class instantiate baseline smoke。
+  - commit：`98ad3f7 refactor: split class enum instantiation`。
 
 ## 修复原则
 
