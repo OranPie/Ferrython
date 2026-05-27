@@ -38,6 +38,8 @@ mod inline_simple;
 mod iterator_state;
 mod json_hooks;
 mod locals;
+mod native_closure_kw;
+mod native_fallback_kw;
 mod native_kw;
 mod object_call;
 mod object_kw;

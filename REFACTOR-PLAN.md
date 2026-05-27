@@ -358,8 +358,10 @@ Status:
   builtins,
   `builtin_numeric.rs` owns `len` / numeric conversion / dunder-aware truthiness
   builtins, `builtin_kw.rs` owns builtin/type keyword-call dispatch,
-  `native_kw.rs` owns native/closure/partial keyword fallback dispatch, and
-  `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
+  `native_kw.rs` owns native-function keyword special cases,
+  `native_closure_kw.rs` owns NativeClosure keyword marker dispatch, and
+  `native_fallback_kw.rs` owns partial/exception/instance/final fallback keyword
+  calls. `class_simple.rs` / `class_abstract.rs` own simple-class and ABC guard helpers.
   `class_enum.rs` and `class_storage.rs` now own enum construction/lookup and
   dict-subclass storage population. `builtin_bound_generators.rs` now owns
   generator / coroutine / async-generator bound methods and AsyncGenAwaitable

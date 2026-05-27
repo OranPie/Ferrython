@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T00:57:08+08:00
+Last updated: 2026-05-28T01:05:48+08:00
 
 ## 代码质量重构进度
 
@@ -1005,6 +1005,8 @@ Last updated: 2026-05-28T00:57:08+08:00
   - 第二十批拆出 `class_builtin_subclass.rs`：builtin-base subclass 的 `__builtin_value__` 构造、默认值和 post-`__new__` 补全逻辑从 `class_instantiate.rs` 移出，`class_instantiate.rs` 从约 799 行降到约 422 行；新文件约 256 行，`CODE_HEALTH_BASELINE.md` 已刷新，`class_instantiate.rs` 退出 match 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 builtin subclass 和 class instantiate smoke。
   - commit：`3bd4b76 refactor: split builtin subclass instantiation`。
+  - 第二十一批拆出 `native_closure_kw.rs` 和 `native_fallback_kw.rs`：NativeClosure kwargs marker、partial/exception/instance/final fallback keyword 调用从 `native_kw.rs` 移出，`native_kw.rs` 从约 578 行降到约 464 行；新文件分别约 102 行和 75 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 native closure/fallback kwargs 和 native function kwargs smoke。
 
 ## 修复原则
 

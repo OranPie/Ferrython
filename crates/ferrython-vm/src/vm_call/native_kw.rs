@@ -6,7 +6,6 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
-use crate::vm_call::exception_build::build_builtin_exception_instance;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -447,132 +446,19 @@ impl VirtualMachine {
                 return (nf_data.func)(&pos_args);
             }
             PyObjectPayload::NativeClosure(nc) => {
-                let mut counter_kw_marker = false;
-                let mut defaultdict_kw_marker = false;
-                let mut weakdict_kw_marker = false;
-                let mut finalize_kw_marker = false;
-                let mut adjusted_kwargs = kwargs;
-                if !adjusted_kwargs.is_empty() && nc.name.as_str().starts_with("Counter.") {
-                    counter_kw_marker = true;
-                    adjusted_kwargs.push((
-                        CompactString::from("__counter_kwargs__"),
-                        PyObject::bool_val(true),
-                    ));
-                }
-                if !adjusted_kwargs.is_empty() && nc.name.as_str().starts_with("defaultdict.") {
-                    defaultdict_kw_marker = true;
-                    adjusted_kwargs.push((
-                        CompactString::from("__defaultdict_kwargs__"),
-                        PyObject::bool_val(true),
-                    ));
-                }
-                if !adjusted_kwargs.is_empty()
-                    && (nc.name.as_str() == "WeakValueDictionary.update"
-                        || nc.name.as_str() == "WeakKeyDictionary.update")
-                {
-                    weakdict_kw_marker = true;
-                    adjusted_kwargs.push((
-                        CompactString::from("__weakdict_kwargs__"),
-                        PyObject::bool_val(true),
-                    ));
-                }
-                if !adjusted_kwargs.is_empty()
-                    && (nc.name.as_str() == "finalize" || nc.name.as_str() == "finalize.__new__")
-                {
-                    finalize_kw_marker = true;
-                    adjusted_kwargs.push((
-                        CompactString::from("__finalize_kwargs__"),
-                        PyObject::bool_val(true),
-                    ));
-                }
-                if !adjusted_kwargs.is_empty() && nc.name.as_str() == "weakref.__new__" {
-                    adjusted_kwargs.push((
-                        CompactString::from("__weakref_ref_kwargs__"),
-                        PyObject::bool_val(true),
-                    ));
-                }
-                let result = if !adjusted_kwargs.is_empty() {
-                    let mut all_args = pos_args;
-                    let mut kw_map = IndexMap::new();
-                    for (k, v) in adjusted_kwargs {
-                        kw_map.insert(HashableKey::str_key(k), v);
-                    }
-                    if counter_kw_marker {
-                        kw_map.insert(
-                            HashableKey::str_key(CompactString::from("__counter_kwargs__")),
-                            PyObject::bool_val(true),
-                        );
-                    }
-                    if defaultdict_kw_marker {
-                        kw_map.insert(
-                            HashableKey::str_key(CompactString::from("__defaultdict_kwargs__")),
-                            PyObject::bool_val(true),
-                        );
-                    }
-                    if weakdict_kw_marker {
-                        kw_map.insert(
-                            HashableKey::str_key(CompactString::from("__weakdict_kwargs__")),
-                            PyObject::bool_val(true),
-                        );
-                    }
-                    if finalize_kw_marker {
-                        kw_map.insert(
-                            HashableKey::str_key(CompactString::from("__finalize_kwargs__")),
-                            PyObject::bool_val(true),
-                        );
-                    }
-                    all_args.push(PyObject::dict(kw_map));
-                    (nc.func)(&all_args)?
-                } else {
-                    (nc.func)(&pos_args)?
-                };
-                // Check if asyncio.run() was invoked
-                if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
-                    return self.maybe_await_result(coro);
-                }
-                return Ok(result);
+                return self.call_native_closure_kw(nc, pos_args, kwargs);
             }
             PyObjectPayload::Partial(pd) => {
-                let partial_func = pd.func.clone();
-                let mut combined_args = pd.args.clone();
-                combined_args.extend(pos_args);
-                let mut combined_kw = pd.kwargs.clone();
-                combined_kw.extend(kwargs);
-                if combined_kw.is_empty() {
-                    return self.call_object(partial_func, combined_args);
-                } else {
-                    return self.call_object_kw(partial_func, combined_args, combined_kw);
-                }
+                return self.call_partial_kw(pd, pos_args, kwargs);
             }
             PyObjectPayload::ExceptionType(kind) => {
-                return build_builtin_exception_instance(*kind, pos_args, &kwargs);
+                return self.call_exception_type_kw(*kind, pos_args, &kwargs);
             }
             PyObjectPayload::Instance(_) => {
-                if func.get_attr("__singledispatch__").is_some() {
-                    return self.vm_singledispatch_call_instance(&func, &pos_args);
-                }
-                if let Some(method) = func.get_attr("__call__") {
-                    let _dispatch_guard = self.enter_frameless_call_dispatch()?;
-                    return self.call_object_kw(method, pos_args, kwargs);
-                }
-                return Err(PyException::type_error(format!(
-                    "'{}' object is not callable",
-                    func.type_name()
-                )));
+                return self.call_instance_with_kw(func, pos_args, kwargs);
             }
             _ => {}
         }
-        // Final fallback: pass kwargs as trailing dict to preserve key names
-        if !kwargs.is_empty() {
-            let mut all_args = pos_args;
-            let mut kw_map = IndexMap::new();
-            for (k, v) in kwargs {
-                kw_map.insert(HashableKey::str_key(k), v);
-            }
-            all_args.push(PyObject::dict(kw_map));
-            self.call_object(func, all_args)
-        } else {
-            self.call_object(func, pos_args)
-        }
+        self.call_object_with_trailing_kwargs(func, pos_args, kwargs)
     }
 }
