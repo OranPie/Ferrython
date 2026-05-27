@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T10:16:33+08:00
+Last updated: 2026-05-27T10:19:54+08:00
 
 ## 代码质量重构进度
 
@@ -177,6 +177,10 @@ Last updated: 2026-05-27T10:16:33+08:00
 - 已继续 `sys_modules` os module 主体拆分：
   - 新增 `sys_modules/os.rs`，拆出 `os` module factory、`os.environ`/`PathLike`/terminal_size 构造、文件/目录/process/fd helper、`stat_result` 构造和 `scandir` helper。
   - `sys_modules.rs` 从约 2880 行降到约 859 行；剩余根文件聚焦 sys 状态、`sys` module assembly、trace/profile/excepthook 和 traceback display helper。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `sys_modules` exception hook 分层：
+  - 新增 `sys_modules/exception_hooks.rs`，拆出 `sys.excepthook`、`sys.unraisablehook`、异常显示类型/值格式化、traceback chain/source line 和 stderr 写入 helper。
+  - `sys_modules.rs` 从约 859 行降到约 699 行，根文件继续聚焦 sys 状态、module assembly、recursion/trace/profile hooks 和当前 frame/module 状态。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已继续 `sys_modules/os` 内部分层：
   - 新增 `sys_modules/os/terminal.rs`，拆出 `terminal_size` class 和 instance 构造。
@@ -430,7 +434,7 @@ Last updated: 2026-05-27T10:16:33+08:00
   - `serial_modules/pickle_module/read.rs` 已按 protocol0/protocol2 opcode loop 拆分；后续只在修改 reduce/global helper 时继续细分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
   - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig 是否继续分层，以及 `unittest.rs` 是否需要内部分层。
-  - 继续评估 `sys_modules.rs` 中 `sys` 是否按职责拆成核心系统状态、module assembly 和 exception/traceback display helper。
+  - 继续评估 `sys_modules.rs` 是否进一步拆出 `version_info`/`flags`/`float_info` 等 sys structseq assembly helper。
   - 继续评估 `network_modules/http_module/{urllib_parse,urllib_request,http_client,http_server}.rs` 是否还需要按更细职责继续内部分层。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
   - 继续评估 `concurrency_modules/weakref/finalize.rs` 是否值得再按 kwargs parsing / callback state / atexit wiring 继续内部分层。

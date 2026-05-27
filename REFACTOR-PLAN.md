@@ -51,9 +51,10 @@ Last updated: 2026-05-27
   body. The extracted `os` module has started internal layering with
   `terminal_size`, `stat_result`, `scandir`, `environ`, `PathLike` / `fspath`,
   `walk`, filesystem operation, process/environment, and permission/fd helpers
-  split under `sys_modules/os/`. The remaining top-level `sys_modules.rs` owns
-  `sys` state, sys module assembly, and
-  exception/traceback display helpers.
+  split under `sys_modules/os/`. The sys exception and traceback display hooks
+  now live in `sys_modules/exception_hooks.rs`. The remaining top-level
+  `sys_modules.rs` owns `sys` state, sys module assembly, recursion/profile
+  hooks, and current-frame/current-module thread-local state.
 - Phase 2 network module mechanical splits are now complete at the top-level
   bucket. The earlier low-coupling back half of
   `network_modules/http_module.rs` already lived under `http_module/`:
