@@ -338,9 +338,9 @@ Status:
   instance construction, trivial `__init__` analysis, fast exact `str()`
   conversion, sort/min/max helpers, JSON hook/default helpers, property helpers,
   bytes/bytearray construction, AST node construction helpers, inline simple
-  function helpers, print/format helpers, and closure frame installation.
-  `vm_call.rs` dropped from the previous health-baseline 7620 lines to 5861
-  lines.
+  function helpers, print/format helpers, closure frame installation, locals
+  collection, class instantiation, and `super()` construction. `vm_call.rs`
+  dropped from the previous health-baseline 7620 lines to 4510 lines.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to

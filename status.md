@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T19:58:40+08:00
+Last updated: 2026-05-27T20:11:12+08:00
 
 ## 代码质量重构进度
 
@@ -955,8 +955,9 @@ Last updated: 2026-05-27T19:58:40+08:00
   - `vm.rs` 顶部 dispatch 宏移入 `vm_dispatch/macros.rs`，通过提前声明 `vm_dispatch` 保持宏作用域和原 call site 不变。
   - `vm_call.rs` 首批低风险 helper 移入 `vm_call/` 子模块：`frameless.rs`、`iterator_state.rs`、`exception_group.rs`、`exception_build.rs`、`class_inline.rs`、`str_fast.rs`、`sort_helpers.rs`、`json_hooks.rs`。
   - 第二批低风险 helper 已继续移入 `vm_call/` 子模块：`property_helpers.rs`、`bytes_constructor.rs`、`ast_nodes.rs`、`inline_simple.rs`、`print_format.rs`、`frame_run.rs`。
-  - `vm.rs` 从健康基线 10989 行降到 10806 行；`vm_call.rs` 从 7620 行降到 5861 行；`CODE_HEALTH_BASELINE.md` 已刷新。
-  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare、property/bytes/print、json/minmax/format 和 class/call smoke。
+  - 第三批自然边界已继续移入 `vm_call/` 子模块：`class_instantiate.rs`、`super_object.rs`、`locals.rs`，保留 `self.instantiate_class()`、`self.make_super()`、`self.collect_locals_dict()` 原调用形状。
+  - `vm.rs` 从健康基线 10989 行降到 10806 行；`vm_call.rs` 从 7620 行降到 4510 行；`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dispatch/call/attr/compare、property/bytes/print、json/minmax/format、class/call、super/locals smoke。
 
 ## 修复原则
 
