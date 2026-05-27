@@ -980,6 +980,7 @@ Last updated: 2026-05-27T23:01:26+08:00
   - commit：`98ad3f7 refactor: split class enum instantiation`。
   - 第十二批拆出 `builtin_bound_generators.rs`：Generator / Coroutine / AsyncGenerator bound-method 分派和 AsyncGenAwaitable 驱动从 `builtin_bound_call.rs` 移出，`builtin_bound_call.rs` 从约 701 行降到约 528 行；新 `builtin_bound_generators.rs` 约 179 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 generator bound、generator context/close 和 async generator bound smoke。
+  - commit：`d865366 refactor: split generator bound calls`。
 
 ## 修复原则
 
