@@ -109,7 +109,9 @@ Last updated: 2026-05-27
 - Phase 2 config module mechanical splits are complete at the top-level bucket.
   `argparse` and `configparser` now live under `config_modules/`; the root
   `config_modules.rs` only declares child modules and re-exports the loaded
-  `configparser` factory.
+  `configparser` factory. The Rust `argparse` compatibility module is split
+  internally into Namespace helpers, ArgumentParser setup/bridge methods, and
+  parse core files.
 - Phase 2 type module mechanical splits have advanced. `typing`, `enum`,
   `types`, and `abc` now live under `type_modules/`; the root
   `type_modules.rs` keeps shared imports plus the remaining `collections.abc`

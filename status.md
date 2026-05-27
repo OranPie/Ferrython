@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T09:14:20+08:00
+Last updated: 2026-05-27T09:20:58+08:00
 
 ## 代码质量重构进度
 
@@ -293,6 +293,12 @@ Last updated: 2026-05-27T09:14:20+08:00
 - 已完成 `config_modules` 顶层机械拆分：
   - 新增 `config_modules/argparse.rs` 和 `config_modules/configparser.rs`。
   - `config_modules.rs` 从约 2256 行降到约 6 行，只保留子模块声明和已加载 `configparser` factory re-export；Rust `argparse` 继续保持未加载状态，实际 `argparse` 由 Python stdlib 提供。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 Rust `argparse` compatibility module 内部分层：
+  - 新增 `config_modules/argparse/namespace.rs`，拆出 Namespace repr/equality/init/class helper。
+  - 新增 `config_modules/argparse/parser.rs`，拆出 ArgumentParser method bridge、constructor/init、subparser/default/group helper。
+  - 新增 `config_modules/argparse/parse.rs`，拆出 parse_args / parse_known_args 共用的解析核心。
+  - `config_modules/argparse.rs` 从约 1445 行降到约 143 行 module assembly shell，并退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表；基线已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已开始 `xml_modules` 机械拆分：
   - 新增 `xml_modules/packages.rs`、`dom.rs`、`sax.rs` 和 `expat.rs`，抽离 `xml`/`xml.etree` package shell、`xml.dom`/`minidom`、`xml.sax` helper modules 和 `xml.parsers.expat`。
