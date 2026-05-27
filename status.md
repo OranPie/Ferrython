@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T01:31:20+08:00
+Last updated: 2026-05-28T01:32:50+08:00
 
 ## 代码质量重构进度
 
@@ -1016,6 +1016,7 @@ Last updated: 2026-05-28T01:31:20+08:00
   - commit：`1daff85 refactor: split object native calls`。
   - 第二十四批拆出 `builtin_numeric_protocol.rs`：`len/abs/hash/bin/oct/hex/format` 这组 protocol-aware numeric builtins 从 `builtin_numeric.rs` 移出，`builtin_numeric.rs` 从约 462 行降到约 348 行；新文件约 128 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 numeric protocol smoke 和 numeric conversion remaining smoke。
+  - commit：`ac23026 refactor: split numeric protocol builtins`。
 
 ## 修复原则
 
