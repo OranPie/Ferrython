@@ -1,15 +1,12 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef,
+    new_fx_hashkey_map, FxHashKeyMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::rc::Rc;
 
 use crate::builtins;
-use crate::vm_call::str_fast::fast_exact_str;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -40,6 +37,9 @@ impl VirtualMachine {
         if matches!(name.as_str(), "globals" | "locals" | "vars" | "dir") {
             return self.call_scope_builtin(name.as_str(), args);
         }
+        if matches!(name.as_str(), "str" | "repr" | "mappingproxy") {
+            return self.call_text_builtin(name.as_str(), args);
+        }
         if matches!(
             name.as_str(),
             "map" | "filter" | "iter" | "next" | "reversed" | "enumerate" | "zip"
@@ -68,74 +68,11 @@ impl VirtualMachine {
             "print" => {
                 return self.vm_print(&args, None, None, None, false);
             }
-            "str" => {
-                if args.is_empty() {
-                    return Ok(PyObject::str_val(CompactString::from("")));
-                }
-                // str(bytes, encoding[, errors]) — decode bytes
-                if args.len() >= 2 {
-                    match &args[0].payload {
-                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
-                            let s = String::from_utf8_lossy(b);
-                            return Ok(PyObject::str_val(CompactString::from(s.as_ref())));
-                        }
-                        _ => {}
-                    }
-                }
-                if args.len() == 1 {
-                    if let Some(result) = fast_exact_str(&args[0]) {
-                        return Ok(result);
-                    }
-                }
-                return self
-                    .vm_str(&args[0])
-                    .map(|s| PyObject::str_val(CompactString::from(s)));
-            }
             "bytes" => {
                 return self.vm_bytes_constructor(&args, false);
             }
             "bytearray" => {
                 return self.vm_bytes_constructor(&args, true);
-            }
-            "repr" => {
-                if args.is_empty() {
-                    return Ok(PyObject::str_val(CompactString::from("")));
-                }
-                return self
-                    .vm_repr(&args[0])
-                    .map(|s| PyObject::str_val(CompactString::from(s)));
-            }
-            "mappingproxy" => {
-                // types.MappingProxyType(dict) — read-only view of a dict
-                if args.len() == 1 {
-                    let src = &args[0];
-                    let map = match &src.payload {
-                        PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
-                            m.read().clone()
-                        }
-                        PyObjectPayload::InstanceDict(attrs) => {
-                            let rd = attrs.read();
-                            let mut m = new_fx_hashkey_map();
-                            for (k, v) in rd.iter() {
-                                m.insert(HashableKey::str_key(k.clone()), v.clone());
-                            }
-                            m
-                        }
-                        _ => {
-                            return Err(PyException::type_error(
-                                "mappingproxy() argument must be a mapping, not a non-mapping type",
-                            ));
-                        }
-                    };
-                    return Ok(PyObject::wrap(PyObjectPayload::MappingProxy(Rc::new(
-                        PyCell::new(map),
-                    ))));
-                }
-                if args.is_empty() {
-                    return Err(PyException::type_error(
-                        "mappingproxy() missing required argument: 'mapping'",
-                    ));
-                }
             }
             "super" => {
                 return self.make_super(&args);

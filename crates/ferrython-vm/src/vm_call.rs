@@ -18,6 +18,7 @@ mod builtin_kw;
 mod builtin_numeric;
 mod builtin_predicates;
 mod builtin_scope;
+mod builtin_text;
 mod bytes_constructor;
 mod class_abstract;
 mod class_enum;
