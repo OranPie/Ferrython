@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T05:03:20+08:00
+Last updated: 2026-05-28T05:15:14+08:00
 
 ## 代码质量重构进度
 
@@ -10,6 +10,12 @@ Last updated: 2026-05-28T05:03:20+08:00
 - 已提交代码健康基线：
   - `24f550c tools: add code health baseline`
   - `tools/code_health.py` 可生成最长文件、match 热点、item 密度和 oversized candidates。
+- 已继续 VM builtin type method 分层：
+  - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
+  - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
+  - `type_methods.rs` 已退出 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件和 oversized candidates；最大新子文件是 `type_bytes.rs`，约 1336 行。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、两组 CLI 烟测覆盖 list/dict/set/frozenset/tuple/range/int/float/bytes/bytearray。
+  - 剩余 warning 未在本批语义外处理：`type_sets.rs` 的两处 `IndexMap::remove` deprecated warning，`instance_methods.rs` 的 `field_names` 未用变量。
 - 已完成并提交 `text_modules` 第一轮机械拆分：
   - `e2890b5 refactor: split text encoding modules`
   - `bc52d9f refactor: split small text modules`
