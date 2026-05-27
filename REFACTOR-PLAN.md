@@ -266,9 +266,10 @@ Status:
   `load_module()` to a registry boundary and has dropped from about 405 lines to
   about 95 lines.
 - Current registry functions are grouped resolvers that preserve the previous
-  factory calls and fallback behavior. The next step is splitting this new
-  registry file into per-bucket files and then evaluating static `ModuleSpec`
-  slices once the boundary is stable.
+  factory calls and fallback behavior. The registry root has been split into
+  `registry/{core,platform,protocols,aliases,extras}.rs`, leaving the top-level
+  registry file as resolver ordering only. Next, evaluate finer bucket files or
+  static `ModuleSpec` slices once the boundary is stable.
 
 Initial target:
 
