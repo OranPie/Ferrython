@@ -992,6 +992,7 @@ Last updated: 2026-05-28T00:05:26+08:00
   - commit：`c6b3a55 refactor: split computation builtin calls`。
   - 第十六批拆出 `builtin_attrs.rs`：`getattr/setattr/delattr` attribute protocol builtins 从 `builtin_call.rs` 移出，`builtin_call.rs` 从约 535 行降到约 368 行；新 `builtin_attrs.rs` 约 182 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 basic attr builtin 和 custom setattr smoke；property/descriptor 深层语义保留既有行为，不混入本次纯拆分修复。
+  - commit：`6bd024e refactor: split attribute builtin calls`。
 
 ## 修复原则
 
