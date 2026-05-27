@@ -336,8 +336,11 @@ Status:
   `crates/ferrython-vm/src/vm_call/`: frameless recursion guard, iterator
   `__setstate__`, ExceptionGroup method installation, builtin exception
   instance construction, trivial `__init__` analysis, fast exact `str()`
-  conversion, sort/min/max helpers, and JSON hook/default helpers. `vm_call.rs`
-  dropped from the previous health-baseline 7620 lines to 6860 lines.
+  conversion, sort/min/max helpers, JSON hook/default helpers, property helpers,
+  bytes/bytearray construction, AST node construction helpers, inline simple
+  function helpers, print/format helpers, and closure frame installation.
+  `vm_call.rs` dropped from the previous health-baseline 7620 lines to 5861
+  lines.
 - Continue mechanically: move existing helper groups into child files while
   keeping public VM methods and call behavior stable. Introduce `PreparedCall`/
   `CallTarget`/`CallArgs` only after repeated branching is isolated enough to
