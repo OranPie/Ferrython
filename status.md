@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T03:55:50+08:00
+Last updated: 2026-05-28T04:09:16+08:00
 
 ## 代码质量重构进度
 
@@ -1065,6 +1065,8 @@ Last updated: 2026-05-28T03:55:50+08:00
   - 第四十批拆出 `builtin_kw_numeric.rs`、`builtin_kw_truth.rs` 和 `builtin_kw_misc.rs`：`int/complex` keyword constructor、`bool` truthiness/dunder keyword path、`open/property` keyword helpers 从 `builtin_kw_primitives.rs` 移出，并删除空壳 `builtin_kw_primitives.rs`；新文件分别约 68、73 和 51 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 primitive kw split smoke，覆盖 `int(base=)`、`complex(real=, imag=)`、`bool()`/`__bool__`/`__len__`、bool keyword TypeError、`property(fget=, doc=)` 和 `open(mode=, encoding=)`。
   - commit：`b40a864 refactor: split primitive keyword helpers`。
+  - 第四十一批拆出 VM 尾部运行时 helper：新增 `vm_trace.rs`、`vm_exception.rs`、`vm_iter_fast.rs` 和 `vm_truth.rs`，分别承载 trace/profile/breakpoint/excepthook、traceback/unwind、inline iterator advance、truthiness/dunder/exception matching helper；`vm.rs` 从约 10806 行降到约 10128 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 trace/profile、exception traceback、iterator fast path 和 truthiness/dunder smoke；`cargo check`/build 仅剩既有 `IndexMap::remove` deprecated 与 `field_names` unused warning。
 
 ## 修复原则
 
