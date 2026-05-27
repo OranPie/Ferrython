@@ -4,7 +4,7 @@ use crate::error::{PyException, PyResult};
 
 use super::helpers::{call_callable, partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::{CompareOp, PyObjectMethods};
-use super::methods_attr::{lookup_in_class_mro, wrap_class_attr_for_instance};
+use super::methods_attr_helpers::{lookup_in_class_mro, wrap_class_attr_for_instance};
 use super::payload::*;
 use compact_str::CompactString;
 use std::cell::RefCell;
