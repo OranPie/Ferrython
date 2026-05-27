@@ -36,8 +36,9 @@ Last updated: 2026-05-27
   `cProfile`, `timeit`, `faulthandler`, `tracemalloc`, `pydoc`,
   `logging.handlers`, `logging.config`, `pickletools`, and `_testcapi` now
   live under `testing_modules/`. The logging module has started internal
-  layering with formatting/time helpers and small class/function factories split
-  under `testing_modules/logging/`.
+  layering with formatting/time helpers, small class/function factories, and
+  handler/formatter class factories split under `testing_modules/logging/`;
+  the root logging file has dropped out of the current longest-file list.
 - Phase 2 system module mechanical splits have started. The low-coupling back
   half of `sys_modules.rs` now lives under `sys_modules/`: `platform`, `locale`,
   `getpass`, `errno`, `atexit`, `site`, `sched`, `mmap`, `resource`, `fcntl`,

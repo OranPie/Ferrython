@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-27T08:04:50+08:00
+Last updated: 2026-05-27T08:07:21+08:00
 
 ## 代码质量重构进度
 
@@ -134,6 +134,10 @@ Last updated: 2026-05-27T08:04:50+08:00
 - 已继续 `logging` 内部分层：
   - 新增 `testing_modules/logging/factories.rs`，拆出 NullHandler、getLevelName、Filter 和 LogRecord 这组无状态 factory。
   - `testing_modules/logging.rs` 从约 2032 行降到约 1798 行；后续更重的 root logger registry/basicConfig 仍保留在根文件，适合单独拆。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
+- 已继续 `logging` handler/formatter 内部分层：
+  - 新增 `testing_modules/logging/handlers.rs`，拆出 StreamHandler、FileHandler、RotatingFileHandler、Formatter 和 Handler class factory。
+  - `testing_modules/logging.rs` 从约 1798 行降到约 1130 行，并退出 `CODE_HEALTH_BASELINE.md` 当前 top 25 最长 Rust 文件列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`。
 - 已完成并提交 `sys_modules` 后半段低耦合模块批量拆分：
   - `9c3aaed refactor: split system helper modules`
@@ -278,6 +282,7 @@ Last updated: 2026-05-27T08:04:50+08:00
   - testing `logging`/`unittest` 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - logging format helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - logging factory helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
+  - logging handler/formatter helper 拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - sys 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - network/http 后半段低耦合模块批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
   - math 模块第一轮批量拆分后通过 `cargo check -p ferrython-stdlib`，仅剩既有 warning。
@@ -297,7 +302,7 @@ Last updated: 2026-05-27T08:04:50+08:00
   - 继续评估 `text_modules/regex_impl/functions.rs` 是否还值得按 search/sub/compile/cache 进一步分层；`pattern.rs` 根文件已完成聚合化。
   - 继续评估 `serial_modules/pickle_module/read.rs` 是否按 protocol0/protocol2/global reduce helper 进一步拆分。
   - 继续评估 `misc_modules/dataclasses.rs`、`misc_modules/ctypes.rs` 是否需要内部分层。
-  - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig/handler factory 是否继续分层，以及 `unittest.rs` 是否需要内部分层。
+  - 继续评估 `testing_modules/logging.rs` 的 root logger registry/basicConfig 是否继续分层，以及 `unittest.rs` 是否需要内部分层。
   - 继续评估 `sys_modules.rs` 中 `sys`、`os`、`os.path` 是否按职责拆成核心系统状态、文件描述符、目录/路径 helper。
   - 继续评估 `network_modules/http_module/{urllib_parse,urllib_request,http_client,http_server}.rs` 是否还需要按更细职责继续内部分层。
   - 继续评估 `math_modules/decimal.rs` 是否需要按 Context/Decimal/object helper 继续内部分层。
