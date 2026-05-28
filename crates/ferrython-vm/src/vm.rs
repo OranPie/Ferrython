@@ -256,809 +256,261 @@ impl VirtualMachine {
                 }
                 // 3-way superinstruction: LoadFast + LoadConst + BinarySubtract
                 Opcode::LoadFastLoadConstBinarySub => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = (instr.arg & 0xFFFF) as usize;
-                    // SAFETY: compiler guarantees indices valid
-                    match slocal!(frame, fast_idx) {
-                        Some(local) => {
-                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                            match (&local.payload, &c.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    let result = match x.checked_sub(*y) {
-                                        Some(r) => PyObject::int(r),
-                                        None => {
-                                            use num_bigint::BigInt;
-                                            PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
-                                        }
-                                    };
-                                    spush!(frame, result);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    spush!(frame, PyObject::float(*x - *y));
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                _ => {
-                                    // Fallback: push both and let execute_one handle BinarySub
-                                    spush!(frame, local.clone());
-                                    spush!(frame, c.clone());
-                                    self.execute_one(ferrython_bytecode::Instruction::new(
-                                        Opcode::BinarySubtract,
-                                        0,
-                                    ))
-                                }
-                            }
+                    match crate::vm_fast_binary::try_fast_fused_binary(frame, instr) {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
+                        crate::vm_fast_binary::FastFusedBinaryResult::Fallback(op) => {
+                            self.execute_one(ferrython_bytecode::Instruction::new(op, 0))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::HandledChain => {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 // 3-way superinstruction: LoadFast + LoadConst + BinaryAdd
                 Opcode::LoadFastLoadConstBinaryAdd => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = (instr.arg & 0xFFFF) as usize;
-                    match slocal!(frame, fast_idx) {
-                        Some(local) => {
-                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                            match (&local.payload, &c.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    let result = match x.checked_add(*y) {
-                                        Some(r) => PyObject::int(r),
-                                        None => {
-                                            use num_bigint::BigInt;
-                                            PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
-                                        }
-                                    };
-                                    spush!(frame, result);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    spush!(frame, PyObject::float(*x + *y));
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Float(y),
-                                ) => {
-                                    spush!(frame, PyObject::float(*x as f64 + *y));
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (
-                                    PyObjectPayload::Float(x),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    spush!(frame, PyObject::float(*x + *y as f64));
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                _ => {
-                                    spush!(frame, local.clone());
-                                    spush!(frame, c.clone());
-                                    self.execute_one(ferrython_bytecode::Instruction::new(
-                                        Opcode::BinaryAdd,
-                                        0,
-                                    ))
-                                }
-                            }
+                    match crate::vm_fast_binary::try_fast_fused_binary(frame, instr) {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
+                        crate::vm_fast_binary::FastFusedBinaryResult::Fallback(op) => {
+                            self.execute_one(ferrython_bytecode::Instruction::new(op, 0))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::HandledChain => {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 Opcode::LoadFastLoadFastBinaryAdd => {
-                    let idx1 = (instr.arg >> 16) as usize;
-                    let idx2 = (instr.arg & 0xFFFF) as usize;
-                    // Borrow locals without cloning — only clone on fallback
-                    let a = slocal!(frame, idx1);
-                    let b = slocal!(frame, idx2);
-                    match (a, b) {
-                        (Some(a), Some(b)) => match (&a.payload, &b.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => {
-                                let (x, y) = (*x, *y);
-                                let result = match x.checked_add(y) {
-                                    Some(r) => PyObject::int(r),
-                                    None => {
-                                        use num_bigint::BigInt;
-                                        PyObject::big_int(BigInt::from(x) + BigInt::from(y))
-                                    }
-                                };
-                                spush!(frame, result);
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x + *y;
-                                spush!(frame, PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            _ => {
-                                let (ac, bc) = (a.clone(), b.clone());
-                                spush!(frame, ac);
-                                spush!(frame, bc);
-                                self.execute_one(ferrython_bytecode::Instruction::new(
-                                    Opcode::BinaryAdd,
-                                    0,
-                                ))
-                            }
-                        },
-                        (None, _) | (_, None) => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                    match crate::vm_fast_binary::try_fast_fused_binary(frame, instr) {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::Fallback(op) => {
+                            self.execute_one(ferrython_bytecode::Instruction::new(op, 0))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_) => {
+                            Err(PyException::name_error(String::from(
+                                "local variable referenced before assignment",
+                            )))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::HandledChain => {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 // 4-way fused: load two locals, add, store result — no stack touch
                 Opcode::LoadFastLoadFastBinaryAddStoreFast => {
-                    let idx1 = (instr.arg >> 16) as usize;
-                    let idx2 = ((instr.arg >> 8) & 0xFF) as usize;
-                    let dest = (instr.arg & 0xFF) as usize;
-                    let a = slocal!(frame, idx1);
-                    let b = slocal!(frame, idx2);
-                    match (a, b) {
-                        (Some(a), Some(b)) => {
-                            match (&a.payload, &b.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    let (x, y) = (*x, *y);
-                                    if let Some(r) = x.checked_add(y) {
-                                        // Try in-place mutation if dest holds sole reference
-                                        let dest_slot =
-                                            unsafe { frame.locals.get_unchecked_mut(dest) };
-                                        if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                                obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok_chain!(
-                                                    profiling,
-                                                    self.profiler,
-                                                    instr.op,
-                                                    frame,
-                                                    instr_base,
-                                                    instr_count
-                                                )
-                                            }
-                                        }
-                                        // Force non-immortal for in-place mutation next time
-                                        *dest_slot = Some(PyObject::wrap_leaf(
-                                            PyObjectPayload::Int(PyInt::Small(r)),
-                                        ));
-                                    } else {
-                                        use num_bigint::BigInt;
-                                        let result =
-                                            PyObject::big_int(BigInt::from(x) + BigInt::from(y));
-                                        sset_local!(frame, dest, result);
-                                    }
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    let r = *x + *y;
-                                    // Try in-place mutation — huge win for float loops
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
-                                    let mut s = String::with_capacity(x.len() + y.len());
-                                    s.push_str(x);
-                                    s.push_str(y);
-                                    sset_local!(
-                                        frame,
-                                        dest,
-                                        PyObject::str_val(CompactString::from(s))
-                                    );
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                _ => {
-                                    let (ac, bc) = (a.clone(), b.clone());
-                                    spush!(frame, ac);
-                                    spush!(frame, bc);
-                                    let r = self.execute_one(ferrython_bytecode::Instruction::new(
-                                        Opcode::BinaryAdd,
-                                        0,
-                                    ));
-                                    // Re-borrow frame after execute_one
-                                    if r.is_ok() {
-                                        let cs_len2 = self.call_stack.len();
-                                        let frame2 = unsafe {
-                                            self.call_stack.get_unchecked_mut(cs_len2 - 1)
-                                        };
-                                        if !frame2.stack.is_empty() {
-                                            let val = frame2.stack.pop().unwrap();
-                                            unsafe { frame2.set_local_unchecked(dest, val) };
-                                        }
-                                    }
-                                    r
-                                }
+                    let fast_result = crate::vm_fast_binary::try_fast_fused_binary(frame, instr);
+                    match fast_result {
+                        crate::vm_fast_binary::FastFusedBinaryResult::HandledChain => {
+                            hot_ok_chain!(
+                                profiling,
+                                self.profiler,
+                                instr.op,
+                                frame,
+                                instr_base,
+                                instr_count
+                            )
+                        }
+                        _ => {}
+                    }
+                    if matches!(
+                        fast_result,
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_)
+                    ) {
+                        Err(PyException::name_error(String::from(
+                            "local variable referenced before assignment",
+                        )))
+                    } else {
+                        let dest = (instr.arg & 0xFF) as usize;
+                        let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                            Opcode::BinaryAdd,
+                            0,
+                        ));
+                        if r.is_ok() {
+                            let cs_len2 = self.call_stack.len();
+                            let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                            if !frame2.stack.is_empty() {
+                                let val = frame2.stack.pop().unwrap();
+                                unsafe { frame2.set_local_unchecked(dest, val) };
                             }
                         }
-                        (None, _) | (_, None) => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                        r
                     }
                 }
                 // 4-way fused: load local + const, add, store — no stack touch
                 Opcode::LoadFastLoadConstBinaryAddStoreFast => {
-                    let local_idx = (instr.arg >> 16) as usize;
-                    let const_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let dest = (instr.arg & 0xFF) as usize;
-                    let a = slocal!(frame, local_idx);
-                    let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    match a {
-                        Some(a) => {
-                            match (&a.payload, &c.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    let (x, y) = (*x, *y);
-                                    if let Some(r) = x.checked_add(y) {
-                                        let dest_slot =
-                                            unsafe { frame.locals.get_unchecked_mut(dest) };
-                                        if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                                obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok_chain!(
-                                                    profiling,
-                                                    self.profiler,
-                                                    instr.op,
-                                                    frame,
-                                                    instr_base,
-                                                    instr_count
-                                                )
-                                            }
-                                        }
-                                        *dest_slot = Some(PyObject::int(r));
-                                    } else {
-                                        use num_bigint::BigInt;
-                                        let result =
-                                            PyObject::big_int(BigInt::from(x) + BigInt::from(y));
-                                        sset_local!(frame, dest, result);
-                                    }
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    let r = *x + *y;
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Float(y),
-                                ) => {
-                                    let r = *x as f64 + *y;
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (
-                                    PyObjectPayload::Float(x),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => {
-                                    let r = *x + *y as f64;
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                (PyObjectPayload::Str(_), PyObjectPayload::Str(rhs)) => {
-                                    // String concat in-place: s = s + "a" (like CPython)
-                                    let rhs_clone: CompactString = rhs.to_compact_string();
-                                    // NLL: a, c borrows are dead after the clone above
-                                    if local_idx == dest {
-                                        let locals_ptr = frame.locals.as_mut_ptr();
-                                        let dest_slot = unsafe { &mut *locals_ptr.add(dest) };
-                                        if let Some(mut arc) = dest_slot.take() {
-                                            if let Some(obj) = PyObjectRef::get_mut(&mut arc) {
-                                                if let PyObjectPayload::Str(ref mut s) = obj.payload
-                                                {
-                                                    s.push_str(&rhs_clone);
-                                                    *dest_slot = Some(arc);
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                            }
-                                            // In-place failed (extra refs), allocate new
-                                            let new_s =
-                                                if let PyObjectPayload::Str(ref x) = arc.payload {
-                                                    let mut s = String::with_capacity(
-                                                        x.len() + rhs_clone.len(),
-                                                    );
-                                                    s.push_str(x);
-                                                    s.push_str(&rhs_clone);
-                                                    CompactString::from(s)
-                                                } else {
-                                                    unreachable!()
-                                                };
-                                            *dest_slot = Some(PyObject::str_val(new_s));
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        }
-                                    }
-                                    // local_idx != dest: fall through to generic path
-                                    let a = slocal!(frame, local_idx);
-                                    let c =
-                                        unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                                    if let Some(a) = a {
-                                        let (ac, cc) = (a.clone(), c.clone());
-                                        spush!(frame, ac);
-                                        spush!(frame, cc);
-                                        let r =
-                                            self.execute_one(ferrython_bytecode::Instruction::new(
-                                                Opcode::BinaryAdd,
-                                                0,
-                                            ));
-                                        if r.is_ok() {
-                                            let cs_len2 = self.call_stack.len();
-                                            let frame2 = unsafe {
-                                                self.call_stack.get_unchecked_mut(cs_len2 - 1)
-                                            };
-                                            if !frame2.stack.is_empty() {
-                                                let val = frame2.stack.pop().unwrap();
-                                                unsafe { frame2.set_local_unchecked(dest, val) };
-                                            }
-                                        }
-                                        r
-                                    } else {
-                                        Err(PyException::name_error(String::from(
-                                            "local variable referenced before assignment",
-                                        )))
-                                    }
-                                }
-                                _ => {
-                                    let (ac, cc) = (a.clone(), c.clone());
-                                    spush!(frame, ac);
-                                    spush!(frame, cc);
-                                    let r = self.execute_one(ferrython_bytecode::Instruction::new(
-                                        Opcode::BinaryAdd,
-                                        0,
-                                    ));
-                                    if r.is_ok() {
-                                        let cs_len2 = self.call_stack.len();
-                                        let frame2 = unsafe {
-                                            self.call_stack.get_unchecked_mut(cs_len2 - 1)
-                                        };
-                                        if !frame2.stack.is_empty() {
-                                            let val = frame2.stack.pop().unwrap();
-                                            unsafe { frame2.set_local_unchecked(dest, val) };
-                                        }
-                                    }
-                                    r
-                                }
+                    let fast_result = crate::vm_fast_binary::try_fast_fused_binary(frame, instr);
+                    match fast_result {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok_chain!(
+                                profiling,
+                                self.profiler,
+                                instr.op,
+                                frame,
+                                instr_base,
+                                instr_count
+                            )
+                        }
+                        _ => {}
+                    }
+                    if matches!(
+                        fast_result,
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_)
+                    ) {
+                        Err(PyException::name_error(String::from(
+                            "local variable referenced before assignment",
+                        )))
+                    } else {
+                        let dest = (instr.arg & 0xFF) as usize;
+                        let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                            Opcode::BinaryAdd,
+                            0,
+                        ));
+                        if r.is_ok() {
+                            let cs_len2 = self.call_stack.len();
+                            let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                            if !frame2.stack.is_empty() {
+                                let val = frame2.stack.pop().unwrap();
+                                unsafe { frame2.set_local_unchecked(dest, val) };
                             }
                         }
-                        None => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                        r
                     }
                 }
                 // Fused LoadFast + LoadConst + BinaryMul + StoreFast (x = x * c)
                 Opcode::LoadFastLoadConstBinaryMulStoreFast => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let dest = (instr.arg & 0xFF) as usize;
-                    let a = slocal!(frame, fast_idx);
-                    let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    match a {
-                        Some(a) => match (&a.payload, &c.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => {
-                                let (x, y) = (*x, *y);
-                                if let Some(r) = x.checked_mul(y) {
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::int(r));
-                                } else {
-                                    use num_bigint::BigInt;
-                                    let result =
-                                        PyObject::big_int(BigInt::from(x) * BigInt::from(y));
-                                    sset_local!(frame, dest, result);
+                    let fast_result = crate::vm_fast_binary::try_fast_fused_binary(frame, instr);
+                    match fast_result {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_) => {
+                            Err(PyException::name_error(String::from(
+                                "local variable referenced before assignment",
+                            )))
+                        }
+                        _ => {
+                            let dest = (instr.arg & 0xFF) as usize;
+                            let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                                Opcode::BinaryMultiply,
+                                0,
+                            ));
+                            if r.is_ok() {
+                                let cs_len2 = self.call_stack.len();
+                                let frame2 =
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                                if !frame2.stack.is_empty() {
+                                    let val = frame2.stack.pop().unwrap();
+                                    unsafe { frame2.set_local_unchecked(dest, val) };
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x * *y;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                let r = *x as f64 * *y;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let r = *x * *y as f64;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            _ => {
-                                spush!(frame, a.clone());
-                                spush!(frame, c.clone());
-                                let r = self.execute_one(ferrython_bytecode::Instruction::new(
-                                    Opcode::BinaryMultiply,
-                                    0,
-                                ));
-                                if r.is_ok() {
-                                    let cs_len2 = self.call_stack.len();
-                                    let frame2 =
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
-                                    if !frame2.stack.is_empty() {
-                                        let val = frame2.stack.pop().unwrap();
-                                        unsafe { frame2.set_local_unchecked(dest, val) };
-                                    }
-                                }
-                                r
-                            }
-                        },
-                        None => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                            r
+                        }
                     }
                 }
                 // Fused LoadFast + LoadConst + BinarySub + StoreFast (x = x - 1)
                 Opcode::LoadFastLoadConstBinarySubStoreFast => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let dest = (instr.arg & 0xFF) as usize;
-                    let a = slocal!(frame, fast_idx);
-                    let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    match a {
-                        Some(a) => match (&a.payload, &c.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => {
-                                let (x, y) = (*x, *y);
-                                if let Some(r) = x.checked_sub(y) {
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::int(r));
-                                } else {
-                                    use num_bigint::BigInt;
-                                    let result =
-                                        PyObject::big_int(BigInt::from(x) - BigInt::from(y));
-                                    sset_local!(frame, dest, result);
+                    let fast_result = crate::vm_fast_binary::try_fast_fused_binary(frame, instr);
+                    match fast_result {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_) => {
+                            Err(PyException::name_error(String::from(
+                                "local variable referenced before assignment",
+                            )))
+                        }
+                        _ => {
+                            let dest = (instr.arg & 0xFF) as usize;
+                            let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                                Opcode::BinarySubtract,
+                                0,
+                            ));
+                            if r.is_ok() {
+                                let cs_len2 = self.call_stack.len();
+                                let frame2 =
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                                if !frame2.stack.is_empty() {
+                                    let val = frame2.stack.pop().unwrap();
+                                    unsafe { frame2.set_local_unchecked(dest, val) };
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x - *y;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                let r = *x as f64 - *y;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let r = *x - *y as f64;
-                                let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                if let Some(ref mut arc) = dest_slot {
-                                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                        obj.payload = PyObjectPayload::Float(r);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                *dest_slot = Some(PyObject::float(r));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            _ => {
-                                spush!(frame, a.clone());
-                                spush!(frame, c.clone());
-                                let r = self.execute_one(ferrython_bytecode::Instruction::new(
-                                    Opcode::BinarySubtract,
-                                    0,
-                                ));
-                                if r.is_ok() {
-                                    let cs_len2 = self.call_stack.len();
-                                    let frame2 =
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
-                                    if !frame2.stack.is_empty() {
-                                        let val = frame2.stack.pop().unwrap();
-                                        unsafe { frame2.set_local_unchecked(dest, val) };
-                                    }
-                                }
-                                r
-                            }
-                        },
-                        None => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                            r
+                        }
                     }
                 }
                 // 6-way fused: x = (x * c1) % c2 — zero stack touch, in-place mutation
                 Opcode::LoadFastMulModStoreFast => {
-                    let local_idx = (instr.arg >> 24) as usize;
-                    let const1_idx = ((instr.arg >> 16) & 0xFF) as usize;
-                    let const2_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let dest = (instr.arg & 0xFF) as usize;
-                    let a = slocal!(frame, local_idx);
-                    let c1 = unsafe { frame.constant_cache.get_unchecked(const1_idx) };
-                    let c2 = unsafe { frame.constant_cache.get_unchecked(const2_idx) };
-                    match a {
-                        Some(a) => {
-                            match (&a.payload, &c1.payload, &c2.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(m)),
-                                    PyObjectPayload::Int(PyInt::Small(d)),
-                                ) if *d != 0 => {
-                                    let (x, m, d) = (*x, *m, *d);
-                                    // Compute (x * m) % d with Python semantics
-                                    if let Some(product) = x.checked_mul(m) {
-                                        // Python modulo: result has same sign as divisor
-                                        let r = ((product % d) + d) % d;
-                                        let dest_slot =
-                                            unsafe { frame.locals.get_unchecked_mut(dest) };
-                                        if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                                obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok!(profiling, self.profiler, instr.op)
-                                            }
-                                        }
-                                        *dest_slot = Some(PyObject::int(r));
-                                    } else {
-                                        use num_bigint::BigInt;
-                                        let product = BigInt::from(x) * BigInt::from(m);
-                                        let d_big = BigInt::from(d);
-                                        let r = ((&product % &d_big) + &d_big) % &d_big;
-                                        let result = PyObject::big_int(r);
-                                        sset_local!(frame, dest, result);
-                                    }
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (
-                                    PyObjectPayload::Float(x),
-                                    PyObjectPayload::Float(m),
-                                    PyObjectPayload::Float(d),
-                                ) if *d != 0.0 => {
-                                    let product = *x * *m;
-                                    let r = product - (product / *d).floor() * *d;
-                                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
-                                    if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                            obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        }
-                                    }
-                                    *dest_slot = Some(PyObject::float(r));
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                _ => {
-                                    // Fallback: push operands on stack, execute mul+mod manually
-                                    // Clone values we need before any borrows
-                                    let a_clone = a.clone();
-                                    let c1_clone = c1.clone();
-                                    let c2_clone = c2.clone();
-                                    spush!(frame, a_clone);
-                                    spush!(frame, c1_clone);
-                                    let r = self.execute_one(ferrython_bytecode::Instruction::new(
-                                        Opcode::BinaryMultiply,
-                                        0,
-                                    ));
-                                    if r.is_ok() {
-                                        let cs_len2 = self.call_stack.len();
-                                        let frame2 = unsafe {
-                                            self.call_stack.get_unchecked_mut(cs_len2 - 1)
-                                        };
-                                        spush!(frame2, c2_clone);
-                                        let r2 =
-                                            self.execute_one(ferrython_bytecode::Instruction::new(
-                                                Opcode::BinaryModulo,
-                                                0,
-                                            ));
-                                        if r2.is_ok() {
-                                            let cs_len3 = self.call_stack.len();
-                                            let frame3 = unsafe {
-                                                self.call_stack.get_unchecked_mut(cs_len3 - 1)
-                                            };
-                                            if !frame3.stack.is_empty() {
-                                                let val = frame3.stack.pop().unwrap();
-                                                unsafe { frame3.set_local_unchecked(dest, val) };
-                                            }
-                                        }
-                                        r2
-                                    } else {
-                                        r
+                    let fast_result = crate::vm_fast_binary::try_fast_fused_binary(frame, instr);
+                    match fast_result {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_) => {
+                            Err(PyException::name_error(String::from(
+                                "local variable referenced before assignment",
+                            )))
+                        }
+                        _ => {
+                            let const2_idx = ((instr.arg >> 8) & 0xFF) as usize;
+                            let dest = (instr.arg & 0xFF) as usize;
+                            let c2 = unsafe { frame.constant_cache.get_unchecked(const2_idx) };
+                            let c2_clone = c2.clone();
+                            let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                                Opcode::BinaryMultiply,
+                                0,
+                            ));
+                            if r.is_ok() {
+                                let cs_len2 = self.call_stack.len();
+                                let frame2 =
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                                spush!(frame2, c2_clone);
+                                let r2 = self.execute_one(ferrython_bytecode::Instruction::new(
+                                    Opcode::BinaryModulo,
+                                    0,
+                                ));
+                                if r2.is_ok() {
+                                    let cs_len3 = self.call_stack.len();
+                                    let frame3 =
+                                        unsafe { self.call_stack.get_unchecked_mut(cs_len3 - 1) };
+                                    if !frame3.stack.is_empty() {
+                                        let val = frame3.stack.pop().unwrap();
+                                        unsafe { frame3.set_local_unchecked(dest, val) };
                                     }
                                 }
+                                r2
+                            } else {
+                                r
                             }
                         }
-                        None => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
                     }
                 }
                 // Fused LoadFast + LoadConst + BinaryMul (pushes result, no store)
                 Opcode::LoadFastLoadConstBinaryMul => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = (instr.arg & 0xFFFF) as usize;
-                    let a = slocal!(frame, fast_idx);
-                    let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    match a {
-                        Some(a) => match (&a.payload, &c.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => {
-                                let result = match x.checked_mul(*y) {
-                                    Some(r) => PyObject::int(r),
-                                    None => {
-                                        use num_bigint::BigInt;
-                                        PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
-                                    }
-                                };
-                                spush!(frame, result);
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                spush!(frame, PyObject::float(*x * *y));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                spush!(frame, PyObject::float(*x as f64 * *y));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                spush!(frame, PyObject::float(*x * *y as f64));
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            _ => {
-                                spush!(frame, a.clone());
-                                spush!(frame, c.clone());
-                                self.execute_one(ferrython_bytecode::Instruction::new(
-                                    Opcode::BinaryMultiply,
-                                    0,
-                                ))
-                            }
-                        },
-                        None => Err(PyException::name_error(String::from(
-                            "local variable referenced before assignment",
-                        ))),
+                    match crate::vm_fast_binary::try_fast_fused_binary(frame, instr) {
+                        crate::vm_fast_binary::FastFusedBinaryResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::Fallback(op) => {
+                            self.execute_one(ferrython_bytecode::Instruction::new(op, 0))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::UnboundLocal(_) => {
+                            Err(PyException::name_error(String::from(
+                                "local variable referenced before assignment",
+                            )))
+                        }
+                        crate::vm_fast_binary::FastFusedBinaryResult::HandledChain => {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 Opcode::PopTop => {
