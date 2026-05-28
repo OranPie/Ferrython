@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T01:24:11+08:00
+Last updated: 2026-05-29T01:33:39+08:00
 
 ## 代码质量重构进度
 
@@ -1202,6 +1202,9 @@ Last updated: 2026-05-29T01:24:11+08:00
   - 第八十一批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:24:11 CST）：新增 `vm_fast_iter.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 GetIter 常见 payload 快路径和 ForIterStoreFast 的非 generator 快路径；主 loop 保留 generator resume 和 generic fallback 以维持 frame rederive/call_stack 语义；`vm.rs` 从 7983 行降到 7663 行，`vm_fast_iter.rs` 为 269 行，并删除已不再使用的 `speek!` 宏。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 range/list/tuple/dict keys/values/items/reversed/generator for-loop smoke。
   - commit：`1f39973 refactor: split vm fast iteration paths`。
+  - 第八十二批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:33:39 CST）：扩展 `vm_fast_collections.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 LoadConst/LoadFast contains-store、LoadFast/LoadConst subscr-store、LoadFast/LoadFast subscr-store、LoadFast/LoadFast/LoadFast store-subscript 和 LoadFast/LoadFast contains-store 的直接快路径；主 loop 保留 fallback 分解和 `execute_one` 后的 frame/result 控制语义；`vm.rs` 从 7663 行降到 7350 行，`vm_fast_collections.rs` 从 248 行扩到 504 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dict/set/list/tuple/str contains、list/tuple/dict subscr-store、dict/list store-subscript 和 local contains/subscr smoke。
+  - commit：`cbecb4b refactor: split vm fused collection paths`。
 
 ## 修复原则
 
