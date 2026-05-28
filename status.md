@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:42:07+08:00
+Last updated: 2026-05-29T02:52:38+08:00
 
 ## 代码质量重构进度
 
@@ -1228,6 +1228,9 @@ Last updated: 2026-05-29T02:42:07+08:00
   - 第八十九批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:42:07 CST）：扩展 `vm_fast_attr.rs`，把普通 `LoadMethod` 的 instance method、instance attr callable 和 builtin receiver method-name tag 快路径并入已有 `try_fast_attr`；主 loop 只保留 `FastAttrResult` 调度壳，继续让 fallback 走 `execute_one`，不触碰后续 `CallMethod` 的 frame 创建、VM-aware builtin method dispatch 和 `CallMethodPopTop` 控制流；`vm.rs` 从 4290 行降到 4073 行，`vm_fast_attr.rs` 从 349 行扩到 464 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过实例方法、实例 callable 属性、list append/pop、dict.get、str strip/upper/startswith/endswith、set.add 和 property descriptor fallback smoke。
   - commit：`f20a9dc refactor: split vm load method path`。
+  - 第九十批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:52:38 CST）：新增 `vm_fast_method.rs`，把 `CallMethod` 中 builtin receiver 的直接快路径和 direct dispatch 移入 `try_fast_builtin_method`，包括 list.append、dict.get、set.add、str strip/lower/upper/startswith/endswith 以及 0/1/2 参数 direct builtin method dispatch；主 loop 保留 Python method frame 创建、trace/profile、VM-aware `collect_iterable` fallback 和 list.sort 的 VM sort 路径；`vm.rs` 从 4073 行降到 3675 行，新增 helper 233 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 list append/pop、dict.get、str method、set.add、join(list)、join(generator)、list.extend(generator/list)、list.sort、set.update(generator)/union(generator)、list.count、str.replace smoke；其中 `join(generator)` 用于回归确认 Str-tag fallback 不再错误走普通 `execute_one`。
+  - commit：`b54921d refactor: split vm builtin method calls`。
 
 ## 修复原则
 
