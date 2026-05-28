@@ -2,8 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::object::{
-    IteratorData, PyObject, PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS,
-    CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
+    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::PyInt;
 
@@ -415,6 +415,25 @@ fn fast_direct_isinstance(stack: &[PyObjectRef]) -> Option<PyObjectRef> {
 }
 
 #[inline(always)]
+fn fast_callfunction_isinstance(stack: &[PyObjectRef]) -> Option<PyObjectRef> {
+    let sl = stack.len();
+    let obj = stack.get(sl.checked_sub(2)?)?;
+    let cls = stack.get(sl - 1)?;
+    let result = match &cls.payload {
+        PyObjectPayload::BuiltinType(bt) => {
+            if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                None
+            } else {
+                fast_builtin_type_match(obj, bt.as_str())
+            }
+        }
+        PyObjectPayload::Class(_) => fast_class_match(obj, cls),
+        _ => None,
+    }?;
+    Some(PyObject::bool_val(result))
+}
+
+#[inline(always)]
 fn fast_loaded_type_isinstance_arg(
     func_obj: &PyObjectRef,
     stack: &[PyObjectRef],
@@ -434,6 +453,146 @@ fn fast_loaded_type_isinstance_arg(
         }
         PyObjectPayload::Class(_) => fast_class_match(obj, func_obj).map(PyObject::bool_val),
         _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_mixed_two_arg_min_max(stack: &[PyObjectRef], is_max: bool) -> Option<PyObjectRef> {
+    let sl = stack.len();
+    let a = stack.get(sl.checked_sub(2)?)?;
+    let b = stack.get(sl - 1)?;
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+            Some(PyObject::int(if is_max {
+                std::cmp::max(*x, *y)
+            } else {
+                std::cmp::min(*x, *y)
+            }))
+        }
+        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+            Some(PyObject::float(if is_max { x.max(*y) } else { x.min(*y) }))
+        }
+        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+            let xf = *x as f64;
+            Some(if (is_max && xf >= *y) || (!is_max && xf <= *y) {
+                PyObject::int(*x)
+            } else {
+                PyObject::float(*y)
+            })
+        }
+        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+            let yf = *y as f64;
+            Some(if (is_max && *x >= yf) || (!is_max && *x <= yf) {
+                PyObject::float(*x)
+            } else {
+                PyObject::int(*y)
+            })
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_small_int_sum_with_start(iterable: &PyObjectRef, start: i64) -> Option<i64> {
+    match &iterable.payload {
+        PyObjectPayload::List(v) => {
+            fast_small_int_items_sum_with_start(unsafe { &*v.data_ptr() }, start)
+        }
+        PyObjectPayload::Tuple(v) => fast_small_int_items_sum_with_start(v, start),
+        PyObjectPayload::Range(rd) => {
+            let n = if rd.step > 0 {
+                if rd.start >= rd.stop {
+                    0i64
+                } else {
+                    (rd.stop - rd.start + rd.step - 1) / rd.step
+                }
+            } else if rd.step < 0 {
+                if rd.start <= rd.stop {
+                    0i64
+                } else {
+                    (rd.start - rd.stop - rd.step - 1) / (-rd.step)
+                }
+            } else {
+                0
+            };
+            if n == 0 {
+                return Some(start);
+            }
+            let range_sum = (n as i128) * (rd.start as i128)
+                + (rd.step as i128) * (n as i128) * ((n - 1) as i128) / 2;
+            let total = start as i128 + range_sum;
+            if total >= i64::MIN as i128 && total <= i64::MAX as i128 {
+                Some(total as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_small_int_items_sum_with_start(items: &[PyObjectRef], start: i64) -> Option<i64> {
+    let mut total = start;
+    for item in items {
+        let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload else {
+            return None;
+        };
+        total = total.checked_add(*n)?;
+    }
+    Some(total)
+}
+
+#[inline(always)]
+pub(crate) fn try_fast_callfunction_builtin(
+    func_obj: &PyObjectRef,
+    stack: &[PyObjectRef],
+    arg_count: usize,
+) -> Option<PyObjectRef> {
+    let builtin_name = match &func_obj.payload {
+        PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
+            Some(name.as_str())
+        }
+        _ => None,
+    };
+
+    match (builtin_name, arg_count) {
+        (Some("setattr"), 3) | (Some("next"), 1) | (Some("next"), 2) => None,
+        (Some("isinstance"), 2) => fast_callfunction_isinstance(stack),
+        (Some("hasattr"), 2) => {
+            let name_arg = stack_tail_arg(stack, 2, 1)?;
+            let PyObjectPayload::Str(name) = &name_arg.payload else {
+                return None;
+            };
+            let obj = stack_tail_arg(stack, 2, 0)?;
+            Some(PyObject::bool_val(ferrython_core::object::py_has_attr(
+                obj,
+                name.as_str(),
+            )))
+        }
+        (Some("getattr"), 2) => {
+            let name_arg = stack_tail_arg(stack, 2, 1)?;
+            let PyObjectPayload::Str(name) = &name_arg.payload else {
+                return None;
+            };
+            let obj = stack_tail_arg(stack, 2, 0)?;
+            obj.get_attr(name.as_str())
+        }
+        (Some("sum"), 1) | (Some("sum"), 2) => {
+            let start = if arg_count == 2 {
+                match &stack_tail_arg(stack, 2, 1)?.payload {
+                    PyObjectPayload::Int(PyInt::Small(start)) => *start,
+                    _ => return None,
+                }
+            } else {
+                0
+            };
+            let iterable = stack_tail_arg(stack, arg_count, 0)?;
+            fast_small_int_sum_with_start(iterable, start).map(PyObject::int)
+        }
+        (Some("min"), 2) => fast_mixed_two_arg_min_max(stack, false),
+        (Some("max"), 2) => fast_mixed_two_arg_min_max(stack, true),
+        _ => try_fast_global_builtin_call(func_obj, stack, arg_count),
     }
 }
 
