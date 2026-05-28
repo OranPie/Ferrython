@@ -4,11 +4,13 @@ use clap::{Parser, Subcommand};
 mod cache;
 mod hash;
 mod info;
+mod search;
 mod wheel;
 
 use cache::handle_cache;
 use hash::compute_hashes;
 use info::{generate_lock_file, inspect_packages, show_config};
+use search::{find_closest_name, search_pypi, show_package};
 use wheel::build_wheel;
 
 #[derive(Parser)]
@@ -1394,162 +1396,6 @@ fn list_packages(
     Ok(())
 }
 
-fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(), String> {
-    // Try installed first
-    if let Some(info) = registry::get_installed(name, site_packages) {
-        println!("Name: {}", info.name);
-        println!("Version: {}", info.version);
-        if let Some(ref summary) = info.summary {
-            println!("Summary: {}", summary);
-        }
-        if let Some(ref home_page) = info.home_page {
-            println!("Home-page: {}", home_page);
-        }
-        if let Some(ref author) = info.author {
-            println!("Author: {}", author);
-        }
-        if let Some(ref license) = info.license {
-            println!("License: {}", license);
-        }
-        if let Some(ref requires_python) = info.requires_python {
-            println!("Requires-Python: {}", requires_python);
-        }
-        println!("Location: {}", site_packages);
-        if let Some(ref requires) = info.requires {
-            // Strip markers for display; show clean dependency names
-            let dep_names: Vec<String> = requires
-                .iter()
-                .map(|r| {
-                    let clean = if let Some(semi) = r.find(';') {
-                        &r[..semi]
-                    } else {
-                        r
-                    };
-                    clean.trim().to_string()
-                })
-                .collect();
-            println!("Requires: {}", dep_names.join(", "));
-        } else {
-            println!("Requires: (none)");
-        }
-
-        // Compute "Required-by": which installed packages depend on this one
-        let normalized_name = info.name.to_lowercase().replace('-', "_").replace('.', "_");
-        let all_installed = registry::list_installed(site_packages);
-        let required_by: Vec<String> = all_installed
-            .iter()
-            .filter(|p| {
-                p.requires.as_ref().map_or(false, |reqs| {
-                    reqs.iter().any(|r| {
-                        let dep = r.split_whitespace().next().unwrap_or(r);
-                        let dep = dep
-                            .split(&['>', '<', '=', '!', '~', ';', '(', '['][..])
-                            .next()
-                            .unwrap_or(dep);
-                        dep.to_lowercase().replace('-', "_").replace('.', "_") == normalized_name
-                    })
-                })
-            })
-            .map(|p| p.name.clone())
-            .collect();
-        if required_by.is_empty() {
-            println!("Required-by: (none)");
-        } else {
-            println!("Required-by: {}", required_by.join(", "));
-        }
-
-        println!("Installer: ferrypip");
-
-        if show_files {
-            println!("Files:");
-            for f in &info.files {
-                println!("  {}", f);
-            }
-            println!("  ({} file(s))", info.files.len());
-        }
-        return Ok(());
-    }
-
-    // Not installed — try to fetch from PyPI
-    match pypi::fetch_package_info(name, None) {
-        Ok(info) => {
-            println!("Name: {} (not installed)", info.name);
-            println!("Version: {} (latest)", info.version);
-            if !info.summary.is_empty() {
-                println!("Summary: {}", info.summary);
-            }
-            if !info.author.is_empty() {
-                println!("Author: {}", info.author);
-            }
-            if !info.license.is_empty() {
-                println!("License: {}", info.license);
-            }
-            if !info.requires_dist.is_empty() {
-                println!("Requires: {}", info.requires_dist.join(", "));
-            }
-            println!("\nTo install: ferrypip install {}", name);
-            Ok(())
-        }
-        Err(_e) => {
-            let suggestion = suggest_similar_package(name);
-            let hint = if let Some(ref similar) = suggestion {
-                format!("\nDid you mean: {}?\n", similar)
-            } else {
-                String::new()
-            };
-            Err(format!(
-                "Package '{}' is not installed and was not found on PyPI.\n\
-                 {}Hint: Check the package name spelling or search with: ferrypip search {}",
-                name, hint, name
-            ))
-        }
-    }
-}
-
-fn search_pypi(query: &str) -> Result<(), String> {
-    // Try exact match first
-    let results = pypi::search(query).map_err(|e| format!("Search failed: {}", e))?;
-    if !results.is_empty() {
-        for (name, version, summary) in &results {
-            println!("{} ({}) - {}", name, version, summary);
-        }
-        return Ok(());
-    }
-
-    // Try common name variations (replace spaces with hyphens, underscores)
-    let variations = vec![
-        query.replace(' ', "-"),
-        query.replace(' ', "_"),
-        query.replace('_', "-"),
-        query.replace('-', "_"),
-        format!("python-{}", query),
-        format!("py{}", query),
-    ];
-
-    let mut found = false;
-    let mut seen = std::collections::HashSet::new();
-    seen.insert(query.to_lowercase());
-
-    for variant in &variations {
-        let normalized = variant.to_lowercase();
-        if !seen.insert(normalized) {
-            continue;
-        }
-        if let Ok(results) = pypi::search(variant) {
-            for (name, version, summary) in &results {
-                println!("{} ({}) - {}", name, version, summary);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        println!("No packages found matching '{}'.", query);
-        println!("Hint: Try browsing https://pypi.org/search/?q={}", query);
-    }
-    Ok(())
-}
-
 fn download_packages(specs: &[String], dest: &str, quiet: bool) -> Result<(), String> {
     for spec in specs {
         let (name, version_req) = pypi::parse_requirement(spec);
@@ -2072,69 +1918,4 @@ fn extract_string_list(s: &str) -> Vec<String> {
     }
 
     result
-}
-
-// ── Similar package suggestion helpers ───────────────────────────────────────
-
-/// Suggest a similar package name from PyPI using common variations.
-fn suggest_similar_package(name: &str) -> Option<String> {
-    let variations = vec![
-        name.replace('_', "-"),
-        name.replace('-', "_"),
-        format!("python-{}", name),
-        format!("py{}", name),
-        format!("{}3", name),
-    ];
-
-    for variant in &variations {
-        if variant == name {
-            continue;
-        }
-        if let Ok(results) = pypi::search(variant) {
-            if !results.is_empty() {
-                return Some(results[0].0.clone());
-            }
-        }
-    }
-    None
-}
-
-/// Find the closest matching name from a list using edit distance.
-fn find_closest_name(needle: &str, haystack: &[&str]) -> Option<String> {
-    let needle_lower = needle.to_lowercase();
-    let mut best: Option<(usize, String)> = None;
-    for &candidate in haystack {
-        let dist = edit_distance(&needle_lower, &candidate.to_lowercase());
-        // Only suggest if reasonably close (max 3 edits or half the length)
-        let threshold = (needle.len() / 2).max(3);
-        if dist <= threshold {
-            if best.is_none() || dist < best.as_ref().unwrap().0 {
-                best = Some((dist, candidate.to_string()));
-            }
-        }
-    }
-    best.map(|(_, name)| name)
-}
-
-/// Simple Levenshtein edit distance.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    let m = a_bytes.len();
-    let n = b_bytes.len();
-    let mut prev = (0..=n).collect::<Vec<_>>();
-    let mut curr = vec![0; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
 }
