@@ -166,91 +166,34 @@ impl VirtualMachine {
 
             // Inline the hottest opcodes to avoid execute_one dispatch overhead
             let result = match instr.op {
-                Opcode::LoadFast => {
-                    let idx = instr.arg as usize;
-                    // SAFETY: compiler guarantees idx < locals.len(); stack pre-allocated
-                    match slocal!(frame, idx) {
-                        Some(val) => {
-                            spush!(frame, val.clone());
+                Opcode::LoadFast
+                | Opcode::StoreFast
+                | Opcode::StoreFastJumpAbsolute
+                | Opcode::LoadConst
+                | Opcode::LoadFastLoadFast
+                | Opcode::LoadFastLoadConst
+                | Opcode::StoreFastLoadFast
+                | Opcode::PopTop
+                | Opcode::PopTopJumpAbsolute
+                | Opcode::DupTop
+                | Opcode::RotTwo
+                | Opcode::LoadConstStoreFast => {
+                    match crate::vm_fast_stack::try_fast_stack(
+                        frame,
+                        instr,
+                        instr_base,
+                        instr_count,
+                    ) {
+                        crate::vm_fast_stack::FastStackResult::Handled => {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        None => Self::err_unbound_local(&frame.code.varnames, idx),
+                        crate::vm_fast_stack::FastStackResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
+                        }
+                        crate::vm_fast_stack::FastStackResult::Fallback => unreachable!(),
                     }
-                }
-                Opcode::StoreFast => {
-                    // SAFETY: stack non-empty (compiler guarantees), idx < locals.len()
-                    let val = spop!(frame);
-                    sset_local!(frame, instr.arg as usize, val);
-                    // Chain-consume JumpAbsolute if it follows (common in loop bodies)
-                    chain_jump!(frame, instr_base, instr_count);
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                // Fused StoreFast + JumpAbsolute — saves one dispatch per loop iteration
-                Opcode::StoreFastJumpAbsolute => {
-                    let store_idx = (instr.arg >> 16) as usize;
-                    let jump_target = (instr.arg & 0xFFFF) as usize;
-                    let val = spop!(frame);
-                    sset_local!(frame, store_idx, val);
-                    frame.ip = jump_target;
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::LoadConst => {
-                    // SAFETY: compiler guarantees arg < constant_cache.len(); stack pre-allocated
-                    let obj = unsafe {
-                        frame
-                            .constant_cache
-                            .get_unchecked(instr.arg as usize)
-                            .clone()
-                    };
-                    spush!(frame, obj);
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // ── Superinstructions: fused opcode pairs ──
-                Opcode::LoadFastLoadFast => {
-                    let idx1 = (instr.arg >> 16) as usize;
-                    let idx2 = (instr.arg & 0xFFFF) as usize;
-                    // SAFETY: compiler guarantees indices < locals.len()
-                    let a = slocal!(frame, idx1).cloned();
-                    let b = slocal!(frame, idx2).cloned();
-                    match (a, b) {
-                        (Some(a), Some(b)) => {
-                            spush!(frame, a);
-                            spush!(frame, b);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        (None, _) => Self::err_unbound_local(&frame.code.varnames, idx1),
-                        (_, None) => Self::err_unbound_local(&frame.code.varnames, idx2),
-                    }
-                }
-                Opcode::LoadFastLoadConst => {
-                    let fast_idx = (instr.arg >> 16) as usize;
-                    let const_idx = (instr.arg & 0xFFFF) as usize;
-                    // SAFETY: compiler guarantees indices valid
-                    match slocal!(frame, fast_idx) {
-                        Some(val) => {
-                            spush!(frame, val.clone());
-                            let c =
-                                unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone();
-                            spush!(frame, c);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
-                    }
-                }
-                Opcode::StoreFastLoadFast => {
-                    let store_idx = (instr.arg >> 16) as usize;
-                    let load_idx = (instr.arg & 0xFFFF) as usize;
-                    // SAFETY: stack non-empty, indices < locals.len()
-                    let val = spop!(frame);
-                    sset_local!(frame, store_idx, val);
-                    match slocal!(frame, load_idx) {
-                        Some(val) => {
-                            spush!(frame, val.clone());
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        None => Self::err_unbound_local(&frame.code.varnames, load_idx),
-                    }
-                }
                 // 3-way superinstruction: LoadFast + LoadConst + BinarySubtract
                 Opcode::LoadFastLoadConstBinarySub => {
                     match crate::vm_fast_binary::try_fast_fused_binary(frame, instr) {
@@ -510,33 +453,6 @@ impl VirtualMachine {
                         }
                     }
                 }
-                Opcode::PopTop => {
-                    // SAFETY: stack non-empty for well-formed bytecode
-                    drop(spop!(frame));
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::PopTopJumpAbsolute => {
-                    drop(spop!(frame));
-                    frame.ip = instr.arg as usize;
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::DupTop => {
-                    // SAFETY: stack non-empty; stack pre-allocated
-                    let v = unsafe { frame.peek_unchecked() }.clone();
-                    spush!(frame, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::RotTwo => {
-                    let len = frame.stack.len();
-                    unsafe {
-                        frame
-                            .stack
-                            .as_mut_ptr()
-                            .add(len - 1)
-                            .swap(frame.stack.as_mut_ptr().add(len - 2))
-                    };
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
                 // RotThree and DupTopTwo: cold, delegate to execute_one
                 Opcode::RotThree | Opcode::DupTopTwo => self.execute_one(instr),
                 Opcode::Nop => hot_ok!(profiling, self.profiler, instr.op),
@@ -734,41 +650,6 @@ impl VirtualMachine {
                             0,
                         ))
                     }
-                }
-
-                // Fused LoadConst + StoreFast — common in initialization (`x = 0`, `s = ""`)
-                Opcode::LoadConstStoreFast => {
-                    let const_idx = (instr.arg >> 16) as usize;
-                    let store_idx = (instr.arg & 0xFFFF) as usize;
-                    let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    // In-place mutation: if dest holds same type with refcount 1, overwrite payload
-                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
-                    if let Some(ref mut arc) = dest_slot {
-                        if let Some(obj) = PyObjectRef::get_mut(arc) {
-                            match (&const_ref.payload, &mut obj.payload) {
-                                (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
-                                    *dst = src.clone();
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (PyObjectPayload::Bool(src), PyObjectPayload::Bool(dst)) => {
-                                    *dst = *src;
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (PyObjectPayload::None, PyObjectPayload::None) => {
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                (PyObjectPayload::Float(src), PyObjectPayload::Float(dst)) => {
-                                    *dst = *src;
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    // Fallback: clone constant
-                    let val = const_ref.clone();
-                    *unsafe { frame.locals.get_unchecked_mut(store_idx) } = Some(val);
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
 
                 Opcode::BinaryAdd
