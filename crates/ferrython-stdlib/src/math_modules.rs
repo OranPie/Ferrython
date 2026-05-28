@@ -6,6 +6,7 @@ mod decimal;
 mod fractions;
 mod functions;
 mod heapq;
+mod number;
 mod numbers;
 mod random;
 mod statistics;
