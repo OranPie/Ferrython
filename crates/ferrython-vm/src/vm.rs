@@ -1,14 +1,13 @@
 //! The main virtual machine — executes bytecode instructions.
 use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
-use ferrython_bytecode::code::{CodeFlags, ConstantValue};
+use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    alloc_tuple_box_empty, has_descriptor_get, is_hidden_dict_key, lookup_in_class_mro,
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize,
-    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR,
-    CLASS_FLAG_HAS_SLOTS,
+    has_descriptor_get, is_hidden_dict_key, lookup_in_class_mro, IteratorData, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize, CLASS_FLAG_HAS_DESCRIPTORS,
+    CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
@@ -2607,190 +2606,28 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
-                // Inline UnaryNot for primitive types
-                Opcode::UnaryNot => {
-                    let v = speek!(frame);
-                    let fast = match &v.payload {
-                        PyObjectPayload::Bool(b) => Some(!b),
-                        PyObjectPayload::Int(PyInt::Small(n)) => Some(*n == 0),
-                        PyObjectPayload::None => Some(true),
-                        PyObjectPayload::Float(f) => Some(*f == 0.0),
-                        PyObjectPayload::Str(s) => Some(s.is_empty()),
-                        PyObjectPayload::List(items) => {
-                            Some(unsafe { &*items.data_ptr() }.is_empty())
-                        }
-                        PyObjectPayload::Tuple(items) => Some(items.is_empty()),
-                        PyObjectPayload::Dict(map) => Some(unsafe { &*map.data_ptr() }.is_empty()),
-                        _ => None,
-                    };
-                    if let Some(r) = fast {
-                        let len = frame.stack.len();
-                        unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
-                // Inline UnaryNegative for int/float
-                Opcode::UnaryNegative => {
-                    let v = speek!(frame);
-                    let fast = match &v.payload {
-                        PyObjectPayload::Int(PyInt::Small(n)) => Some(match n.checked_neg() {
-                            Some(r) => PyObject::int(r),
-                            None => {
-                                use num_bigint::BigInt;
-                                PyObject::big_int(-BigInt::from(*n))
-                            }
-                        }),
-                        PyObjectPayload::Float(f) => Some(PyObject::float(-f)),
-                        PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { -1 } else { 0 })),
-                        _ => None,
-                    };
-                    if let Some(r) = fast {
-                        let len = frame.stack.len();
-                        unsafe { *frame.stack.get_unchecked_mut(len - 1) = r };
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
-                // Inline BinaryPower for int/float fast paths
-                Opcode::BinaryPower | Opcode::InplacePower => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) if *y >= 0 && *y <= 63 => {
-                            let mut r: i64 = 1;
-                            let mut overflow = false;
-                            let base = *x;
-                            let exp = *y;
-                            for _ in 0..exp {
-                                match r.checked_mul(base) {
-                                    Some(v) => r = v,
-                                    None => {
-                                        overflow = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if !overflow {
-                                unsafe { frame.binary_op_result(PyObject::int(r)) };
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                self.execute_one(instr)
-                            }
-                        }
-                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                            unsafe { frame.binary_op_result(PyObject::float(x.powf(*y))) };
+                // Fast unary, power, and bitwise primitive paths.
+                Opcode::UnaryNot
+                | Opcode::UnaryNegative
+                | Opcode::BinaryPower
+                | Opcode::InplacePower
+                | Opcode::BinaryAnd
+                | Opcode::InplaceAnd
+                | Opcode::BinaryOr
+                | Opcode::InplaceOr
+                | Opcode::BinaryXor
+                | Opcode::InplaceXor
+                | Opcode::BinaryLshift
+                | Opcode::InplaceLshift
+                | Opcode::BinaryRshift
+                | Opcode::InplaceRshift => {
+                    match crate::vm_fast_unary_bitwise::try_fast_unary_bitwise(frame, instr) {
+                        crate::vm_fast_unary_bitwise::FastUnaryBitwiseResult::Handled => {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                            unsafe { frame.binary_op_result(PyObject::float(x.powi(*y as i32))) };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                        crate::vm_fast_unary_bitwise::FastUnaryBitwiseResult::Fallback => {
+                            self.execute_one(instr)
                         }
-                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                            unsafe {
-                                frame.binary_op_result(PyObject::float((*x as f64).powf(*y)))
-                            };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                // Inline bitwise ops for int fast paths
-                Opcode::BinaryAnd | Opcode::InplaceAnd => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) => {
-                            unsafe { frame.binary_op_result(PyObject::int(*x & *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => {
-                            unsafe { frame.binary_op_result(PyObject::bool_val(*x && *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                Opcode::BinaryOr | Opcode::InplaceOr => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) => {
-                            unsafe { frame.binary_op_result(PyObject::int(*x | *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => {
-                            unsafe { frame.binary_op_result(PyObject::bool_val(*x || *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                Opcode::BinaryXor | Opcode::InplaceXor => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) => {
-                            unsafe { frame.binary_op_result(PyObject::int(*x ^ *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => {
-                            unsafe { frame.binary_op_result(PyObject::bool_val(*x ^ *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                Opcode::BinaryLshift | Opcode::InplaceLshift => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) => {
-                            if let Some(result) = PyInt::checked_small_lshift(*x, *y) {
-                                unsafe { frame.binary_op_result(PyObject::int(result)) };
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                self.execute_one(instr)
-                            }
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                Opcode::BinaryRshift | Opcode::InplaceRshift => {
-                    let len = frame.stack.len();
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    match (&a.payload, &b.payload) {
-                        (
-                            PyObjectPayload::Int(PyInt::Small(x)),
-                            PyObjectPayload::Int(PyInt::Small(y)),
-                        ) if *y >= 0 && *y < 64 => {
-                            unsafe { frame.binary_op_result(PyObject::int(*x >> *y)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline LoadDeref — lock-free closure variable fast path
@@ -2812,372 +2649,32 @@ impl VirtualMachine {
                     unsafe { *frame.cells[idx].data_ptr() = Some(value) };
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // Inline BuildTuple for small counts (0–4)
-                Opcode::BuildTuple => {
-                    let count = instr.arg as usize;
-                    match count {
-                        0 => {
-                            unsafe { frame.push_unchecked(PyObject::tuple(vec![])) };
+                // Fast builders, primitive f-string formatting, and sequence unpack.
+                Opcode::BuildTuple
+                | Opcode::BuildList
+                | Opcode::FormatValue
+                | Opcode::BuildString
+                | Opcode::UnpackSequence => {
+                    match crate::vm_fast_build::try_fast_build(
+                        frame,
+                        instr,
+                        instr_base,
+                        instr_count,
+                    ) {
+                        crate::vm_fast_build::FastBuildResult::Handled => {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        1 => {
-                            let a = spop!(frame);
-                            let mut tb = alloc_tuple_box_empty();
-                            tb.push(a);
-                            unsafe {
-                                frame
-                                    .push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb)))
-                            };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                        crate::vm_fast_build::FastBuildResult::ChainJump => {
+                            hot_ok_chain!(
+                                profiling,
+                                self.profiler,
+                                instr.op,
+                                frame,
+                                instr_base,
+                                instr_count
+                            )
                         }
-                        2 => {
-                            let b = spop!(frame);
-                            let a = spop!(frame);
-                            let mut tb = alloc_tuple_box_empty();
-                            tb.push(a);
-                            tb.push(b);
-                            unsafe {
-                                frame
-                                    .push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb)))
-                            };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        3 => {
-                            let c = spop!(frame);
-                            let b = spop!(frame);
-                            let a = spop!(frame);
-                            let mut tb = alloc_tuple_box_empty();
-                            tb.push(a);
-                            tb.push(b);
-                            tb.push(c);
-                            unsafe {
-                                frame
-                                    .push_unchecked(PyObject::wrap_leaf(PyObjectPayload::Tuple(tb)))
-                            };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => {
-                            let start = frame.stack.len() - count;
-                            let items = frame.stack.split_off(start);
-                            unsafe { frame.push_unchecked(PyObject::tuple(items)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                    }
-                }
-                // Inline BuildList for small counts (0–3)
-                Opcode::BuildList => {
-                    let count = instr.arg as usize;
-                    match count {
-                        0 => {
-                            unsafe { frame.push_unchecked(PyObject::list(vec![])) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        1 => {
-                            let a = spop!(frame);
-                            unsafe { frame.push_unchecked(PyObject::list(vec![a])) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => {
-                            let start = frame.stack.len() - count;
-                            let items = frame.stack.split_off(start);
-                            unsafe { frame.push_unchecked(PyObject::list(items)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                    }
-                }
-                // Inline FormatValue for common primitives (int, str, float, bool, None)
-                Opcode::FormatValue => {
-                    let has_fmt_spec = instr.arg & 0x04 != 0;
-                    let conversion = (instr.arg & 0x03) as u8;
-                    if !has_fmt_spec && (conversion == 0 || conversion == 1) {
-                        let val = speek!(frame);
-                        // Format value to string fragment (without allocating PyObject yet)
-                        let fast_str = match &val.payload {
-                            PyObjectPayload::Str(s) => Some(s.to_compact_string()),
-                            PyObjectPayload::Int(PyInt::Small(n)) => {
-                                let mut buf = itoa::Buffer::new();
-                                Some(CompactString::from(buf.format(*n)))
-                            }
-                            PyObjectPayload::Float(f) => {
-                                let mut buf = ryu::Buffer::new();
-                                Some(CompactString::from(buf.format(*f)))
-                            }
-                            PyObjectPayload::Bool(b) => {
-                                Some(CompactString::from(if *b { "True" } else { "False" }))
-                            }
-                            PyObjectPayload::None => Some(CompactString::from("None")),
-                            _ => None,
-                        };
-                        if let Some(s) = fast_str {
-                            let next_ip = frame.ip;
-                            let instr_len = frame.code.instructions.len();
-                            // Look-ahead fusion: avoid intermediate PyObject + dispatch cycles
-                            if next_ip < instr_len {
-                                let next =
-                                    unsafe { *frame.code.instructions.get_unchecked(next_ip) };
-                                // Pattern 1: FORMAT_VALUE + BUILD_STRING 1 → skip BUILD_STRING
-                                // f"{val}" — BUILD_STRING 1 is a no-op
-                                if next.op == Opcode::BuildString && next.arg == 1 {
-                                    let len = frame.stack.len();
-                                    unsafe {
-                                        *frame.stack.get_unchecked_mut(len - 1) =
-                                            PyObject::str_val(s)
-                                    };
-                                    frame.ip = next_ip + 1; // skip BUILD_STRING
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                // Pattern 2: FORMAT_VALUE + BUILD_STRING 2 → fuse prefix + val
-                                // f"prefix{val}" — stack has [prefix, val], concat directly
-                                if next.op == Opcode::BuildString && next.arg == 2 {
-                                    let stack_len = frame.stack.len();
-                                    let prefix_obj = sget!(frame, stack_len - 2);
-                                    if let PyObjectPayload::Str(prefix) = &prefix_obj.payload {
-                                        let total = prefix.len() + s.len();
-                                        let mut result = String::with_capacity(total);
-                                        result.push_str(prefix.as_str());
-                                        result.push_str(s.as_str());
-                                        unsafe {
-                                            std::ptr::drop_in_place(
-                                                frame.stack.as_mut_ptr().add(stack_len - 2),
-                                            );
-                                            std::ptr::drop_in_place(
-                                                frame.stack.as_mut_ptr().add(stack_len - 1),
-                                            );
-                                            frame.stack.set_len(stack_len - 2);
-                                        }
-                                        spush!(
-                                            frame,
-                                            PyObject::str_val(CompactString::from(result))
-                                        );
-                                        frame.ip = next_ip + 1; // skip BUILD_STRING
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                // Pattern 3 & 4: LOAD_CONST + BUILD_STRING 2 or 3
-                                if next_ip + 1 < instr_len && next.op == Opcode::LoadConst {
-                                    let next2 = unsafe {
-                                        *frame.code.instructions.get_unchecked(next_ip + 1)
-                                    };
-                                    let suffix_const = &frame.code.constants[next.arg as usize];
-                                    if let ConstantValue::Str(suffix) = suffix_const {
-                                        // Pattern 3: FORMAT_VALUE + LOAD_CONST + BUILD_STRING 2
-                                        // f"{val}suffix" — fuse val + suffix
-                                        if next2.op == Opcode::BuildString && next2.arg == 2 {
-                                            let total = s.len() + suffix.len();
-                                            let mut result = String::with_capacity(total);
-                                            result.push_str(s.as_str());
-                                            result.push_str(suffix.as_str());
-                                            let len = frame.stack.len();
-                                            unsafe {
-                                                *frame.stack.get_unchecked_mut(len - 1) =
-                                                    PyObject::str_val(CompactString::from(result))
-                                            };
-                                            frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        }
-                                        // Pattern 4: FORMAT_VALUE + LOAD_CONST + BUILD_STRING 3
-                                        // f"prefix{val}suffix" — fuse prefix + val + suffix
-                                        if next2.op == Opcode::BuildString && next2.arg == 3 {
-                                            let stack_len = frame.stack.len();
-                                            let prefix_obj = sget!(frame, stack_len - 2);
-                                            if let PyObjectPayload::Str(prefix) =
-                                                &prefix_obj.payload
-                                            {
-                                                let total = prefix.len() + s.len() + suffix.len();
-                                                let mut result = String::with_capacity(total);
-                                                result.push_str(prefix.as_str());
-                                                result.push_str(s.as_str());
-                                                result.push_str(suffix.as_str());
-                                                unsafe {
-                                                    std::ptr::drop_in_place(
-                                                        frame.stack.as_mut_ptr().add(stack_len - 2),
-                                                    );
-                                                    std::ptr::drop_in_place(
-                                                        frame.stack.as_mut_ptr().add(stack_len - 1),
-                                                    );
-                                                    frame.stack.set_len(stack_len - 2);
-                                                }
-                                                spush!(
-                                                    frame,
-                                                    PyObject::str_val(CompactString::from(result))
-                                                );
-                                                frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
-                                                hot_ok!(profiling, self.profiler, instr.op)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Normal path: replace TOS with formatted Str
-                            let len = frame.stack.len();
-                            unsafe {
-                                *frame.stack.get_unchecked_mut(len - 1) = PyObject::str_val(s)
-                            };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
-                // Inline BuildString for the all-str fast path
-                Opcode::BuildString => {
-                    let count = instr.arg as usize;
-                    if count <= 1 {
-                        // 0 or 1 items — trivial
-                        if count == 0 {
-                            spush!(frame, PyObject::str_val(CompactString::from("")));
-                        }
-                        // count == 1 → already a string from FormatValue, nothing to do
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        let start = frame.stack.len() - count;
-                        let mut total_len = 0usize;
-                        let mut all_str = true;
-                        for i in start..frame.stack.len() {
-                            if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
-                                total_len += s.len();
-                            } else {
-                                all_str = false;
-                                break;
-                            }
-                        }
-                        if all_str {
-                            let mut result = String::with_capacity(total_len);
-                            for i in start..frame.stack.len() {
-                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
-                                    result.push_str(s.as_str());
-                                }
-                            }
-                            frame.stack.truncate(start);
-                            spush!(frame, PyObject::str_val(CompactString::from(result)));
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    }
-                }
-                // Inline UnpackSequence for tuple fast path
-                Opcode::UnpackSequence => {
-                    let count = instr.arg as usize;
-                    let top = spop!(frame);
-                    match &top.payload {
-                        PyObjectPayload::Tuple(items) if items.len() == count => {
-                            // Look-ahead: if next instructions are StoreFast (or fused variant),
-                            // write directly to locals — skip stack, save N dispatches.
-                            let ip = frame.ip;
-                            if count >= 2 && count <= 8 && ip + count <= instr_count {
-                                let mut ok = true;
-                                for i in 0..count - 1 {
-                                    if unsafe { *instr_base.add(ip + i) }.op != Opcode::StoreFast {
-                                        ok = false;
-                                        break;
-                                    }
-                                }
-                                if ok {
-                                    let last = unsafe { *instr_base.add(ip + count - 1) };
-                                    let last_info = match last.op {
-                                        Opcode::StoreFast => Some((last.arg as usize, None)),
-                                        Opcode::StoreFastJumpAbsolute => Some((
-                                            (last.arg >> 16) as usize,
-                                            Some((last.arg & 0xFFFF) as usize),
-                                        )),
-                                        _ => None,
-                                    };
-                                    if let Some((last_idx, jump)) = last_info {
-                                        for i in 0..count - 1 {
-                                            let si =
-                                                unsafe { *instr_base.add(ip + i) }.arg as usize;
-                                            sset_local!(frame, si, items[i].clone());
-                                        }
-                                        sset_local!(frame, last_idx, items[count - 1].clone());
-                                        frame.ip = jump.unwrap_or(ip + count);
-                                        hot_ok_chain!(
-                                            profiling,
-                                            self.profiler,
-                                            instr.op,
-                                            frame,
-                                            instr_base,
-                                            instr_count
-                                        )
-                                    }
-                                }
-                            }
-                            // Fallback: push to stack in reverse order
-                            unsafe {
-                                let stack = &mut frame.stack;
-                                stack.reserve(count);
-                                let base = stack.as_mut_ptr().add(stack.len());
-                                for i in 0..count {
-                                    std::ptr::write(base.add(i), items[count - 1 - i].clone());
-                                }
-                                stack.set_len(stack.len() + count);
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::List(cell) => {
-                            let list = unsafe { &*cell.data_ptr() };
-                            if list.len() == count {
-                                let ip = frame.ip;
-                                if count >= 2 && count <= 8 && ip + count <= instr_count {
-                                    let mut ok = true;
-                                    for i in 0..count - 1 {
-                                        if unsafe { *instr_base.add(ip + i) }.op
-                                            != Opcode::StoreFast
-                                        {
-                                            ok = false;
-                                            break;
-                                        }
-                                    }
-                                    if ok {
-                                        let last = unsafe { *instr_base.add(ip + count - 1) };
-                                        let last_info = match last.op {
-                                            Opcode::StoreFast => Some((last.arg as usize, None)),
-                                            Opcode::StoreFastJumpAbsolute => Some((
-                                                (last.arg >> 16) as usize,
-                                                Some((last.arg & 0xFFFF) as usize),
-                                            )),
-                                            _ => None,
-                                        };
-                                        if let Some((last_idx, jump)) = last_info {
-                                            for i in 0..count - 1 {
-                                                let si =
-                                                    unsafe { *instr_base.add(ip + i) }.arg as usize;
-                                                sset_local!(frame, si, list[i].clone());
-                                            }
-                                            sset_local!(frame, last_idx, list[count - 1].clone());
-                                            frame.ip = jump.unwrap_or(ip + count);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                    }
-                                }
-                                unsafe {
-                                    let stack = &mut frame.stack;
-                                    stack.reserve(count);
-                                    let base = stack.as_mut_ptr().add(stack.len());
-                                    for i in 0..count {
-                                        std::ptr::write(base.add(i), list[count - 1 - i].clone());
-                                    }
-                                    stack.set_len(stack.len() + count);
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                spush!(frame, top);
-                                self.execute_one(instr)
-                            }
-                        }
-                        _ => {
-                            spush!(frame, top);
-                            self.execute_one(instr)
-                        }
+                        crate::vm_fast_build::FastBuildResult::Fallback => self.execute_one(instr),
                     }
                 }
                 Opcode::BuildMap => self.execute_one(instr),
