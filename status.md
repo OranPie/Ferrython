@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T01:59:13+08:00
+Last updated: 2026-05-29T02:08:25+08:00
 
 ## 代码质量重构进度
 
@@ -1212,6 +1212,9 @@ Last updated: 2026-05-29T01:59:13+08:00
   - 第八十四批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:59:13 CST）：扩展 `vm_fast_iter.rs`，从普通 `ForIter` arm 中拆出 range/list/tuple/ref/rev-ref、enumerate、zip、dict keys/items/entries 等非 generator 快路径；主 loop 保留 generator resume、fallback `execute_one` 和 call_stack rederive 控制语义；`vm.rs` 从 6802 行降到 6086 行，`vm_fast_iter.rs` 从 269 行扩到 910 行，并删除已闲置的 `vm_iter_fast.rs`。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 range/list for-loop、dict items unpack、enumerate unpack、zip unpack 和 generator for-loop smoke。
   - commit：`d2aed0f refactor: split vm for-iter paths`。
+  - 第八十五批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:08:25 CST）：扩展 `vm_fast_compare.rs`，拆出 `CompareOpPopJumpIfFalse`、`LoadFastCompareConstJump`、`LoadFastLoadFastCompareJump` 的 primitive compare helper，并把 `PopJumpIfFalse/True` 的 primitive truthiness 判断移入 helper；主 loop 继续保留 `exec_compare_ops`、`vm_is_truthy`、异常和跳转控制语义；`vm.rs` 从 6086 行降到 5871 行，`vm_fast_compare.rs` 从 161 行扩到 316 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const compare jump、local/local compare jump、primitive truthiness 和 custom `__bool__` fallback smoke。
+  - commit：`26ae7f0 refactor: split vm compare jump paths`。
 
 ## 修复原则
 
