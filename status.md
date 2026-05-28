@@ -1175,6 +1175,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第七十二批继续 `serial_modules/pickle_module/write` 分层（2026-05-28 19:13:48 CST）：新增 `write/memo.rs`，拆出 `PickleWriteMemo`、identity memo get/put helper、protocol 0 unicode/bytes escaping helper；`write.rs` 从 1046 行降到 918 行，`memo.rs` 为 143 行，`write.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 pickle protocol 0/2 dict/list/tuple roundtrip、cycle memo roundtrip 和 partially-consumed iterator roundtrip smoke。
   - commit：`0d9162c refactor: split pickle write memo helpers`。
+  - 第七十三批继续 `ferrython-core/src/object/methods_format` 分层（2026-05-28 19:19:41 CST）：新增 `methods_format/dir.rs`，拆出 `py_dir` 及各 payload 类型的 `dir()` 名称集合；`methods_format.rs` 从 1034 行降到 615 行，`dir.rs` 为 423 行，`methods_format.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 numeric/string/complex-adjacent format basics、list/dict/str dir、instance/class/MRO dir smoke。
+  - commit：`bf6a4c9 refactor: split object dir formatting helpers`。
 
 ## 修复原则
 
