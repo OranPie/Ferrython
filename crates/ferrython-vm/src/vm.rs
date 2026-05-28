@@ -19,7 +19,6 @@ use crate::vm_fast_paths::{
     fast_int_conversion, fast_small_int_sequence_min_max, fast_small_int_sequence_sorted,
     try_fast_builtin_setattr_stack, try_fast_global_builtin_call,
 };
-use crate::vm_method_cache::{is_interned_append, is_interned_pop};
 
 /// The Ferrython virtual machine.
 pub struct VirtualMachine {
@@ -2641,252 +2640,155 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let base_idx = stack_len - arg_count - 2;
-                    // Ultra-fast pointer-identity check for list.append (most common case)
-                    // Skips all pattern matching and string comparison when the method name
-                    // is the same interned singleton pushed by LoadFastLoadMethod.
-                    if arg_count == 1 && is_interned_append(sget!(frame, base_idx)) {
-                        if let PyObjectPayload::List(items) = &sget!(frame, base_idx + 1).payload {
-                            unsafe {
-                                let val = std::ptr::read(frame.stack.as_ptr().add(stack_len - 1));
-                                (&mut *items.data_ptr()).push(val);
-                                let _receiver =
-                                    std::ptr::read(frame.stack.as_ptr().add(stack_len - 2));
-                                // Name is immortal — drop is no-op, but we must still read it off
-                                let _name = std::ptr::read(frame.stack.as_ptr().add(stack_len - 3));
-                                frame.stack.set_len(stack_len - 3);
-                            }
-                            hot_ok_chain!(
-                                profiling,
-                                self.profiler,
-                                instr.op,
-                                frame,
-                                instr_base,
-                                instr_count
-                            )
-                        }
-                    }
-                    // Ultra-fast pointer-identity check for list.pop
-                    if arg_count == 0 && is_interned_pop(sget!(frame, base_idx)) {
-                        if let PyObjectPayload::List(items) = &sget!(frame, base_idx + 1).payload {
-                            unsafe {
-                                let vec = &mut *items.data_ptr();
-                                if let Some(_val) = vec.pop() {
-                                    let _receiver =
-                                        std::ptr::read(frame.stack.as_ptr().add(stack_len - 1));
-                                    let _name =
-                                        std::ptr::read(frame.stack.as_ptr().add(stack_len - 2));
-                                    frame.stack.set_len(stack_len - 2);
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                                // Empty list falls through to existing string-comparison path
-                            }
-                        }
-                    }
-                    // Builtin type method dispatch (Str name tag on stack)
                     let is_builtin_str =
                         matches!(&sget!(frame, base_idx).payload, PyObjectPayload::Str(_));
                     if is_builtin_str {
-                        // Fallback: string comparison for methods not caught by pointer identity
-                        let is_list_append = arg_count == 1
-                            && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
-                                (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "append");
-                        let is_list_pop = !is_list_append
-                            && arg_count == 0
-                            && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
-                                (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
-                        if is_list_append {
-                            let len = frame.stack.len();
-                            unsafe {
-                                let val = std::ptr::read(frame.stack.as_ptr().add(len - 1));
-                                let receiver = &*frame.stack.as_ptr().add(len - 2);
-                                if let PyObjectPayload::List(items) = &receiver.payload {
-                                    let vec = &mut *items.data_ptr();
-                                    vec.push(val);
-                                }
-                                let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 2));
-                                let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
-                                frame.stack.set_len(len - 3);
+                        match crate::vm_fast_method::try_fast_builtin_method_poptop(
+                            frame, arg_count,
+                        ) {
+                            crate::vm_fast_method::FastMethodPopTopResult::Handled => {
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            hot_ok_chain!(
-                                profiling,
-                                self.profiler,
-                                instr.op,
-                                frame,
-                                instr_base,
-                                instr_count
-                            )
-                        } else if is_list_pop {
-                            let len = frame.stack.len();
-                            unsafe {
-                                let receiver = &*frame.stack.as_ptr().add(len - 1);
-                                if let PyObjectPayload::List(items) = &receiver.payload {
-                                    let vec = &mut *items.data_ptr();
-                                    match vec.pop() {
-                                        Some(_val) => {
-                                            let _receiver =
-                                                std::ptr::read(frame.stack.as_ptr().add(len - 1));
-                                            let _name =
-                                                std::ptr::read(frame.stack.as_ptr().add(len - 2));
-                                            frame.stack.set_len(len - 2);
-                                            hot_ok_chain!(
-                                                profiling,
-                                                self.profiler,
-                                                instr.op,
-                                                frame,
-                                                instr_base,
-                                                instr_count
-                                            )
-                                        }
-                                        None => {
-                                            Err(PyException::index_error("pop from empty list"))
-                                        }
-                                    }
-                                } else {
-                                    unreachable!()
-                                }
+                            crate::vm_fast_method::FastMethodPopTopResult::HandledChain => {
+                                hot_ok_chain!(
+                                    profiling,
+                                    self.profiler,
+                                    instr.op,
+                                    frame,
+                                    instr_base,
+                                    instr_count
+                                )
                             }
-                        } else {
-                            // General builtin method — execute, then discard result
-                            let call_result = if arg_count == 1 {
-                                let a0 = spop!(frame);
-                                let receiver = spop!(frame);
-                                let name_obj = spop!(frame);
-                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let n = name.as_str();
-                                    if matches!(
-                                        n,
-                                        "union"
-                                            | "intersection"
-                                            | "difference"
-                                            | "symmetric_difference"
-                                            | "update"
-                                            | "intersection_update"
-                                            | "difference_update"
-                                            | "symmetric_difference_update"
-                                            | "issubset"
-                                            | "issuperset"
-                                            | "isdisjoint"
-                                            | "__or__"
-                                            | "__and__"
-                                            | "__sub__"
-                                            | "__xor__"
-                                    ) && matches!(
-                                        &receiver.payload,
-                                        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
-                                    ) && matches!(
-                                        &a0.payload,
-                                        PyObjectPayload::Generator(_)
-                                            | PyObjectPayload::Instance(_)
-                                            | PyObjectPayload::Iterator(_)
-                                    ) {
-                                        self.collect_iterable(&a0).and_then(|items| {
-                                            crate::builtins::call_method(
-                                                &receiver,
-                                                n,
-                                                &[PyObject::list(items)],
-                                            )
-                                        })
-                                    // list.extend with generator/instance: collect via VM first
-                                    } else if n == "extend"
-                                        && matches!(&receiver.payload, PyObjectPayload::List(_))
-                                    {
-                                        let needs_vm_collect = match &a0.payload {
+                            crate::vm_fast_method::FastMethodPopTopResult::Fallback => {
+                                let call_result = if arg_count == 1 {
+                                    let a0 = spop!(frame);
+                                    let receiver = spop!(frame);
+                                    let name_obj = spop!(frame);
+                                    if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                        let n = name.as_str();
+                                        if matches!(
+                                            n,
+                                            "union"
+                                                | "intersection"
+                                                | "difference"
+                                                | "symmetric_difference"
+                                                | "update"
+                                                | "intersection_update"
+                                                | "difference_update"
+                                                | "symmetric_difference_update"
+                                                | "issubset"
+                                                | "issuperset"
+                                                | "isdisjoint"
+                                                | "__or__"
+                                                | "__and__"
+                                                | "__sub__"
+                                                | "__xor__"
+                                        ) && matches!(
+                                            &receiver.payload,
+                                            PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                                        ) && matches!(
+                                            &a0.payload,
                                             PyObjectPayload::Generator(_)
-                                            | PyObjectPayload::Instance(_) => true,
-                                            PyObjectPayload::Iterator(iter_data) => matches!(
-                                                &*iter_data.read(),
-                                                IteratorData::Enumerate { .. }
-                                                    | IteratorData::Zip { .. }
-                                                    | IteratorData::MapOne { .. }
-                                                    | IteratorData::Map { .. }
-                                                    | IteratorData::Filter { .. }
-                                                    | IteratorData::FilterFalse { .. }
-                                                    | IteratorData::Sentinel { .. }
-                                            ),
-                                            _ => false,
-                                        };
-                                        if needs_vm_collect {
+                                                | PyObjectPayload::Instance(_)
+                                                | PyObjectPayload::Iterator(_)
+                                        ) {
                                             self.collect_iterable(&a0).and_then(|items| {
                                                 crate::builtins::call_method(
                                                     &receiver,
-                                                    "extend",
+                                                    n,
                                                     &[PyObject::list(items)],
                                                 )
                                             })
+                                        } else if n == "extend"
+                                            && matches!(&receiver.payload, PyObjectPayload::List(_))
+                                        {
+                                            let needs_vm_collect = match &a0.payload {
+                                                PyObjectPayload::Generator(_)
+                                                | PyObjectPayload::Instance(_) => true,
+                                                PyObjectPayload::Iterator(iter_data) => matches!(
+                                                    &*iter_data.read(),
+                                                    IteratorData::Enumerate { .. }
+                                                        | IteratorData::Zip { .. }
+                                                        | IteratorData::MapOne { .. }
+                                                        | IteratorData::Map { .. }
+                                                        | IteratorData::Filter { .. }
+                                                        | IteratorData::FilterFalse { .. }
+                                                        | IteratorData::Sentinel { .. }
+                                                ),
+                                                _ => false,
+                                            };
+                                            if needs_vm_collect {
+                                                self.collect_iterable(&a0).and_then(|items| {
+                                                    crate::builtins::call_method(
+                                                        &receiver,
+                                                        "extend",
+                                                        &[PyObject::list(items)],
+                                                    )
+                                                })
+                                            } else {
+                                                crate::builtins::call_method(&receiver, n, &[a0])
+                                            }
                                         } else {
                                             crate::builtins::call_method(&receiver, n, &[a0])
                                         }
                                     } else {
-                                        crate::builtins::call_method(&receiver, n, &[a0])
+                                        Ok(PyObject::none())
                                     }
-                                } else {
-                                    Ok(PyObject::none())
-                                }
-                            } else if arg_count == 0 {
-                                let receiver = spop!(frame);
-                                let name_obj = spop!(frame);
-                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let n = name.as_str();
-                                    if n == "sort" {
-                                        if matches!(&receiver.payload, PyObjectPayload::List(_)) {
-                                            let mut v = if let PyObjectPayload::List(items) =
+                                } else if arg_count == 0 {
+                                    let receiver = spop!(frame);
+                                    let name_obj = spop!(frame);
+                                    if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                        let n = name.as_str();
+                                        if n == "sort"
+                                            && matches!(&receiver.payload, PyObjectPayload::List(_))
+                                        {
+                                            let mut values = if let PyObjectPayload::List(items) =
                                                 &receiver.payload
                                             {
                                                 items.read().clone()
                                             } else {
                                                 Vec::new()
                                             };
-                                            match self.vm_sort(&mut v) {
-                                                Ok(()) => {
-                                                    if let PyObjectPayload::List(items) =
-                                                        &receiver.payload
-                                                    {
-                                                        *items.write() = v;
-                                                    }
-                                                    Ok(PyObject::none())
+                                            self.vm_sort(&mut values).and_then(|()| {
+                                                if let PyObjectPayload::List(items) =
+                                                    &receiver.payload
+                                                {
+                                                    *items.write() = values;
                                                 }
-                                                Err(e) => Err(e),
-                                            }
+                                                Ok(PyObject::none())
+                                            })
                                         } else {
                                             crate::builtins::call_method(&receiver, n, &[])
                                         }
                                     } else {
-                                        crate::builtins::call_method(&receiver, n, &[])
+                                        Ok(PyObject::none())
                                     }
                                 } else {
-                                    Ok(PyObject::none())
+                                    let mut args = Vec::with_capacity(arg_count);
+                                    for _ in 0..arg_count {
+                                        args.push(spop!(frame));
+                                    }
+                                    args.reverse();
+                                    let receiver = spop!(frame);
+                                    let name_obj = spop!(frame);
+                                    if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                        crate::builtins::call_method(
+                                            &receiver,
+                                            name.as_str(),
+                                            &args,
+                                        )
+                                    } else {
+                                        Ok(PyObject::none())
+                                    }
+                                };
+                                match call_result {
+                                    Ok(_) => hot_ok!(profiling, self.profiler, instr.op),
+                                    Err(e) => Err(e),
                                 }
-                            } else {
-                                let mut args = Vec::with_capacity(arg_count);
-                                for _ in 0..arg_count {
-                                    args.push(spop!(frame));
-                                }
-                                args.reverse();
-                                let receiver = spop!(frame);
-                                let name_obj = spop!(frame);
-                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    crate::builtins::call_method(&receiver, name.as_str(), &args)
-                                } else {
-                                    Ok(PyObject::none())
-                                }
-                            };
-                            match call_result {
-                                Ok(_) => {
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                Err(e) => Err(e),
                             }
+                            crate::vm_fast_method::FastMethodPopTopResult::Error(e) => Err(e),
                         }
                     } else {
-                        // Python function call or other: delegate to CallMethod, result handler
-                        // will detect CallMethodPopTop and discard the return value
                         let cm_instr =
                             ferrython_bytecode::Instruction::new(Opcode::CallMethod, instr.arg);
                         let slot_0 = sget!(frame, base_idx);
@@ -2901,7 +2803,6 @@ impl VirtualMachine {
                             false
                         };
                         if is_simple_method {
-                            // Inline frame creation using borrowed path (avoids Rc clones)
                             let method_idx = frame.stack.len() - arg_count - 2;
                             let arg_start = frame.stack.len() - arg_count;
                             let mut new_frame = unsafe {
@@ -2937,7 +2838,6 @@ impl VirtualMachine {
                             }
                             new_frame.scope_kind = crate::frame::ScopeKind::Function;
                             self.call_stack.push(new_frame);
-                            // Re-derive frame_ptr: push may reallocate Vec
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             if self.call_stack.len()
                                 > ferrython_stdlib::get_recursion_limit() as usize
@@ -2949,13 +2849,9 @@ impl VirtualMachine {
                                     "maximum recursion depth exceeded",
                                 ))
                             } else {
-                                // Child frame pushed. When it returns, the Ok(Some(ret)) handler
-                                // will check that the calling instruction was CallMethodPopTop
-                                // and discard the return value instead of pushing it.
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
                         } else {
-                            // Non-fast-path: delegate to execute_one, then pop result
                             match self.execute_one(cm_instr) {
                                 Ok(res) => {
                                     if res.is_none() {

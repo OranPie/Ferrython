@@ -8,9 +8,18 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
 
+use crate::vm_method_cache::{is_interned_append, is_interned_pop};
+
 pub(crate) enum FastMethodResult {
     Handled(PyObjectRef),
     HandledNone,
+    Fallback,
+    Error(PyException),
+}
+
+pub(crate) enum FastMethodPopTopResult {
+    Handled,
+    HandledChain,
     Fallback,
     Error(PyException),
 }
@@ -31,6 +40,107 @@ pub(crate) fn try_fast_builtin_method(frame: &mut Frame, arg_count: usize) -> Fa
         1 => try_builtin_method_1(frame, base_idx, name.as_str()),
         2 => try_builtin_method_2(frame, base_idx, name.as_str()),
         _ => FastMethodResult::Fallback,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn try_fast_builtin_method_poptop(
+    frame: &mut Frame,
+    arg_count: usize,
+) -> FastMethodPopTopResult {
+    let stack_len = frame.stack.len();
+    let Some(base_idx) = stack_len.checked_sub(arg_count + 2) else {
+        return FastMethodPopTopResult::Fallback;
+    };
+
+    if arg_count == 1
+        && is_interned_append(unsafe { frame.stack.get_unchecked(base_idx) })
+        && matches!(
+            &unsafe { frame.stack.get_unchecked(base_idx + 1) }.payload,
+            PyObjectPayload::List(_)
+        )
+    {
+        append_list_arg(frame);
+        return FastMethodPopTopResult::HandledChain;
+    }
+
+    if arg_count == 0
+        && is_interned_pop(unsafe { frame.stack.get_unchecked(base_idx) })
+        && matches!(
+            &unsafe { frame.stack.get_unchecked(base_idx + 1) }.payload,
+            PyObjectPayload::List(_)
+        )
+    {
+        return match pop_list_receiver(frame) {
+            Ok(()) => FastMethodPopTopResult::HandledChain,
+            Err(err) => FastMethodPopTopResult::Error(err),
+        };
+    }
+
+    let name = match &unsafe { frame.stack.get_unchecked(base_idx) }.payload {
+        PyObjectPayload::Str(name) => name.clone(),
+        _ => return FastMethodPopTopResult::Fallback,
+    };
+
+    match arg_count {
+        0 => try_builtin_method_poptop_0(frame, base_idx, name.as_str()),
+        1 => try_builtin_method_poptop_1(frame, base_idx, name.as_str()),
+        2 => match try_builtin_method_2(frame, base_idx, name.as_str()) {
+            FastMethodResult::Handled(_) | FastMethodResult::HandledNone => {
+                FastMethodPopTopResult::Handled
+            }
+            FastMethodResult::Fallback => FastMethodPopTopResult::Fallback,
+            FastMethodResult::Error(err) => FastMethodPopTopResult::Error(err),
+        },
+        _ => FastMethodPopTopResult::Fallback,
+    }
+}
+
+#[inline(always)]
+fn try_builtin_method_poptop_0(
+    frame: &mut Frame,
+    base_idx: usize,
+    name: &str,
+) -> FastMethodPopTopResult {
+    match (
+        name,
+        &unsafe { frame.stack.get_unchecked(base_idx + 1) }.payload,
+    ) {
+        ("pop", PyObjectPayload::List(_)) => match pop_list_receiver(frame) {
+            Ok(()) => FastMethodPopTopResult::HandledChain,
+            Err(err) => FastMethodPopTopResult::Error(err),
+        },
+        ("sort", PyObjectPayload::List(_)) => FastMethodPopTopResult::Fallback,
+        _ => match try_builtin_method_0(frame, base_idx, name) {
+            FastMethodResult::Handled(_) | FastMethodResult::HandledNone => {
+                FastMethodPopTopResult::Handled
+            }
+            FastMethodResult::Fallback => FastMethodPopTopResult::Fallback,
+            FastMethodResult::Error(err) => FastMethodPopTopResult::Error(err),
+        },
+    }
+}
+
+#[inline(always)]
+fn try_builtin_method_poptop_1(
+    frame: &mut Frame,
+    base_idx: usize,
+    name: &str,
+) -> FastMethodPopTopResult {
+    match (
+        name,
+        &unsafe { frame.stack.get_unchecked(base_idx + 1) }.payload,
+    ) {
+        ("append", PyObjectPayload::List(_)) => {
+            append_list_arg(frame);
+            FastMethodPopTopResult::HandledChain
+        }
+        _ => match try_builtin_method_1(frame, base_idx, name) {
+            FastMethodResult::Handled(_) => FastMethodPopTopResult::Handled,
+            FastMethodResult::HandledNone => FastMethodPopTopResult::HandledChain,
+            FastMethodResult::Fallback => FastMethodPopTopResult::Fallback,
+            FastMethodResult::Error(err) => FastMethodPopTopResult::Error(err),
+        },
     }
 }
 
@@ -177,6 +287,41 @@ fn try_builtin_method_2(frame: &mut Frame, _base_idx: usize, name: &str) -> Fast
 #[inline(always)]
 fn pop_stack(frame: &mut Frame) -> PyObjectRef {
     frame.stack.pop().expect("stack underflow")
+}
+
+#[inline(always)]
+fn append_list_arg(frame: &mut Frame) {
+    let len = frame.stack.len();
+    unsafe {
+        let value = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+        let receiver = &*frame.stack.as_ptr().add(len - 2);
+        let PyObjectPayload::List(items) = &receiver.payload else {
+            unreachable!()
+        };
+        (&mut *items.data_ptr()).push(value);
+        let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+        let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+        frame.stack.set_len(len - 3);
+    }
+}
+
+#[inline(always)]
+fn pop_list_receiver(frame: &mut Frame) -> PyResult<()> {
+    let len = frame.stack.len();
+    unsafe {
+        let receiver = &*frame.stack.as_ptr().add(len - 1);
+        let PyObjectPayload::List(items) = &receiver.payload else {
+            unreachable!()
+        };
+        if (&mut *items.data_ptr()).pop().is_some() {
+            let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+            let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+            frame.stack.set_len(len - 2);
+            Ok(())
+        } else {
+            Err(PyException::index_error("pop from empty list"))
+        }
+    }
 }
 
 #[inline(always)]
