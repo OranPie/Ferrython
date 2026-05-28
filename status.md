@@ -1166,6 +1166,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十九批继续 `network_modules/http_module/http_server` 分层（2026-05-28 18:52:17 CST）：新增 `http_server/{protocol,handlers,server}.rs`，拆出 HTTP request parsing/status/error/content-type helper、handler/rfile/wfile/SimpleHTTPRequestHandler 文件服务逻辑、HTTPServer factory/accept loop/connection dispatch；`http_server.rs` 从 1109 行降到 21 行，最大新子文件 `handlers.rs` 为 577 行，`http_server.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 BaseHTTPRequestHandler command/path/responses/date_time_string/translate_path/send_response/send_header/wfile、SimpleHTTPRequestHandler file-service 和 module export smoke。
   - commit：`4444d0a refactor: split http server module`。
+  - 第七十批继续 `testing_modules/unittest/assertions` 分层（2026-05-28 18:58:00 CST）：新增 `assertions/{basic,exceptions,numeric_types,collections_regex,logs}.rs`，拆出基础比较/真假/身份/包含断言、异常上下文断言、数值和类型断言、regex/集合/序列断言、assertLogs/assertRaisesRegex；`assertions.rs` 从 1073 行降到 36 行，最大新子文件 `collections_regex.rs` 为 275 行，`assertions.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 TestCase 基础/包含/大小/近似/类型/regex/集合/序列/多行/fail/subTest/assertRaises/assertRaisesRegex/assertLogs smoke；`assertAlmostEqual` 贴近边界的容差行为仍按既有实现，本批未混入修复。
+  - commit：`29db653 refactor: split unittest assertion groups`。
 
 ## 修复原则
 
