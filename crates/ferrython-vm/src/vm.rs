@@ -1284,57 +1284,12 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let base_idx = stack_len - arg_count - 2;
-                    let slot_0 = sget!(frame, base_idx);
-                    // Fast path: slot_0 is a Python function (unbound method)
-                    let is_simple_method = if !matches!(&slot_0.payload, PyObjectPayload::None) {
-                        if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                            pf.is_simple && pf.code.arg_count as usize == arg_count + 1
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    if is_simple_method {
-                        // Borrowed path: take method object, borrow its Arc fields
-                        let method_idx = frame.stack.len() - arg_count - 2;
-                        let arg_start = frame.stack.len() - arg_count;
-                        let mut new_frame = unsafe {
-                            let method_obj: PyObjectRef =
-                                std::ptr::read(frame.stack.as_ptr().add(method_idx));
-                            let pf_ptr = match &method_obj.payload {
-                                PyObjectPayload::Function(pf) => {
-                                    &**pf as *const ferrython_core::types::PyFunction
-                                }
-                                _ => std::hint::unreachable_unchecked(),
-                            };
-                            Frame::new_borrowed(
-                                &*pf_ptr,
-                                method_obj,
-                                &self.builtins,
-                                &mut self.frame_pool,
-                            )
-                        };
-                        // Stack: [..., method, receiver, arg0, ..., argN-1]
-                        // Move args + receiver off stack with direct reads
-                        unsafe {
-                            let base = frame.stack.as_ptr();
-                            for i in 0..arg_count {
-                                new_frame.locals[i + 1] =
-                                    Some(std::ptr::read(base.add(arg_start + i)));
-                            }
-                            // receiver at arg_start - 1; method already consumed above
-                            new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
-                            frame.stack.set_len(method_idx);
-                        }
-                        // Inherit global cache for recursive calls (same code object)
-                        if Rc::ptr_eq(&frame.code, &new_frame.code) {
-                            if let Some(ref cache) = frame.global_cache {
-                                new_frame.global_cache = Some(cache.clone());
-                                new_frame.global_cache_version = frame.global_cache_version;
-                            }
-                        }
-                        new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                    if let Some(new_frame) = crate::vm_fast_method::try_fast_python_method_frame(
+                        frame,
+                        &self.builtins,
+                        &mut self.frame_pool,
+                        arg_count,
+                    ) {
                         self.call_stack.push(new_frame);
                         // Re-derive frame_ptr: push may reallocate Vec
                         rederive_frame!(self, frame_ptr, instr_base, instr_count);
@@ -1430,52 +1385,12 @@ impl VirtualMachine {
                     } else {
                         let cm_instr =
                             ferrython_bytecode::Instruction::new(Opcode::CallMethod, instr.arg);
-                        let slot_0 = sget!(frame, base_idx);
-                        let is_simple_method = if !matches!(&slot_0.payload, PyObjectPayload::None)
-                        {
-                            if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                                pf.is_simple && pf.code.arg_count as usize == arg_count + 1
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        if is_simple_method {
-                            let method_idx = frame.stack.len() - arg_count - 2;
-                            let arg_start = frame.stack.len() - arg_count;
-                            let mut new_frame = unsafe {
-                                let method_obj: PyObjectRef =
-                                    std::ptr::read(frame.stack.as_ptr().add(method_idx));
-                                let pf_ptr = match &method_obj.payload {
-                                    PyObjectPayload::Function(pf) => {
-                                        &**pf as *const ferrython_core::types::PyFunction
-                                    }
-                                    _ => std::hint::unreachable_unchecked(),
-                                };
-                                Frame::new_borrowed(
-                                    &*pf_ptr,
-                                    method_obj,
-                                    &self.builtins,
-                                    &mut self.frame_pool,
-                                )
-                            };
-                            unsafe {
-                                let base = frame.stack.as_ptr();
-                                for ii in 0..arg_count {
-                                    new_frame.locals[ii + 1] =
-                                        Some(std::ptr::read(base.add(arg_start + ii)));
-                                }
-                                new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
-                                frame.stack.set_len(method_idx);
-                            }
-                            if Rc::ptr_eq(&frame.code, &new_frame.code) {
-                                if let Some(ref cache) = frame.global_cache {
-                                    new_frame.global_cache = Some(cache.clone());
-                                    new_frame.global_cache_version = frame.global_cache_version;
-                                }
-                            }
-                            new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                        if let Some(new_frame) = crate::vm_fast_method::try_fast_python_method_frame(
+                            frame,
+                            &self.builtins,
+                            &mut self.frame_pool,
+                            arg_count,
+                        ) {
                             self.call_stack.push(new_frame);
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             if self.call_stack.len()

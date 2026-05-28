@@ -1,6 +1,6 @@
-//! Fast method-call helpers for builtin receiver paths.
+//! Fast method-call helpers for direct method dispatch paths.
 
-use crate::frame::Frame;
+use crate::frame::{Frame, FramePool, ScopeKind, SharedBuiltins};
 use crate::vm::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
@@ -8,6 +8,7 @@ use ferrython_core::object::{
     FxHashKeyMap, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
+use std::rc::Rc;
 
 use crate::vm_method_cache::{is_interned_append, is_interned_pop};
 
@@ -23,6 +24,56 @@ pub(crate) enum FastMethodPopTopResult {
     HandledChain,
     Fallback,
     Error(PyException),
+}
+
+#[inline(always)]
+pub(crate) fn try_fast_python_method_frame(
+    frame: &mut Frame,
+    builtins: &SharedBuiltins,
+    frame_pool: &mut FramePool,
+    arg_count: usize,
+) -> Option<Frame> {
+    let stack_len = frame.stack.len();
+    let base_idx = stack_len.checked_sub(arg_count + 2)?;
+    let is_simple_method = match &unsafe { frame.stack.get_unchecked(base_idx) }.payload {
+        PyObjectPayload::Function(pf) => {
+            pf.is_simple && pf.code.arg_count as usize == arg_count + 1
+        }
+        PyObjectPayload::None => false,
+        _ => false,
+    };
+    if !is_simple_method {
+        return None;
+    }
+
+    let method_idx = base_idx;
+    let arg_start = stack_len - arg_count;
+    let mut new_frame = unsafe {
+        let method_obj: PyObjectRef = std::ptr::read(frame.stack.as_ptr().add(method_idx));
+        let pf_ptr = match &method_obj.payload {
+            PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+            _ => std::hint::unreachable_unchecked(),
+        };
+        Frame::new_borrowed(&*pf_ptr, method_obj, builtins, frame_pool)
+    };
+
+    unsafe {
+        let base = frame.stack.as_ptr();
+        for i in 0..arg_count {
+            new_frame.locals[i + 1] = Some(std::ptr::read(base.add(arg_start + i)));
+        }
+        new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
+        frame.stack.set_len(method_idx);
+    }
+
+    if Rc::ptr_eq(&frame.code, &new_frame.code) {
+        if let Some(ref cache) = frame.global_cache {
+            new_frame.global_cache = Some(cache.clone());
+            new_frame.global_cache_version = frame.global_cache_version;
+        }
+    }
+    new_frame.scope_kind = ScopeKind::Function;
+    Some(new_frame)
 }
 
 impl VirtualMachine {
