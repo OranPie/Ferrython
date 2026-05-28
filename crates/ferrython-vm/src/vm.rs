@@ -6958,98 +6958,22 @@ impl VirtualMachine {
                 // Zero-Arc: reads constant and local by reference, does containment check,
                 // stores bool result to local with in-place mutation.
                 Opcode::LoadConstLoadFastContainsStoreFast => {
+                    match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
+                        crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
+                            idx,
+                        ) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                        _ => {}
+                    }
                     let not_in = (instr.arg >> 31) != 0;
                     let const_idx = ((instr.arg >> 20) & 0x3FF) as usize;
                     let fast_idx = ((instr.arg >> 10) & 0x3FF) as usize;
                     let store_idx = (instr.arg & 0x3FF) as usize;
-                    let needle = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    let haystack_opt = slocal!(frame, fast_idx);
-                    if let Some(haystack) = haystack_opt {
-                        let found = match (&needle.payload, &haystack.payload) {
-                            (PyObjectPayload::Str(s), PyObjectPayload::Dict(map)) => {
-                                let r = unsafe { &*map.data_ptr() };
-                                Some(r.contains_key(&BorrowedStrKey(s.as_str())))
-                            }
-                            (PyObjectPayload::Int(PyInt::Small(n)), PyObjectPayload::Dict(map)) => {
-                                let r = unsafe { &*map.data_ptr() };
-                                Some(r.contains_key(&BorrowedIntKey(*n)))
-                            }
-                            (PyObjectPayload::Bool(b), PyObjectPayload::Dict(map)) => {
-                                let r = unsafe { &*map.data_ptr() };
-                                Some(r.contains_key(&BorrowedIntKey(*b as i64)))
-                            }
-                            (PyObjectPayload::Str(s), PyObjectPayload::Set(items)) => {
-                                let r = unsafe { &*items.data_ptr() };
-                                Some(r.contains_key(&HashableKey::str_key(s.to_compact_string())))
-                            }
-                            (
-                                PyObjectPayload::Int(PyInt::Small(n)),
-                                PyObjectPayload::Set(items),
-                            ) => {
-                                let r = unsafe { &*items.data_ptr() };
-                                Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n))))
-                            }
-                            (PyObjectPayload::Str(needle_s), PyObjectPayload::List(items_arc)) => {
-                                let items = unsafe { &*items_arc.data_ptr() };
-                                Some(items.iter().any(|x| {
-                                    if let PyObjectPayload::Str(s) = &x.payload {
-                                        s == needle_s
-                                    } else {
-                                        false
-                                    }
-                                }))
-                            }
-                            (
-                                PyObjectPayload::Int(PyInt::Small(nv)),
-                                PyObjectPayload::List(items_arc),
-                            ) => {
-                                let items = unsafe { &*items_arc.data_ptr() };
-                                Some(items.iter().any(|x| {
-                                    if let PyObjectPayload::Int(PyInt::Small(v)) = &x.payload {
-                                        v == nv
-                                    } else {
-                                        false
-                                    }
-                                }))
-                            }
-                            (PyObjectPayload::Str(needle_s), PyObjectPayload::Tuple(items)) => {
-                                Some(items.iter().any(|x| {
-                                    if let PyObjectPayload::Str(s) = &x.payload {
-                                        s == needle_s
-                                    } else {
-                                        false
-                                    }
-                                }))
-                            }
-                            (
-                                PyObjectPayload::Int(PyInt::Small(nv)),
-                                PyObjectPayload::Tuple(items),
-                            ) => Some(items.iter().any(|x| {
-                                if let PyObjectPayload::Int(PyInt::Small(v)) = &x.payload {
-                                    v == nv
-                                } else {
-                                    false
-                                }
-                            })),
-                            (PyObjectPayload::Str(needle_s), PyObjectPayload::Str(haystack_s)) => {
-                                Some(haystack_s.contains(needle_s.as_str()))
-                            }
-                            _ => None,
-                        };
-                        if let Some(is_in) = found {
-                            let result = if not_in { !is_in } else { is_in };
-                            // In-place mutation for bool result
-                            let dest = unsafe { frame.locals.get_unchecked_mut(store_idx) };
-                            if let Some(ref mut arc) = dest {
-                                if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                    obj.payload = PyObjectPayload::Bool(result);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                            }
-                            *dest = Some(PyObject::bool_val(result));
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                    }
                     // Fallback: decompose to individual ops
                     spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
                     if let Some(v) = slocal!(frame, fast_idx) {
@@ -7070,107 +6994,21 @@ impl VirtualMachine {
                 // Fused LoadFast + LoadConst + BinarySubscr + StoreFast
                 // Zero-Arc for container/index; clones element with in-place mutation fallback.
                 Opcode::LoadFastLoadConstSubscrStoreFast => {
+                    match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
+                        crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
+                            idx,
+                        ) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                        _ => {}
+                    }
                     let fast_idx = ((instr.arg >> 20) & 0x3FF) as usize;
                     let const_idx = ((instr.arg >> 10) & 0x3FF) as usize;
                     let store_idx = (instr.arg & 0x3FF) as usize;
-                    // Use raw pointer to read local without borrowing frame.locals
-                    // SAFETY: fast_idx is a valid local index from well-formed bytecode
-                    let locals_ptr = frame.locals.as_mut_ptr();
-                    let obj_opt = unsafe { &*locals_ptr.add(fast_idx) };
-                    let key = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                    if let Some(obj) = obj_opt {
-                        match (&obj.payload, &key.payload) {
-                            (
-                                PyObjectPayload::List(items_arc),
-                                PyObjectPayload::Int(PyInt::Small(idx)),
-                            ) => {
-                                let items = unsafe { &*items_arc.data_ptr() };
-                                let i = *idx;
-                                let actual = if i < 0 { i + items.len() as i64 } else { i };
-                                if actual >= 0 && (actual as usize) < items.len() {
-                                    let elem = &items[actual as usize];
-                                    // In-place mutation via raw pointer (bypasses borrow checker)
-                                    let dest = unsafe { &mut *locals_ptr.add(store_idx) };
-                                    if let Some(ref mut arc) = dest {
-                                        if let Some(dest_obj) = PyObjectRef::get_mut(arc) {
-                                            match (&elem.payload, &mut dest_obj.payload) {
-                                                (
-                                                    PyObjectPayload::Int(src),
-                                                    PyObjectPayload::Int(dst),
-                                                ) => {
-                                                    *dst = src.clone();
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                (
-                                                    PyObjectPayload::Float(src),
-                                                    PyObjectPayload::Float(dst),
-                                                ) => {
-                                                    *dst = *src;
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                (
-                                                    PyObjectPayload::Bool(src),
-                                                    PyObjectPayload::Bool(dst),
-                                                ) => {
-                                                    *dst = *src;
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    *dest = Some(elem.clone());
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                            }
-                            (
-                                PyObjectPayload::Tuple(items),
-                                PyObjectPayload::Int(PyInt::Small(idx)),
-                            ) => {
-                                let i = *idx;
-                                let actual = if i < 0 { i + items.len() as i64 } else { i };
-                                if actual >= 0 && (actual as usize) < items.len() {
-                                    let elem = &items[actual as usize];
-                                    let dest = unsafe { &mut *locals_ptr.add(store_idx) };
-                                    if let Some(ref mut arc) = dest {
-                                        if let Some(dest_obj) = PyObjectRef::get_mut(arc) {
-                                            match (&elem.payload, &mut dest_obj.payload) {
-                                                (
-                                                    PyObjectPayload::Int(src),
-                                                    PyObjectPayload::Int(dst),
-                                                ) => {
-                                                    *dst = src.clone();
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    *dest = Some(elem.clone());
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                            }
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let val = unsafe { &*map.data_ptr() }
-                                    .get(&BorrowedStrKey(s.as_str()))
-                                    .cloned();
-                                if let Some(v) = val {
-                                    sset_local!(frame, store_idx, v);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                            }
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                let val = unsafe { &*map.data_ptr() }
-                                    .get(&BorrowedIntKey(*n))
-                                    .cloned();
-                                if let Some(v) = val {
-                                    sset_local!(frame, store_idx, v);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
                     // Fallback: decompose
                     if let Some(v) = slocal!(frame, fast_idx) {
                         spush!(frame, v.clone());
@@ -7189,59 +7027,8 @@ impl VirtualMachine {
                 // Fused LoadFast + LoadFast + BinarySubscr + StoreFast
                 // Zero-Arc for container and key: reads both from locals by reference.
                 Opcode::LoadFastLoadFastSubscrStoreFast => {
-                    let container_idx = (instr.arg >> 24) as usize;
-                    let key_idx = ((instr.arg >> 16) & 0xFF) as usize;
-                    let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let locals_ptr = frame.locals.as_mut_ptr();
-                    let container = unsafe { &*locals_ptr.add(container_idx) };
-                    let key = unsafe { &*locals_ptr.add(key_idx) };
-                    if let (Some(ref obj), Some(ref k)) = (container, key) {
-                        let result_val = match (&obj.payload, &k.payload) {
-                            // dict[int]
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                unsafe { &*map.data_ptr() }
-                                    .get(&BorrowedIntKey(*n))
-                                    .cloned()
-                            }
-                            // dict[str]
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                unsafe { &*map.data_ptr() }
-                                    .get(&BorrowedStrKey(s.as_str()))
-                                    .cloned()
-                            }
-                            // list[int]
-                            (
-                                PyObjectPayload::List(items_arc),
-                                PyObjectPayload::Int(PyInt::Small(idx)),
-                            ) => {
-                                let items = unsafe { &*items_arc.data_ptr() };
-                                let i = *idx;
-                                let actual = if i < 0 { i + items.len() as i64 } else { i };
-                                if actual >= 0 && (actual as usize) < items.len() {
-                                    Some(items[actual as usize].clone())
-                                } else {
-                                    None
-                                }
-                            }
-                            // tuple[int]
-                            (
-                                PyObjectPayload::Tuple(items),
-                                PyObjectPayload::Int(PyInt::Small(idx)),
-                            ) => {
-                                let i = *idx;
-                                let actual = if i < 0 { i + items.len() as i64 } else { i };
-                                if actual >= 0 && (actual as usize) < items.len() {
-                                    Some(items[actual as usize].clone())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(val) = result_val {
-                            // In-place mutation if dest has refcount 1
-                            let dest_slot = unsafe { &mut *locals_ptr.add(store_idx) };
-                            *dest_slot = Some(val);
+                    match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
+                        crate::vm_fast_collections::FastFusedCollectionResult::HandledChain => {
                             hot_ok_chain!(
                                 profiling,
                                 self.profiler,
@@ -7251,7 +7038,17 @@ impl VirtualMachine {
                                 instr_count
                             )
                         }
+                        crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
+                            idx,
+                        ) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                        _ => {}
                     }
+                    let container_idx = (instr.arg >> 24) as usize;
+                    let key_idx = ((instr.arg >> 16) & 0xFF) as usize;
+                    let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
                     // Fallback: decompose to individual ops
                     if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(container_idx) } {
                         spush!(frame, v.clone());
@@ -7275,56 +7072,21 @@ impl VirtualMachine {
                 // Fused LoadFast + LoadFast + LoadFast + StoreSubscr
                 // Zero-Arc: reads value, container, key from locals by reference.
                 Opcode::LoadFastLoadFastLoadFastStoreSubscr => {
+                    match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
+                        crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
+                            idx,
+                        ) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                        _ => {}
+                    }
                     let val_idx = (instr.arg >> 24) as usize;
                     let container_idx = ((instr.arg >> 16) & 0xFF) as usize;
                     let key_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let locals_ptr = frame.locals.as_ptr();
-                    let val_opt = unsafe { &*locals_ptr.add(val_idx) };
-                    let container_opt = unsafe { &*locals_ptr.add(container_idx) };
-                    let key_opt = unsafe { &*locals_ptr.add(key_idx) };
-                    if let (Some(ref val), Some(ref obj), Some(ref k)) =
-                        (val_opt, container_opt, key_opt)
-                    {
-                        let done = match (&obj.payload, &k.payload) {
-                            // dict[int] = val
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                let hk = HashableKey::Int(PyInt::Small(*n));
-                                unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
-                                true
-                            }
-                            // dict[str] = val
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::str_key(s.to_compact_string());
-                                unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
-                                true
-                            }
-                            // dict[bool] = val
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
-                                let hk = HashableKey::Int(PyInt::Small(*b as i64));
-                                unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
-                                true
-                            }
-                            // list[int] = val
-                            (
-                                PyObjectPayload::List(items_arc),
-                                PyObjectPayload::Int(PyInt::Small(idx)),
-                            ) => {
-                                let items = unsafe { &mut *items_arc.data_ptr() };
-                                let i = *idx;
-                                let actual = if i < 0 { i + items.len() as i64 } else { i };
-                                if actual >= 0 && (actual as usize) < items.len() {
-                                    items[actual as usize] = val.clone();
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => false,
-                        };
-                        if done {
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                    }
                     // Fallback: push all 3 locals and execute StoreSubscr
                     for idx in [val_idx, container_idx, key_idx] {
                         if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
@@ -7341,90 +7103,8 @@ impl VirtualMachine {
                     let haystack_idx = ((instr.arg >> 16) & 0xFF) as usize;
                     let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
                     let negate = (instr.arg & 1) != 0; // 1 = not_in
-                    let locals_ptr = frame.locals.as_ptr();
-                    let needle_opt = unsafe { &*locals_ptr.add(needle_idx) };
-                    let haystack_opt = unsafe { &*locals_ptr.add(haystack_idx) };
-                    if let (Some(needle), Some(haystack)) = (needle_opt, haystack_opt) {
-                        let found = match &haystack.payload {
-                            PyObjectPayload::Dict(map) => {
-                                let r = unsafe { &*map.data_ptr() };
-                                match &needle.payload {
-                                    PyObjectPayload::Int(PyInt::Small(n)) => {
-                                        Some(r.contains_key(&BorrowedIntKey(*n)))
-                                    }
-                                    PyObjectPayload::Str(s) => {
-                                        Some(r.contains_key(&BorrowedStrKey(s.as_str())))
-                                    }
-                                    PyObjectPayload::Bool(b) => {
-                                        Some(r.contains_key(&BorrowedIntKey(*b as i64)))
-                                    }
-                                    _ => None,
-                                }
-                            }
-                            PyObjectPayload::Set(items) => {
-                                let r = unsafe { &*items.data_ptr() };
-                                match &needle.payload {
-                                    PyObjectPayload::Int(PyInt::Small(n)) => {
-                                        Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n))))
-                                    }
-                                    PyObjectPayload::Str(s) => Some(r.contains_key(
-                                        &HashableKey::str_key(s.to_compact_string()),
-                                    )),
-                                    PyObjectPayload::Bool(b) => Some(
-                                        r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64))),
-                                    ),
-                                    _ => None,
-                                }
-                            }
-                            PyObjectPayload::List(items) => {
-                                let items = unsafe { &*items.data_ptr() };
-                                Some(items.iter().any(|x| match (&x.payload, &needle.payload) {
-                                    (
-                                        PyObjectPayload::Int(PyInt::Small(a)),
-                                        PyObjectPayload::Int(PyInt::Small(b)),
-                                    ) => a == b,
-                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    _ => x.is_same(needle),
-                                }))
-                            }
-                            PyObjectPayload::Tuple(items) => {
-                                Some(items.iter().any(|x| match (&x.payload, &needle.payload) {
-                                    (
-                                        PyObjectPayload::Int(PyInt::Small(a)),
-                                        PyObjectPayload::Int(PyInt::Small(b)),
-                                    ) => a == b,
-                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    _ => x.is_same(needle),
-                                }))
-                            }
-                            PyObjectPayload::Str(haystack_s) => {
-                                if let PyObjectPayload::Str(needle_s) = &needle.payload {
-                                    Some(haystack_s.contains(needle_s.as_str()))
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(is_in) = found {
-                            let result = if negate { !is_in } else { is_in };
-                            // In-place mutation: if dest already holds a bool, overwrite payload
-                            let dest_slot =
-                                unsafe { &mut *frame.locals.as_mut_ptr().add(store_idx) };
-                            if let Some(ref mut arc) = dest_slot {
-                                if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                    obj.payload = PyObjectPayload::Bool(result);
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                            }
-                            *dest_slot = Some(PyObject::bool_val(result));
+                    match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
+                        crate::vm_fast_collections::FastFusedCollectionResult::HandledChain => {
                             hot_ok_chain!(
                                 profiling,
                                 self.profiler,
@@ -7434,6 +7114,13 @@ impl VirtualMachine {
                                 instr_count
                             )
                         }
+                        crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
+                            idx,
+                        ) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                        _ => {}
                     }
                     // Fallback: decompose to individual ops
                     for idx in [needle_idx, haystack_idx] {
