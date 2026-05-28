@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:38:52+08:00
+Last updated: 2026-05-29T04:45:45+08:00
 
 ## 代码质量重构进度
 
@@ -1286,6 +1286,10 @@ Last updated: 2026-05-29T04:38:52+08:00
   - 体检结果：`vm.rs` 从 2229 行降到 1999 行，退出超过 2000 行队列；刷新后当前超过 2000 行候选只剩 `ferrython-pip/src/cli.rs`（2140）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 module name store/load、simple instance `StoreAttr`、list/dict subscript/store、contains 和 compare-jump loop smoke。
   - commit：`618415a refactor: split vm fused fallback helpers`。
+  - 第一百零五批处理最后一个超过 2000 行候选 `ferrython-pip/src/cli.rs`（2026-05-29 04:45:45 CST）：新增 `cli/search.rs`，拆出 `show_package`、`search_pypi`、相似包名建议、closest-name/edit-distance 和 search/show 的局部打印 helper；`cli.rs` 保留 clap command model、主 command dispatch、install/uninstall/list/download/freeze/check/project 等主流程。
+  - 体检结果：`cli.rs` 从 2140 行降到 1921 行，新 `cli/search.rs` 为 202 行；`CODE_HEALTH_BASELINE.md` 刷新后 `Oversized Rust Candidates` 表已清空，Phase 1 中所有超过 2000 行的 Rust 文件已退出队列。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、`list`、`config --list` 和 `hash Cargo.toml` 无网络 smoke。
+  - commit：`d6c5136 refactor: split ferrypip search commands`。
 
 ## 修复原则
 
