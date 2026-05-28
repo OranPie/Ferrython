@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:45:45+08:00
+Last updated: 2026-05-29T04:51:05+08:00
 
 ## 代码质量重构进度
 
@@ -1290,6 +1290,10 @@ Last updated: 2026-05-29T04:45:45+08:00
   - 体检结果：`cli.rs` 从 2140 行降到 1921 行，新 `cli/search.rs` 为 202 行；`CODE_HEALTH_BASELINE.md` 刷新后 `Oversized Rust Candidates` 表已清空，Phase 1 中所有超过 2000 行的 Rust 文件已退出队列。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、`list`、`config --list` 和 `hash Cargo.toml` 无网络 smoke。
   - commit：`d6c5136 refactor: split ferrypip search commands`。
+  - 第一百零六批继续压缩当前最大 VM dispatch 文件 `ferrython-vm/src/vm.rs`（2026-05-29 04:51:05 CST）：新增 `vm_fast_flow.rs`，拆出 `Nop`、无条件 jump、`BeginFinally` 和 `PopBlockJump` 这些纯 frame control-flow 快路径；扩展 `vm_fast_names.rs`，承接 `LoadGlobal` cache hit 和 `LoadGlobalStoreFast` cache-hit/store-fast 路径。
+  - 体检结果：`vm.rs` 从 1999 行降到 1972 行，新 `vm_fast_flow.rs` 为 31 行，`vm_fast_names.rs` 扩到 103 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）和 `vm_helpers.rs`（1952）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 global store/load、global builtin call、loop break/jump 和 try/finally return smoke。
+  - commit：`284a589 refactor: split vm flow and global helpers`。
 
 ## 修复原则
 
