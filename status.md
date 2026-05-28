@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:18:49+08:00
+Last updated: 2026-05-28T08:27:10+08:00
 
 ## 代码质量重构进度
 
@@ -1123,6 +1123,10 @@ Last updated: 2026-05-28T08:18:49+08:00
   - commit：`2484780 refactor: split inspect helpers`。
   - 第五十五批继续 `codecs` 分层：新增 `serial_modules/codecs_module/helpers.rs` 和 `io.rs`，分别承载编码规范化/UTF16/UTF32/CP1252/Punycode/replacement helper，以及 `codecs.open` file-like bridge；`codecs_module.rs` 从约 1287 行降到约 883 行，退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `codecs.encode/decode/lookup/open` smoke，覆盖 utf-8、latin-1、cp1252、rot_13 和写读文件。
+  - commit：`de99e50 docs: record codecs helper split`。
+  - 第五十六批继续 `operator` 分层：新增 `collection_modules/operator/callables.rs`，拆出 `itemgetter`、`attrgetter`、`methodcaller` 和 `length_hint` callable factory 及其 builtin-bound method dispatch helper；`operator.rs` 从约 1222 行降到约 755 行，新增 callable 子文件约 415 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `operator.itemgetter/attrgetter/methodcaller/length_hint` smoke。
+  - commit：`3753f9d refactor: split operator callables`。
 
 ## 修复原则
 
