@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:08:21+08:00
+Last updated: 2026-05-29T06:12:36+08:00
 
 ## 代码质量重构进度
 
@@ -1346,6 +1346,10 @@ Last updated: 2026-05-29T06:08:21+08:00
   - 体检结果：`core_fns.rs` 从 1617 行降到 993 行，进入 1000 行可接受范围；新 `collections.rs` 为 639 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/methods_arith.rs`（1590）、`compiler/peephole.rs`（1567）和 `opcodes/arithmetic.rs`（1506）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - commit：`c80facf refactor: split builtin collection functions`。
+  - 第一百二十批处理 core arithmetic 大文件 `object/methods_arith.rs`（2026-05-29 06:12:36 CST）：新增 `object/methods_arith/bitwise.rs` 和 `object/methods_arith/modulo.rs`，拆出 shift/bitwise 集合视图与 int fallback、`%` 的 printf-style formatter 和 modulo 入口；主文件保留 add/sub/mul/div/power/unary 入口并 re-export 子模块。
+  - 体检结果：`methods_arith.rs` 从 1590 行降到 966 行，进入 1000 行可接受范围；新 `bitwise.rs` 为 381 行，`modulo.rs` 为 268 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`compiler/peephole.rs`（1567）、`opcodes/arithmetic.rs`（1506）和 `vm_helpers.rs`（1470）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
+  - commit：`bda5770 refactor: split arithmetic bitwise helpers`。
 
 ## 修复原则
 
