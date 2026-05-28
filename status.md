@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:16:56+08:00
+Last updated: 2026-05-29T04:27:38+08:00
 
 ## 代码质量重构进度
 
@@ -1278,6 +1278,10 @@ Last updated: 2026-05-29T04:16:56+08:00
   - 体检结果：`vm.rs` 从 2305 行降到 2229 行，新 `vm_return.rs` 为 70 行；刷新后当前超过 2000 行候选为 `object/payload.rs`（2290）、`vm.rs`（2229）和 `ferrython-pip/src/cli.rs`（2140）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过普通 return、argument return、try/finally return fallback、`__init__` 返回非 None 的 TypeError 和 unbound local return smoke。
   - commit：`c8b7d31 refactor: split vm return helpers`。
+  - 第一百零三批处理当前最大超过 2000 行候选 `ferrython-core/src/object/payload.rs`（2026-05-29 04:27:38 CST）：新增 `object/cell_map.rs`，拆出 `PyCell`、FxHash-backed attr/dict/set map alias、map constructor helper 和 `FrozenSetData`；新增 `object/str_repr.rs`，拆出 inline/heap `StrRepr` 字符串表示。`object/mod.rs` 保持公共 re-export，`payload.rs` 也保留兼容 re-export，避免破坏旧的 `super::payload::*` 内部导入面。
+  - 体检结果：`payload.rs` 从 2290 行降到 1878 行，退出超过 2000 行队列；新文件 `cell_map.rs` 为 172 行、`str_repr.rs` 为 223 行。刷新后当前超过 2000 行候选仅剩 `vm.rs`（2229）和 `ferrython-pip/src/cli.rs`（2140）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过短/长字符串、dict/set/frozenset、class/instance attrs 和 weakref smoke。
+  - commit：`cd66398 refactor: split object payload primitives`。
 
 ## 修复原则
 
