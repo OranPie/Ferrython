@@ -1,13 +1,12 @@
 //! The main virtual machine — executes bytecode instructions.
-use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
+use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    lookup_in_class_mro, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR,
-    CLASS_FLAG_HAS_SLOTS,
+    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
@@ -18,9 +17,9 @@ use std::rc::Rc;
 use crate::vm_fast_paths::{
     fast_callable_bool, fast_deque_native_closure_returns_none, fast_exact_type,
     fast_int_conversion, fast_small_int_sequence_min_max, fast_small_int_sequence_sorted,
-    native_function_binds_to_class, try_fast_builtin_setattr_stack, try_fast_global_builtin_call,
+    try_fast_builtin_setattr_stack, try_fast_global_builtin_call,
 };
-use crate::vm_method_cache::{cached_method_name, is_interned_append, is_interned_pop};
+use crate::vm_method_cache::{is_interned_append, is_interned_pop};
 
 /// The Ferrython virtual machine.
 pub struct VirtualMachine {
@@ -2353,229 +2352,13 @@ impl VirtualMachine {
                         self.execute_one(call_instr)
                     }
                 }
-                // Inline LoadMethod fast path for plain instances:
-                // Skip execute_one dispatch for the common case of instance.method()
-                Opcode::LoadMethod => {
-                    let name_idx = instr.arg as usize;
-                    let stack_len = frame.stack.len();
-                    // 0 = fallback, 1 = bound method (val in fast_val), 2 = instance attr (val in fast_val)
-                    // 3 = builtin bound method (method_name in fast_name, receiver on TOS)
-                    let mut fast_kind: u8 = 0;
-                    let mut fast_val: Option<PyObjectRef> = None;
-                    if stack_len > 0 {
-                        let obj = sget!(frame, stack_len - 1);
-                        match &obj.payload {
-                            PyObjectPayload::Instance(inst) => {
-                                let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
-                                if skip_ga
-                                    && inst.dict_storage.is_none()
-                                    && !inst.is_special
-                                    && !inst.attrs.read().contains_key("__deque__")
-                                {
-                                    let name = &frame.code.names[name_idx];
-                                    if name.as_str() != "__class__" && name.as_str() != "__dict__" {
-                                        let class = &inst.class;
-                                        if let PyObjectPayload::Class(cd) = &class.payload {
-                                            // Check inline cache first (avoids vtable lock + hash probe)
-                                            let ip = frame.ip as u32;
-                                            if let Some(cached) = frame
-                                                .attr_ic
-                                                .as_ref()
-                                                .and_then(|ic| ic.lookup(ip, cd.class_version))
-                                            {
-                                                if matches!(
-                                                    &cached.payload,
-                                                    PyObjectPayload::Function(_)
-                                                ) {
-                                                    fast_kind = 1;
-                                                    fast_val = Some(cached.clone());
-                                                } else if let PyObjectPayload::NativeFunction(nf) =
-                                                    &cached.payload
-                                                {
-                                                    fast_kind = if native_function_binds_to_class(
-                                                        cd,
-                                                        name,
-                                                        nf.name.as_str(),
-                                                    ) {
-                                                        1
-                                                    } else {
-                                                        2
-                                                    };
-                                                    fast_val = Some(cached.clone());
-                                                }
-                                            }
-                                            if fast_kind == 0 {
-                                                // Vtable includes own namespace — single lock, single hash probe
-                                                let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                                let method_hit = if !vt.is_empty() {
-                                                    vt.get(name.as_str()).cloned()
-                                                } else {
-                                                    unsafe { &*cd.namespace.data_ptr() }
-                                                        .get(name.as_str())
-                                                        .cloned()
-                                                };
-                                                if let Some(class_val) = method_hit {
-                                                    if matches!(
-                                                        &class_val.payload,
-                                                        PyObjectPayload::Function(_)
-                                                    ) {
-                                                        fast_kind = 1;
-                                                        frame
-                                                            .attr_ic
-                                                            .get_or_insert_with(|| {
-                                                                Box::new(AttrInlineCache::empty())
-                                                            })
-                                                            .insert(
-                                                                ip,
-                                                                cd.class_version,
-                                                                class_val.clone(),
-                                                            );
-                                                        fast_val = Some(class_val);
-                                                    } else if let PyObjectPayload::NativeFunction(
-                                                        nf,
-                                                    ) = &class_val.payload
-                                                    {
-                                                        fast_kind =
-                                                            if native_function_binds_to_class(
-                                                                cd,
-                                                                name,
-                                                                nf.name.as_str(),
-                                                            ) {
-                                                                1
-                                                            } else {
-                                                                2
-                                                            };
-                                                        frame
-                                                            .attr_ic
-                                                            .get_or_insert_with(|| {
-                                                                Box::new(AttrInlineCache::empty())
-                                                            })
-                                                            .insert(
-                                                                ip,
-                                                                cd.class_version,
-                                                                class_val.clone(),
-                                                            );
-                                                        fast_val = Some(class_val);
-                                                    }
-                                                } else if let Some(v) =
-                                                    unsafe { &*inst.attrs.data_ptr() }
-                                                        .get(name.as_str())
-                                                        .cloned()
-                                                {
-                                                    fast_kind = 2;
-                                                    fast_val = Some(v);
-                                                } else if unsafe { &*cd.method_vtable.data_ptr() }
-                                                    .is_empty()
-                                                {
-                                                    if let Some(method) =
-                                                        lookup_in_class_mro(class, name.as_str())
-                                                    {
-                                                        if matches!(
-                                                            &method.payload,
-                                                            PyObjectPayload::Function(_)
-                                                        ) {
-                                                            fast_kind = 1;
-                                                            frame
-                                                                .attr_ic
-                                                                .get_or_insert_with(|| {
-                                                                    Box::new(
-                                                                        AttrInlineCache::empty(),
-                                                                    )
-                                                                })
-                                                                .insert(
-                                                                    ip,
-                                                                    cd.class_version,
-                                                                    method.clone(),
-                                                                );
-                                                            fast_val = Some(method);
-                                                        } else if let PyObjectPayload::NativeFunction(
-                                                            nf,
-                                                        ) = &method.payload
-                                                        {
-                                                            fast_kind = if native_function_binds_to_class(
-                                                                cd,
-                                                                name,
-                                                                nf.name.as_str(),
-                                                            ) {
-                                                                1
-                                                            } else {
-                                                                2
-                                                            };
-                                                            frame
-                                                                .attr_ic
-                                                                .get_or_insert_with(|| {
-                                                                    Box::new(
-                                                                        AttrInlineCache::empty(),
-                                                                    )
-                                                                })
-                                                                .insert(
-                                                                    ip,
-                                                                    cd.class_version,
-                                                                    method.clone(),
-                                                                );
-                                                            fast_val = Some(method);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Fast path for builtin type method calls (list.append, dict.get, etc.)
-                            // Creates BuiltinBoundMethod inline to avoid full get_attr dispatch
-                            PyObjectPayload::List(_)
-                            | PyObjectPayload::Dict(_)
-                            | PyObjectPayload::Str(_)
-                            | PyObjectPayload::Tuple(_)
-                            | PyObjectPayload::Set(_)
-                            | PyObjectPayload::ByteArray(_)
-                            | PyObjectPayload::Bytes(_)
-                            | PyObjectPayload::InstanceDict(_) => {
-                                let name = &frame.code.names[name_idx];
-                                if name.as_str() != "__class__" {
-                                    fast_kind = 3;
-                                }
-                            }
-                            _ => {}
-                        }
+                Opcode::LoadMethod => match crate::vm_fast_attr::try_fast_attr(frame, instr) {
+                    crate::vm_fast_attr::FastAttrResult::Handled => {
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
-                    match fast_kind {
-                        1 => {
-                            // Two-item protocol: push method, then receiver
-                            // CallMethod will detect method (non-None) at base slot
-                            let method = fast_val.unwrap();
-                            // TOS is the object — it becomes slot_1 (receiver)
-                            // Insert method below it as slot_0
-                            let recv = spop!(frame);
-                            spush!(frame, method);
-                            spush!(frame, recv);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        2 => {
-                            // Two-item protocol slow path: push None sentinel + callable
-                            let val = fast_val.unwrap();
-                            *frame.stack.last_mut().unwrap() = PyObject::none();
-                            spush!(frame, val);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        3 => {
-                            // Builtin type method: use unbound protocol with Str tag
-                            // Stack: [name_as_Str, receiver] — CallMethod detects Str in slot_0
-                            // Avoids Arc allocation for BuiltinBoundMethod entirely
-                            let name_obj = cached_method_name(frame.code.names[name_idx].as_str())
-                                .unwrap_or_else(|| {
-                                    PyObject::str_val(frame.code.names[name_idx].clone())
-                                });
-                            // receiver is already TOS, insert name below it
-                            let recv_idx = frame.stack.len() - 1;
-                            spush!(frame, name_obj);
-                            frame.stack.swap(recv_idx, recv_idx + 1);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
+                    crate::vm_fast_attr::FastAttrResult::Fallback => self.execute_one(instr),
+                    crate::vm_fast_attr::FastAttrResult::UnboundLocal(_) => unreachable!(),
+                },
                 // Inline CallMethod super-fast path: two-item protocol + direct frame creation
                 Opcode::CallMethod => {
                     let arg_count = instr.arg as usize;

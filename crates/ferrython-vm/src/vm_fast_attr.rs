@@ -36,6 +36,7 @@ pub(crate) fn try_fast_attr(frame: &mut Frame, instr: Instruction) -> FastAttrRe
             try_load_fast_method(frame, local_idx, name_idx)
         }
         Opcode::LoadAttr => try_load_attr(frame, instr.arg as usize),
+        Opcode::LoadMethod => try_load_method(frame, instr.arg as usize),
         _ => FastAttrResult::Fallback,
     }
 }
@@ -202,6 +203,120 @@ fn try_load_fast_method(frame: &mut Frame, local_idx: usize, name_idx: usize) ->
             push(frame, obj);
             FastAttrResult::Fallback
         }
+    }
+}
+
+#[inline(always)]
+fn try_load_method(frame: &mut Frame, name_idx: usize) -> FastAttrResult {
+    if frame.stack.is_empty() {
+        return FastAttrResult::Fallback;
+    }
+
+    let obj = unsafe { frame.stack.get_unchecked(frame.stack.len() - 1) }.clone();
+    let name = frame.code.names[name_idx].clone();
+    let mut fast_kind = 0u8;
+    let mut fast_value: Option<PyObjectRef> = None;
+
+    match &obj.payload {
+        PyObjectPayload::Instance(inst) => {
+            let skip_getattribute = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
+            if skip_getattribute
+                && inst.dict_storage.is_none()
+                && !inst.is_special
+                && !inst.attrs.read().contains_key("__deque__")
+                && name.as_str() != "__class__"
+                && name.as_str() != "__dict__"
+            {
+                let class = &inst.class;
+                if let PyObjectPayload::Class(cd) = &class.payload {
+                    let ip = frame.ip as u32;
+                    if let Some(cached) = attr_cache_lookup(frame, ip, cd.class_version) {
+                        match &cached.payload {
+                            PyObjectPayload::Function(_) => {
+                                fast_kind = 1;
+                                fast_value = Some(cached);
+                            }
+                            PyObjectPayload::NativeFunction(nf) => {
+                                fast_kind = method_bind_kind(cd, &name, nf.name.as_str());
+                                fast_value = Some(cached);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if fast_kind == 0 {
+                        if let Some(class_value) = class_method_hit(class, cd, name.as_str()) {
+                            match &class_value.payload {
+                                PyObjectPayload::Function(_) => {
+                                    fast_kind = 1;
+                                    attr_cache_insert(
+                                        frame,
+                                        ip,
+                                        cd.class_version,
+                                        class_value.clone(),
+                                    );
+                                    fast_value = Some(class_value);
+                                }
+                                PyObjectPayload::NativeFunction(nf) => {
+                                    fast_kind = method_bind_kind(cd, &name, nf.name.as_str());
+                                    attr_cache_insert(
+                                        frame,
+                                        ip,
+                                        cd.class_version,
+                                        class_value.clone(),
+                                    );
+                                    fast_value = Some(class_value);
+                                }
+                                _ => {}
+                            }
+                        } else if let Some(value) = unsafe { &*inst.attrs.data_ptr() }
+                            .get(name.as_str())
+                            .cloned()
+                        {
+                            fast_kind = 2;
+                            fast_value = Some(value);
+                        }
+                    }
+                }
+            }
+        }
+        PyObjectPayload::List(_)
+        | PyObjectPayload::Dict(_)
+        | PyObjectPayload::Str(_)
+        | PyObjectPayload::Tuple(_)
+        | PyObjectPayload::Set(_)
+        | PyObjectPayload::ByteArray(_)
+        | PyObjectPayload::Bytes(_)
+        | PyObjectPayload::InstanceDict(_) => {
+            if name.as_str() != "__class__" {
+                fast_kind = 3;
+            }
+        }
+        _ => {}
+    }
+
+    match fast_kind {
+        1 => {
+            let method = fast_value.expect("method fast value");
+            let receiver = frame.stack.pop().expect("receiver");
+            push(frame, method);
+            push(frame, receiver);
+            FastAttrResult::Handled
+        }
+        2 => {
+            replace_stack_top(frame, PyObject::none());
+            push(frame, fast_value.expect("callable fast value"));
+            FastAttrResult::Handled
+        }
+        3 => {
+            let name_obj =
+                cached_method_name(name.as_str()).unwrap_or_else(|| PyObject::str_val(name));
+            let receiver_idx = frame.stack.len() - 1;
+            push(frame, name_obj);
+            frame.stack.swap(receiver_idx, receiver_idx + 1);
+            FastAttrResult::Handled
+        }
+        _ => FastAttrResult::Fallback,
     }
 }
 
