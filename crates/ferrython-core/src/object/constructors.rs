@@ -424,7 +424,7 @@ static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| {
 });
 static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| {
     PyObjectRef::new_immortal(PyObject {
-        payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(b"")),
+        payload: PyObjectPayload::Str(super::StrRepr::from_bytes(b"")),
     })
 });
 static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| {
@@ -444,7 +444,7 @@ static EMPTY_FROZENSET: LazyLock<PyObjectRef> = LazyLock::new(|| {
 static CHAR_CACHE: LazyLock<[PyObjectRef; 128]> = LazyLock::new(|| {
     std::array::from_fn(|i| {
         PyObjectRef::new_immortal(PyObject {
-            payload: PyObjectPayload::Str(super::payload::StrRepr::from_bytes(&[i as u8])),
+            payload: PyObjectPayload::Str(super::StrRepr::from_bytes(&[i as u8])),
         })
     })
 });
@@ -1215,9 +1215,7 @@ impl PyObject {
                 return CHAR_CACHE[b as usize].clone();
             }
         }
-        Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_compact(
-            v,
-        )))
+        Self::wrap_leaf(PyObjectPayload::Str(super::StrRepr::from_compact(v)))
     }
     /// Return cached single-char string for ASCII byte, or create new.
     #[inline(always)]
@@ -1237,9 +1235,7 @@ impl PyObject {
             1 if bytes[0] < 128 => CHAR_CACHE[bytes[0] as usize].clone(),
             _ => {
                 // Use StrRepr::from_bytes to inline short strings (≤15 bytes)
-                Self::wrap_leaf(PyObjectPayload::Str(super::payload::StrRepr::from_bytes(
-                    bytes,
-                )))
+                Self::wrap_leaf(PyObjectPayload::Str(super::StrRepr::from_bytes(bytes)))
             }
         }
     }
