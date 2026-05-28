@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:27:38+08:00
+Last updated: 2026-05-29T04:38:52+08:00
 
 ## 代码质量重构进度
 
@@ -1282,6 +1282,10 @@ Last updated: 2026-05-29T04:27:38+08:00
   - 体检结果：`payload.rs` 从 2290 行降到 1878 行，退出超过 2000 行队列；新文件 `cell_map.rs` 为 172 行、`str_repr.rs` 为 223 行。刷新后当前超过 2000 行候选仅剩 `vm.rs`（2229）和 `ferrython-pip/src/cli.rs`（2140）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过短/长字符串、dict/set/frozenset、class/instance attrs 和 weakref smoke。
   - commit：`cd66398 refactor: split object payload primitives`。
+  - 第一百零四批继续处理超过 2000 行候选 `ferrython-vm/src/vm.rs`（2026-05-29 04:38:52 CST）：新增 `vm_fused_fallback.rs`，拆出 fused collection superinstruction 的 fallback 分解；新增 `vm_compare_fallback.rs`，拆出 fused compare-jump fallback；新增 `vm_fast_names.rs`，拆出 module-scope `LoadName`/`StoreName` 快路径；并把 `StoreAttr` 简单实例写入快路径并入 `vm_fast_attr.rs`，移除不再使用的 `slocal!` 宏。
+  - 体检结果：`vm.rs` 从 2229 行降到 1999 行，退出超过 2000 行队列；刷新后当前超过 2000 行候选只剩 `ferrython-pip/src/cli.rs`（2140）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 module name store/load、simple instance `StoreAttr`、list/dict subscript/store、contains 和 compare-jump loop smoke。
+  - commit：`618415a refactor: split vm fused fallback helpers`。
 
 ## 修复原则
 
