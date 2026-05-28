@@ -1160,6 +1160,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十七批继续 `testing_modules/logging` 分层（2026-05-28 18:38:41 CST）：新增 `logging/logger.rs`，拆出 `logging_log`、`logging_get_logger`、logger instance 方法、parent/child/filter/handler dispatch 和 effective-level 查询；`logging.rs` 从 1130 行降到 358 行，`logger.rs` 为 777 行，`logging.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 logging getLogger cache/name/setLevel/getEffectiveLevel/isEnabledFor/getChild、StreamHandler add/remove/hasHandlers、basicConfig FileHandler 和 disable smoke。
   - commit：`3a2c34c refactor: split logging logger helpers`。
+  - 第六十八批继续 `import_modules` 分层（2026-05-28 18:44:25 CST）：新增 `import_modules/{metadata,resources}.rs`，拆出 `importlib.metadata` dist-info 扫描/metadata API 和 `importlib.resources` Traversable/read/path helper；`import_modules.rs` 从 1125 行降到 538 行，`metadata.rs` 为 274 行，`resources.rs` 为 321 行，`import_modules.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 importlib.util spec/resolve_name、machinery suffixes、importlib.metadata missing-package API、importlib.resources files/joinpath/contents/is_resource smoke；`importlib.machinery.all_suffixes` 当前仍以 list 暴露，本批未混入语义修复。
+  - commit：`0d465ab refactor: split importlib helper modules`。
 
 ## 修复原则
 
