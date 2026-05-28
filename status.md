@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:52:38+08:00
+Last updated: 2026-05-29T02:59:38+08:00
 
 ## 代码质量重构进度
 
@@ -1231,6 +1231,9 @@ Last updated: 2026-05-29T02:52:38+08:00
   - 第九十批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:52:38 CST）：新增 `vm_fast_method.rs`，把 `CallMethod` 中 builtin receiver 的直接快路径和 direct dispatch 移入 `try_fast_builtin_method`，包括 list.append、dict.get、set.add、str strip/lower/upper/startswith/endswith 以及 0/1/2 参数 direct builtin method dispatch；主 loop 保留 Python method frame 创建、trace/profile、VM-aware `collect_iterable` fallback 和 list.sort 的 VM sort 路径；`vm.rs` 从 4073 行降到 3675 行，新增 helper 233 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 list append/pop、dict.get、str method、set.add、join(list)、join(generator)、list.extend(generator/list)、list.sort、set.update(generator)/union(generator)、list.count、str.replace smoke；其中 `join(generator)` 用于回归确认 Str-tag fallback 不再错误走普通 `execute_one`。
   - commit：`b54921d refactor: split vm builtin method calls`。
+  - 第九十一批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:59:38 CST）：扩展 `vm_fast_method.rs`，新增 `try_fast_builtin_method_poptop`，把 `CallMethodPopTop` 中 list.append/list.pop 指针快路径、Str-tag builtin method 直接调用和可丢弃返回值的直接 dispatch 移入 helper；主 loop 保留 VM-aware `collect_iterable` fallback、list.sort VM sort、Python simple method frame creation 和 generic `execute_one(CallMethod)` 丢弃返回值路径；`vm.rs` 从 3675 行降到 3571 行，`vm_fast_method.rs` 从 233 行扩到 378 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 CallMethodPopTop 表达式语句 smoke，覆盖 list append/pop、空 list.pop IndexError、dict.get 丢弃返回值、str method 丢弃返回值、set.add/update(generator)、list.extend(generator/list)、list.sort 和 Python 方法表达式语句。
+  - commit：`756ad2d refactor: split vm method poptop calls`。
 
 ## 修复原则
 
