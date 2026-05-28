@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:38:07+08:00
+Last updated: 2026-05-29T06:42:06+08:00
 
 ## 代码质量重构进度
 
@@ -22,6 +22,12 @@ Last updated: 2026-05-29T06:38:07+08:00
   - 当前基线中 `methods_type.rs` 已从最长 Rust 文件第二位退出到第十四位。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
   - 代码提交：`6250039 refactor: split object to-list conversion`。
+- 第一百二十七批：已拆分 VM string method 辅助逻辑：
+  - 新增 `crates/ferrython-vm/src/builtins/string_methods/encoding.rs`，集中 `str.encode` 的 ascii/latin1/utf16/utf32/cp1252/punycode/idna 分派。
+  - 新增 `crates/ferrython-vm/src/builtins/string_methods/formatting.rs`，集中 `str.format` field 和 nested spec 解析 helper。
+  - `builtins/string_methods.rs` 从约 1419 行降到 1176 行。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - 代码提交：`2fa2976 refactor: split string encoding helpers`。
 - 已继续 VM builtin type method 分层：
   - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
