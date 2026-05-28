@@ -3,6 +3,7 @@
 mod cell_map;
 mod class_data;
 mod constructors;
+mod gc_tracking;
 pub mod helpers;
 mod methods;
 mod methods_arith;
@@ -21,7 +22,7 @@ pub use class_data::*;
 pub use constructors::alloc_list_box_empty;
 pub use constructors::alloc_map_inner;
 pub use constructors::alloc_tuple_box_empty;
-pub use constructors::init_gc;
+pub use gc_tracking::init_gc;
 pub use helpers::*;
 pub use methods::*;
 pub use methods_attr::py_has_attr;
