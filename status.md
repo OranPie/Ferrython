@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:24:20+08:00
+Last updated: 2026-05-29T02:35:58+08:00
 
 ## 代码质量重构进度
 
@@ -1221,6 +1221,10 @@ Last updated: 2026-05-29T02:24:20+08:00
   - 第八十七批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:24:20 CST）：扩展 `vm_call/inline_simple.rs`，把 `CallFunction` 和 `LoadGlobalCallFunction` 中重复的 simple-function/recursive-base/closure-return mini-result 推断移入已有 call helper；主 loop 保留 trace/profile gate、frame 创建、recursion limit 和 call_stack rederive 控制语义；`vm.rs` 从 5434 行降到 4953 行，`inline_simple.rs` 从约 176 行扩到 318 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 simple return、const return、add/sub/mul inline、recursive base-case、closure return 和 global call smoke。
   - commit：`1a8678b refactor: split vm inline call returns`。
+  - 第八十八批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:35:58 CST）：扩展 `vm_fast_paths.rs`，把 `LoadGlobalCallFunction` 中全局缓存命中的 builtin/type 快路径计算移入 `try_fast_global_builtin_call`；主 loop 只保留结果命中后的参数栈裁剪、push result 和 fallback `CallFunction` 分解，继续避开 frame 创建、trace/profile 和 recursion limit 语义；`vm.rs` 从 4953 行降到 4290 行，`vm_fast_paths.rs` 从约 295 行扩到 575 行。
+  - 覆盖的快路径包括 `len/range/str/isinstance/type/int/callable/float/bool/abs/sum/min/max/sorted`，以及 `isinstance(x, LoadedBuiltinTypeOrClass)` 的现有特殊路径；fallback 仍按原逻辑把 `func_obj` 推回栈后执行 `CallFunction`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 len/range/str/isinstance/type/int/callable/float/bool/abs/sum/min/max/sorted global builtin smoke。
+  - commit：`c2d8886 refactor: split vm global builtin calls`。
 
 ## 修复原则
 
