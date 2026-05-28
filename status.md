@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T01:51:22+08:00
+Last updated: 2026-05-29T01:59:13+08:00
 
 ## 代码质量重构进度
 
@@ -1209,6 +1209,9 @@ Last updated: 2026-05-29T01:51:22+08:00
   - 质量补充：helper 保留 int/float 溢出 BigInt 路径、string add store 快路径和 dest slot 可变对象原地更新能力，避免机械拆分带来明显性能退化。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const/local add/sub/mul、store-fast arithmetic、mul-mod、float mixed arithmetic 和 string concat smoke。
   - commit：`b9d4b2a refactor: split vm fused arithmetic paths`。
+  - 第八十四批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:59:13 CST）：扩展 `vm_fast_iter.rs`，从普通 `ForIter` arm 中拆出 range/list/tuple/ref/rev-ref、enumerate、zip、dict keys/items/entries 等非 generator 快路径；主 loop 保留 generator resume、fallback `execute_one` 和 call_stack rederive 控制语义；`vm.rs` 从 6802 行降到 6086 行，`vm_fast_iter.rs` 从 269 行扩到 910 行，并删除已闲置的 `vm_iter_fast.rs`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 range/list for-loop、dict items unpack、enumerate unpack、zip unpack 和 generator for-loop smoke。
+  - commit：`d2aed0f refactor: split vm for-iter paths`。
 
 ## 修复原则
 
