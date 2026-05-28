@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:52:43+08:00
+Last updated: 2026-05-29T06:57:45+08:00
 
 ## 代码质量重构进度
 
@@ -41,6 +41,12 @@ Last updated: 2026-05-29T06:52:43+08:00
   - `opcodes/flow.rs` 从约 1413 行降到 310 行，保留 jump/iterator opcode 和子模块入口。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - 代码提交：`9e8638d refactor: split flow opcode handlers`。
+- 第一百三十批：已拆分 VM class 后处理逻辑：
+  - 新增 `crates/ferrython-vm/src/vm_class/namedtuple.rs`，集中 typing.NamedTuple class syntax 后处理和生成的 `__init__`/`__getitem__`/`__len__`/`__iter__`/`__repr__`。
+  - 新增 `crates/ferrython-vm/src/vm_class/enum_processing.rs`，集中 Enum/Flag 成员生成、auto() 解析、Flag 位运算和 `__members__` 维护。
+  - `vm_class.rs` 从约 1397 行降到 782 行。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - 代码提交：`4957665 refactor: split namedtuple class processing`、`053794e refactor: split enum class processing`。
 - 已继续 VM builtin type method 分层：
   - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
