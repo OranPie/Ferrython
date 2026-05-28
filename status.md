@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:12:36+08:00
+Last updated: 2026-05-29T06:15:01+08:00
 
 ## 代码质量重构进度
 
@@ -1350,6 +1350,10 @@ Last updated: 2026-05-29T06:12:36+08:00
   - 体检结果：`methods_arith.rs` 从 1590 行降到 966 行，进入 1000 行可接受范围；新 `bitwise.rs` 为 381 行，`modulo.rs` 为 268 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`compiler/peephole.rs`（1567）、`opcodes/arithmetic.rs`（1506）和 `vm_helpers.rs`（1470）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
   - commit：`bda5770 refactor: split arithmetic bitwise helpers`。
+  - 第一百二十一批处理 compiler peephole 大文件 `compiler/peephole.rs`（2026-05-29 06:15:01 CST）：新增 `compiler/peephole/superinstructions.rs`，拆出整段 superinstruction fusion、jump target collection、old-to-new target rewrite 和 NOP compaction；`peephole.rs` 保留 pass orchestration、constant folding、dead code/jump cleanup 和 max stack 计算。
+  - 体检结果：`peephole.rs` 从 1567 行降到 841 行，进入 1000 行可接受范围；新 `superinstructions.rs` 为 732 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`opcodes/arithmetic.rs`（1506）、`vm_helpers.rs`（1470）和 `parser/statements.rs`（1458）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`。
+  - commit：`54ce30c refactor: split peephole superinstructions`。
 
 ## 修复原则
 
