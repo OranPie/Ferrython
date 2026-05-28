@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:08:34+08:00
+Last updated: 2026-05-28T08:18:49+08:00
 
 ## 代码质量重构进度
 
@@ -1120,6 +1120,9 @@ Last updated: 2026-05-28T08:08:34+08:00
   - commit：`cb25e00 refactor: split os module helpers`。
   - 第五十四批继续 `inspect` 分层：新增 `introspection_modules/inspect/{predicates,source,mro_argspec,frame}.rs`，分别承载 inspect type predicate、member/source/doc helper、MRO/argspec helper 和 frame/stack stub；`inspect.rs` 从约 1339 行降到约 861 行，退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `inspect.isfunction/isclass/isroutine/getdoc/getmodule/getargspec/getfullargspec/signature/cleandoc/getattr_static/currentframe/stack` smoke。
+  - commit：`2484780 refactor: split inspect helpers`。
+  - 第五十五批继续 `codecs` 分层：新增 `serial_modules/codecs_module/helpers.rs` 和 `io.rs`，分别承载编码规范化/UTF16/UTF32/CP1252/Punycode/replacement helper，以及 `codecs.open` file-like bridge；`codecs_module.rs` 从约 1287 行降到约 883 行，退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `codecs.encode/decode/lookup/open` smoke，覆盖 utf-8、latin-1、cp1252、rot_13 和写读文件。
 
 ## 修复原则
 
