@@ -1142,6 +1142,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十一批继续 `decimal` value helper 分层：新增 `math_modules/decimal/value.rs`，拆出 `_value` 提取、Decimal parse/format/scale alignment、比较、int/float/str/hash 等不创建新 Decimal 实例的 helper。`decimal.rs` 从约 1502 行降到约 1314 行，`value.rs` 约 196 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal compare/int/float/str/hash/add/neg/abs/is_zero/is_nan/is_infinite smoke。
   - commit：`a2e06d3 refactor: split decimal value helpers`。
+  - 第六十二批继续 `testing_modules/unittest` 分层（2026-05-28 09:03:57 CST）：新增 `testing_modules/unittest/assertions.rs`，拆出 `TestCase` 断言方法注册和 `assert_msg` helper；`unittest.rs` 从约 1325 行降到约 265 行，`assertions.rs` 约 1073 行，`unittest.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `assertEqual/assertNotEqual/assertTrue/assertFalse/assertIsNone/assertIn/assertGreater/assertLess/assertAlmostEqual/assertRegex/assertCountEqual/assertListEqual/assertTupleEqual/assertMultiLineEqual/fail` smoke。
+  - commit：`eefe5f6 refactor: split unittest assertions`。
 
 ## 修复原则
 
