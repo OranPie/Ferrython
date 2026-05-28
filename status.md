@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:04:24+08:00
+Last updated: 2026-05-29T06:08:21+08:00
 
 ## 代码质量重构进度
 
@@ -1342,6 +1342,10 @@ Last updated: 2026-05-29T06:04:24+08:00
   - 体检结果：`constructors.rs` 从 1659 行降到 1150 行；新 `gc_tracking.rs` 为 518 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`builtins/core_fns.rs`（1617）、`object/methods_arith.rs`（1590）和 `compiler/peephole.rs`（1567）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
   - commit：`13d9ce2 refactor: split object gc tracking`。
+  - 第一百一十九批处理 VM builtin 大文件 `builtins/core_fns.rs`（2026-05-29 06:08:21 CST）：新增 `builtins/core_fns/collections.rs`，拆出 `reversed/enumerate/zip/range/list/tuple/dict/set/frozenset/all/any/iter/next`、`get_iter_from_obj` 和 `dict.fromkeys`；`core_fns.rs` 保留基础 builtin、属性/描述符、bytes/complex/import/memoryview 等其它组。
+  - 体检结果：`core_fns.rs` 从 1617 行降到 993 行，进入 1000 行可接受范围；新 `collections.rs` 为 639 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/methods_arith.rs`（1590）、`compiler/peephole.rs`（1567）和 `opcodes/arithmetic.rs`（1506）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - commit：`c80facf refactor: split builtin collection functions`。
 
 ## 修复原则
 
