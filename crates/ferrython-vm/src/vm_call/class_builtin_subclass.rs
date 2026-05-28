@@ -1,7 +1,8 @@
-use ferrython_core::error::PyResult;
+use compact_str::CompactString;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    get_builtin_base_type_name, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    get_builtin_base_type_name, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 
 use super::class_builtin_values::{BuiltinSubclassStrMode, BuiltinSubclassValue};
@@ -62,6 +63,11 @@ impl VirtualMachine {
             return Ok(());
         };
 
+        if base_type.as_str() == "deque" {
+            self.ensure_deque_subclass_storage(inst_data, pos_args)?;
+            return Ok(());
+        }
+
         if let BuiltinSubclassValue::Store(Some(value)) = self.build_builtin_subclass_value(
             base_type.as_str(),
             pos_args,
@@ -72,6 +78,46 @@ impl VirtualMachine {
                 .write()
                 .insert(intern_or_new("__builtin_value__"), value);
         }
+        Ok(())
+    }
+
+    fn ensure_deque_subclass_storage(
+        &mut self,
+        inst_data: &ferrython_core::object::InstanceData,
+        pos_args: &[PyObjectRef],
+    ) -> PyResult<()> {
+        if inst_data.attrs.read().contains_key("__deque__") {
+            return Ok(());
+        }
+        let mut maxlen = None;
+        if pos_args.len() >= 2 && !matches!(&pos_args[1].payload, PyObjectPayload::None) {
+            let raw = pos_args[1].to_int()?;
+            if raw < 0 {
+                return Err(PyException::value_error("maxlen must be non-negative"));
+            }
+            maxlen = Some(raw as usize);
+        }
+        let mut items =
+            if pos_args.is_empty() || matches!(&pos_args[0].payload, PyObjectPayload::None) {
+                Vec::new()
+            } else {
+                let iter = self.resolve_iterable(&pos_args[0])?;
+                self.collect_iterable(&iter)?
+            };
+        if let Some(ml) = maxlen {
+            if items.len() > ml {
+                items = items[items.len() - ml..].to_vec();
+            }
+        }
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(
+            CompactString::from("__maxlen__"),
+            maxlen
+                .map(|n| PyObject::int(n as i64))
+                .unwrap_or_else(PyObject::none),
+        );
         Ok(())
     }
 }

@@ -317,6 +317,9 @@ pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<Co
                     return Some((**name).clone());
                 }
             }
+            PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "collections.deque" => {
+                return Some(CompactString::from("deque"));
+            }
             PyObjectPayload::Class(cd) => {
                 if let Some(name) = get_builtin_base_type_name_from_bases(&cd.bases) {
                     return Some(name);

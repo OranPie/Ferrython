@@ -9,6 +9,35 @@ use indexmap::IndexMap;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
+    pub(super) fn resolve_deque_constructor_args(
+        &mut self,
+        pos_args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<Vec<PyObjectRef>> {
+        if pos_args.len() > 2 {
+            return Err(PyException::type_error(
+                "deque() takes at most 2 positional arguments",
+            ));
+        }
+        let mut all = Vec::with_capacity(2);
+        if let Some(iterable) = pos_args.first() {
+            let iter = self.resolve_iterable(iterable)?;
+            all.push(PyObject::list(self.collect_iterable(&iter)?));
+        }
+        if let Some(maxlen) = pos_args.get(1).cloned().or_else(|| {
+            kwargs
+                .iter()
+                .find(|(k, _)| k.as_str() == "maxlen")
+                .map(|(_, v)| v.clone())
+        }) {
+            while all.is_empty() {
+                all.push(PyObject::list(vec![]));
+            }
+            all.push(maxlen);
+        }
+        Ok(all)
+    }
+
     pub(super) fn call_collection_native_kw(
         &mut self,
         nf_data: &NativeFunctionData,
@@ -71,17 +100,7 @@ impl VirtualMachine {
         }
 
         if nf_data.name.as_str() == "collections.deque" {
-            let mut all = pos_args.to_vec();
-            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "maxlen") {
-                while all.is_empty() {
-                    all.push(PyObject::list(vec![]));
-                }
-                if all.len() < 2 {
-                    all.push(v.clone());
-                } else {
-                    all[1] = v.clone();
-                }
-            }
+            let all = self.resolve_deque_constructor_args(pos_args, kwargs)?;
             return (nf_data.func)(&all).map(Some);
         }
 

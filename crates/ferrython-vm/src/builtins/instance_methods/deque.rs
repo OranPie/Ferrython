@@ -6,8 +6,6 @@ use ferrython_core::object::{
 };
 use std::rc::Rc;
 
-use super::super::dispatch;
-
 pub(crate) fn call_deque_method(
     inst: &ferrython_core::object::InstanceData,
     method: &str,
@@ -294,16 +292,10 @@ pub(crate) fn call_deque_method(
             }
             Ok(PyObject::none())
         }
-        "copy" => {
+        "copy" | "__copy__" => {
             let data = get_data();
             let items = data.to_list()?;
-            let maxlen_obj = inst
-                .attrs
-                .read()
-                .get("__maxlen__")
-                .cloned()
-                .unwrap_or_else(PyObject::none);
-            dispatch("deque", &[PyObject::list(items), maxlen_obj])
+            Ok(build_like_self(items))
         }
         "count" => {
             if args.len() != 1 {

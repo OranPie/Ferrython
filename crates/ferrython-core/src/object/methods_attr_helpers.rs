@@ -488,6 +488,7 @@ pub(super) fn instance_builtin_method(
                 | "rotate"
                 | "clear"
                 | "copy"
+                | "__copy__"
                 | "count"
                 | "index"
                 | "insert"

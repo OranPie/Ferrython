@@ -24,6 +24,10 @@ impl VirtualMachine {
         if nf_data.name.as_str() == "singledispatch.register" {
             return self.vm_singledispatch_register(&args);
         }
+        if nf_data.name.as_str() == "collections.deque" {
+            let resolved = self.resolve_deque_constructor_args(&args, &[])?;
+            return (nf_data.func)(&resolved);
+        }
         if let Some(result) = self.call_iter_regex_or_path_native_object(nf_data, &args)? {
             return Ok(result);
         }

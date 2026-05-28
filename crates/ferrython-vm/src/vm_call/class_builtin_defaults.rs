@@ -12,6 +12,7 @@ pub(super) fn default_builtin_subclass_value(base_type: &str) -> Option<PyObject
         "str" => Some(PyObject::str_val(CompactString::from(""))),
         "bytes" => Some(PyObject::bytes(vec![])),
         "bytearray" => Some(PyObject::bytes(vec![])),
+        "deque" => Some(PyObject::list(vec![])),
         _ => None,
     }
 }

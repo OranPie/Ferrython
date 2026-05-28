@@ -13,6 +13,16 @@ impl VirtualMachine {
         kwargs: &[(CompactString, PyObjectRef)],
     ) -> PyResult<()> {
         if let Some(init) = cls.get_attr("__init__") {
+            if matches!(
+                &init.payload,
+                PyObjectPayload::NativeFunction(nf)
+                    if nf.name.as_str() == "collections.deque.__init__"
+            ) && matches!(
+                &instance.payload,
+                PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__deque__")
+            ) {
+                return Ok(());
+            }
             let is_builtin_init = matches!(&init.payload,
                 PyObjectPayload::BuiltinBoundMethod(bbm)
                     if matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(_)));

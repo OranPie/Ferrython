@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T07:28:50+08:00
+Last updated: 2026-05-29T07:55:07+08:00
 
 ## 代码质量重构进度
 
@@ -945,13 +945,13 @@ Last updated: 2026-05-29T07:28:50+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 `atexit` registry/CLI exit hook、`weakref.finalize` atexit 注销和 vendored `test.test_weakref` 代理模块。
+- 当前待提交代码修复涉及 `collections.deque` 构造器、deque 子类 marker storage 和 copy/`__copy__` 语义。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
 - `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy` 当前模块级通过：`run=75 pass=75 fail=0 err=0 skip=0`。
-  - 下一步：转向 `deque` 小批候选，或扫描新的低成本 CPython 模块。
+  - 下一步：继续处理 `deque` iterator mutation、递归 pickle/repeat、reversed iterator type 和超大 index，或扫描新的低成本 CPython 模块。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -1000,6 +1000,12 @@ Last updated: 2026-05-29T07:28:50+08:00
   - 修复：`weakref.finalize` 变为可子类化 class，支持 kwargs/deprecated keyword form，referent 死亡自动触发，多个 finalizer 按 LIFO 顺序执行，并在触发后释放 callback/finalizer 引用。
 - `test_weakref.FinalizeTestCase.test_atexit`
   - 修复：子进程可导入 vendored `test.test_weakref`，CLI 退出时执行 atexit registry，`weakref.finalize` 的 `atexit` 属性控制退出期回调并按 LIFO 顺序运行。
+- `test_deque` constructor/subclass/copy 批次：
+  - 修复：`collections.deque` native 构造器走 VM iterable 解析和收集路径，支持 lazy iterator / old sequence protocol，并保持 invalid iterator / non-iterable 的 `TypeError` 行为。
+  - 修复：deque 子类把 `collections.deque` native function 识别为 builtin base，实例初始化时安装 `__deque__`、`_data`、`__maxlen__` marker storage，避免子类数据被继承的 native `deque.__init__` 清空。
+  - 修复：deque `copy()` / `__copy__()` 返回同类对象并保留 maxlen/storage；类级 `collections.deque.__init__` 支持 kwargs `maxlen`、多余位置参数校验和 descriptor self 校验。
+  - 验证：focused 9 项全过，覆盖 `test_init`、constructor iterator cases、subclass basics/copy_pickle/subclass_with_kwargs、copy/copy_method 和 addmul。
+  - 完整 `test_deque` 当前：`run=79 pass=68 fail=6 err=2 skip=3`；剩余为 container iterator cycle、recursive pickle/repeat identity、iterator mutation RuntimeError、`reversed(list)` type callable 和超大 index。
 
 
 - 已开始 Phase4/Phase5 VM 拆分：

@@ -1,6 +1,6 @@
 use crate::intern::intern_or_new;
 use crate::object::payload::NativeFunctionData;
-use crate::types::PyFunction;
+use crate::types::{HashableKey, PyFunction};
 use compact_str::CompactString;
 use std::rc::Rc;
 
@@ -151,6 +151,95 @@ pub(super) fn native_function_attr(
         ))),
         "__doc__" => Some(PyObject::none()),
         "__call__" => Some(obj.clone()),
+        "__init__" if nf.name.as_str() == "collections.deque" => Some(PyObject::native_function(
+            "collections.deque.__init__",
+            |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error(
+                        "descriptor '__init__' for 'collections.deque' objects needs an argument",
+                    ));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    let mut positional_end = args.len();
+                    let mut kw_maxlen = None;
+                    if let Some(last) = args.last() {
+                        if let PyObjectPayload::Dict(map) = &last.payload {
+                            if let Some(value) = map
+                                .read()
+                                .get(&HashableKey::str_key(CompactString::from("maxlen")))
+                                .cloned()
+                            {
+                                kw_maxlen = Some(value);
+                                positional_end = positional_end.saturating_sub(1);
+                            }
+                        }
+                    }
+                    if positional_end > 3 {
+                        return Err(PyException::type_error(
+                            "deque() takes at most 2 positional arguments",
+                        ));
+                    }
+                    let maxlen_obj = if positional_end >= 3 {
+                        Some(args[2].clone())
+                    } else {
+                        kw_maxlen
+                    };
+                    let maxlen = if let Some(value) = maxlen_obj {
+                        if matches!(&value.payload, PyObjectPayload::None) {
+                            None
+                        } else {
+                            let raw = value.to_int()?;
+                            if raw < 0 {
+                                return Err(PyException::value_error(
+                                    "maxlen must be non-negative",
+                                ));
+                            }
+                            Some(raw as usize)
+                        }
+                    } else {
+                        None
+                    };
+                    let mut items = if positional_end < 2
+                        || matches!(&args[1].payload, PyObjectPayload::None)
+                    {
+                        Vec::new()
+                    } else {
+                        if let PyObjectPayload::Instance(_) = &args[1].payload {
+                            if args[1].get_attr("__iter__").is_some()
+                                && args[1].get_attr("__next__").is_none()
+                                && args[1].get_attr("__getitem__").is_none()
+                            {
+                                return Err(PyException::type_error(format!(
+                                    "'{}' object is not iterable",
+                                    args[1].type_name()
+                                )));
+                            }
+                        }
+                        args[1].to_list()?
+                    };
+                    if let Some(ml) = maxlen {
+                        if items.len() > ml {
+                            items = items[items.len() - ml..].to_vec();
+                        }
+                    }
+                    let mut attrs = inst.attrs.write();
+                    attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
+                    attrs.insert(CompactString::from("_data"), PyObject::list(items));
+                    attrs.insert(
+                        CompactString::from("__maxlen__"),
+                        maxlen
+                            .map(|n| PyObject::int(n as i64))
+                            .unwrap_or_else(PyObject::none),
+                    );
+                    Ok(PyObject::none())
+                } else {
+                    Err(PyException::type_error(format!(
+                        "descriptor '__init__' for 'collections.deque' objects does not apply to '{}'",
+                        args[0].type_name()
+                    )))
+                }
+            },
+        )),
         "__get__" => {
             let func_obj = obj.clone();
             Some(PyObject::native_closure("__get__", move |args| {
