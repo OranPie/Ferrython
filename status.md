@@ -1178,6 +1178,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第七十三批继续 `ferrython-core/src/object/methods_format` 分层（2026-05-28 19:19:41 CST）：新增 `methods_format/dir.rs`，拆出 `py_dir` 及各 payload 类型的 `dir()` 名称集合；`methods_format.rs` 从 1034 行降到 615 行，`dir.rs` 为 423 行，`methods_format.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 numeric/string/complex-adjacent format basics、list/dict/str dir、instance/class/MRO dir smoke。
   - commit：`bf6a4c9 refactor: split object dir formatting helpers`。
+  - 第七十四批继续 `xml_modules` 分层（2026-05-28 19:25:02 CST）：新增 `xml_modules/element.rs`，拆出 Element 对象构造、XmlElement/PyObject 转换、Element 方法闭包、Element 序列化 helper；`xml_modules.rs` 从 1032 行降到 412 行，`element.rs` 为 624 行，`xml_modules.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Element/SubElement attrib/text/find/findtext/findall/len/index/iter/tostring/fromstring/ElementTree smoke。
+  - commit：`e2793cf refactor: split xml element helpers`。
 
 ## 修复原则
 
