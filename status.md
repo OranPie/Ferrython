@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:51:34+08:00
+Last updated: 2026-05-28T08:57:50+08:00
 
 ## 代码质量重构进度
 
@@ -1139,6 +1139,9 @@ Last updated: 2026-05-28T08:51:34+08:00
   - 第六十批开始 `decimal` 内部分层：新增 `math_modules/decimal/context.rs`，拆出 signal 类型、flags/traps dict 和 Context clear/copy helper；新增 `math_modules/decimal/digits.rs`，拆出 long-division digit vector helper 和 precision truncation/rounding helper。`decimal.rs` 从约 1815 行降到约 1502 行，并从当前 item-density 热点中降级。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal arithmetic/division/quantize、getcontext/Context、clear_flags/clear_traps 和 signal flags smoke。
   - commit：`119bbb2 refactor: split decimal helpers`。
+  - 第六十一批继续 `decimal` value helper 分层：新增 `math_modules/decimal/value.rs`，拆出 `_value` 提取、Decimal parse/format/scale alignment、比较、int/float/str/hash 等不创建新 Decimal 实例的 helper。`decimal.rs` 从约 1502 行降到约 1314 行，`value.rs` 约 196 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal compare/int/float/str/hash/add/neg/abs/is_zero/is_nan/is_infinite smoke。
+  - commit：`a2e06d3 refactor: split decimal value helpers`。
 
 ## 修复原则
 
