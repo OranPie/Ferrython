@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:10:40+08:00
+Last updated: 2026-05-29T05:16:30+08:00
 
 ## 代码质量重构进度
 
@@ -1306,6 +1306,10 @@ Last updated: 2026-05-29T05:10:40+08:00
   - 体检结果：`arithmetic.rs` 从 1903 行降到 1506 行，新 `percent_format.rs` 为 404 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`ferrypip cli.rs`（1921）、`object/payload.rs`（1878）和 `object/helpers.rs`（1812）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 tuple `%s/%d/%x`、mapping `%()`、bytes `%`、`%r/%f/%e/%g/%%` 和普通 `+/%/**` arithmetic smoke。
   - commit：`65fe25a refactor: split arithmetic percent formatting`。
+  - 第一百一十批继续压缩 VM dispatch 文件 `ferrython-vm/src/vm.rs`（2026-05-29 05:16:30 CST）：扩展 `vm_fast_method.rs`，新增 `try_fast_python_method_frame`，把 `CallMethod` 和 `CallMethodPopTop` 里重复的 simple Python method borrowed-frame 构造、receiver/arg 移动、recursive global cache 继承和 function scope 设置集中到 helper；`vm.rs` 继续保留 frame push、recursion guard、trace/profile call event 和 discard-return 控制语义。
+  - 体检结果：`vm.rs` 从 1972 行降到 1887 行，`vm_fast_method.rs` 从约 378 行扩到 596 行；刷新后当前最大 Rust 文件为 `ferrypip cli.rs`（1921）、`vm.rs`（1887）、`object/payload.rs`（1878）和 `object/helpers.rs`（1812）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过普通 method call、`CallMethodPopTop` 丢弃返回值、属性写入和递归 method call smoke。
+  - commit：`d85dc64 refactor: split vm python method frame helper`。
 
 ## 修复原则
 
