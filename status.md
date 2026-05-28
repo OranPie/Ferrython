@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T03:53:28+08:00
+Last updated: 2026-05-29T03:59:08+08:00
 
 ## 代码质量重构进度
 
@@ -1262,6 +1262,10 @@ Last updated: 2026-05-29T03:53:28+08:00
   - 体检结果：`core_fns.rs` 从 2522 行降到 2295 行，新 `fundamental.rs` 为 238 行；当前最大 Rust 文件重新变为 `vm.rs`（2424 行），其次是 `core_fns.rs`（2295 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）和 `cli.rs`（2140 行）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `str(bytes, encoding)`、`int(..., base)`、`float`、`bool`、`type(obj)`、动态 `type('C', (), {...})` 和禁止继承 `bool` smoke。
   - commit：`7b415c0 refactor: split core fundamental builtins`。
+  - 第九十九批继续处理当前最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 03:59:08 CST）：新增 `vm_fast_stack.rs`，拆出 `LoadFast/StoreFast/StoreFastJumpAbsolute/LoadConst`、`LoadFastLoadFast`、`LoadFastLoadConst`、`StoreFastLoadFast`、`PopTop/PopTopJumpAbsolute/DupTop/RotTwo` 和 `LoadConstStoreFast` 的无 `self` 快路径；主 dispatch loop 保留 call/return/exception/rederive 等敏感控制流。
+  - 体检结果：`vm.rs` 从 2424 行降到 2305 行，新 `vm_fast_stack.rs` 为 207 行；当前最大 Rust 文件仍是 `vm.rs`（2305 行），但只比 `core_fns.rs`（2295 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）略大。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const load-store、for-loop store+jump、function local return、list append/pop、tuple swap 和 repeated const-store smoke。
+  - commit：`f77c430 refactor: split vm stack fast paths`。
 
 ## 修复原则
 
