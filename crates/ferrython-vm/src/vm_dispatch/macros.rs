@@ -23,13 +23,6 @@ macro_rules! spop {
     };
 }
 
-/// Unchecked local read — only borrows locals field, not entire Frame.
-macro_rules! slocal {
-    ($frame:expr, $idx:expr) => {
-        unsafe { $frame.locals.get_unchecked($idx).as_ref() }
-    };
-}
-
 /// Unchecked local write — only borrows locals field, not entire Frame.
 macro_rules! sset_local {
     ($frame:expr, $idx:expr, $val:expr) => {

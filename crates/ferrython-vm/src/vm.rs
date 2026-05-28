@@ -4,11 +4,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
-    PyObject, PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR,
-    CLASS_FLAG_HAS_SLOTS,
-};
-use ferrython_core::types::PyInt;
+use ferrython_core::object::{PyObject, PyObjectPayload, PyObjectRef};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -453,8 +449,6 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // RotThree and DupTopTwo: cold, delegate to execute_one
-                Opcode::RotThree | Opcode::DupTopTwo => self.execute_one(instr),
                 Opcode::Nop => hot_ok!(profiling, self.profiler, instr.op),
                 // Fast GetIter for common iterable payloads.
                 Opcode::GetIter => match crate::vm_fast_iter::try_fast_get_iter(frame) {
@@ -793,7 +787,6 @@ impl VirtualMachine {
                         crate::vm_fast_build::FastBuildResult::Fallback => self.execute_one(instr),
                     }
                 }
-                Opcode::BuildMap => self.execute_one(instr),
                 // Inline CallFunction fast path for simple Python function calls
                 Opcode::CallFunction => {
                     let arg_count = instr.arg as usize;
@@ -1587,105 +1580,33 @@ impl VirtualMachine {
                         Self::err_unbound_local(&frame.code.varnames, idx)
                     }
                 },
-                // Inline LoadName: check global cache, fallback to full path
-                // In module scope locals==globals, so global_cache covers LoadName too
+                // Fast module-scope name access.
                 Opcode::LoadName => {
-                    let idx = instr.arg as usize;
-                    let ver = crate::frame::globals_version();
-                    if frame.exec_locals.is_none() && frame.global_cache_version == ver {
-                        if let Some(ref cache) = frame.global_cache {
-                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
-                                spush!(frame, v.clone());
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
+                    match crate::vm_fast_names::try_fast_load_name(frame, instr.arg as usize) {
+                        crate::vm_fast_names::FastNameResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
+                        crate::vm_fast_names::FastNameResult::Fallback => self.execute_one(instr),
                     }
-                    self.execute_one(instr)
                 }
-                // Inline StoreName for module scope (hot in module-level loops)
                 Opcode::StoreName => {
-                    if frame.scope_kind == crate::frame::ScopeKind::Module
-                        && frame.exec_locals.is_none()
-                    {
-                        let idx = instr.arg as usize;
-                        let value = spop!(frame);
-                        // If StoreGlobal in called functions bumped globals_version, our
-                        // cache may have stale entries for variables they modified.
-                        // Invalidate the whole cache before writing the fresh slot.
-                        if frame.global_cache.is_some() {
-                            let cur_ver = crate::frame::globals_version();
-                            let cache = std::rc::Rc::make_mut(frame.global_cache.as_mut().unwrap());
-                            if frame.global_cache_version != cur_ver {
-                                for slot in cache.iter_mut() {
-                                    *slot = None;
-                                }
-                            }
-                            if idx < cache.len() {
-                                cache[idx] = Some(value.clone());
-                            }
+                    match crate::vm_fast_names::try_fast_store_name(frame, instr.arg as usize) {
+                        crate::vm_fast_names::FastNameResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        // Update-in-place when name already exists (avoids CompactString clone)
-                        let name_ref = &frame.code.names[idx];
-                        let mut globals = frame.globals.write();
-                        if let Some(slot) = globals.get_mut(name_ref) {
-                            *slot = value;
-                        } else {
-                            globals.insert(name_ref.clone(), value);
-                        }
-                        drop(globals);
-                        crate::frame::bump_globals_version();
-                        // Sync cache version to new globals version (cache is up-to-date)
-                        frame.global_cache_version = crate::frame::globals_version();
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
+                        crate::vm_fast_names::FastNameResult::Fallback => self.execute_one(instr),
                     }
                 }
-                Opcode::StoreGlobal => self.execute_one(instr),
-                // Inline StoreAttr fast path for simple instance attribute writes
-                Opcode::StoreAttr => {
-                    let name = &frame.code.names[instr.arg as usize];
-                    let stack_len = frame.stack.len();
-                    // Fast path: Instance with no __setattr__, no descriptors, no __slots__ (cached flags)
-                    let fast = if stack_len >= 2 {
-                        if let PyObjectPayload::Instance(inst) =
-                            &sget!(frame, stack_len - 1).payload
-                        {
-                            inst.class_flags
-                                & (CLASS_FLAG_HAS_SETATTR
-                                    | CLASS_FLAG_HAS_DESCRIPTORS
-                                    | CLASS_FLAG_HAS_SLOTS)
-                                == 0
-                                && !(name.as_str() == "__callback__"
-                                    && inst.attrs.read().contains_key("__weakref_ref__"))
-                                && !inst.attrs.read().contains_key("__weakref_target__")
-                                && !inst.attrs.read().contains_key("__deque__")
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    if fast {
-                        let obj = spop!(frame);
-                        let value = spop!(frame);
-                        if let PyObjectPayload::Instance(inst) = &obj.payload {
-                            let map = unsafe { &mut *inst.attrs.data_ptr() };
-                            // Fast path: update existing attr without key allocation
-                            if let Some(slot) = map.get_mut(name) {
-                                *slot = value;
-                            } else {
-                                map.insert(name.clone(), value);
-                            }
-                        }
+                Opcode::StoreAttr => match crate::vm_fast_attr::try_fast_attr(frame, instr) {
+                    crate::vm_fast_attr::FastAttrResult::Handled => {
                         hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
                     }
-                }
-                // CompareOp catch-all: all common cases handled by guarded arms above
-                Opcode::CompareOp => self.execute_one(instr),
-                // Fused CompareOp + PopJumpIfFalse: avoids intermediate bool allocation
+                    crate::vm_fast_attr::FastAttrResult::Fallback => self.execute_one(instr),
+                    crate::vm_fast_attr::FastAttrResult::UnboundLocal(idx) => {
+                        Self::err_unbound_local(&frame.code.varnames, idx)
+                    }
+                },
+                // Compare + jump superinstructions avoid intermediate bool allocation.
                 Opcode::CompareOpPopJumpIfFalse => {
                     let cmp_op = instr.arg >> 24;
                     let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
@@ -1697,27 +1618,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            let result = self.exec_compare_ops(cmp_instr)?;
-                            if result.is_none() {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                let v = spop!(frame);
-                                let is_false = if cmp_op == 10 {
-                                    matches!(&v.payload, PyObjectPayload::Bool(false))
-                                } else {
-                                    match &v.payload {
-                                        PyObjectPayload::Bool(b) => !b,
-                                        PyObjectPayload::None => true,
-                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                        _ => !self.vm_is_truthy(&v)?,
-                                    }
-                                };
-                                if is_false {
-                                    let cs_len = self.call_stack.len();
-                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                        jump_target;
-                                }
-                            }
+                            self.fallback_compare_jump(cmp_op, jump_target)?;
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
@@ -1725,8 +1626,6 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // 4-way superinstruction: LoadFast + LoadConst + CompareOp + PopJumpIfFalse
-                // Zero-clone — reads local and constant by reference, no stack ops at all
                 Opcode::LoadFastCompareConstJump => {
                     let cmp_op = instr.arg >> 28;
                     let jump_target = (instr.arg & 0xFFF) as usize;
@@ -1738,23 +1637,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            let result = self.exec_compare_ops(cmp_instr)?;
-                            if result.is_none() {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                let v = spop!(frame);
-                                let is_false = match &v.payload {
-                                    PyObjectPayload::Bool(b) => !b,
-                                    PyObjectPayload::None => true,
-                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                    _ => !self.vm_is_truthy(&v)?,
-                                };
-                                if is_false {
-                                    let cs_len = self.call_stack.len();
-                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                        jump_target;
-                                }
-                            }
+                            self.fallback_compare_jump(cmp_op, jump_target)?;
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
@@ -1762,8 +1645,6 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // 4-way superinstruction: LoadFast + LoadFast + CompareOp + PopJumpIfFalse
-                // Zero-clone — reads both locals by reference, no stack ops at all
                 Opcode::LoadFastLoadFastCompareJump => {
                     let cmp_op = instr.arg >> 28;
                     let jump_target = (instr.arg & 0xFFF) as usize;
@@ -1775,23 +1656,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            let result = self.exec_compare_ops(cmp_instr)?;
-                            if result.is_none() {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                let v = spop!(frame);
-                                let is_false = match &v.payload {
-                                    PyObjectPayload::Bool(b) => !b,
-                                    PyObjectPayload::None => true,
-                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                    _ => !self.vm_is_truthy(&v)?,
-                                };
-                                if is_false {
-                                    let cs_len = self.call_stack.len();
-                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                        jump_target;
-                                }
-                            }
+                            self.fallback_compare_jump(cmp_op, jump_target)?;
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
@@ -1833,9 +1698,6 @@ impl VirtualMachine {
                     frame.ip = instr.arg as usize;
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // Fused LoadConst + LoadFast + CompareOp(in/not_in) + StoreFast
-                // Zero-Arc: reads constant and local by reference, does containment check,
-                // stores bool result to local with in-place mutation.
                 Opcode::LoadConstLoadFastContainsStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
                         crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
@@ -1849,29 +1711,9 @@ impl VirtualMachine {
                         }
                         _ => {}
                     }
-                    let not_in = (instr.arg >> 31) != 0;
-                    let const_idx = ((instr.arg >> 20) & 0x3FF) as usize;
-                    let fast_idx = ((instr.arg >> 10) & 0x3FF) as usize;
-                    let store_idx = (instr.arg & 0x3FF) as usize;
-                    // Fallback: decompose to individual ops
-                    spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
-                    if let Some(v) = slocal!(frame, fast_idx) {
-                        spush!(frame, v.clone());
-                    } else {
-                        let _ = spop!(frame);
-                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
-                        unreachable!();
-                    }
-                    let cmp_arg = if not_in { 7u32 } else { 6u32 };
-                    let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_arg);
-                    self.execute_one(cmp_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
+                    self.fallback_fused_collection(instr)?;
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // Fused LoadFast + LoadConst + BinarySubscr + StoreFast
-                // Zero-Arc for container/index; clones element with in-place mutation fallback.
                 Opcode::LoadFastLoadConstSubscrStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
                         crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
@@ -1885,26 +1727,9 @@ impl VirtualMachine {
                         }
                         _ => {}
                     }
-                    let fast_idx = ((instr.arg >> 20) & 0x3FF) as usize;
-                    let const_idx = ((instr.arg >> 10) & 0x3FF) as usize;
-                    let store_idx = (instr.arg & 0x3FF) as usize;
-                    // Fallback: decompose
-                    if let Some(v) = slocal!(frame, fast_idx) {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
-                        unreachable!();
-                    }
-                    spush!(frame, frame.constant_cache.get_unchecked(const_idx).clone());
-                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
-                    self.execute_one(subscr_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
+                    self.fallback_fused_collection(instr)?;
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // Fused LoadFast + LoadFast + BinarySubscr + StoreFast
-                // Zero-Arc for container and key: reads both from locals by reference.
                 Opcode::LoadFastLoadFastSubscrStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
                         crate::vm_fast_collections::FastFusedCollectionResult::HandledChain => {
@@ -1925,31 +1750,9 @@ impl VirtualMachine {
                         }
                         _ => {}
                     }
-                    let container_idx = (instr.arg >> 24) as usize;
-                    let key_idx = ((instr.arg >> 16) & 0xFF) as usize;
-                    let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    // Fallback: decompose to individual ops
-                    if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(container_idx) } {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, container_idx)?;
-                        unreachable!();
-                    }
-                    if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(key_idx) } {
-                        spush!(frame, v.clone());
-                    } else {
-                        Self::err_unbound_local(&frame.code.varnames, key_idx)?;
-                        unreachable!();
-                    }
-                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
-                    self.execute_one(subscr_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
+                    self.fallback_fused_collection(instr)?;
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
-                // Fused LoadFast + LoadFast + LoadFast + StoreSubscr
-                // Zero-Arc: reads value, container, key from locals by reference.
                 Opcode::LoadFastLoadFastLoadFastStoreSubscr => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
                         crate::vm_fast_collections::FastFusedCollectionResult::Handled => {
@@ -1963,25 +1766,10 @@ impl VirtualMachine {
                         }
                         _ => {}
                     }
-                    let val_idx = (instr.arg >> 24) as usize;
-                    let container_idx = ((instr.arg >> 16) & 0xFF) as usize;
-                    let key_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    // Fallback: push all 3 locals and execute StoreSubscr
-                    for idx in [val_idx, container_idx, key_idx] {
-                        if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
-                            spush!(frame, v.clone());
-                        } else {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                    }
-                    self.execute_one(Instruction::new(Opcode::StoreSubscr, 0))
+                    self.fallback_fused_collection(instr)?;
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadFastLoadFastContainsStoreFast => {
-                    let needle_idx = (instr.arg >> 24) as usize;
-                    let haystack_idx = ((instr.arg >> 16) & 0xFF) as usize;
-                    let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
-                    let negate = (instr.arg & 1) != 0; // 1 = not_in
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
                         crate::vm_fast_collections::FastFusedCollectionResult::HandledChain => {
                             hot_ok_chain!(
@@ -2001,26 +1789,8 @@ impl VirtualMachine {
                         }
                         _ => {}
                     }
-                    // Fallback: decompose to individual ops
-                    for idx in [needle_idx, haystack_idx] {
-                        if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
-                            spush!(frame, v.clone());
-                        } else {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                    }
-                    let cmp_arg = if negate { 7u32 } else { 6u32 };
-                    let r = self.execute_one(Instruction::new(Opcode::CompareOp, cmp_arg));
-                    if r.is_ok() {
-                        let cs_len2 = self.call_stack.len();
-                        let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
-                        if !frame2.stack.is_empty() {
-                            let val = frame2.stack.pop().unwrap();
-                            unsafe { frame2.set_local_unchecked(store_idx, val) };
-                        }
-                    }
-                    r
+                    self.fallback_fused_collection(instr)?;
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 _ => self.execute_one(instr),
             };

@@ -7,7 +7,8 @@ use compact_str::CompactString;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::object::{
     has_descriptor_get, lookup_in_class_mro, PyObject, PyObjectPayload, PyObjectRef,
-    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE,
+    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR,
+    CLASS_FLAG_HAS_SLOTS,
 };
 
 pub(crate) enum FastAttrResult {
@@ -37,6 +38,7 @@ pub(crate) fn try_fast_attr(frame: &mut Frame, instr: Instruction) -> FastAttrRe
         }
         Opcode::LoadAttr => try_load_attr(frame, instr.arg as usize),
         Opcode::LoadMethod => try_load_method(frame, instr.arg as usize),
+        Opcode::StoreAttr => try_store_attr(frame, instr.arg as usize),
         _ => FastAttrResult::Fallback,
     }
 }
@@ -44,6 +46,11 @@ pub(crate) fn try_fast_attr(frame: &mut Frame, instr: Instruction) -> FastAttrRe
 #[inline(always)]
 fn local_ref(frame: &Frame, idx: usize) -> Option<&PyObjectRef> {
     unsafe { frame.locals.get_unchecked(idx).as_ref() }
+}
+
+#[inline(always)]
+fn stack_ref(frame: &Frame, idx: usize) -> &PyObjectRef {
+    unsafe { frame.stack.get_unchecked(idx) }
 }
 
 #[inline(always)]
@@ -60,6 +67,47 @@ fn set_local(frame: &mut Frame, idx: usize, value: PyObjectRef) {
 fn replace_stack_top(frame: &mut Frame, value: PyObjectRef) {
     let len = frame.stack.len();
     unsafe { *frame.stack.get_unchecked_mut(len - 1) = value };
+}
+
+#[inline(always)]
+fn pop(frame: &mut Frame) -> PyObjectRef {
+    frame.stack.pop().expect("stack underflow")
+}
+
+#[inline(always)]
+fn try_store_attr(frame: &mut Frame, name_idx: usize) -> FastAttrResult {
+    let name = frame.code.names[name_idx].clone();
+    let stack_len = frame.stack.len();
+    let fast = if stack_len >= 2 {
+        if let PyObjectPayload::Instance(inst) = &stack_ref(frame, stack_len - 1).payload {
+            inst.class_flags
+                & (CLASS_FLAG_HAS_SETATTR | CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_SLOTS)
+                == 0
+                && !(name.as_str() == "__callback__"
+                    && inst.attrs.read().contains_key("__weakref_ref__"))
+                && !inst.attrs.read().contains_key("__weakref_target__")
+                && !inst.attrs.read().contains_key("__deque__")
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !fast {
+        return FastAttrResult::Fallback;
+    }
+
+    let obj = pop(frame);
+    let value = pop(frame);
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        let map = unsafe { &mut *inst.attrs.data_ptr() };
+        if let Some(slot) = map.get_mut(&name) {
+            *slot = value;
+        } else {
+            map.insert(name, value);
+        }
+    }
+    FastAttrResult::Handled
 }
 
 #[inline(always)]
