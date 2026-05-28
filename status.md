@@ -1148,6 +1148,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十三批继续 `type_modules` / `collections.abc` 分层（2026-05-28 09:12:27 CST）：新增 `type_modules/collections_abc.rs` 和 `collections_abc/{helpers,sequences,sets,generators,mapping_views}.rs`，把 `collections.abc` factory、ABC helper、Sequence/MutableSequence、Set/MutableSet、Generator/Coroutine/AsyncGenerator、MappingView/KeysView/ItemsView/ValuesView 方法注册从根文件拆出；`type_modules.rs` 从约 1232 行降到约 25 行，最大新文件 `collections_abc.rs` 约 424 行，`type_modules.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `collections.abc` Sequence/Mapping/MutableSet subclass/isinstance、Sequence.index/count、Set union/intersection/isdisjoint、KeysView/ItemsView contains 和 ABC register smoke；`ValuesView.__contains__` 仍是既有不完整语义，本批未混入修复。
   - commit：`028770c refactor: split collections abc module`。
+  - 第六十四批继续 `concurrency_modules/threading` 分层（2026-05-28 09:24:07 CST）：新增 `threading/{thread_class,module_fns,sync_primitives}.rs` 和 `threading/sync_primitives/{locks,semaphores,events,condition_timer}.rs`，拆出 `Thread` 类、模块级函数、Lock/RLock、Semaphore/BoundedSemaphore、Event/Barrier、Condition/Timer 构造逻辑；`threading.rs` 从约 1185 行降到约 64 行，最大新子文件 `thread_class.rs` 约 356 行，`threading.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `threading` active/current/enumerate/main/local/get_ident/stack_size、Lock/RLock、Semaphore/BoundedSemaphore、Event、Barrier、Timer 和默认 Thread smoke；`Thread(name="...")` 仍是既有 kwargs 不完整语义，本批未混入修复。
+  - commit：`81c40ce refactor: split threading module`。
 
 ## 修复原则
 
