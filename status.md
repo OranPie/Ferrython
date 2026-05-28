@@ -1169,6 +1169,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第七十批继续 `testing_modules/unittest/assertions` 分层（2026-05-28 18:58:00 CST）：新增 `assertions/{basic,exceptions,numeric_types,collections_regex,logs}.rs`，拆出基础比较/真假/身份/包含断言、异常上下文断言、数值和类型断言、regex/集合/序列断言、assertLogs/assertRaisesRegex；`assertions.rs` 从 1073 行降到 36 行，最大新子文件 `collections_regex.rs` 为 275 行，`assertions.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 TestCase 基础/包含/大小/近似/类型/regex/集合/序列/多行/fail/subTest/assertRaises/assertRaisesRegex/assertLogs smoke；`assertAlmostEqual` 贴近边界的容差行为仍按既有实现，本批未混入修复。
   - commit：`29db653 refactor: split unittest assertion groups`。
+  - 第七十一批继续 `ferrython-compiler/src/symbol_table` 分层（2026-05-28 19:06:15 CST）：新增 `symbol_table/{model,resolver}.rs`，拆出 Scope/Symbol/SymbolTable 数据模型及 lookup/name helper、free/cell 变量 top-down/bottom-up resolver；`symbol_table.rs` 从 1050 行降到 782 行，`model.rs` 为 169 行，`resolver.rs` 为 112 行，`symbol_table.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`、`cargo check -p ferrython-cli`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过闭包捕获、`nonlocal`、comprehension 捕获和 class method `super()` smoke。
+  - commit：`042f349 refactor: split symbol table model`。
 
 ## 修复原则
 
