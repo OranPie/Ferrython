@@ -1172,6 +1172,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第七十一批继续 `ferrython-compiler/src/symbol_table` 分层（2026-05-28 19:06:15 CST）：新增 `symbol_table/{model,resolver}.rs`，拆出 Scope/Symbol/SymbolTable 数据模型及 lookup/name helper、free/cell 变量 top-down/bottom-up resolver；`symbol_table.rs` 从 1050 行降到 782 行，`model.rs` 为 169 行，`resolver.rs` 为 112 行，`symbol_table.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`、`cargo check -p ferrython-cli`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过闭包捕获、`nonlocal`、comprehension 捕获和 class method `super()` smoke。
   - commit：`042f349 refactor: split symbol table model`。
+  - 第七十二批继续 `serial_modules/pickle_module/write` 分层（2026-05-28 19:13:48 CST）：新增 `write/memo.rs`，拆出 `PickleWriteMemo`、identity memo get/put helper、protocol 0 unicode/bytes escaping helper；`write.rs` 从 1046 行降到 918 行，`memo.rs` 为 143 行，`write.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 pickle protocol 0/2 dict/list/tuple roundtrip、cycle memo roundtrip 和 partially-consumed iterator roundtrip smoke。
+  - commit：`0d9162c refactor: split pickle write memo helpers`。
 
 ## 修复原则
 
