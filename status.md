@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:23:41+08:00
+Last updated: 2026-05-29T05:31:55+08:00
 
 ## 代码质量重构进度
 
@@ -1314,6 +1314,10 @@ Last updated: 2026-05-29T05:23:41+08:00
   - 体检结果：`cli.rs` 从 1921 行降到 1379 行，新 `cli/project.rs` 为 547 行；刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/payload.rs`（1878）、`object/helpers.rs`（1812）和 `parser/expressions.rs`（1803）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、空 site `list --format freeze`、`config --list`、`hash Cargo.toml`、无项目目录 `project` 预期错误和临时 `pyproject.toml` 项目 smoke。
   - commit：`cd076c7 refactor: split ferrypip project commands`。
+  - 第一百一十二批处理 core object payload 热点 `ferrython-core/src/object/payload.rs`（2026-05-29 05:31:55 CST）：新增 `object/class_data.rs`，拆出 `ClassData`、class version counter、method vtable rebuild、slot collection、descriptor detection、dict-subclass detection 和 class cache invalidation逻辑；`payload.rs` 保留 `PyObjectRef`、`PyObjectPayload`、generator/iterator data、instance/module data 和兼容 re-export。
+  - 体检结果：`payload.rs` 从 1878 行降到 1362 行，新 `class_data.rs` 为 527 行；刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/helpers.rs`（1813）、`parser/expressions.rs`（1803）和 `compiler/statements.rs`（1747）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class create/inheritance、`__slots__`、method call、`__mro__` 和 exception subclass smoke。
+  - commit：`ce766f6 refactor: split core class data`。
 
 ## 修复原则
 
