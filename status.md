@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:22:47+08:00
+Last updated: 2026-05-29T06:26:39+08:00
 
 ## 代码质量重构进度
 
@@ -1362,6 +1362,10 @@ Last updated: 2026-05-29T06:22:47+08:00
   - 体检结果：`vm_helpers.rs` 从 1470 行降到 163 行；新 `iterables.rs` 为 1315 行，后续可继续按 collection/advance 二次拆分。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`parser/statements.rs`（1458）、`object/methods_type.rs`（1438）和 `builtins/string_methods.rs`（1419）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - commit：`97c3a7d refactor: split vm iterable helpers`。
+  - 第一百二十四批继续处理 VM iterable helper `vm_helpers/iterables.rs`（2026-05-29 06:26:39 CST）：新增 `vm_helpers/iter_next.rs`，拆出 `vm_iter_next` 和 `advance_lazy_iterator` 以及 lazy iterator state handling；`iterables.rs` 保留 `islice`、iterable resolve/collect 和 `vm_collect_iterable`。
+  - 体检结果：`iterables.rs` 从 1315 行降到 700 行，退出最长 Rust 文件前 25；新 `iter_next.rs` 为 624 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`parser/statements.rs`（1458）、`object/methods_type.rs`（1438）和 `builtins/string_methods.rs`（1419）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - commit：`5da51a2 refactor: split vm iterator advancement`。
 
 ## 修复原则
 
