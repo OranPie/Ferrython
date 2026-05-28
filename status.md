@@ -1238,6 +1238,10 @@ Last updated: 2026-05-29T02:59:38+08:00
   - 覆盖的快路径包括 `len/range/str/type/int/callable/float/bool/abs/hasattr/getattr/sum/min/max/sorted`、`isinstance(obj, builtin/class)` 和 mixed int/float `min/max`；`next()` 保持回落完整 dispatch 以兼容默认值、StopIteration 和迭代协议边界。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 setattr/hasattr/getattr、核心 builtin、isinstance class/builtin、sum start、min/max mixed、sorted、next iterator、getattr missing、next empty/default、sum TypeError 和 setattr instance smoke。
   - commit：`2774eac refactor: split vm call builtin fast paths`。
+  - 第九十三批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 03:20:42 CST）：新增 `vm_fast_call.rs`，把 `CallFunction` 中实例 `__call__` 快速建帧、简单类实例化、ExceptionType 实例化、RaiseVarargs(1)、EndFinally(None)、LoadDeref/StoreDeref 和 try/except block setup/pop 小快路径移出主 dispatch loop；主 loop 继续保留 frame push 后的 `rederive_frame!`、recursion limit、trace/profile call event 和 fallback `execute_one` 控制语义。
+  - 体检结果：`vm.rs` 从 3027 行降到 2811 行，新 `vm_fast_call.rs` 为 334 行；`vm.rs` 仍略大于 `vm_helpers.rs`（2799 行），下一批应继续在这两个最大文件之间择优处理，而不是转去小文件。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 simple class `__init__`、bare class、instance `__call__`、closure LoadDeref/StoreDeref、ValueError raise/catch、ExceptionGroup attrs 和 try/finally smoke。
+  - commit：`a818ba8 refactor: split vm fast call helpers`。
 
 ## 修复原则
 
