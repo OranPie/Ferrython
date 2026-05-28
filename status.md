@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:19:13+08:00
+Last updated: 2026-05-29T06:22:47+08:00
 
 ## 代码质量重构进度
 
@@ -1358,6 +1358,10 @@ Last updated: 2026-05-29T06:19:13+08:00
   - 体检结果：`opcodes/arithmetic.rs` 从 1506 行降到 749 行，进入 1000 行可接受范围；新 `subscript.rs` 为 674 行，`unary.rs` 为 106 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`vm_helpers.rs`（1470）、`parser/statements.rs`（1458）和 `object/methods_type.rs`（1438）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - commit：`9362398 refactor: split arithmetic opcode handlers`。
+  - 第一百二十三批处理 VM helper 大文件 `vm_helpers.rs`（2026-05-29 06:22:47 CST）：新增 `vm_helpers/iterables.rs`，拆出 `islice`、iterable resolution/collection、lazy iterator advance、map-one collection 和 VM-level iterable collection；`vm_helpers.rs` 保留排序、`vm_lt` 和 post-call intercept。
+  - 体检结果：`vm_helpers.rs` 从 1470 行降到 163 行；新 `iterables.rs` 为 1315 行，后续可继续按 collection/advance 二次拆分。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`parser/statements.rs`（1458）、`object/methods_type.rs`（1438）和 `builtins/string_methods.rs`（1419）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - commit：`97c3a7d refactor: split vm iterable helpers`。
 
 ## 修复原则
 
