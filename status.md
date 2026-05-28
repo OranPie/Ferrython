@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:32:27+08:00
+Last updated: 2026-05-28T08:39:03+08:00
 
 ## 代码质量重构进度
 
@@ -1130,6 +1130,9 @@ Last updated: 2026-05-28T08:32:27+08:00
   - 第五十七批继续 `math_modules` 分层：新增 `math_modules/functions.rs`，把 `math` module factory、math builtin 函数、`ldexp`/`remainder` FFI 和整数/浮点共享 helper 从根文件移出；`math_modules.rs` 从约 1245 行降到约 21 行聚合模块，`functions.rs` 约 1225 行，并保留 `fractions` 通过 sibling helper 复用 `index_bigint`/`bigint_to_object`。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `math/fractions/statistics/cmath/decimal` smoke。
   - commit：`b2c6e30 refactor: split math module functions`。
+  - 第五十八批继续 `math_modules/functions` 内部分层：新增 `math_modules/number.rs`，拆出 `math_number_to_float`、`index_bigint`、`bigint_to_object`、BigInt isqrt/log 和 integral conversion helper；新增 `math_modules/functions/special.rs`，拆出 `erf`、`erfc`、`gamma`、`lgamma`、`fsum` 和 `dist` 及 Lanczos/ldexp helper。`functions.rs` 从约 1225 行降到约 793 行，`number.rs` 约 249 行，`special.rs` 约 207 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `math.gcd/isqrt/comb/perm/fsum/dist/gamma/lgamma/erf/erfc` 和 `fractions.Fraction` smoke；`gamma/erf/erfc` 采用既有近似实现的容差断言。
+  - commit：`5d25a05 refactor: split math helper internals`。
 
 ## 修复原则
 
