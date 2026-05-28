@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:17:08+08:00
+Last updated: 2026-05-29T02:24:20+08:00
 
 ## 代码质量重构进度
 
@@ -1218,6 +1218,9 @@ Last updated: 2026-05-29T02:17:08+08:00
   - 第八十六批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:17:08 CST）：新增 `vm_fast_attr.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 `LoadFastLoadAttr`、`LoadFastLoadAttrStoreFast`、`LoadFastLoadMethod` 和 `LoadAttr` 的 simple instance/builtin fast paths；主 loop 保留 fallback 的 `execute_one`、store-after-load 和 unbound-local 错误语义；`vm.rs` 从 5871 行降到 5434 行，新增 helper 为 349 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 instance attr/class attr、fused attr-store、instance method、builtin method、property descriptor 和 custom `__getattribute__` fallback smoke。
   - commit：`cc7e6bd refactor: split vm attribute load paths`。
+  - 第八十七批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:24:20 CST）：扩展 `vm_call/inline_simple.rs`，把 `CallFunction` 和 `LoadGlobalCallFunction` 中重复的 simple-function/recursive-base/closure-return mini-result 推断移入已有 call helper；主 loop 保留 trace/profile gate、frame 创建、recursion limit 和 call_stack rederive 控制语义；`vm.rs` 从 5434 行降到 4953 行，`inline_simple.rs` 从约 176 行扩到 318 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 simple return、const return、add/sub/mul inline、recursive base-case、closure return 和 global call smoke。
+  - commit：`1a8678b refactor: split vm inline call returns`。
 
 ## 修复原则
 
