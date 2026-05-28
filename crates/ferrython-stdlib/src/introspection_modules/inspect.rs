@@ -1,5 +1,24 @@
 use super::*;
 
+mod frame;
+mod mro_argspec;
+mod predicates;
+mod source;
+
+use frame::{inspect_currentframe, inspect_stack};
+use mro_argspec::{inspect_classify_class_attrs, inspect_getargspec, inspect_getmro};
+use predicates::{
+    inspect_isabstract, inspect_isasyncgen, inspect_isasyncgenfunction, inspect_isawaitable,
+    inspect_isbuiltin, inspect_isclass, inspect_iscoroutine, inspect_iscoroutinefunction,
+    inspect_isdatadescriptor, inspect_isfunction, inspect_isgenerator, inspect_isgeneratorfunction,
+    inspect_ismethod, inspect_ismodule, inspect_isroutine,
+};
+use source::{
+    inspect_cleandoc, inspect_getattr_static, inspect_getdoc, inspect_getfile, inspect_getmembers,
+    inspect_getmodule, inspect_getsource, inspect_getsourcefile, inspect_getsourcelines,
+    inspect_unwrap,
+};
+
 // ── inspect module ──
 
 pub fn create_inspect_module() -> PyObjectRef {
@@ -782,369 +801,38 @@ pub fn create_inspect_module() -> PyObjectRef {
         "inspect",
         vec![
             // ── Type-checking predicates ──
-            (
-                "isfunction",
-                make_builtin(|args| {
-                    check_args("inspect.isfunction", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Function(_)
-                    )))
-                }),
-            ),
-            (
-                "isclass",
-                make_builtin(|args| {
-                    check_args("inspect.isclass", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_)
-                    )))
-                }),
-            ),
-            (
-                "ismethod",
-                make_builtin(|args| {
-                    check_args("inspect.ismethod", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::BoundMethod { .. }
-                    )))
-                }),
-            ),
-            (
-                "ismodule",
-                make_builtin(|args| {
-                    check_args("inspect.ismodule", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Module(_)
-                    )))
-                }),
-            ),
-            (
-                "isbuiltin",
-                make_builtin(|args| {
-                    check_args("inspect.isbuiltin", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::NativeFunction(_)
-                            | PyObjectPayload::BuiltinFunction(_)
-                            | PyObjectPayload::BuiltinType(_)
-                    )))
-                }),
-            ),
-            (
-                "isgenerator",
-                make_builtin(|args| {
-                    check_args("inspect.isgenerator", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Generator(_)
-                    )))
-                }),
-            ),
+            ("isfunction", make_builtin(inspect_isfunction)),
+            ("isclass", make_builtin(inspect_isclass)),
+            ("ismethod", make_builtin(inspect_ismethod)),
+            ("ismodule", make_builtin(inspect_ismodule)),
+            ("isbuiltin", make_builtin(inspect_isbuiltin)),
+            ("isgenerator", make_builtin(inspect_isgenerator)),
             (
                 "isgeneratorfunction",
-                make_builtin(|args| {
-                    check_args("inspect.isgeneratorfunction", args, 1)?;
-                    if let PyObjectPayload::Function(f) = &args[0].payload {
-                        Ok(PyObject::bool_val(
-                            f.code.flags.contains(CodeFlags::GENERATOR),
-                        ))
-                    } else {
-                        Ok(PyObject::bool_val(false))
-                    }
-                }),
+                make_builtin(inspect_isgeneratorfunction),
             ),
-            (
-                "iscoroutine",
-                make_builtin(|args| {
-                    check_args("inspect.iscoroutine", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Coroutine(_)
-                    )))
-                }),
-            ),
+            ("iscoroutine", make_builtin(inspect_iscoroutine)),
             (
                 "iscoroutinefunction",
-                make_builtin(|args| {
-                    check_args("inspect.iscoroutinefunction", args, 1)?;
-                    if let PyObjectPayload::Function(pf) = &args[0].payload {
-                        Ok(PyObject::bool_val(
-                            pf.code.flags.contains(CodeFlags::COROUTINE),
-                        ))
-                    } else {
-                        Ok(PyObject::bool_val(false))
-                    }
-                }),
+                make_builtin(inspect_iscoroutinefunction),
             ),
-            (
-                "isroutine",
-                make_builtin(|args| {
-                    check_args("inspect.isroutine", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Function(_)
-                            | PyObjectPayload::BoundMethod { .. }
-                            | PyObjectPayload::NativeFunction(_)
-                            | PyObjectPayload::NativeClosure(_)
-                            | PyObjectPayload::BuiltinBoundMethod(_)
-                            | PyObjectPayload::BuiltinFunction(_)
-                    )))
-                }),
-            ),
-            (
-                "isabstract",
-                make_builtin(|args| {
-                    check_args("inspect.isabstract", args, 1)?;
-                    Ok(PyObject::bool_val(
-                        args[0].get_attr("__abstractmethods__").is_some(),
-                    ))
-                }),
-            ),
-            (
-                "isasyncgen",
-                make_builtin(|args| {
-                    check_args("inspect.isasyncgen", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::AsyncGenerator(_)
-                    )))
-                }),
-            ),
+            ("isroutine", make_builtin(inspect_isroutine)),
+            ("isabstract", make_builtin(inspect_isabstract)),
+            ("isasyncgen", make_builtin(inspect_isasyncgen)),
             (
                 "isasyncgenfunction",
-                make_builtin(|args| {
-                    check_args("inspect.isasyncgenfunction", args, 1)?;
-                    if let PyObjectPayload::Function(pf) = &args[0].payload {
-                        Ok(PyObject::bool_val(
-                            pf.code.flags.contains(CodeFlags::ASYNC_GENERATOR),
-                        ))
-                    } else {
-                        Ok(PyObject::bool_val(false))
-                    }
-                }),
+                make_builtin(inspect_isasyncgenfunction),
             ),
-            (
-                "isawaitable",
-                make_builtin(|args| {
-                    check_args("inspect.isawaitable", args, 1)?;
-                    Ok(PyObject::bool_val(matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Coroutine(_) | PyObjectPayload::BuiltinAwaitable(_)
-                    )))
-                }),
-            ),
-            (
-                "isdatadescriptor",
-                make_builtin(|args| {
-                    check_args("inspect.isdatadescriptor", args, 1)?;
-                    Ok(PyObject::bool_val(
-                        args[0].get_attr("__get__").is_some()
-                            && args[0].get_attr("__set__").is_some(),
-                    ))
-                }),
-            ),
+            ("isawaitable", make_builtin(inspect_isawaitable)),
+            ("isdatadescriptor", make_builtin(inspect_isdatadescriptor)),
             // ── Member introspection ──
-            (
-                "getmembers",
-                make_builtin(|args| {
-                    check_args_min("inspect.getmembers", args, 1)?;
-                    let dir_names = args[0].dir();
-                    let mut result = Vec::new();
-                    for n in &dir_names {
-                        if let Some(val) = args[0].get_attr(n.as_str()) {
-                            result.push(PyObject::tuple(vec![PyObject::str_val(n.clone()), val]));
-                        }
-                    }
-                    Ok(PyObject::list(result))
-                }),
-            ),
-            (
-                "getdoc",
-                make_builtin(|args| {
-                    check_args("inspect.getdoc", args, 1)?;
-                    match args[0].get_attr("__doc__") {
-                        Some(doc) if !matches!(&doc.payload, PyObjectPayload::None) => {
-                            let s = doc.py_to_string();
-                            let lines: Vec<&str> = s.lines().collect();
-                            if lines.is_empty() {
-                                return Ok(PyObject::none());
-                            }
-                            let min_indent = lines
-                                .iter()
-                                .skip(1)
-                                .filter(|l| !l.trim().is_empty())
-                                .map(|l| l.len() - l.trim_start().len())
-                                .min()
-                                .unwrap_or(0);
-                            let mut result = String::from(lines[0].trim());
-                            for line in &lines[1..] {
-                                result.push('\n');
-                                if line.len() > min_indent {
-                                    result.push_str(&line[min_indent..]);
-                                } else {
-                                    result.push_str(line.trim());
-                                }
-                            }
-                            let cleaned: String = result
-                                .lines()
-                                .map(|l| l.trim_end())
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            Ok(PyObject::str_val(CompactString::from(cleaned.trim_end())))
-                        }
-                        _ => Ok(PyObject::none()),
-                    }
-                }),
-            ),
-            (
-                "getmodule",
-                make_builtin(|args| {
-                    check_args("inspect.getmodule", args, 1)?;
-                    Ok(args[0]
-                        .get_attr("__module__")
-                        .unwrap_or_else(PyObject::none))
-                }),
-            ),
-            (
-                "getfile",
-                make_builtin(|args| {
-                    check_args("inspect.getfile", args, 1)?;
-                    if let PyObjectPayload::Function(f) = &args[0].payload {
-                        return Ok(PyObject::str_val(f.code.filename.clone()));
-                    }
-                    if let PyObjectPayload::Module(m) = &args[0].payload {
-                        if let Some(file) = m.attrs.read().get("__file__").cloned() {
-                            return Ok(file);
-                        }
-                    }
-                    Err(PyException::type_error("could not get file for object"))
-                }),
-            ),
-            (
-                "getsourcefile",
-                make_builtin(|args| {
-                    check_args("inspect.getsourcefile", args, 1)?;
-                    let filename = if let PyObjectPayload::Function(f) = &args[0].payload {
-                        Some(f.code.filename.clone())
-                    } else if let PyObjectPayload::Module(m) = &args[0].payload {
-                        m.attrs
-                            .read()
-                            .get("__file__")
-                            .map(|f| CompactString::from(f.py_to_string()))
-                    } else {
-                        None
-                    };
-                    match filename {
-                        Some(f) if f.ends_with(".py") => Ok(PyObject::str_val(f)),
-                        Some(_) => Ok(PyObject::none()),
-                        None => Err(PyException::type_error("could not find source file")),
-                    }
-                }),
-            ),
-            (
-                "getsource",
-                make_builtin(|args| {
-                    check_args("inspect.getsource", args, 1)?;
-                    let filename = match &args[0].payload {
-                        PyObjectPayload::Function(f) => f.code.filename.clone(),
-                        PyObjectPayload::Module(m) => {
-                            if let Some(f) = m.attrs.read().get("__file__") {
-                                CompactString::from(f.py_to_string())
-                            } else {
-                                return Err(PyException::runtime_error("could not find source"));
-                            }
-                        }
-                        _ => return Err(PyException::runtime_error("could not find source")),
-                    };
-                    match std::fs::read_to_string(filename.as_str()) {
-                        Ok(src) => {
-                            if let PyObjectPayload::Function(f) = &args[0].payload {
-                                let lines: Vec<&str> = src.lines().collect();
-                                let start = (f.code.first_line_number as usize).saturating_sub(1);
-                                if start < lines.len() {
-                                    let indent =
-                                        lines[start].len() - lines[start].trim_start().len();
-                                    let mut end = start + 1;
-                                    while end < lines.len() {
-                                        let line = lines[end];
-                                        if line.trim().is_empty() {
-                                            end += 1;
-                                            continue;
-                                        }
-                                        let li = line.len() - line.trim_start().len();
-                                        if li <= indent {
-                                            break;
-                                        }
-                                        end += 1;
-                                    }
-                                    return Ok(PyObject::str_val(CompactString::from(
-                                        lines[start..end].join("\n"),
-                                    )));
-                                }
-                            }
-                            Ok(PyObject::str_val(CompactString::from(src)))
-                        }
-                        Err(_) => Err(PyException::runtime_error("could not read source file")),
-                    }
-                }),
-            ),
-            (
-                "getsourcelines",
-                make_builtin(|args| {
-                    check_args("inspect.getsourcelines", args, 1)?;
-                    let filename = match &args[0].payload {
-                        PyObjectPayload::Function(f) => {
-                            Some((f.code.filename.clone(), f.code.first_line_number))
-                        }
-                        _ => None,
-                    };
-                    if let Some((fname, lineno)) = filename {
-                        match std::fs::read_to_string(fname.as_str()) {
-                            Ok(src) => {
-                                let all_lines: Vec<&str> = src.lines().collect();
-                                let start = (lineno as usize).saturating_sub(1);
-                                if start >= all_lines.len() {
-                                    return Err(PyException::runtime_error(
-                                        "could not find source lines",
-                                    ));
-                                }
-                                let base_indent =
-                                    all_lines[start].len() - all_lines[start].trim_start().len();
-                                let mut end = start + 1;
-                                while end < all_lines.len() {
-                                    let line = all_lines[end];
-                                    if line.trim().is_empty() {
-                                        end += 1;
-                                        continue;
-                                    }
-                                    let indent = line.len() - line.trim_start().len();
-                                    if indent <= base_indent {
-                                        break;
-                                    }
-                                    end += 1;
-                                }
-                                let lines: Vec<PyObjectRef> = all_lines[start..end]
-                                    .iter()
-                                    .map(|l| {
-                                        PyObject::str_val(CompactString::from(format!("{}\n", l)))
-                                    })
-                                    .collect();
-                                Ok(PyObject::tuple(vec![
-                                    PyObject::list(lines),
-                                    PyObject::int(lineno as i64),
-                                ]))
-                            }
-                            Err(_) => Err(PyException::runtime_error("could not read source")),
-                        }
-                    } else {
-                        Err(PyException::runtime_error("could not find source lines"))
-                    }
-                }),
-            ),
+            ("getmembers", make_builtin(inspect_getmembers)),
+            ("getdoc", make_builtin(inspect_getdoc)),
+            ("getmodule", make_builtin(inspect_getmodule)),
+            ("getfile", make_builtin(inspect_getfile)),
+            ("getsourcefile", make_builtin(inspect_getsourcefile)),
+            ("getsource", make_builtin(inspect_getsource)),
+            ("getsourcelines", make_builtin(inspect_getsourcelines)),
             // ── Signature & Parameter ──
             ("signature", signature_fn),
             ("getcallargs", getcallargs_fn),
@@ -1152,176 +840,19 @@ pub fn create_inspect_module() -> PyObjectRef {
             ("Parameter", param_cls),
             ("Signature", sig_cls),
             // ── MRO & argspec ──
-            (
-                "getmro",
-                make_builtin(|args| {
-                    check_args("inspect.getmro", args, 1)?;
-                    if let PyObjectPayload::Class(cd) = &args[0].payload {
-                        let mut mro = vec![args[0].clone()];
-                        mro.extend(cd.mro.iter().cloned());
-                        Ok(PyObject::tuple(mro))
-                    } else if let Some(mro) = args[0].get_attr("__mro__") {
-                        Ok(mro)
-                    } else {
-                        Ok(PyObject::tuple(vec![args[0].clone()]))
-                    }
-                }),
-            ),
-            (
-                "getargspec",
-                make_builtin(|args| {
-                    check_args("inspect.getargspec", args, 1)?;
-                    if let PyObjectPayload::Function(pf) = &args[0].payload {
-                        let code = &pf.code;
-                        let ac = code.arg_count as usize;
-                        let has_varargs = code.flags.contains(CodeFlags::VARARGS);
-                        let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
-                        let mut positional = Vec::new();
-                        for i in 0..ac {
-                            if i < code.varnames.len() {
-                                positional.push(PyObject::str_val(code.varnames[i].clone()));
-                            }
-                        }
-                        let varargs = if has_varargs && ac < code.varnames.len() {
-                            PyObject::str_val(code.varnames[ac].clone())
-                        } else {
-                            PyObject::none()
-                        };
-                        let kw_start = ac + if has_varargs { 1 } else { 0 };
-                        let kwc = code.kwonlyarg_count as usize;
-                        let varkw = if has_varkw && kw_start + kwc < code.varnames.len() {
-                            PyObject::str_val(code.varnames[kw_start + kwc].clone())
-                        } else {
-                            PyObject::none()
-                        };
-                        let defaults = if pf.defaults.is_empty() {
-                            PyObject::none()
-                        } else {
-                            PyObject::tuple(pf.defaults.clone())
-                        };
-                        Ok(PyObject::tuple(vec![
-                            PyObject::list(positional),
-                            varargs,
-                            varkw,
-                            defaults,
-                        ]))
-                    } else {
-                        Err(PyException::type_error("unsupported callable"))
-                    }
-                }),
-            ),
+            ("getmro", make_builtin(inspect_getmro)),
+            ("getargspec", make_builtin(inspect_getargspec)),
             (
                 "classify_class_attrs",
-                make_builtin(|args| {
-                    check_args("inspect.classify_class_attrs", args, 1)?;
-                    Ok(PyObject::list(vec![]))
-                }),
+                make_builtin(inspect_classify_class_attrs),
             ),
             // ── Source inspection utilities ──
-            (
-                "cleandoc",
-                make_builtin(|args| {
-                    check_args("inspect.cleandoc", args, 1)?;
-                    let doc = args[0].py_to_string();
-                    Ok(PyObject::str_val(CompactString::from(clean_docstring(
-                        &doc,
-                    ))))
-                }),
-            ),
-            (
-                "unwrap",
-                make_builtin(|args| {
-                    check_args("inspect.unwrap", args, 1)?;
-                    let mut func = args[0].clone();
-                    for _ in 0..100 {
-                        if let Some(wrapped) = func.get_attr("__wrapped__") {
-                            func = wrapped;
-                        } else {
-                            break;
-                        }
-                    }
-                    Ok(func)
-                }),
-            ),
+            ("cleandoc", make_builtin(inspect_cleandoc)),
+            ("unwrap", make_builtin(inspect_unwrap)),
             // ── Frame introspection ──
-            (
-                "getattr_static",
-                make_builtin(|args| {
-                    // getattr_static(obj, name[, default]) — like getattr but no descriptor protocol
-                    if args.is_empty() || args.len() < 2 {
-                        return Err(PyException::type_error(
-                            "getattr_static() requires at least 2 arguments",
-                        ));
-                    }
-                    let name_str = args[1].py_to_string();
-                    if let Some(v) = args[0].get_attr(&name_str) {
-                        Ok(v)
-                    } else if args.len() >= 3 {
-                        Ok(args[2].clone())
-                    } else {
-                        Err(PyException::attribute_error(format!(
-                            "'{}' object has no attribute '{}'",
-                            args[0].type_name(),
-                            name_str
-                        )))
-                    }
-                }),
-            ),
-            (
-                "currentframe",
-                make_builtin(|_args| {
-                    let cls =
-                        PyObject::class(CompactString::from("frame"), vec![], IndexMap::new());
-                    let mut attrs = IndexMap::new();
-                    attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
-                    attrs.insert(CompactString::from("f_code"), {
-                        let code_cls =
-                            PyObject::class(CompactString::from("code"), vec![], IndexMap::new());
-                        let mut code_attrs = IndexMap::new();
-                        code_attrs.insert(
-                            CompactString::from("co_filename"),
-                            PyObject::str_val(CompactString::from("<unknown>")),
-                        );
-                        code_attrs.insert(
-                            CompactString::from("co_name"),
-                            PyObject::str_val(CompactString::from("<module>")),
-                        );
-                        code_attrs.insert(CompactString::from("co_firstlineno"), PyObject::int(0));
-                        PyObject::instance_with_attrs(code_cls, code_attrs)
-                    });
-                    attrs.insert(
-                        CompactString::from("f_locals"),
-                        PyObject::dict(IndexMap::new()),
-                    );
-                    attrs.insert(
-                        CompactString::from("f_globals"),
-                        PyObject::dict(IndexMap::new()),
-                    );
-                    attrs.insert(CompactString::from("f_back"), PyObject::none());
-                    Ok(PyObject::instance_with_attrs(cls, attrs))
-                }),
-            ),
-            (
-                "stack",
-                make_builtin(|_| {
-                    let cls =
-                        PyObject::class(CompactString::from("FrameInfo"), vec![], IndexMap::new());
-                    let mut attrs = IndexMap::new();
-                    attrs.insert(
-                        CompactString::from("filename"),
-                        PyObject::str_val(CompactString::from("<unknown>")),
-                    );
-                    attrs.insert(CompactString::from("lineno"), PyObject::int(0));
-                    attrs.insert(
-                        CompactString::from("function"),
-                        PyObject::str_val(CompactString::from("<module>")),
-                    );
-                    attrs.insert(CompactString::from("code_context"), PyObject::none());
-                    attrs.insert(CompactString::from("index"), PyObject::none());
-                    let frame_info = PyObject::instance_with_attrs(cls, attrs);
-                    Ok(PyObject::list(vec![frame_info]))
-                }),
-            ),
+            ("getattr_static", make_builtin(inspect_getattr_static)),
+            ("currentframe", make_builtin(inspect_currentframe)),
+            ("stack", make_builtin(inspect_stack)),
             // ── Constants ──
             ("CO_OPTIMIZED", PyObject::int(0x01)),
             ("CO_NEWLOCALS", PyObject::int(0x02)),
