@@ -195,6 +195,292 @@ pub(crate) fn fast_small_int_sequence_sorted(arg: &PyObjectRef) -> Option<PyObje
 }
 
 #[inline(always)]
+fn stack_tail_arg(stack: &[PyObjectRef], arg_count: usize, offset: usize) -> Option<&PyObjectRef> {
+    let start = stack.len().checked_sub(arg_count)?;
+    stack.get(start + offset)
+}
+
+#[inline(always)]
+fn fast_len_value(arg: &PyObjectRef) -> Option<i64> {
+    match &arg.payload {
+        PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }.len() as i64),
+        PyObjectPayload::Tuple(v) => Some(v.len() as i64),
+        PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
+        PyObjectPayload::Dict(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
+        PyObjectPayload::Set(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_str_value(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Str(_) => Some(arg.clone()),
+        PyObjectPayload::Int(PyInt::Small(n)) => {
+            let mut buf = itoa::Buffer::new();
+            Some(PyObject::str_val(CompactString::from(buf.format(*n))))
+        }
+        PyObjectPayload::Float(f) => {
+            let mut buf = ryu::Buffer::new();
+            Some(PyObject::str_val(CompactString::from(buf.format(*f))))
+        }
+        PyObjectPayload::Bool(b) => Some(PyObject::str_val(CompactString::from(if *b {
+            "True"
+        } else {
+            "False"
+        }))),
+        PyObjectPayload::None => Some(PyObject::str_val(CompactString::from("None"))),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_float_value(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Float(_) => Some(arg.clone()),
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::float(*n as f64)),
+        PyObjectPayload::Bool(b) => Some(PyObject::float(if *b { 1.0 } else { 0.0 })),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_bool_value(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Bool(_) => Some(arg.clone()),
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::bool_val(*n != 0)),
+        PyObjectPayload::Float(f) => Some(PyObject::bool_val(*f != 0.0)),
+        PyObjectPayload::None => Some(PyObject::bool_val(false)),
+        PyObjectPayload::Str(s) => Some(PyObject::bool_val(!s.is_empty())),
+        PyObjectPayload::List(v) => Some(PyObject::bool_val(!unsafe { &*v.data_ptr() }.is_empty())),
+        PyObjectPayload::Tuple(v) => Some(PyObject::bool_val(!v.is_empty())),
+        PyObjectPayload::Dict(m) => Some(PyObject::bool_val(!unsafe { &*m.data_ptr() }.is_empty())),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_abs_value(arg: &PyObjectRef) -> Option<PyObjectRef> {
+    match &arg.payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(n.abs())),
+        PyObjectPayload::Float(f) => Some(PyObject::float(f.abs())),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_small_int_sum(arg: &PyObjectRef) -> Option<i64> {
+    match &arg.payload {
+        PyObjectPayload::List(v) => fast_small_int_items_sum(unsafe { &*v.data_ptr() }),
+        PyObjectPayload::Tuple(v) => fast_small_int_items_sum(v),
+        PyObjectPayload::Range(rd) => {
+            let n = if rd.step > 0 {
+                if rd.start >= rd.stop {
+                    0i64
+                } else {
+                    (rd.stop - rd.start + rd.step - 1) / rd.step
+                }
+            } else if rd.step < 0 {
+                if rd.start <= rd.stop {
+                    0i64
+                } else {
+                    (rd.start - rd.stop - rd.step - 1) / (-rd.step)
+                }
+            } else {
+                0
+            };
+            if n == 0 {
+                return Some(0);
+            }
+            let range_sum = (n as i128) * (rd.start as i128)
+                + (rd.step as i128) * (n as i128) * ((n - 1) as i128) / 2;
+            if range_sum >= i64::MIN as i128 && range_sum <= i64::MAX as i128 {
+                Some(range_sum as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_small_int_items_sum(items: &[PyObjectRef]) -> Option<i64> {
+    let mut total: i64 = 0;
+    for item in items {
+        let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload else {
+            return None;
+        };
+        total = total.checked_add(*n)?;
+    }
+    Some(total)
+}
+
+#[inline(always)]
+fn fast_two_arg_min_max(stack: &[PyObjectRef], is_max: bool) -> Option<PyObjectRef> {
+    let sl = stack.len();
+    let a = stack.get(sl.checked_sub(2)?)?;
+    let b = stack.get(sl - 1)?;
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+            Some(PyObject::int(if is_max {
+                std::cmp::max(*x, *y)
+            } else {
+                std::cmp::min(*x, *y)
+            }))
+        }
+        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+            Some(PyObject::float(if is_max { x.max(*y) } else { x.min(*y) }))
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_builtin_type_match(obj: &PyObjectRef, builtin_type: &str) -> Option<bool> {
+    match builtin_type {
+        "int" => Some(matches!(
+            &obj.payload,
+            PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+        )),
+        "float" => Some(matches!(&obj.payload, PyObjectPayload::Float(_))),
+        "str" => Some(matches!(&obj.payload, PyObjectPayload::Str(_))),
+        "bool" => Some(matches!(&obj.payload, PyObjectPayload::Bool(_))),
+        "list" => Some(matches!(&obj.payload, PyObjectPayload::List(_))),
+        "dict" => Some(matches!(
+            &obj.payload,
+            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_)
+        )),
+        "tuple" => Some(matches!(&obj.payload, PyObjectPayload::Tuple(_))),
+        "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
+        "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
+        "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+        "NoneType" => Some(matches!(&obj.payload, PyObjectPayload::None)),
+        "generator" => Some(matches!(&obj.payload, PyObjectPayload::Generator(_))),
+        "coroutine" => Some(matches!(&obj.payload, PyObjectPayload::Coroutine(_))),
+        "async_generator" => Some(matches!(&obj.payload, PyObjectPayload::AsyncGenerator(_))),
+        "frozenset" => Some(matches!(&obj.payload, PyObjectPayload::FrozenSet(_))),
+        "range" => Some(matches!(&obj.payload, PyObjectPayload::Range(_))),
+        "type" => Some(matches!(
+            &obj.payload,
+            PyObjectPayload::BuiltinType(_) | PyObjectPayload::Class(_)
+        )),
+        "method" => Some(matches!(&obj.payload, PyObjectPayload::BoundMethod { .. })),
+        "builtin_method" => Some(matches!(
+            &obj.payload,
+            PyObjectPayload::BuiltinBoundMethod(_)
+        )),
+        "object" => Some(true),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn fast_class_match(obj: &PyObjectRef, cls: &PyObjectRef) -> Option<bool> {
+    let PyObjectPayload::Class(cd) = &cls.payload else {
+        return None;
+    };
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    let PyObjectPayload::Class(obj_cd) = &inst.class.payload else {
+        return None;
+    };
+    if obj_cd.name == cd.name {
+        Some(true)
+    } else if obj_cd
+        .mro
+        .iter()
+        .any(|b| matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name))
+    {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+fn fast_direct_isinstance(stack: &[PyObjectRef]) -> Option<PyObjectRef> {
+    let sl = stack.len();
+    let obj = stack.get(sl.checked_sub(2)?)?;
+    let cls = stack.get(sl - 1)?;
+    if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+        return None;
+    }
+    let PyObjectPayload::BuiltinType(bt) = &cls.payload else {
+        return None;
+    };
+    fast_builtin_type_match(obj, bt.as_str()).map(PyObject::bool_val)
+}
+
+#[inline(always)]
+fn fast_loaded_type_isinstance_arg(
+    func_obj: &PyObjectRef,
+    stack: &[PyObjectRef],
+) -> Option<PyObjectRef> {
+    let sl = stack.len();
+    let func = stack.get(sl.checked_sub(2)?)?;
+    let obj = stack.get(sl - 1)?;
+    let PyObjectPayload::BuiltinFunction(fn_name) = &func.payload else {
+        return None;
+    };
+    if fn_name.as_str() != "isinstance" {
+        return None;
+    }
+    match &func_obj.payload {
+        PyObjectPayload::BuiltinType(bt) => {
+            fast_builtin_type_match(obj, bt.as_str()).map(PyObject::bool_val)
+        }
+        PyObjectPayload::Class(_) => fast_class_match(obj, func_obj).map(PyObject::bool_val),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn try_fast_global_builtin_call(
+    func_obj: &PyObjectRef,
+    stack: &[PyObjectRef],
+    arg_count: usize,
+) -> Option<PyObjectRef> {
+    let builtin_name = match &func_obj.payload {
+        PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
+            Some(name.as_str())
+        }
+        _ => None,
+    };
+
+    match (builtin_name, arg_count) {
+        (Some("len"), 1) => fast_len_value(stack_tail_arg(stack, 1, 0)?).map(PyObject::int),
+        (Some("range"), 1) => {
+            let PyObjectPayload::Int(PyInt::Small(stop)) = &stack_tail_arg(stack, 1, 0)?.payload
+            else {
+                return None;
+            };
+            Some(PyObject::range(0, *stop, 1))
+        }
+        (Some("str"), 1) => fast_str_value(stack_tail_arg(stack, 1, 0)?),
+        (Some("isinstance"), 2) => fast_direct_isinstance(stack),
+        (Some("type"), 1) => fast_exact_type(stack_tail_arg(stack, 1, 0)?),
+        (Some("int"), 1) => fast_int_conversion(stack_tail_arg(stack, 1, 0)?),
+        (Some("callable"), 1) => {
+            fast_callable_bool(stack_tail_arg(stack, 1, 0)?).map(PyObject::bool_val)
+        }
+        (Some("float"), 1) => fast_float_value(stack_tail_arg(stack, 1, 0)?),
+        (Some("bool"), 1) => fast_bool_value(stack_tail_arg(stack, 1, 0)?),
+        (Some("abs"), 1) => fast_abs_value(stack_tail_arg(stack, 1, 0)?),
+        (Some("sum"), 1) => fast_small_int_sum(stack_tail_arg(stack, 1, 0)?).map(PyObject::int),
+        (Some("min"), 1) => fast_small_int_sequence_min_max(stack_tail_arg(stack, 1, 0)?, false),
+        (Some("max"), 1) => fast_small_int_sequence_min_max(stack_tail_arg(stack, 1, 0)?, true),
+        (Some("sorted"), 1) => fast_small_int_sequence_sorted(stack_tail_arg(stack, 1, 0)?),
+        (Some("min"), 2) => fast_two_arg_min_max(stack, false),
+        (Some("max"), 2) => fast_two_arg_min_max(stack, true),
+        _ if arg_count == 2 => fast_loaded_type_isinstance_arg(func_obj, stack),
+        _ => None,
+    }
+}
+
+#[inline(always)]
 pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
     match &arg.payload {
         PyObjectPayload::None => Some(PyObject::builtin_type_by_name("NoneType")),
