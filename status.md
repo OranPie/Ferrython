@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:02:07+08:00
+Last updated: 2026-05-29T05:10:40+08:00
 
 ## 代码质量重构进度
 
@@ -1302,6 +1302,10 @@ Last updated: 2026-05-29T05:02:07+08:00
   - 体检结果：`string_methods.rs` 从 1934 行降到 1419 行，新 `fast_ops.rs` 为 404 行、`punycode.rs` 为 137 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`ferrypip cli.rs`（1921）、`opcodes/arithmetic.rs`（1903）和 `object/payload.rs`（1878）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `split/rsplit`、`join`、`replace`、`find/count`、punycode encode/decode roundtrip、`format` 和 `format_map` smoke。
   - commit：`37c7bae refactor: split string method helpers`。
+  - 第一百零九批处理当前 VM opcode 大文件 `ferrython-vm/src/opcodes/arithmetic.rs`（2026-05-29 05:10:40 CST）：新增 `opcodes/arithmetic/percent_format.rs`，拆出 Python `%` printf-style string formatting、PEP 461 bytes `%` formatting、radix formatting helper 和 scientific exponent normalization；`arithmetic.rs` 保留 unary/binary/subscript/union opcode dispatch 和现有 `%` 调用点。
+  - 体检结果：`arithmetic.rs` 从 1903 行降到 1506 行，新 `percent_format.rs` 为 404 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`ferrypip cli.rs`（1921）、`object/payload.rs`（1878）和 `object/helpers.rs`（1812）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 tuple `%s/%d/%x`、mapping `%()`、bytes `%`、`%r/%f/%e/%g/%%` 和普通 `+/%/**` arithmetic smoke。
+  - commit：`65fe25a refactor: split arithmetic percent formatting`。
 
 ## 修复原则
 
