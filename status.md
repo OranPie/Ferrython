@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:08:25+08:00
+Last updated: 2026-05-29T02:17:08+08:00
 
 ## 代码质量重构进度
 
@@ -1215,6 +1215,9 @@ Last updated: 2026-05-29T02:08:25+08:00
   - 第八十五批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:08:25 CST）：扩展 `vm_fast_compare.rs`，拆出 `CompareOpPopJumpIfFalse`、`LoadFastCompareConstJump`、`LoadFastLoadFastCompareJump` 的 primitive compare helper，并把 `PopJumpIfFalse/True` 的 primitive truthiness 判断移入 helper；主 loop 继续保留 `exec_compare_ops`、`vm_is_truthy`、异常和跳转控制语义；`vm.rs` 从 6086 行降到 5871 行，`vm_fast_compare.rs` 从 161 行扩到 316 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const compare jump、local/local compare jump、primitive truthiness 和 custom `__bool__` fallback smoke。
   - commit：`26ae7f0 refactor: split vm compare jump paths`。
+  - 第八十六批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:17:08 CST）：新增 `vm_fast_attr.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 `LoadFastLoadAttr`、`LoadFastLoadAttrStoreFast`、`LoadFastLoadMethod` 和 `LoadAttr` 的 simple instance/builtin fast paths；主 loop 保留 fallback 的 `execute_one`、store-after-load 和 unbound-local 错误语义；`vm.rs` 从 5871 行降到 5434 行，新增 helper 为 349 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 instance attr/class attr、fused attr-store、instance method、builtin method、property descriptor 和 custom `__getattribute__` fallback smoke。
+  - commit：`cc7e6bd refactor: split vm attribute load paths`。
 
 ## 修复原则
 
