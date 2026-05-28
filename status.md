@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:56:56+08:00
+Last updated: 2026-05-29T06:00:38+08:00
 
 ## 代码质量重构进度
 
@@ -1334,6 +1334,10 @@ Last updated: 2026-05-29T05:56:56+08:00
   - 体检结果：`expressions.rs` 从 1710 行降到 641 行，并退出最长 Rust 文件前 25；新子文件为 `comprehensions.rs` 601 行、`constants.rs` 317 行、`calls.rs` 188 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`ferrython-cli/src/main.rs`（1724）、`object/constructors.rs`（1659）和 `builtins/core_fns.rs`（1617）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`、`cargo check -p ferrython-cli`。
   - commit：`ed1f409 refactor: split compiler expression helpers`。
+  - 第一百一十七批处理 CLI 大文件 `ferrython-cli/src/main.rs`（2026-05-29 06:00:38 CST）：新增 `ferrython-cli/src/project.rs`，拆出 `-m venv`、`new/init/run/build/test` 项目命令、venv discovery、test discovery/runner UI 以及 sdist/wheel 打包 helper；`main.rs` 保留 interpreter arg parsing、pipeline/run helpers、`-m` dispatcher 和 base64 内置模块。
+  - 体检结果：`main.rs` 从 1724 行降到 970 行，进入 1000 行可接受范围；新 `project.rs` 为 767 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/constructors.rs`（1659）、`builtins/core_fns.rs`（1617）和 `object/methods_arith.rs`（1590）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-cli`。
+  - commit：`2c0d892 refactor: split cli project commands`。
 
 ## 修复原则
 
