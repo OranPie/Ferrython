@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:12:08+08:00
+Last updated: 2026-05-29T04:16:56+08:00
 
 ## 代码质量重构进度
 
@@ -1274,6 +1274,10 @@ Last updated: 2026-05-29T04:12:08+08:00
   - 体检结果：`vm_helpers.rs` 从 2294 行降到 1952 行，退出超过 2000 行队列；新文件 `vm_object_protocol.rs` 为 217 行、`vm_functional.rs` 为 126 行。刷新后当前超过 2000 行的 Rust 候选为 `vm.rs`（2305）、`object/payload.rs`（2290）和 `ferrython-pip/src/cli.rs`（2140）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 descriptor `__get__`、custom `__hash__/__eq__` dict lookup、Exception subclass、`functools.reduce` 和 `singledispatch` smoke。
   - commit：`e20d59a refactor: split vm object protocol helpers`。
+  - 第一百零二批继续处理超过 2000 行候选 `ferrython-vm/src/vm.rs`（2026-05-29 04:16:56 CST）：新增 `vm_return.rs`，把 `ReturnValue`、`LoadFastReturnValue` 和 `LoadConstReturnValue` 的无 finally/block 快路径移出主 dispatch loop；遇到 finally/block 时仍回落 `execute_one` 走完整 return/finally 语义。
+  - 体检结果：`vm.rs` 从 2305 行降到 2229 行，新 `vm_return.rs` 为 70 行；刷新后当前超过 2000 行候选为 `object/payload.rs`（2290）、`vm.rs`（2229）和 `ferrython-pip/src/cli.rs`（2140）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过普通 return、argument return、try/finally return fallback、`__init__` 返回非 None 的 TypeError 和 unbound local return smoke。
+  - commit：`c8b7d31 refactor: split vm return helpers`。
 
 ## 修复原则
 
