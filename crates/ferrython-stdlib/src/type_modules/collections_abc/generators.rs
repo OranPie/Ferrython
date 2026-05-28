@@ -1,0 +1,149 @@
+use super::helpers::{add_method, drop_abstract};
+use super::*;
+
+pub(super) fn add_generator_methods(
+    generator_cls: &PyObjectRef,
+    coroutine_cls: &PyObjectRef,
+    async_iterator_cls: &PyObjectRef,
+    async_generator_cls: &PyObjectRef,
+) {
+    add_method(
+        &generator_cls,
+        "__iter__",
+        PyObject::native_closure("Generator.__iter__", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Generator.__iter__ requires self"));
+            }
+            Ok(args[0].clone())
+        }),
+    );
+    drop_abstract(&generator_cls, &["__iter__", "__next__", "close"]);
+    add_method(
+        &generator_cls,
+        "__next__",
+        PyObject::native_closure("Generator.__next__", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Generator.__next__ requires self"));
+            }
+            let send = args[0]
+                .get_attr("send")
+                .ok_or_else(|| PyException::attribute_error("send"))?;
+            ferrython_core::object::helpers::call_callable(&send, &[PyObject::none()])
+        }),
+    );
+    add_method(
+        &generator_cls,
+        "close",
+        PyObject::native_closure("Generator.close", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Generator.close requires self"));
+            }
+            let throw = args[0]
+                .get_attr("throw")
+                .ok_or_else(|| PyException::attribute_error("throw"))?;
+            let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
+            let _ = ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]);
+            Ok(PyObject::none())
+        }),
+    );
+    drop_abstract(&coroutine_cls, &["close"]);
+    add_method(
+        &coroutine_cls,
+        "close",
+        PyObject::native_closure("Coroutine.close", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Coroutine.close requires self"));
+            }
+            let throw = args[0]
+                .get_attr("throw")
+                .ok_or_else(|| PyException::attribute_error("throw"))?;
+            let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
+            let _ = ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]);
+            Ok(PyObject::none())
+        }),
+    );
+    add_method(
+        &async_iterator_cls,
+        "__aiter__",
+        PyObject::native_closure("AsyncIterator.__aiter__", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "AsyncIterator.__aiter__ requires self",
+                ));
+            }
+            Ok(args[0].clone())
+        }),
+    );
+    add_method(
+        &async_generator_cls,
+        "__aiter__",
+        PyObject::native_closure("AsyncGenerator.__aiter__", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "AsyncGenerator.__aiter__ requires self",
+                ));
+            }
+            Ok(args[0].clone())
+        }),
+    );
+    drop_abstract(&async_generator_cls, &["__aiter__", "__anext__"]);
+    add_method(
+        &async_generator_cls,
+        "__anext__",
+        PyObject::native_closure("AsyncGenerator.__anext__", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "AsyncGenerator.__anext__ requires self",
+                ));
+            }
+            let asend = args[0]
+                .get_attr("asend")
+                .ok_or_else(|| PyException::attribute_error("asend"))?;
+            ferrython_core::object::helpers::call_callable(&asend, &[PyObject::none()])
+        }),
+    );
+    add_method(
+        &async_generator_cls,
+        "asend",
+        PyObject::native_closure("AsyncGenerator.asend", move |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("asend() requires value"));
+            }
+            Ok(PyObject::builtin_awaitable(args[1].clone()))
+        }),
+    );
+    add_method(
+        &async_generator_cls,
+        "athrow",
+        PyObject::native_closure("AsyncGenerator.athrow", move |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("athrow() requires an exception"));
+            }
+            let typ_name = args[1].type_name();
+            if typ_name == "GeneratorExit" {
+                Err(PyException::new(
+                    ExceptionKind::GeneratorExit,
+                    String::new(),
+                ))
+            } else {
+                Err(PyException::value_error(args[1].py_to_string()))
+            }
+        }),
+    );
+    add_method(
+        &async_generator_cls,
+        "aclose",
+        PyObject::native_closure("AsyncGenerator.aclose", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "AsyncGenerator.aclose requires self",
+                ));
+            }
+            let athrow = args[0]
+                .get_attr("athrow")
+                .ok_or_else(|| PyException::attribute_error("athrow"))?;
+            let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
+            ferrython_core::object::helpers::call_callable(&athrow, &[gen_exit])
+        }),
+    );
+}
