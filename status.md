@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T03:47:01+08:00
+Last updated: 2026-05-29T03:53:28+08:00
 
 ## 代码质量重构进度
 
@@ -1258,6 +1258,10 @@ Last updated: 2026-05-29T03:47:01+08:00
   - 体检结果：`cli.rs` 从 2620 行降到 2140 行，新增子文件分别为 `cache.rs` 114 行、`hash.rs` 25 行、`info.rs` 176 行、`wheel.rs` 153 行；当前最大 Rust 文件变为 `builtins/core_fns.rs`（2522 行），其次是 `vm.rs`（2424 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）和 `cli.rs`（2140 行）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、`cache dir`、`hash Cargo.toml`、`config --list` 无网络 smoke。
   - commit：`dd2f958 refactor: split ferrypip utility commands`。
+  - 第九十八批处理当前最大文件 `ferrython-vm/src/builtins/core_fns.rs`（2026-05-29 03:53:28 CST）：新增 `builtins/core_fns/fundamental.rs`，拆出 `str/int/float/bool/type` 及动态 `type()` class creation helper；`core_fns.rs` 保留 registry-adjacent core functions、numeric helpers、container constructors、attribute helpers、import 和 memoryview 等剩余职责。
+  - 体检结果：`core_fns.rs` 从 2522 行降到 2295 行，新 `fundamental.rs` 为 238 行；当前最大 Rust 文件重新变为 `vm.rs`（2424 行），其次是 `core_fns.rs`（2295 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）和 `cli.rs`（2140 行）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `str(bytes, encoding)`、`int(..., base)`、`float`、`bool`、`type(obj)`、动态 `type('C', (), {...})` 和禁止继承 `bool` smoke。
+  - commit：`7b415c0 refactor: split core fundamental builtins`。
 
 ## 修复原则
 
