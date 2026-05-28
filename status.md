@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:04:18+08:00
+Last updated: 2026-05-29T04:12:08+08:00
 
 ## 代码质量重构进度
 
@@ -1270,6 +1270,10 @@ Last updated: 2026-05-29T04:04:18+08:00
   - 体检结果：`core_fns.rs` 从 2295 行降到 1617 行，新 `numeric.rs` 为 691 行；`core_fns.rs` 已退出超过 2000 行队列，当前超过 2000 行的 Rust 候选集中在 `vm.rs`（2305）、`vm_helpers.rs`（2294）、`object/payload.rs`（2290）和 `ferrython-pip/src/cli.rs`（2140）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `abs/min/max/sum/range`、`round`、`pow` 三参数、`divmod`、`hash(frozenset)`、`hex/oct/bin`、`callable`、`ord/chr` smoke；`input` 为交互函数，本批不做阻塞式 smoke。
   - commit：`d0f258e refactor: split core numeric builtins`。
+  - 第一百零一批继续处理当前超过 2000 行候选 `ferrython-vm/src/vm_helpers.rs`（2026-05-29 04:12:08 CST）：新增 `vm_object_protocol.rs`，拆出 VM object protocol 相关 helper，包括 hash/eq dispatch、异常类判定、iterator result 校验、实例 dunder 查找、descriptor 解析、builtin value 提取和 hashable key 转换；新增 `vm_functional.rs`，拆出 `functools.reduce` 和 `singledispatch` VM bridge。
+  - 体检结果：`vm_helpers.rs` 从 2294 行降到 1952 行，退出超过 2000 行队列；新文件 `vm_object_protocol.rs` 为 217 行、`vm_functional.rs` 为 126 行。刷新后当前超过 2000 行的 Rust 候选为 `vm.rs`（2305）、`object/payload.rs`（2290）和 `ferrython-pip/src/cli.rs`（2140）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 descriptor `__get__`、custom `__hash__/__eq__` dict lookup、Exception subclass、`functools.reduce` 和 `singledispatch` smoke。
+  - commit：`e20d59a refactor: split vm object protocol helpers`。
 
 ## 修复原则
 
