@@ -4,6 +4,7 @@
 
 mod arguments;
 mod expressions;
+mod match_stmt;
 mod statements;
 
 use crate::error::{ParseError, ParseErrorKind};
