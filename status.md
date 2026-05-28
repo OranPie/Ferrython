@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:57:45+08:00
+Last updated: 2026-05-29T07:28:50+08:00
 
 ## 代码质量重构进度
 
@@ -1407,6 +1407,10 @@ Last updated: 2026-05-29T06:57:45+08:00
   - 体检结果：`cli.rs` 从 1379 行降到 417 行，并退出最长 Rust 文件前 25；新子文件为 `install.rs` 445 行、`commands.rs` 332 行、`requirements.rs` 150 行、`paths.rs` 41 行、`output.rs` 11 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`builtins/mod.rs`（1381）、`object/payload.rs`（1362）和 `builtins/type_methods/type_bytes.rs`（1336）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`。
   - commit：`d34300b refactor: split ferrypip cli handlers`。
+  - 第一百三十二批收口上轮遗留 VM builtin helper 拆分（2026-05-29 07:28:50 CST）：新增 `builtins/format_helpers.rs` 和 `builtins/iter_helpers.rs`，从 `builtins/mod.rs` 拆出 format spec / float repr helper，以及 `iter_advance`、`iter_next_value` 和公开 iterator 构造桥接 helper；`builtins/mod.rs` 保留 builtin registry、dispatch、复杂数和通用 method 分派。
+  - 体检结果：`builtins/mod.rs` 从 1381 行降到 705 行，并退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 和 match hotspot 列表；新 `iter_helpers.rs` 为 545 行，`format_helpers.rs` 为 142 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/payload.rs`（1362）、`builtins/type_methods/type_bytes.rs`（1336）和 `parser/lexer.rs`（1334）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、`git diff --check`。
+  - commit：`17de5b7 refactor: split builtin helper modules`。
 
 ## 修复原则
 
