@@ -47,7 +47,7 @@ impl VirtualMachine {
             register_shared_vm_callbacks(&builtins);
         }
         // Register generator frame drop callback (core crate can't know Frame type)
-        ferrython_core::object::register_gen_frame_drop(crate::vm_helpers::drop_generator_frame);
+        ferrython_core::object::register_gen_frame_drop(crate::vm_generator::drop_generator_frame);
         let mut modules = IndexMap::new();
         if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
             modules.insert(CompactString::from("builtins"), builtins_mod);

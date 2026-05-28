@@ -29,6 +29,7 @@ mod vm_fast_stack;
 mod vm_fast_unary_bitwise;
 mod vm_functional;
 mod vm_fused_fallback;
+mod vm_generator;
 mod vm_helpers;
 mod vm_import;
 mod vm_init;
