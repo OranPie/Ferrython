@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:51:05+08:00
+Last updated: 2026-05-29T04:56:49+08:00
 
 ## 代码质量重构进度
 
@@ -1294,6 +1294,10 @@ Last updated: 2026-05-29T04:51:05+08:00
   - 体检结果：`vm.rs` 从 1999 行降到 1972 行，新 `vm_fast_flow.rs` 为 31 行，`vm_fast_names.rs` 扩到 103 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）和 `vm_helpers.rs`（1952）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 global store/load、global builtin call、loop break/jump 和 try/finally return smoke。
   - commit：`284a589 refactor: split vm flow and global helpers`。
+  - 第一百零七批处理 match 密度最高且职责混杂的 `ferrython-vm/src/vm_helpers.rs`（2026-05-29 04:56:49 CST）：新增 `vm_generator.rs`，拆出 generator frame buffer pool、generator resume/send/throw、async-generator awaitable 驱动、coroutine/deferred await 处理，并把 core 的 generator frame drop callback 改指向新模块；`vm_helpers.rs` 保留 iterable collect/advance、sort 和 post-call intercept。
+  - 体检结果：`vm_helpers.rs` 从 1952 行降到 1470 行，新 `vm_generator.rs` 为 492 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`string_methods.rs`（1934）、`ferrypip cli.rs`（1921）和 `opcodes/arithmetic.rs`（1903）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 generator list、generator send、generator throw、`asyncio.run(coro)` 和 async-generator `__anext__().send(None)` smoke。
+  - commit：`65dbc3e refactor: split vm generator lifecycle`。
 
 ## 修复原则
 
