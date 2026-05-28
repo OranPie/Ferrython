@@ -6,9 +6,16 @@ use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::types::PyFunction;
 use std::rc::Rc;
 
 pub(crate) enum FastCallResult {
+    Pushed,
+    NewFrame(Frame),
+    Fallback,
+}
+
+pub(crate) enum FastGlobalFunctionResult {
     Pushed,
     NewFrame(Frame),
     Fallback,
@@ -121,6 +128,115 @@ pub(crate) fn try_fast_block_control(frame: &mut Frame, instr: Instruction) -> F
         }
         _ => FastBlockResult::Fallback,
     }
+}
+
+#[inline(always)]
+fn global_function_call_kind(pf: &PyFunction, arg_count: usize, frame: &Frame) -> u8 {
+    if pf.is_simple && pf.code.arg_count as usize == arg_count {
+        if is_trivial_const_return(pf) {
+            3
+        } else if Rc::ptr_eq(&pf.code, &frame.code) {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}
+
+#[inline(always)]
+fn is_trivial_const_return(pf: &PyFunction) -> bool {
+    (pf.code.instructions.len() == 2
+        && pf.code.instructions[0].op == Opcode::LoadConst
+        && pf.code.instructions[1].op == Opcode::ReturnValue)
+        || (pf.code.instructions.len() == 1
+            && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
+}
+
+#[inline(always)]
+pub(crate) fn try_fast_global_function_call(
+    frame: &mut Frame,
+    func_obj: &PyObjectRef,
+    builtins: &SharedBuiltins,
+    frame_pool: &mut FramePool,
+    arg_count: usize,
+    trace_active_now: bool,
+    inline_simple_args: impl Fn(&PyFunction, &[PyObjectRef]) -> Option<PyObjectRef>,
+    inline_recursive_base: impl Fn(
+        &[Instruction],
+        &[PyObjectRef],
+        &[PyObjectRef],
+    ) -> Option<PyObjectRef>,
+) -> FastGlobalFunctionResult {
+    let PyObjectPayload::Function(pf) = &func_obj.payload else {
+        return FastGlobalFunctionResult::Fallback;
+    };
+    let call_kind = global_function_call_kind(pf, arg_count, frame);
+    if call_kind == 0 {
+        return FastGlobalFunctionResult::Fallback;
+    }
+
+    if call_kind == 3 && !trace_active_now {
+        let ret_val = pf.constant_cache[pf.code.instructions[0].arg as usize].clone();
+        let args_start = frame.stack.len() - arg_count;
+        unsafe {
+            let base = frame.stack.as_ptr();
+            for i in 0..arg_count {
+                let _ = std::ptr::read(base.add(args_start + i));
+            }
+            frame.stack.set_len(args_start);
+        }
+        push_stack(frame, ret_val);
+        return FastGlobalFunctionResult::Pushed;
+    }
+
+    let args_start = frame.stack.len() - arg_count;
+    let args: Vec<PyObjectRef> = frame.stack[args_start..args_start + arg_count]
+        .iter()
+        .cloned()
+        .collect();
+    let mini_result = match call_kind {
+        1 if arg_count > 0 => inline_simple_args(pf, &args),
+        2 => inline_recursive_base(&frame.code.instructions, &frame.constant_cache, &args),
+        _ => None,
+    };
+    if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
+        frame.stack.truncate(args_start);
+        push_stack(frame, ret_val);
+        return FastGlobalFunctionResult::Pushed;
+    }
+
+    let mut new_frame = if call_kind == 2 {
+        unsafe { Frame::new_recursive(frame, frame_pool) }
+    } else if call_kind == 1 {
+        let func_clone = func_obj.clone();
+        unsafe {
+            let pf_ptr = match &func_clone.payload {
+                PyObjectPayload::Function(pf) => &**pf as *const PyFunction,
+                _ => std::hint::unreachable_unchecked(),
+            };
+            Frame::new_borrowed(&*pf_ptr, func_clone, builtins, frame_pool)
+        }
+    } else {
+        let mut f = Frame::new_from_pool(
+            Rc::clone(&pf.code),
+            pf.globals.clone(),
+            builtins.clone(),
+            Rc::clone(&pf.constant_cache),
+            frame_pool,
+        );
+        f.scope_kind = ScopeKind::Function;
+        f
+    };
+    unsafe {
+        let base = frame.stack.as_ptr();
+        for i in 0..arg_count {
+            new_frame.locals[i] = Some(std::ptr::read(base.add(args_start + i)));
+        }
+        frame.stack.set_len(args_start);
+    }
+    FastGlobalFunctionResult::NewFrame(new_frame)
 }
 
 #[inline(always)]

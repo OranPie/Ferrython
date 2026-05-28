@@ -1414,133 +1414,25 @@ impl VirtualMachine {
                     } else {
                         None
                     };
-                    if let Some(func_obj) = func_ref {
-                        // Check if simple function with matching arg count
-                        let call_kind = if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                            if pf.is_simple && pf.code.arg_count as usize == arg_count {
-                                // Trivial function: body is just `LoadConst X; ReturnValue`
-                                // or fused `LoadConstReturnValue X`
-                                if (pf.code.instructions.len() == 2
-                                    && pf.code.instructions[0].op == Opcode::LoadConst
-                                    && pf.code.instructions[1].op == Opcode::ReturnValue)
-                                    || (pf.code.instructions.len() == 1
-                                        && pf.code.instructions[0].op
-                                            == Opcode::LoadConstReturnValue)
-                                {
-                                    3u8
-                                } else if Rc::ptr_eq(&pf.code, &frame.code) {
-                                    2u8
-                                } else {
-                                    1
-                                }
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        };
+                    if let Some(func_obj_ref) = func_ref {
+                        let func_obj = func_obj_ref.clone();
                         // Skip all mini-interpreter fast paths when tracing/profiling is active
                         let trace_active_now = ferrython_stdlib::is_trace_active()
                             || ferrython_stdlib::is_profile_active();
-                        if call_kind == 3 && !trace_active_now {
-                            // Trivial function: inline the return constant
-                            let ret_val = if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                                let ci = pf.code.instructions[0].arg as usize;
-                                pf.constant_cache[ci].clone()
-                            } else {
-                                unreachable!()
-                            };
-                            // Drop args from stack, push return value
-                            let stack_len = frame.stack.len();
-                            unsafe {
-                                let base = frame.stack.as_ptr();
-                                for i in 0..arg_count {
-                                    let _ = std::ptr::read(base.add(stack_len - arg_count + i));
-                                }
-                                frame.stack.set_len(stack_len - arg_count);
-                            }
-                            spush!(frame, ret_val);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else if call_kind > 0 {
-                            let stack_len = frame.stack.len();
-                            let args_start = stack_len - arg_count;
-                            let args: Vec<PyObjectRef> = frame.stack
-                                [args_start..args_start + arg_count]
-                                .iter()
-                                .cloned()
-                                .collect();
-                            let mini_result =
-                                if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                                    match call_kind {
-                                        1 if arg_count > 0 => {
-                                            Self::try_inline_simple_function_args(pf, &args)
-                                        }
-                                        2 => Self::try_inline_recursive_base_case(
-                                            &frame.code.instructions,
-                                            &frame.constant_cache,
-                                            &args,
-                                        ),
-                                        _ => None,
-                                    }
-                                } else {
-                                    None
-                                };
-                            if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
-                                // Base case resolved without frame creation
-                                frame.stack.truncate(args_start);
-                                spush!(frame, ret_val);
+                        match crate::vm_fast_call::try_fast_global_function_call(
+                            frame,
+                            &func_obj,
+                            &self.builtins,
+                            &mut self.frame_pool,
+                            arg_count,
+                            trace_active_now,
+                            Self::try_inline_simple_function_args,
+                            Self::try_inline_recursive_base_case,
+                        ) {
+                            crate::vm_fast_call::FastGlobalFunctionResult::Pushed => {
                                 hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                let mut new_frame = if call_kind == 2 {
-                                    // SAFETY: parent frame outlives child in iterative dispatch
-                                    unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
-                                } else if call_kind == 1 {
-                                    // Borrowed path: clone only the Rc<PyObject>, skip Arc clones
-                                    let func_clone = func_obj.clone();
-                                    unsafe {
-                                        let pf_ptr = match &func_clone.payload {
-                                            PyObjectPayload::Function(pf) => {
-                                                &**pf as *const ferrython_core::types::PyFunction
-                                            }
-                                            _ => std::hint::unreachable_unchecked(),
-                                        };
-                                        Frame::new_borrowed(
-                                            &*pf_ptr,
-                                            func_clone,
-                                            &self.builtins,
-                                            &mut self.frame_pool,
-                                        )
-                                    }
-                                } else {
-                                    let (code, globals, constant_cache) =
-                                        if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                                            (
-                                                Rc::clone(&pf.code),
-                                                pf.globals.clone(),
-                                                Rc::clone(&pf.constant_cache),
-                                            )
-                                        } else {
-                                            unreachable!()
-                                        };
-                                    let mut f = Frame::new_from_pool(
-                                        code,
-                                        globals,
-                                        self.builtins.clone(),
-                                        constant_cache,
-                                        &mut self.frame_pool,
-                                    );
-                                    f.scope_kind = crate::frame::ScopeKind::Function;
-                                    f
-                                };
-                                // Move args directly from parent stack to new frame locals
-                                unsafe {
-                                    let base = frame.stack.as_ptr();
-                                    for i in 0..arg_count {
-                                        new_frame.locals[i] =
-                                            Some(std::ptr::read(base.add(args_start + i)));
-                                    }
-                                    frame.stack.set_len(args_start);
-                                }
+                            }
+                            crate::vm_fast_call::FastGlobalFunctionResult::NewFrame(new_frame) => {
                                 self.call_stack.push(new_frame);
                                 // Re-derive frame_ptr: push may reallocate Vec
                                 rederive_frame!(self, frame_ptr, instr_base, instr_count);
@@ -1566,19 +1458,22 @@ impl VirtualMachine {
                                     }
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }
-                            } // close mini-interpreter else block
-                        } else if let Some(result) =
-                            try_fast_global_builtin_call(func_obj, &frame.stack, arg_count)
-                        {
-                            let stack_len = frame.stack.len();
-                            frame.stack.truncate(stack_len - arg_count);
-                            spush!(frame, result);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            spush!(frame, func_obj.clone());
-                            let call_instr =
-                                Instruction::new(Opcode::CallFunction, arg_count as u32);
-                            self.execute_one(call_instr)
+                            }
+                            crate::vm_fast_call::FastGlobalFunctionResult::Fallback => {
+                                if let Some(result) =
+                                    try_fast_global_builtin_call(&func_obj, &frame.stack, arg_count)
+                                {
+                                    let stack_len = frame.stack.len();
+                                    frame.stack.truncate(stack_len - arg_count);
+                                    spush!(frame, result);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                } else {
+                                    spush!(frame, func_obj);
+                                    let call_instr =
+                                        Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                    self.execute_one(call_instr)
+                                }
+                            }
                         }
                     } else {
                         // Cache miss — decompose to LoadGlobal + CallFunction
