@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T03:39:58+08:00
+Last updated: 2026-05-29T03:47:01+08:00
 
 ## 代码质量重构进度
 
@@ -1254,6 +1254,10 @@ Last updated: 2026-05-29T03:39:58+08:00
   - 体检结果：`vm.rs` 从 2706 行降到 2424 行，`vm_fast_method.rs` 从 378 行扩到 547 行；当前最大 Rust 文件变为 `ferrython-pip/src/cli.rs`（2620 行），其次是 `builtins/core_fns.rs`（2522 行）、`vm.rs`（2424 行）和 `vm_helpers.rs`（2294 行）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `join(generator)`、`list.extend(generator)`、`list.sort`、`set.update(generator)`、`set.union(generator)` 和 Python method expression smoke。
   - commit：`58cf83d refactor: split vm method fallback calls`。
+  - 第九十七批处理当前最大文件 `ferrython-pip/src/cli.rs`（2026-05-29 03:47:01 CST）：新增 `cli/{cache,hash,info,wheel}.rs`，拆出 cache 子命令、hash 子命令、config/inspect/lock 信息输出和 wheel 构建辅助；`cli.rs` 保留 clap command model、主 command dispatch、install/project/list/show/search 等主流程。
+  - 体检结果：`cli.rs` 从 2620 行降到 2140 行，新增子文件分别为 `cache.rs` 114 行、`hash.rs` 25 行、`info.rs` 176 行、`wheel.rs` 153 行；当前最大 Rust 文件变为 `builtins/core_fns.rs`（2522 行），其次是 `vm.rs`（2424 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）和 `cli.rs`（2140 行）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、`cache dir`、`hash Cargo.toml`、`config --list` 无网络 smoke。
+  - commit：`dd2f958 refactor: split ferrypip utility commands`。
 
 ## 修复原则
 
