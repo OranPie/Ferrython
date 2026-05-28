@@ -33,6 +33,7 @@ mod vm_method_cache;
 mod vm_object_protocol;
 mod vm_rawio;
 mod vm_regex_bridge;
+mod vm_return;
 mod vm_text;
 mod vm_trace;
 pub(crate) mod vm_truth;

@@ -1,5 +1,5 @@
 //! The main virtual machine — executes bytecode instructions.
-use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
+use crate::frame::{Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
@@ -563,92 +563,16 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Inline ReturnValue: fast path when no finally blocks are active
-                Opcode::ReturnValue => {
-                    if frame.block_stack.is_empty() {
-                        // SAFETY: stack non-empty for well-formed bytecode
-                        let val = spop!(frame);
-                        // __init__ must return None — check here so Err flows
-                        // through the normal exception unwind (try/except catches it)
-                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
-                            Err(PyException::type_error(
-                                "__init__() should return None".to_string(),
-                            ))
-                        } else {
-                            Ok(Some(val))
+                Opcode::ReturnValue
+                | Opcode::LoadFastReturnValue
+                | Opcode::LoadConstReturnValue => {
+                    match crate::vm_return::try_fast_return(frame, instr) {
+                        crate::vm_return::FastReturnResult::Return(val) => Ok(Some(val)),
+                        crate::vm_return::FastReturnResult::Fallback => self.execute_one(instr),
+                        crate::vm_return::FastReturnResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
                         }
-                    } else if frame
-                        .block_stack
-                        .iter()
-                        .any(|b| b.kind() == BlockKind::Finally)
-                    {
-                        self.execute_one(instr)
-                    } else {
-                        // SAFETY: stack non-empty for well-formed bytecode
-                        let val = spop!(frame);
-                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
-                            Err(PyException::type_error(
-                                "__init__() should return None".to_string(),
-                            ))
-                        } else {
-                            Ok(Some(val))
-                        }
-                    }
-                }
-                // Fused LoadFast + ReturnValue — common `return x` pattern
-                Opcode::LoadFastReturnValue => {
-                    if frame.block_stack.is_empty() {
-                        match slocal!(frame, instr.arg as usize) {
-                            Some(val) => {
-                                let val = val.clone();
-                                if frame.discard_return
-                                    && !matches!(&val.payload, PyObjectPayload::None)
-                                {
-                                    Err(PyException::type_error(
-                                        "__init__() should return None".to_string(),
-                                    ))
-                                } else {
-                                    Ok(Some(val))
-                                }
-                            }
-                            None => {
-                                Self::err_unbound_local(&frame.code.varnames, instr.arg as usize)
-                            }
-                        }
-                    } else {
-                        // Fallback: push to stack and use normal ReturnValue
-                        match slocal!(frame, instr.arg as usize) {
-                            Some(val) => {
-                                spush!(frame, val.clone());
-                                self.execute_one(ferrython_bytecode::Instruction::new(
-                                    Opcode::ReturnValue,
-                                    0,
-                                ))
-                            }
-                            None => {
-                                Self::err_unbound_local(&frame.code.varnames, instr.arg as usize)
-                            }
-                        }
-                    }
-                }
-                // Fused LoadConst + ReturnValue — common `return 0`, `return None`
-                Opcode::LoadConstReturnValue => {
-                    if frame.block_stack.is_empty() {
-                        let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
-                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
-                            Err(PyException::type_error(
-                                "__init__() should return None".to_string(),
-                            ))
-                        } else {
-                            Ok(Some(val.clone()))
-                        }
-                    } else {
-                        let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
-                        spush!(frame, val.clone());
-                        self.execute_one(ferrython_bytecode::Instruction::new(
-                            Opcode::ReturnValue,
-                            0,
-                        ))
+                        crate::vm_return::FastReturnResult::Error(err) => Err(err),
                     }
                 }
 
