@@ -3,10 +3,10 @@ use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
+    IteratorData, PyObject, PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS,
+    CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::PyInt;
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
@@ -875,40 +875,31 @@ impl VirtualMachine {
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline try/except block setup/teardown (very cheap, called every iteration in try loops)
-                Opcode::SetupExcept => {
-                    frame.push_block(crate::frame::BlockKind::Except, instr.arg as usize);
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::SetupFinally => {
-                    frame.push_block(crate::frame::BlockKind::Finally, instr.arg as usize);
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::PopBlock => {
-                    frame.pop_block();
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                Opcode::PopExcept => {
-                    frame.pop_block();
-                    self.restore_previous_exception();
-                    hot_ok!(profiling, self.profiler, instr.op)
+                Opcode::SetupExcept
+                | Opcode::SetupFinally
+                | Opcode::PopBlock
+                | Opcode::PopExcept => {
+                    match crate::vm_fast_call::try_fast_block_control(frame, instr) {
+                        crate::vm_fast_call::FastBlockResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_call::FastBlockResult::PopExcept => {
+                            self.restore_previous_exception();
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_call::FastBlockResult::Fallback => unreachable!(),
+                    }
                 }
                 // Inline RaiseVarargs(1) for the common case: raise ExceptionInstance
                 Opcode::RaiseVarargs if instr.arg == 1 => {
-                    let tos = unsafe { frame.peek_unchecked() };
-                    match &tos.payload {
-                        PyObjectPayload::ExceptionInstance(ei) => {
-                            let kind = ei.kind;
-                            let msg = ei.message.clone();
-                            // Pop takes ownership of Rc — avoids extra tos.clone()
-                            let orig = spop!(frame);
-                            Err(PyException::with_original(kind, msg, orig))
+                    match crate::vm_fast_call::try_fast_raise_varargs_one(frame) {
+                        crate::vm_fast_call::FastExceptionFlowResult::Error(err) => Err(err),
+                        crate::vm_fast_call::FastExceptionFlowResult::PoppedFinallyNone => {
+                            unreachable!()
                         }
-                        PyObjectPayload::ExceptionType(kind) => {
-                            let kind = *kind;
-                            frame.pop();
-                            Err(PyException::new(kind, ""))
+                        crate::vm_fast_call::FastExceptionFlowResult::Fallback => {
+                            self.exec_exception_ops(instr)
                         }
-                        _ => self.exec_exception_ops(instr),
                     }
                 }
                 Opcode::BeginFinally => {
@@ -916,24 +907,15 @@ impl VirtualMachine {
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // EndFinally fast path: TOS is None → no exception, no pending return/jump
-                Opcode::EndFinally => {
-                    if frame.pending_return.is_none()
-                        && frame.pending_jump.is_none()
-                        && !frame.stack.is_empty()
-                    {
-                        if matches!(
-                            unsafe { frame.peek_unchecked() }.payload,
-                            PyObjectPayload::None
-                        ) {
-                            let _ = spop!(frame);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    } else {
+                Opcode::EndFinally => match crate::vm_fast_call::try_fast_end_finally_none(frame) {
+                    crate::vm_fast_call::FastExceptionFlowResult::PoppedFinallyNone => {
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    }
+                    crate::vm_fast_call::FastExceptionFlowResult::Error(_) => unreachable!(),
+                    crate::vm_fast_call::FastExceptionFlowResult::Fallback => {
                         self.execute_one(instr)
                     }
-                }
+                },
                 // Fast unary, power, and bitwise primitive paths.
                 Opcode::UnaryNot
                 | Opcode::UnaryNegative
@@ -961,21 +943,22 @@ impl VirtualMachine {
                 // Inline LoadDeref — lock-free closure variable fast path
                 // SAFETY: single-threaded interpreter, no concurrent cell writes
                 Opcode::LoadDeref => {
-                    let idx = instr.arg as usize;
-                    let val = unsafe { &*frame.cells[idx].data_ptr() };
-                    if let Some(v) = val {
-                        unsafe { frame.push_unchecked(v.clone()) };
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
+                    match crate::vm_fast_call::try_fast_load_deref(frame, instr.arg as usize) {
+                        crate::vm_fast_call::FastDerefResult::Loaded => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_call::FastDerefResult::Fallback => self.execute_one(instr),
+                        crate::vm_fast_call::FastDerefResult::Stored => unreachable!(),
                     }
                 }
                 // StoreDeref: lock-free write closure var
                 Opcode::StoreDeref => {
-                    let value = spop!(frame);
-                    let idx = instr.arg as usize;
-                    unsafe { *frame.cells[idx].data_ptr() = Some(value) };
-                    hot_ok!(profiling, self.profiler, instr.op)
+                    match crate::vm_fast_call::fast_store_deref(frame, instr.arg as usize) {
+                        crate::vm_fast_call::FastDerefResult::Stored => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        _ => unreachable!(),
+                    }
                 }
                 // Fast builders, primitive f-string formatting, and sequence unpack.
                 Opcode::BuildTuple
@@ -1307,309 +1290,110 @@ impl VirtualMachine {
                             } // close the mini-interpreter else (normal frame creation path)
                         } else {
                             if !trace_active_now {
-                                if let PyObjectPayload::Instance(inst) =
-                                    &sget!(frame, func_idx).payload
-                                {
-                                    let call_method =
-                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                            let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                            if !vt.is_empty() {
-                                                vt.get("__call__").cloned()
-                                            } else {
-                                                unsafe { &*cd.namespace.data_ptr() }
-                                                    .get("__call__")
-                                                    .cloned()
-                                            }
-                                        } else {
-                                            None
-                                        };
-                                    if let Some(call_method) = call_method {
-                                        if let PyObjectPayload::Function(pf) = &call_method.payload
+                                match crate::vm_fast_call::try_fast_instance_call(
+                                    frame,
+                                    &self.builtins,
+                                    &mut self.frame_pool,
+                                    func_idx,
+                                    arg_count,
+                                ) {
+                                    crate::vm_fast_call::FastCallResult::NewFrame(new_frame) => {
+                                        self.call_stack.push(new_frame);
+                                        rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                        if self.call_stack.len()
+                                            > ferrython_stdlib::get_recursion_limit() as usize
                                         {
-                                            if pf.code.arg_count as usize == arg_count + 1
-                                                && pf.code.kwonlyarg_count == 0
-                                                && !pf.code.flags.contains(CodeFlags::VARARGS)
-                                                && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
-                                                && !pf.code.flags.contains(CodeFlags::GENERATOR)
-                                                && !pf.code.flags.contains(CodeFlags::COROUTINE)
-                                            {
-                                                let mut new_frame = Frame::new_from_pool(
-                                                    Rc::clone(&pf.code),
-                                                    pf.globals.clone(),
-                                                    self.builtins.clone(),
-                                                    Rc::clone(&pf.constant_cache),
-                                                    &mut self.frame_pool,
-                                                );
-                                                new_frame.scope_kind =
-                                                    crate::frame::ScopeKind::Function;
-                                                unsafe {
-                                                    let base = frame.stack.as_ptr();
-                                                    new_frame.locals[0] =
-                                                        Some(std::ptr::read(base.add(func_idx)));
-                                                    for i in 0..arg_count {
-                                                        new_frame.locals[i + 1] =
-                                                            Some(std::ptr::read(
-                                                                base.add(args_start + i),
-                                                            ));
-                                                    }
-                                                    frame.stack.set_len(func_idx);
-                                                }
-                                                self.call_stack.push(new_frame);
-                                                rederive_frame!(
-                                                    self,
-                                                    frame_ptr,
-                                                    instr_base,
-                                                    instr_count
-                                                );
-                                                if self.call_stack.len()
-                                                    > ferrython_stdlib::get_recursion_limit()
-                                                        as usize
-                                                {
-                                                    if let Some(frame) = self.call_stack.pop() {
-                                                        frame.recycle(&mut self.frame_pool);
-                                                    }
-                                                    return Err(PyException::recursion_error(
-                                                        "maximum recursion depth exceeded",
-                                                    ));
+                                            if let Some(frame) = self.call_stack.pop() {
+                                                frame.recycle(&mut self.frame_pool);
+                                            }
+                                            return Err(PyException::recursion_error(
+                                                "maximum recursion depth exceeded",
+                                            ));
+                                        }
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                    crate::vm_fast_call::FastCallResult::Pushed => {
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                    crate::vm_fast_call::FastCallResult::Fallback => {}
+                                }
+                            }
+                            match crate::vm_fast_call::try_fast_simple_class_call(
+                                frame,
+                                &self.builtins,
+                                &mut self.frame_pool,
+                                func_idx,
+                                arg_count,
+                            ) {
+                                crate::vm_fast_call::FastCallResult::NewFrame(new_frame) => {
+                                    self.call_stack.push(new_frame);
+                                    rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                    if self.call_stack.len()
+                                        > ferrython_stdlib::get_recursion_limit() as usize
+                                    {
+                                        if let Some(frame) = self.call_stack.pop() {
+                                            frame.recycle(&mut self.frame_pool);
+                                        }
+                                        Err(PyException::recursion_error(
+                                            "maximum recursion depth exceeded",
+                                        ))
+                                    } else {
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                }
+                                crate::vm_fast_call::FastCallResult::Pushed => {
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                crate::vm_fast_call::FastCallResult::Fallback => {
+                                    match crate::vm_fast_call::try_fast_exception_type_call(
+                                        frame, func_idx, arg_count,
+                                    ) {
+                                        crate::vm_fast_call::FastCallResult::Pushed => {
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        crate::vm_fast_call::FastCallResult::NewFrame(_) => {
+                                            unreachable!()
+                                        }
+                                        crate::vm_fast_call::FastCallResult::Fallback => {
+                                            let func_obj = sget!(frame, func_idx);
+                                            let fast_result = if matches!(
+                                                (&func_obj.payload, arg_count),
+                                                (PyObjectPayload::BuiltinFunction(name), 3)
+                                                    if name.as_str() == "setattr"
+                                            ) {
+                                                if try_fast_builtin_setattr_stack(
+                                                    &mut frame.stack,
+                                                    func_idx,
+                                                ) {
+                                                    chain_pop_none!(
+                                                        frame,
+                                                        instr_base,
+                                                        instr_count,
+                                                        profiling,
+                                                        self.profiler,
+                                                        instr.op
+                                                    )
                                                 } else {
-                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                    None
                                                 }
+                                            } else {
+                                                crate::vm_fast_paths::try_fast_callfunction_builtin(
+                                                    func_obj,
+                                                    &frame.stack,
+                                                    arg_count,
+                                                )
+                                            };
+                                            if let Some(result) = fast_result {
+                                                frame.stack.truncate(func_idx);
+                                                spush!(frame, result);
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            } else {
+                                                self.execute_one(instr)
                                             }
                                         }
                                     }
                                 }
                             }
-                            // ── Inline Class instantiation for simple classes ──
-                            // Avoids execute_one + 2 Vec allocs + double call_object dispatch
-                            if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {
-                                // is_simple_class is computed at creation and invalidated on known mutation paths.
-                                // Safety check: verify __new__ wasn't added after creation without invalidation.
-                                if cd.is_simple_class.get()
-                                    && !cd.namespace.read().contains_key("__new__")
-                                    && !cd.is_dict_subclass
-                                    && cd.builtin_base_name.is_none()
-                                    && !ferrython_core::object::is_property_subclass_class(sget!(
-                                        frame, func_idx
-                                    ))
-                                {
-                                    // Look up __init__: try vtable first (O(1) hash), fall back to namespace
-                                    let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                    let init_fn = if !vt.is_empty() {
-                                        vt.get("__init__").cloned()
-                                    } else {
-                                        None
-                                    }
-                                    .or_else(|| {
-                                        cd.namespace.read().get("__init__").cloned().or_else(|| {
-                                            ferrython_core::object::lookup_in_class_mro(
-                                                sget!(frame, func_idx),
-                                                "__init__",
-                                            )
-                                        })
-                                    });
-                                    if let Some(init_fn) = init_fn {
-                                        // Check if __init__ is a simple Function we can inline
-                                        if let PyObjectPayload::Function(pf) = &init_fn.payload {
-                                            if pf.is_simple
-                                                && pf.code.arg_count as usize == arg_count + 1
-                                            {
-                                                let cls = sget!(frame, func_idx).clone();
-                                                let instance = PyObject::instance(cls);
-                                                // Create frame directly for __init__(self, *args)
-                                                let mut new_frame = Frame::new_from_pool(
-                                                    Rc::clone(&pf.code),
-                                                    pf.globals.clone(),
-                                                    self.builtins.clone(),
-                                                    Rc::clone(&pf.constant_cache),
-                                                    &mut self.frame_pool,
-                                                );
-                                                new_frame.scope_kind =
-                                                    crate::frame::ScopeKind::Function;
-                                                // locals[0] = self (instance)
-                                                new_frame.locals[0] = Some(instance.clone());
-                                                // Move args from parent stack to locals[1..]
-                                                let args_start = func_idx + 1;
-                                                unsafe {
-                                                    let base = frame.stack.as_ptr();
-                                                    for i in 0..arg_count {
-                                                        new_frame.locals[1 + i] =
-                                                            Some(std::ptr::read(
-                                                                base.add(args_start + i),
-                                                            ));
-                                                    }
-                                                    // Drop function ref from stack
-                                                    let _func = std::ptr::read(base.add(func_idx));
-                                                    frame.stack.set_len(func_idx);
-                                                }
-                                                // Push instance as return value BEFORE __init__ frame
-                                                spush!(frame, instance);
-                                                // Mark frame to discard __init__'s return value
-                                                new_frame.discard_return = true;
-                                                self.call_stack.push(new_frame);
-                                                rederive_frame!(
-                                                    self,
-                                                    frame_ptr,
-                                                    instr_base,
-                                                    instr_count
-                                                );
-                                                if self.call_stack.len()
-                                                    > ferrython_stdlib::get_recursion_limit()
-                                                        as usize
-                                                {
-                                                    if let Some(f) = self.call_stack.pop() {
-                                                        f.recycle(&mut self.frame_pool);
-                                                    }
-                                                    Err(PyException::recursion_error(
-                                                        "maximum recursion depth exceeded",
-                                                    ))
-                                                } else {
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                            } else {
-                                                // __init__ has complex signature — fall back
-                                                self.execute_one(instr)
-                                            }
-                                        } else {
-                                            self.execute_one(instr)
-                                        }
-                                    } else {
-                                        // No __init__ found — create bare instance
-                                        let cls = sget!(frame, func_idx).clone();
-                                        let instance = PyObject::instance(cls.clone());
-                                        // Set exception `args` for exception subclasses (cached flag)
-                                        if cd.is_exception_subclass {
-                                            if let PyObjectPayload::Instance(inst) =
-                                                &instance.payload
-                                            {
-                                                let mut args_vec = Vec::with_capacity(arg_count);
-                                                for i in 0..arg_count {
-                                                    args_vec.push(
-                                                        sget!(frame, func_idx + 1 + i).clone(),
-                                                    );
-                                                }
-                                                let mut attrs = inst.attrs.write();
-                                                if arg_count == 1 {
-                                                    attrs.insert(
-                                                        CompactString::from("message"),
-                                                        args_vec[0].clone(),
-                                                    );
-                                                }
-                                                attrs.insert(
-                                                    CompactString::from("args"),
-                                                    PyObject::tuple(args_vec),
-                                                );
-                                            }
-                                        }
-                                        unsafe {
-                                            let base = frame.stack.as_ptr();
-                                            for i in 0..=arg_count {
-                                                let _ = std::ptr::read(base.add(func_idx + i));
-                                            }
-                                            frame.stack.set_len(func_idx);
-                                        }
-                                        spush!(frame, instance);
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                } else {
-                                    self.execute_one(instr)
-                                }
-                            } else if let PyObjectPayload::ExceptionType(kind) =
-                                &sget!(frame, func_idx).payload
-                            {
-                                // Inline ExceptionType instantiation — avoids exec_call_ops Vec alloc + call_object dispatch
-                                let kind = *kind;
-                                let msg: CompactString = if arg_count >= 1 {
-                                    if let PyObjectPayload::Str(s) =
-                                        &sget!(frame, func_idx + 1).payload
-                                    {
-                                        s.to_compact_string()
-                                    } else {
-                                        CompactString::from(
-                                            sget!(frame, func_idx + 1).py_to_string(),
-                                        )
-                                    }
-                                } else {
-                                    CompactString::default()
-                                };
-                                // Collect args (most exceptions have 0-1 args)
-                                let args: Vec<PyObjectRef> = if arg_count > 0 {
-                                    (0..arg_count)
-                                        .map(|i| sget!(frame, func_idx + 1 + i).clone())
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
-                                unsafe {
-                                    frame.stack.set_len(func_idx);
-                                }
-                                let inst =
-                                    PyObject::exception_instance_with_args(kind, msg, args.clone());
-                                // ExceptionGroup/BaseExceptionGroup: attach .message, .exceptions, .subgroup, .split
-                                if matches!(
-                                    kind,
-                                    ExceptionKind::ExceptionGroup
-                                        | ExceptionKind::BaseExceptionGroup
-                                ) {
-                                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                                        let mut a = ei.ensure_attrs().write();
-                                        if !args.is_empty() {
-                                            a.insert(
-                                                CompactString::from("message"),
-                                                args[0].clone(),
-                                            );
-                                        }
-                                        if args.len() >= 2 {
-                                            let exc_list = match &args[1].payload {
-                                                PyObjectPayload::List(_) => args[1].clone(),
-                                                PyObjectPayload::Tuple(items) => {
-                                                    PyObject::list((**items).clone())
-                                                }
-                                                _ => PyObject::list(vec![args[1].clone()]),
-                                            };
-                                            a.insert(CompactString::from("exceptions"), exc_list);
-                                        }
-                                        drop(a);
-                                    }
-                                    if args.len() >= 2 {
-                                        crate::vm_call::attach_eg_methods_pub(&inst);
-                                    }
-                                }
-                                spush!(frame, inst);
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                let func_obj = sget!(frame, func_idx);
-                                let fast_result = if matches!(
-                                    (&func_obj.payload, arg_count),
-                                    (PyObjectPayload::BuiltinFunction(name), 3)
-                                        if name.as_str() == "setattr"
-                                ) {
-                                    if try_fast_builtin_setattr_stack(&mut frame.stack, func_idx) {
-                                        chain_pop_none!(
-                                            frame,
-                                            instr_base,
-                                            instr_count,
-                                            profiling,
-                                            self.profiler,
-                                            instr.op
-                                        )
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    crate::vm_fast_paths::try_fast_callfunction_builtin(
-                                        func_obj,
-                                        &frame.stack,
-                                        arg_count,
-                                    )
-                                };
-                                if let Some(result) = fast_result {
-                                    frame.stack.truncate(func_idx);
-                                    spush!(frame, result);
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                } else {
-                                    self.execute_one(instr)
-                                }
-                            } // close else for BuiltinFunction checks
                         } // close else for Class check
                     } // close stack guard
                 }
