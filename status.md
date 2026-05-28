@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:57:50+08:00
+Last updated: 2026-05-28T19:37:04+08:00
 
 ## 代码质量重构进度
 
@@ -1181,6 +1181,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第七十四批继续 `xml_modules` 分层（2026-05-28 19:25:02 CST）：新增 `xml_modules/element.rs`，拆出 Element 对象构造、XmlElement/PyObject 转换、Element 方法闭包、Element 序列化 helper；`xml_modules.rs` 从 1032 行降到 412 行，`element.rs` 为 624 行，`xml_modules.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Element/SubElement attrib/text/find/findtext/findall/len/index/iter/tostring/fromstring/ElementTree smoke。
   - commit：`e2793cf refactor: split xml element helpers`。
+  - 第七十五批转向超过 2000 行文件优先级（2026-05-28 19:37:04 CST）：新增 `object/helpers/formatting.rs`，拆出 range 长度、slice 解析/执行、Python 格式化、bytes/list/set/dict repr formatting helper；`object/helpers.rs` 从 2646 行降到 1812 行，`formatting.rs` 为 852 行，`object/helpers.rs` 已退出超过 2000 行候选队列。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过数字格式化、bytes/list repr、负步长切片和 range 切片 smoke。
+  - commit：`778dbfe refactor: split object helper formatting`。
 
 ## 修复原则
 
