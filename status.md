@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T00:47:11+08:00
+Last updated: 2026-05-29T00:53:34+08:00
 
 ## 代码质量重构进度
 
@@ -1187,6 +1187,9 @@ Last updated: 2026-05-29T00:47:11+08:00
   - 第七十六批继续超过 2000 行文件优先级（2026-05-29 00:47:11 CST）：新增 `compiler/patterns.rs`，从 `compiler/statements.rs` 拆出 `match/case` pattern test、sequence/mapping/class pattern helper 和 pattern binding helper；`compiler/statements.rs` 从 2234 行降到 1747 行，`patterns.rs` 为 496 行，`compiler/statements.rs` 已退出超过 2000 行候选队列。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`、`cargo build -p ferrython-cli --bin ferrython`。额外尝试 `match/case` runtime smoke 时发现当前 pattern matching 仍走既有 fallback，未作为本批通过项，也未混入语义修复。
   - commit：`a7eb6d3 refactor: split compiler pattern matching`。
+  - 第七十七批开始直接处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 00:53:34 CST）：新增 `vm_fast_binary.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 BinaryAdd/Subtract/Multiply/Modulo/FloorDivide/TrueDivide 及对应 inplace opcode 的热路径 helper；`vm.rs` 从 9155 行降到 8916 行，`vm_fast_binary.rs` 为 263 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 int/float/string/list/tuple 二元运算 smoke。
+  - commit：`d155cad refactor: split vm fast binary paths`。
 
 ## 修复原则
 
