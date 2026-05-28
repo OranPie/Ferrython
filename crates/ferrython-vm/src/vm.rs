@@ -449,7 +449,16 @@ impl VirtualMachine {
                         }
                     }
                 }
-                Opcode::Nop => hot_ok!(profiling, self.profiler, instr.op),
+                Opcode::Nop
+                | Opcode::JumpForward
+                | Opcode::JumpAbsolute
+                | Opcode::BeginFinally
+                | Opcode::PopBlockJump => match crate::vm_fast_flow::try_fast_flow(frame, instr) {
+                    crate::vm_fast_flow::FastFlowResult::Handled => {
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    }
+                    crate::vm_fast_flow::FastFlowResult::Fallback => unreachable!(),
+                },
                 // Fast GetIter for common iterable payloads.
                 Opcode::GetIter => match crate::vm_fast_iter::try_fast_get_iter(frame) {
                     crate::vm_fast_iter::FastGetIterResult::Handled => {
@@ -614,25 +623,13 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Inline LoadGlobal: check per-frame cache, then globals, then builtins
+                // Inline LoadGlobal: check per-frame cache, then globals, then builtins.
                 Opcode::LoadGlobal => {
-                    let idx = instr.arg as usize;
-                    let ver = crate::frame::globals_version();
-                    // Fast path: cache hit
-                    if frame.global_cache_version == ver {
-                        if let Some(ref cache) = frame.global_cache {
-                            // SAFETY: compiler guarantees idx < code.names.len() == cache.len()
-                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
-                                spush!(frame, v.clone());
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                self.execute_one(instr) // miss — fall through to full handler
-                            }
-                        } else {
-                            self.execute_one(instr)
+                    match crate::vm_fast_names::try_fast_load_global(frame, instr.arg as usize) {
+                        crate::vm_fast_names::FastNameResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                    } else {
-                        self.execute_one(instr) // version mismatch
+                        crate::vm_fast_names::FastNameResult::Fallback => self.execute_one(instr),
                     }
                 }
                 // Inline PopJumpIfFalse for primitive types (hot in conditionals/loops)
@@ -668,11 +665,6 @@ impl VirtualMachine {
                         hot_ok!(profiling, self.profiler, instr.op)
                     }
                 },
-                // Inline unconditional jumps (trivial but saves dispatch)
-                Opcode::JumpForward | Opcode::JumpAbsolute => {
-                    frame.ip = instr.arg as usize;
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
                 // Inline try/except block setup/teardown (very cheap, called every iteration in try loops)
                 Opcode::SetupExcept
                 | Opcode::SetupFinally
@@ -700,10 +692,6 @@ impl VirtualMachine {
                             self.exec_exception_ops(instr)
                         }
                     }
-                }
-                Opcode::BeginFinally => {
-                    spush!(frame, PyObject::none());
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // EndFinally fast path: TOS is None → no exception, no pending return/jump
                 Opcode::EndFinally => match crate::vm_fast_call::try_fast_end_finally_none(frame) {
@@ -1664,39 +1652,24 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Fused LoadGlobal + StoreFast: stores global directly to local
+                // Fused LoadGlobal + StoreFast: stores global directly to local.
                 Opcode::LoadGlobalStoreFast => {
-                    let name_idx = (instr.arg >> 16) as usize;
-                    let store_idx = (instr.arg & 0xFFFF) as usize;
-                    let ver = crate::frame::globals_version();
-                    if frame.global_cache_version == ver {
-                        if let Some(ref cache) = frame.global_cache {
-                            if let Some(ref v) = unsafe { cache.get_unchecked(name_idx) } {
-                                // Skip clone if destination already holds the same Arc
-                                let dest = unsafe { frame.locals.get_unchecked(store_idx) };
-                                if let Some(ref existing) = dest {
-                                    if PyObjectRef::ptr_eq(existing, v) {
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    }
-                                }
-                                sset_local!(frame, store_idx, v.clone());
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
+                    match crate::vm_fast_names::try_fast_load_global_store_fast(frame, instr.arg) {
+                        crate::vm_fast_names::FastGlobalStoreResult::Handled => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_names::FastGlobalStoreResult::Fallback {
+                            name_idx,
+                            store_idx,
+                        } => {
+                            let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
+                            self.execute_one(load_instr)?;
+                            let frame = self.call_stack.last_mut().unwrap();
+                            let value = spop!(frame);
+                            sset_local!(frame, store_idx, value);
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     }
-                    // Cache miss: fallback to LoadGlobal + StoreFast
-                    let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
-                    self.execute_one(load_instr)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    let v = spop!(frame);
-                    sset_local!(frame, store_idx, v);
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                // Fused PopBlock + Jump: pops exception block and jumps in one dispatch
-                Opcode::PopBlockJump => {
-                    frame.pop_block();
-                    frame.ip = instr.arg as usize;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadConstLoadFastContainsStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
