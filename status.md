@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:40:50+08:00
+Last updated: 2026-05-29T05:46:00+08:00
 
 ## 代码质量重构进度
 
@@ -1322,6 +1322,10 @@ Last updated: 2026-05-29T05:40:50+08:00
   - 体检结果：`expressions.rs` 从 1803 行降到 970 行，进入用户指定的 1000 行可接受范围；新子文件分别为 `fstring.rs` 467 行、`helpers.rs` 203 行、`lambda.rs` 116 行、`subscript.rs` 90 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/helpers.rs`（1813）、`compiler/statements.rs`（1747）和 `ferrython-cli/src/main.rs`（1724）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-parser`、`cargo test -p ferrython-parser`。
   - commit：`7994abf refactor: split parser expression helpers`。
+  - 第一百一十四批处理当前第二大 core object 聚合文件 `ferrython-core/src/object/helpers.rs`（2026-05-29 05:46:00 CST）：新增 `object/helpers/comparison.rs`，拆出 code object 常量比较、dict/map equality 和 `partial_cmp_objects`；新增 `object/helpers/builtin_type_methods.rs`，拆出 builtin type method resolver、`type.__new__`、builtin subclass `__new__`、property/dict subclass dunder 和通用 dunder wrapper。
+  - 体检结果：`helpers.rs` 从 1813 行降到 591 行，并退出最长 Rust 文件前 25；新子文件为 `builtin_type_methods.rs` 699 行、`comparison.rs` 545 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`compiler/statements.rs`（1747）、`ferrython-cli/src/main.rs`（1724）和 `compiler/expressions.rs`（1710）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`。
+  - commit：`18dac09 refactor: split object helper modules`。
 
 ## 修复原则
 
