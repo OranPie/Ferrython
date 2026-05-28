@@ -5,6 +5,7 @@ use crate::VirtualMachine;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{PyObjectMethods, PyObjectPayload, PyObjectRef};
 
+mod iter_next;
 mod iterables;
 
 impl VirtualMachine {
