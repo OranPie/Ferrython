@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:47:59+08:00
+Last updated: 2026-05-29T06:52:43+08:00
 
 ## 代码质量重构进度
 
@@ -34,6 +34,13 @@ Last updated: 2026-05-29T06:47:59+08:00
   - 当前基线中 `methods_attr.rs` 已退出最长 Rust 文件前 25。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
   - 代码提交：`68501d4 refactor: split non-instance attribute lookup`。
+- 第一百二十九批：已拆分 VM flow opcode handler：
+  - 新增 `crates/ferrython-vm/src/opcodes/flow/build.rs`，集中容器构建、unpack 和 collection update opcode。
+  - 新增 `crates/ferrython-vm/src/opcodes/flow/call.rs`，集中 function/method call、LoadMethod、MakeFunction 和 call fusion fallback。
+  - 新增 `crates/ferrython-vm/src/opcodes/flow/return_import.rs`，集中 return/finally 和 import/import-from/import-star opcode。
+  - `opcodes/flow.rs` 从约 1413 行降到 310 行，保留 jump/iterator opcode 和子模块入口。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - 代码提交：`9e8638d refactor: split flow opcode handlers`。
 - 已继续 VM builtin type method 分层：
   - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
