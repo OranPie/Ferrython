@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:42:06+08:00
+Last updated: 2026-05-29T06:47:59+08:00
 
 ## 代码质量重构进度
 
@@ -28,6 +28,12 @@ Last updated: 2026-05-29T06:42:06+08:00
   - `builtins/string_methods.rs` 从约 1419 行降到 1176 行。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - 代码提交：`2fa2976 refactor: split string encoding helpers`。
+- 第一百二十八批：已拆分 core object 非 Instance 属性查找：
+  - 新增 `crates/ferrython-core/src/object/methods_attr/non_instance_attrs.rs`，集中 Class/Module/builtin scalar/collection/coroutine/code/cell/iterator/native closure 等非 Instance payload 的属性分派。
+  - `object/methods_attr.rs` 从约 1418 行降到 563 行，新 `non_instance_attrs.rs` 约 836 行。
+  - 当前基线中 `methods_attr.rs` 已退出最长 Rust 文件前 25。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
+  - 代码提交：`68501d4 refactor: split non-instance attribute lookup`。
 - 已继续 VM builtin type method 分层：
   - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
