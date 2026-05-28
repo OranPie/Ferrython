@@ -1242,6 +1242,10 @@ Last updated: 2026-05-29T02:59:38+08:00
   - 体检结果：`vm.rs` 从 3027 行降到 2811 行，新 `vm_fast_call.rs` 为 334 行；`vm.rs` 仍略大于 `vm_helpers.rs`（2799 行），下一批应继续在这两个最大文件之间择优处理，而不是转去小文件。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 simple class `__init__`、bare class、instance `__call__`、closure LoadDeref/StoreDeref、ValueError raise/catch、ExceptionGroup attrs 和 try/finally smoke。
   - commit：`a818ba8 refactor: split vm fast call helpers`。
+  - 第九十四批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 03:27:42 CST）：扩展 `vm_fast_call.rs`，新增 `try_fast_global_function_call`，把 `LoadGlobalCallFunction` 全局缓存命中后的 Python function quick-call、trivial const return、recursive base mini-result 和 child frame 构造移出主 dispatch loop；主 loop 保留 cache miss 分解、builtin/type fallback、frame push 后的 `rederive_frame!`、recursion limit 和 trace/profile call event。
+  - 体检结果：`vm.rs` 从 2811 行降到 2706 行，`vm_fast_call.rs` 从 334 行扩到 450 行；当前最大文件变为 `vm_helpers.rs`（2799 行），下一批应优先拆 `vm_helpers.rs` 的 repr/format/iteration/generator 职责组。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 global simple return、trivial const return、recursive base case、global builtin fallback、closure return 和 two-arg simple call smoke。
+  - commit：`1cc3bec refactor: split vm global function calls`。
 
 ## 修复原则
 
