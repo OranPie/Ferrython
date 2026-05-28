@@ -1,4 +1,4 @@
-use super::{bigint_to_object, index_bigint};
+use super::functions::{bigint_to_object, index_bigint};
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
