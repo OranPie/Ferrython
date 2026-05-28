@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T03:59:08+08:00
+Last updated: 2026-05-29T04:04:18+08:00
 
 ## 代码质量重构进度
 
@@ -1266,6 +1266,10 @@ Last updated: 2026-05-29T03:59:08+08:00
   - 体检结果：`vm.rs` 从 2424 行降到 2305 行，新 `vm_fast_stack.rs` 为 207 行；当前最大 Rust 文件仍是 `vm.rs`（2305 行），但只比 `core_fns.rs`（2295 行）、`vm_helpers.rs`（2294 行）、`object/payload.rs`（2290 行）略大。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const load-store、for-loop store+jump、function local return、list append/pop、tuple swap 和 repeated const-store smoke。
   - commit：`f77c430 refactor: split vm stack fast paths`。
+  - 第一百批继续处理超过 2000 行候选 `ferrython-vm/src/builtins/core_fns.rs`（2026-05-29 04:04:18 CST）：新增 `builtins/core_fns/numeric.rs`，拆出 `abs/min/max/sum/round/pow/divmod/hash`、`callable/input/ord/chr` 和 `hex/oct/bin` 及其 `__index__` helper；`core_fns.rs` 保留 print/len/repr/id、sorted/reversed/enumerate/zip/range、容器构造、attr/import/memoryview 等剩余职责。
+  - 体检结果：`core_fns.rs` 从 2295 行降到 1617 行，新 `numeric.rs` 为 691 行；`core_fns.rs` 已退出超过 2000 行队列，当前超过 2000 行的 Rust 候选集中在 `vm.rs`（2305）、`vm_helpers.rs`（2294）、`object/payload.rs`（2290）和 `ferrython-pip/src/cli.rs`（2140）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `abs/min/max/sum/range`、`round`、`pow` 三参数、`divmod`、`hash(frozenset)`、`hex/oct/bin`、`callable`、`ord/chr` smoke；`input` 为交互函数，本批不做阻塞式 smoke。
+  - commit：`d0f258e refactor: split core numeric builtins`。
 
 ## 修复原则
 
