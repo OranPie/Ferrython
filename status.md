@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T19:37:04+08:00
+Last updated: 2026-05-29T00:47:11+08:00
 
 ## 代码质量重构进度
 
@@ -1184,6 +1184,9 @@ Last updated: 2026-05-28T19:37:04+08:00
   - 第七十五批转向超过 2000 行文件优先级（2026-05-28 19:37:04 CST）：新增 `object/helpers/formatting.rs`，拆出 range 长度、slice 解析/执行、Python 格式化、bytes/list/set/dict repr formatting helper；`object/helpers.rs` 从 2646 行降到 1812 行，`formatting.rs` 为 852 行，`object/helpers.rs` 已退出超过 2000 行候选队列。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过数字格式化、bytes/list repr、负步长切片和 range 切片 smoke。
   - commit：`778dbfe refactor: split object helper formatting`。
+  - 第七十六批继续超过 2000 行文件优先级（2026-05-29 00:47:11 CST）：新增 `compiler/patterns.rs`，从 `compiler/statements.rs` 拆出 `match/case` pattern test、sequence/mapping/class pattern helper 和 pattern binding helper；`compiler/statements.rs` 从 2234 行降到 1747 行，`patterns.rs` 为 496 行，`compiler/statements.rs` 已退出超过 2000 行候选队列。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`、`cargo build -p ferrython-cli --bin ferrython`。额外尝试 `match/case` runtime smoke 时发现当前 pattern matching 仍走既有 fallback，未作为本批通过项，也未混入语义修复。
+  - commit：`a7eb6d3 refactor: split compiler pattern matching`。
 
 ## 修复原则
 
