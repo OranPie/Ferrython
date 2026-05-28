@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:31:55+08:00
+Last updated: 2026-05-29T05:40:50+08:00
 
 ## 代码质量重构进度
 
@@ -1318,6 +1318,10 @@ Last updated: 2026-05-29T05:31:55+08:00
   - 体检结果：`payload.rs` 从 1878 行降到 1362 行，新 `class_data.rs` 为 527 行；刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/helpers.rs`（1813）、`parser/expressions.rs`（1803）和 `compiler/statements.rs`（1747）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 class create/inheritance、`__slots__`、method call、`__mro__` 和 exception subclass smoke。
   - commit：`ce766f6 refactor: split core class data`。
+  - 第一百一十三批处理当前 top 4 大文件 `ferrython-parser/src/parser/expressions.rs`（2026-05-29 05:40:50 CST）：新增 `parser/expressions/fstring.rs`、`helpers.rs`、`lambda.rs` 和 `subscript.rs`，分别拆出 f-string 内容解析和 source-location remap、comprehension/list/target helper、lambda 参数解析以及 slice/subscript 解析；`expressions.rs` 保留 precedence-climbing、atom/trailer 和 yield/await 主流程。
+  - 体检结果：`expressions.rs` 从 1803 行降到 970 行，进入用户指定的 1000 行可接受范围；新子文件分别为 `fstring.rs` 467 行、`helpers.rs` 203 行、`lambda.rs` 116 行、`subscript.rs` 90 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/helpers.rs`（1813）、`compiler/statements.rs`（1747）和 `ferrython-cli/src/main.rs`（1724）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-parser`、`cargo test -p ferrython-parser`。
+  - commit：`7994abf refactor: split parser expression helpers`。
 
 ## 修复原则
 
