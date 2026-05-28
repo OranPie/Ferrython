@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T07:56:47+08:00
+Last updated: 2026-05-28T08:08:34+08:00
 
 ## 代码质量重构进度
 
@@ -1117,6 +1117,9 @@ Last updated: 2026-05-28T07:56:47+08:00
   - commit：`92d3408 refactor: split super attribute handling`。
   - 第五十三批继续 `sys_modules/os` 分层：新增 `os/fd.rs`、`os/misc.rs` 和 `os/system_info.rs`，并扩展 `os/process.rs`、`os/stat.rs`，把 fd/open/read/write/fdopen/fstat/ftruncate/lseek/fsync、urandom/access/env/fsencode/fsdecode、uname/times/get_terminal_size、Unix uid/gid/waitpid/W* helper 从 `os.rs` 注册表移出；`os.rs` 从约 1206 行降到约 189 行，继续保持在 `CODE_HEALTH_BASELINE.md` top 25 之外，最大新子文件为 `os/fd.rs` 约 548 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `os.open/write/read/lseek/fstat/fdopen/urandom/access/fsencode/fsdecode/getpid/getppid/remove` smoke。
+  - commit：`cb25e00 refactor: split os module helpers`。
+  - 第五十四批继续 `inspect` 分层：新增 `introspection_modules/inspect/{predicates,source,mro_argspec,frame}.rs`，分别承载 inspect type predicate、member/source/doc helper、MRO/argspec helper 和 frame/stack stub；`inspect.rs` 从约 1339 行降到约 861 行，退出当前 `CODE_HEALTH_BASELINE.md` top 25 最长 Rust 文件列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `inspect.isfunction/isclass/isroutine/getdoc/getmodule/getargspec/getfullargspec/signature/cleandoc/getattr_static/currentframe/stack` smoke。
 
 ## 修复原则
 
