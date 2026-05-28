@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T01:05:49+08:00
+Last updated: 2026-05-29T01:16:26+08:00
 
 ## 代码质量重构进度
 
@@ -1196,6 +1196,9 @@ Last updated: 2026-05-29T01:05:49+08:00
   - 第七十九批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:05:49 CST）：新增 `vm_fast_compare.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 CompareOp 的基础比较、identity 比较和 `in/not in` 快路径 bool 计算；保留原 `cmp_jump_lookahead!` 控制流在主 loop 内；`vm.rs` 从 8682 行降到 8486 行，`vm_fast_compare.rs` 为 161 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `< <= == != > >=`、`is/is not`、dict/set/list/tuple/str `in/not in` smoke。
   - commit：`ea8eed8 refactor: split vm fast compare paths`。
+  - 第八十批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:16:26 CST）：新增 `vm_fast_unary_bitwise.rs` 和 `vm_fast_build.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 UnaryNot/UnaryNegative、BinaryPower、int/bool 位运算、BuildTuple/BuildList、FormatValue/BuildString f-string 快路径和 tuple/list UnpackSequence 快路径；`vm.rs` 从 8486 行降到 7983 行，两个新 helper 文件分别为 222 行和 332 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 not/negate/power/bitwise、f-string、tuple/list 构造和 tuple/list unpack smoke。
+  - commit：`2c72566 refactor: split vm build and unary paths`。
 
 ## 修复原则
 
