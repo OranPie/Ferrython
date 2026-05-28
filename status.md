@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:00:38+08:00
+Last updated: 2026-05-29T06:04:24+08:00
 
 ## 代码质量重构进度
 
@@ -1338,6 +1338,10 @@ Last updated: 2026-05-29T06:00:38+08:00
   - 体检结果：`main.rs` 从 1724 行降到 970 行，进入 1000 行可接受范围；新 `project.rs` 为 767 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/constructors.rs`（1659）、`builtins/core_fns.rs`（1617）和 `object/methods_arith.rs`（1590）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-cli`。
   - commit：`2c0d892 refactor: split cli project commands`。
+  - 第一百一十八批处理 core 对象构造大文件 `object/constructors.rs`（2026-05-29 06:04:24 CST）：新增 `object/gc_tracking.rs`，拆出 cycle collector 注册、tracked object weak list、reachable/reference 扫描、trial deletion/refine、weakref notification 和 cycle breaking；`constructors.rs` 只保留 singleton/cache/freelist 以及 `PyObject` 工厂方法，并通过 `track_object` 调用 GC tracking 边界。
+  - 体检结果：`constructors.rs` 从 1659 行降到 1150 行；新 `gc_tracking.rs` 为 518 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`builtins/core_fns.rs`（1617）、`object/methods_arith.rs`（1590）和 `compiler/peephole.rs`（1567）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-core`。
+  - commit：`13d9ce2 refactor: split object gc tracking`。
 
 ## 修复原则
 
