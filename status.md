@@ -1157,6 +1157,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十六批继续 `serial_modules/csv_module` 分层（2026-05-28 18:30:45 CST）：新增 `csv_module/{dialect,reader,writer,dict_io}.rs`，把 dialect registry/Sniffer、reader dialect extraction 和 parse、writer quoting/write row、DictReader/DictWriter helper 从根文件拆出；`csv_module.rs` 从约 1167 行降到 153 行，拆分后 5 个文件合计 1165 行，最大新子文件 `dict_io.rs` 为 322 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 csv reader/dialect registry/list/get/unregister、registered dialect reader、writer/DictWriter object smoke、DictReader、Sniffer 和 `field_size_limit` smoke；Python class `Sink.write` 状态回写仍是既有不完整语义，本批未混入修复。
   - commit：`ce0189d refactor: split csv module`。
+  - 第六十七批继续 `testing_modules/logging` 分层（2026-05-28 18:38:41 CST）：新增 `logging/logger.rs`，拆出 `logging_log`、`logging_get_logger`、logger instance 方法、parent/child/filter/handler dispatch 和 effective-level 查询；`logging.rs` 从 1130 行降到 358 行，`logger.rs` 为 777 行，`logging.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 logging getLogger cache/name/setLevel/getEffectiveLevel/isEnabledFor/getChild、StreamHandler add/remove/hasHandlers、basicConfig FileHandler 和 disable smoke。
+  - commit：`3a2c34c refactor: split logging logger helpers`。
 
 ## 修复原则
 
