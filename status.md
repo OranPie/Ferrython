@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T01:33:39+08:00
+Last updated: 2026-05-29T01:51:22+08:00
 
 ## 代码质量重构进度
 
@@ -1205,6 +1205,10 @@ Last updated: 2026-05-29T01:33:39+08:00
   - 第八十二批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:33:39 CST）：扩展 `vm_fast_collections.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 LoadConst/LoadFast contains-store、LoadFast/LoadConst subscr-store、LoadFast/LoadFast subscr-store、LoadFast/LoadFast/LoadFast store-subscript 和 LoadFast/LoadFast contains-store 的直接快路径；主 loop 保留 fallback 分解和 `execute_one` 后的 frame/result 控制语义；`vm.rs` 从 7663 行降到 7350 行，`vm_fast_collections.rs` 从 248 行扩到 504 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 dict/set/list/tuple/str contains、list/tuple/dict subscr-store、dict/list store-subscript 和 local contains/subscr smoke。
   - commit：`cbecb4b refactor: split vm fused collection paths`。
+  - 第八十三批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:51:22 CST）：扩展 `vm_fast_binary.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 LoadFast/LoadConst/LoadFast fused add/sub/mul、fused store-fast arithmetic 和 `(x * c1) % c2` 快路径；主 loop 继续保留 fallback 的 `execute_one`、stack pop/store 和异常 unwind 语义；`vm.rs` 从 7350 行降到 6802 行，`vm_fast_binary.rs` 从 263 行扩到 607 行。
+  - 质量补充：helper 保留 int/float 溢出 BigInt 路径、string add store 快路径和 dest slot 可变对象原地更新能力，避免机械拆分带来明显性能退化。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 local/const/local add/sub/mul、store-fast arithmetic、mul-mod、float mixed arithmetic 和 string concat smoke。
+  - commit：`b9d4b2a refactor: split vm fused arithmetic paths`。
 
 ## 修复原则
 
