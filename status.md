@@ -1403,6 +1403,10 @@ Last updated: 2026-05-29T06:57:45+08:00
   - 体检结果：`iterables.rs` 从 1315 行降到 700 行，退出最长 Rust 文件前 25；新 `iter_next.rs` 为 624 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`parser/statements.rs`（1458）、`object/methods_type.rs`（1438）和 `builtins/string_methods.rs`（1419）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
   - commit：`5da51a2 refactor: split vm iterator advancement`。
+  - 第一百三十一批处理 ferrypip CLI 大文件 `ferrython-pip/src/cli.rs`（2026-05-29 07:02:10 CST）：新增 `cli/commands.rs`、`cli/install.rs`、`cli/requirements.rs`、`cli/paths.rs` 和 `cli/output.rs`，拆出 uninstall/list/download/freeze/check 命令处理、安装/版本解析/hash 校验、requirements 文件解析、site-packages 路径/debug 输出和通用输出 helper；`cli.rs` 保留 clap 参数定义和顶层命令分派。
+  - 体检结果：`cli.rs` 从 1379 行降到 417 行，并退出最长 Rust 文件前 25；新子文件为 `install.rs` 445 行、`commands.rs` 332 行、`requirements.rs` 150 行、`paths.rs` 41 行、`output.rs` 11 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`builtins/mod.rs`（1381）、`object/payload.rs`（1362）和 `builtins/type_methods/type_bytes.rs`（1336）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`。
+  - commit：`d34300b refactor: split ferrypip cli handlers`。
 
 ## 修复原则
 
