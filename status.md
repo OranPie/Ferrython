@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T02:59:38+08:00
+Last updated: 2026-05-29T03:39:58+08:00
 
 ## 代码质量重构进度
 
@@ -1250,6 +1250,10 @@ Last updated: 2026-05-29T02:59:38+08:00
   - 体检结果：`vm_helpers.rs` 从 2799 行降到 2294 行，新 `vm_text.rs` 为 513 行；当前最大文件重新变为 `vm.rs`（2706 行），其次是 `ferrython-pip/src/cli.rs`（2620 行）和 `builtins/core_fns.rs`（2522 行）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过自定义 `__str__/__repr__`、`str.format` 转换/宽度、format 字段 attr/item access、list/tuple/dict/set repr、异常 `str(e)` 和 args repr smoke。
   - commit：`6cb5e7c refactor: split vm text helpers`。
+  - 第九十六批继续处理当前最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 03:39:58 CST）：扩展 `vm_fast_method.rs`，把 `CallMethod` / `CallMethodPopTop` 的 VM-aware builtin fallback dispatch 移出主 dispatch loop；覆盖 `join(generator)`、set update/union 等 generator/iterator 收集、`list.extend` lazy iterator 收集、`list.sort` 的 VM sort 路径和通用多参数 builtin method fallback。
+  - 体检结果：`vm.rs` 从 2706 行降到 2424 行，`vm_fast_method.rs` 从 378 行扩到 547 行；当前最大 Rust 文件变为 `ferrython-pip/src/cli.rs`（2620 行），其次是 `builtins/core_fns.rs`（2522 行）、`vm.rs`（2424 行）和 `vm_helpers.rs`（2294 行）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `join(generator)`、`list.extend(generator)`、`list.sort`、`set.update(generator)`、`set.union(generator)` 和 Python method expression smoke。
+  - commit：`58cf83d refactor: split vm method fallback calls`。
 
 ## 修复原则
 
