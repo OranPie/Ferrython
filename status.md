@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T04:56:49+08:00
+Last updated: 2026-05-29T05:02:07+08:00
 
 ## 代码质量重构进度
 
@@ -1298,6 +1298,10 @@ Last updated: 2026-05-29T04:56:49+08:00
   - 体检结果：`vm_helpers.rs` 从 1952 行降到 1470 行，新 `vm_generator.rs` 为 492 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`string_methods.rs`（1934）、`ferrypip cli.rs`（1921）和 `opcodes/arithmetic.rs`（1903）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 generator list、generator send、generator throw、`asyncio.run(coro)` 和 async-generator `__anext__().send(None)` smoke。
   - commit：`65dbc3e refactor: split vm generator lifecycle`。
+  - 第一百零八批处理当前第二大 builtin 聚合文件 `ferrython-vm/src/builtins/string_methods.rs`（2026-05-29 05:02:07 CST）：新增 `builtins/string_methods/fast_ops.rs`，拆出 split/find/count/replace/join 的底层快速 helper；新增 `builtins/string_methods/punycode.rs`，拆出 punycode encode/decode 算法，并保持 `string_methods` 对外 re-export 给 bytes codec 路径使用。
+  - 体检结果：`string_methods.rs` 从 1934 行降到 1419 行，新 `fast_ops.rs` 为 404 行、`punycode.rs` 为 137 行；刷新后 `Oversized Rust Candidates` 仍为空，当前最大 Rust 文件为 `vm.rs`（1972）、`ferrypip cli.rs`（1921）、`opcodes/arithmetic.rs`（1903）和 `object/payload.rs`（1878）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `split/rsplit`、`join`、`replace`、`find/count`、punycode encode/decode roundtrip、`format` 和 `format_map` smoke。
+  - commit：`37c7bae refactor: split string method helpers`。
 
 ## 修复原则
 
