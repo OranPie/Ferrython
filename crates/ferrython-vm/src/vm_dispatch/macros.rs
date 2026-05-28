@@ -23,13 +23,6 @@ macro_rules! spop {
     };
 }
 
-/// Unchecked peek at TOS — only borrows stack field immutably.
-macro_rules! speek {
-    ($frame:expr) => {
-        unsafe { $frame.stack.get_unchecked($frame.stack.len() - 1) }
-    };
-}
-
 /// Unchecked local read — only borrows locals field, not entire Frame.
 macro_rules! slocal {
     ($frame:expr, $idx:expr) => {

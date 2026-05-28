@@ -6,7 +6,7 @@ use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     has_descriptor_get, is_hidden_dict_key, lookup_in_class_mro, IteratorData, PyObject,
-    PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize, CLASS_FLAG_HAS_DESCRIPTORS,
+    PyObjectMethods, PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
@@ -1091,63 +1091,13 @@ impl VirtualMachine {
                 // RotThree and DupTopTwo: cold, delegate to execute_one
                 Opcode::RotThree | Opcode::DupTopTwo => self.execute_one(instr),
                 Opcode::Nop => hot_ok!(profiling, self.profiler, instr.op),
-                // Inline GetIter for common types
-                Opcode::GetIter => {
-                    let obj = speek!(frame);
-                    match &obj.payload {
-                        PyObjectPayload::Iterator(_)
-                        | PyObjectPayload::RangeIter(..)
-                        | PyObjectPayload::VecIter(_)
-                        | PyObjectPayload::WeakValueIter(_)
-                        | PyObjectPayload::WeakKeyIter(_)
-                        | PyObjectPayload::RefIter { .. }
-                        | PyObjectPayload::RevRefIter { .. }
-                        | PyObjectPayload::Generator(_) => {
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
-                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                                source: obj.clone(),
-                                index: SyncUsize::new(0),
-                            });
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        // Use RefIter for dict keys — avoids upfront Vec allocation + extra
-                        // clone round. ForIter handles RefIter→Dict→get_index→to_object per step.
-                        PyObjectPayload::Dict(_)
-                        | PyObjectPayload::MappingProxy(_)
-                        | PyObjectPayload::DictKeys { .. } => {
-                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                                source: obj.clone(),
-                                index: SyncUsize::new(0),
-                            });
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::DictValues { .. } => {
-                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                                source: obj.clone(),
-                                index: SyncUsize::new(0),
-                            });
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::DictItems { .. } => {
-                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                                source: obj.clone(),
-                                index: SyncUsize::new(0),
-                            });
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
+                // Fast GetIter for common iterable payloads.
+                Opcode::GetIter => match crate::vm_fast_iter::try_fast_get_iter(frame) {
+                    crate::vm_fast_iter::FastGetIterResult::Handled => {
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
-                }
+                    crate::vm_fast_iter::FastGetIterResult::Fallback => self.execute_one(instr),
+                },
                 // Inline ForIter for Range/List (hot in `for i in range(n)`)
                 Opcode::ForIter => {
                     // SAFETY: stack non-empty (iterator on TOS)
@@ -1911,69 +1861,12 @@ impl VirtualMachine {
                 Opcode::ForIterStoreFast => {
                     let jump_target = (instr.arg >> 16) as usize;
                     let store_idx = (instr.arg & 0xFFFF) as usize;
-                    let iter = unsafe { frame.peek_unchecked() };
-                    // Lock-free fast path for RangeIter
-                    if let PyObjectPayload::RangeIter(ri) = &iter.payload {
-                        let cur = ri.current.get();
-                        let done = if ri.step > 0 {
-                            cur >= ri.stop
-                        } else {
-                            cur <= ri.stop
-                        };
-                        if done {
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
-                        } else {
-                            ri.current.set(cur + ri.step);
-                            // Try in-place mutation if dest holds sole reference
-                            let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
-                            if let Some(ref mut arc) = dest_slot {
-                                if let Some(obj) = PyObjectRef::get_mut(arc) {
-                                    obj.payload = PyObjectPayload::Int(PyInt::Small(cur));
-                                    hot_ok_chain!(
-                                        profiling,
-                                        self.profiler,
-                                        instr.op,
-                                        frame,
-                                        instr_base,
-                                        instr_count
-                                    )
-                                }
-                            }
-                            // Force non-immortal allocation so get_mut succeeds next iteration
-                            *dest_slot =
-                                Some(PyObject::wrap_leaf(PyObjectPayload::Int(PyInt::Small(cur))));
-                        }
-                        hot_ok_chain!(
-                            profiling,
-                            self.profiler,
-                            instr.op,
-                            frame,
-                            instr_base,
-                            instr_count
-                        )
-                    } else if let PyObjectPayload::VecIter(data) = &iter.payload {
-                        let idx = data.index.get();
-                        if idx < data.items.len() {
-                            let obj = data.items[idx].clone();
-                            data.index.set(idx + 1);
-                            sset_local!(frame, store_idx, obj);
-                        } else {
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
-                        }
-                        hot_ok_chain!(
-                            profiling,
-                            self.profiler,
-                            instr.op,
-                            frame,
-                            instr_base,
-                            instr_count
-                        )
-                    } else if let PyObjectPayload::RefIter { source, index } = &iter.payload {
-                        if index.get() == usize::MAX {
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
+                    match crate::vm_fast_iter::try_fast_for_iter_store(
+                        frame,
+                        jump_target,
+                        store_idx,
+                    ) {
+                        crate::vm_fast_iter::FastForIterStoreResult::HandledChain => {
                             hot_ok_chain!(
                                 profiling,
                                 self.profiler,
@@ -1983,254 +1876,41 @@ impl VirtualMachine {
                                 instr_count
                             )
                         }
-                        let idx = index.get();
-                        let item = match &source.payload {
-                            PyObjectPayload::List(cell) => {
-                                let items = unsafe { &*cell.data_ptr() };
-                                if idx < items.len() {
-                                    Some(items[idx].clone())
-                                } else {
-                                    None
+                        crate::vm_fast_iter::FastForIterStoreResult::Generator(gen_arc) => {
+                            match self.resume_generator_for_iter(&gen_arc) {
+                                Ok(Some(value)) => {
+                                    rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                    let frame = unsafe { &mut *frame_ptr };
+                                    sset_local!(frame, store_idx, value);
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
-                            }
-                            PyObjectPayload::Tuple(items) => {
-                                if idx < items.len() {
-                                    Some(items[idx].clone())
-                                } else {
-                                    None
+                                Ok(None) => {
+                                    rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                    let frame = unsafe { &mut *frame_ptr };
+                                    drop(spop!(frame)); // remove generator
+                                    frame.ip = jump_target;
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
+                                Err(e) => Err(e),
                             }
-                            PyObjectPayload::Dict(cell)
-                            | PyObjectPayload::MappingProxy(cell)
-                            | PyObjectPayload::DictKeys { map: cell, .. } => {
-                                let map = unsafe { &*cell.data_ptr() };
-                                if idx < map.len() {
-                                    let (hk, _) = map.get_index(idx).unwrap();
-                                    Some(match hk {
-                                        HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
-                                        HashableKey::Str(s) => {
-                                            PyObject::str_val(s.to_compact_string())
-                                        }
-                                        _ => hk.to_object(),
-                                    })
-                                } else {
-                                    None
-                                }
-                            }
-                            PyObjectPayload::DictValues { map: cell, .. } => {
-                                let map = unsafe { &*cell.data_ptr() };
-                                if idx < map.len() {
-                                    Some(map.get_index(idx).unwrap().1.clone())
-                                } else {
-                                    None
-                                }
-                            }
-                            PyObjectPayload::DictItems { map: cell, .. } => {
-                                let map = unsafe { &*cell.data_ptr() };
-                                if idx < map.len() {
-                                    let (k, v) = map.get_index(idx).unwrap();
-                                    Some(PyObject::tuple(vec![k.to_object(), v.clone()]))
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(v) = item {
-                            index.set(idx + 1);
-                            sset_local!(frame, store_idx, v);
-                        } else {
-                            index.set(usize::MAX);
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
                         }
-                        hot_ok_chain!(
-                            profiling,
-                            self.profiler,
-                            instr.op,
-                            frame,
-                            instr_base,
-                            instr_count
-                        )
-                    } else if let PyObjectPayload::RevRefIter { source, index } = &iter.payload {
-                        let idx = index.get();
-                        if idx == usize::MAX || idx == 0 {
-                            index.set(usize::MAX);
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
-                        } else if let PyObjectPayload::List(cell) = &source.payload {
-                            let pos = idx - 1;
-                            let items = unsafe { &*cell.data_ptr() };
-                            if pos < items.len() {
-                                let obj = items[pos].clone();
-                                index.set(pos);
-                                sset_local!(frame, store_idx, obj);
-                            } else {
-                                index.set(usize::MAX);
-                                drop(spop!(frame));
-                                frame.ip = jump_target;
-                            }
-                        } else {
-                            index.set(usize::MAX);
-                            drop(spop!(frame));
-                            frame.ip = jump_target;
-                        }
-                        hot_ok_chain!(
-                            profiling,
-                            self.profiler,
-                            instr.op,
-                            frame,
-                            instr_base,
-                            instr_count
-                        )
-                    } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
-                        let mut data = iter_data.write();
-                        match &mut *data {
-                            IteratorData::Range {
-                                current,
-                                stop,
-                                step,
-                            } => {
-                                let done = if *step > 0 {
-                                    *current >= *stop
-                                } else {
-                                    *current <= *stop
-                                };
-                                if done {
-                                    drop(data);
-                                    drop(spop!(frame));
-                                    frame.ip = jump_target;
-                                } else {
-                                    let v = PyObject::int(*current);
-                                    *current += *step;
-                                    drop(data);
-                                    sset_local!(frame, store_idx, v);
-                                }
-                                hot_ok_chain!(
-                                    profiling,
-                                    self.profiler,
-                                    instr.op,
-                                    frame,
-                                    instr_base,
-                                    instr_count
-                                )
-                            }
-                            IteratorData::List { items, index } => {
-                                if *index < items.len() {
-                                    let v = items[*index].clone();
-                                    *index += 1;
-                                    drop(data);
-                                    sset_local!(frame, store_idx, v);
-                                } else {
-                                    drop(data);
-                                    drop(spop!(frame));
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok_chain!(
-                                    profiling,
-                                    self.profiler,
-                                    instr.op,
-                                    frame,
-                                    instr_base,
-                                    instr_count
-                                )
-                            }
-                            IteratorData::Tuple { items, index } => {
-                                if *index < items.len() {
-                                    let v = items[*index].clone();
-                                    *index += 1;
-                                    drop(data);
-                                    sset_local!(frame, store_idx, v);
-                                } else {
-                                    drop(data);
-                                    drop(spop!(frame));
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok_chain!(
-                                    profiling,
-                                    self.profiler,
-                                    instr.op,
-                                    frame,
-                                    instr_base,
-                                    instr_count
-                                )
-                            }
-                            IteratorData::DictKeys { keys, index } => {
-                                if *index < keys.len() {
-                                    let obj = keys[*index].clone();
-                                    *index += 1;
-                                    drop(data);
-                                    sset_local!(frame, store_idx, obj);
-                                } else {
-                                    drop(data);
-                                    drop(spop!(frame));
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok_chain!(
-                                    profiling,
-                                    self.profiler,
-                                    instr.op,
-                                    frame,
-                                    instr_base,
-                                    instr_count
-                                )
-                            }
-                            _ => {
-                                // Fallback: execute as ForIter, then the StoreFast
-                                drop(data);
-                                let for_instr = ferrython_bytecode::Instruction::new(
-                                    Opcode::ForIter,
-                                    jump_target as u32,
-                                );
-                                match self.execute_one(for_instr) {
-                                    Ok(_) => {
-                                        let frame = self.call_stack.last_mut().unwrap();
-                                        // If ForIter didn't jump (value was pushed), store it
-                                        if frame.ip != jump_target {
-                                            let v = spop!(frame);
-                                            sset_local!(frame, store_idx, v);
-                                        }
-                                        hot_ok!(profiling, self.profiler, instr.op)
+                        crate::vm_fast_iter::FastForIterStoreResult::Fallback => {
+                            // Fallback for non-iterator types
+                            let for_instr = ferrython_bytecode::Instruction::new(
+                                Opcode::ForIter,
+                                jump_target as u32,
+                            );
+                            match self.execute_one(for_instr) {
+                                Ok(_) => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    if frame.ip != jump_target {
+                                        let v = spop!(frame);
+                                        sset_local!(frame, store_idx, v);
                                     }
-                                    Err(e) => Err(e),
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
+                                Err(e) => Err(e),
                             }
-                        }
-                    } else if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
-                        // Inline generator in ForIterStoreFast
-                        let gen_arc = gen_arc.clone();
-                        match self.resume_generator_for_iter(&gen_arc) {
-                            Ok(Some(value)) => {
-                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                                let frame = unsafe { &mut *frame_ptr };
-                                sset_local!(frame, store_idx, value);
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            Ok(None) => {
-                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
-                                let frame = unsafe { &mut *frame_ptr };
-                                drop(spop!(frame)); // remove generator
-                                frame.ip = jump_target;
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        // Fallback for non-iterator types
-                        let for_instr = ferrython_bytecode::Instruction::new(
-                            Opcode::ForIter,
-                            jump_target as u32,
-                        );
-                        match self.execute_one(for_instr) {
-                            Ok(_) => {
-                                let frame = self.call_stack.last_mut().unwrap();
-                                if frame.ip != jump_target {
-                                    let v = spop!(frame);
-                                    sset_local!(frame, store_idx, v);
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            }
-                            Err(e) => Err(e),
                         }
                     }
                 }
