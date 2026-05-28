@@ -1234,6 +1234,10 @@ Last updated: 2026-05-29T02:59:38+08:00
   - 第九十一批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 02:59:38 CST）：扩展 `vm_fast_method.rs`，新增 `try_fast_builtin_method_poptop`，把 `CallMethodPopTop` 中 list.append/list.pop 指针快路径、Str-tag builtin method 直接调用和可丢弃返回值的直接 dispatch 移入 helper；主 loop 保留 VM-aware `collect_iterable` fallback、list.sort VM sort、Python simple method frame creation 和 generic `execute_one(CallMethod)` 丢弃返回值路径；`vm.rs` 从 3675 行降到 3571 行，`vm_fast_method.rs` 从 233 行扩到 378 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 CallMethodPopTop 表达式语句 smoke，覆盖 list append/pop、空 list.pop IndexError、dict.get 丢弃返回值、str method 丢弃返回值、set.add/update(generator)、list.extend(generator/list)、list.sort 和 Python 方法表达式语句。
   - commit：`756ad2d refactor: split vm method poptop calls`。
+  - 第九十二批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 03:09:11 CST）：扩展 `vm_fast_paths.rs`，新增 `try_fast_callfunction_builtin`，把普通 `CallFunction` 中 builtin/type 的快速调用计算移出主 dispatch loop；主 loop 保留 `setattr` 链式 pop-none 特判、`next()` fallback、class/exception/function frame creation 和 trace/profile/recursion 控制语义；`vm.rs` 从 3571 行降到 3027 行，`vm_fast_paths.rs` 从约 575 行扩到 734 行。
+  - 覆盖的快路径包括 `len/range/str/type/int/callable/float/bool/abs/hasattr/getattr/sum/min/max/sorted`、`isinstance(obj, builtin/class)` 和 mixed int/float `min/max`；`next()` 保持回落完整 dispatch 以兼容默认值、StopIteration 和迭代协议边界。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 setattr/hasattr/getattr、核心 builtin、isinstance class/builtin、sum start、min/max mixed、sorted、next iterator、getattr missing、next empty/default、sum TypeError 和 setattr instance smoke。
+  - commit：`2774eac refactor: split vm call builtin fast paths`。
 
 ## 修复原则
 
