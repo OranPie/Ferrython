@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:26:39+08:00
+Last updated: 2026-05-29T06:31:37+08:00
 
 ## 代码质量重构进度
 
@@ -10,6 +10,12 @@ Last updated: 2026-05-29T06:26:39+08:00
 - 已提交代码健康基线：
   - `24f550c tools: add code health baseline`
   - `tools/code_health.py` 可生成最长文件、match 热点、item 密度和 oversized candidates。
+- 第一百二十五批：已拆分 parser match/case 语句解析：
+  - 新增 `crates/ferrython-parser/src/parser/match_stmt.rs`，集中 `match`/`case` 语句和 pattern 解析逻辑。
+  - `parser/statements.rs` 从约 1458 行降到 1074 行，新 `match_stmt.rs` 约 361 行。
+  - 当前基线中 `parser/statements.rs` 已从最长 Rust 文件第二位降到第十四位。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-parser`。
+  - 代码提交：`9c14676 refactor: split match statement parser`。
 - 已继续 VM builtin type method 分层：
   - 新增 `builtins/type_methods/type_bytes.rs`、`type_numeric.rs`、`type_sequences.rs`、`type_mappings.rs` 和 `type_sets.rs`。
   - `type_methods.rs` 从约 3869 行降到 107 行，保留 collection helper、排序比较 helper 和子模块 re-export。
