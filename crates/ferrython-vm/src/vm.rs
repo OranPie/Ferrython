@@ -2380,45 +2380,10 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Inline int comparisons (hot in for-loop range iteration)
-                Opcode::CompareOp if instr.arg <= 5 => {
-                    let len = frame.stack.len();
-                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    let compares_weak_ref = |obj: &PyObjectRef| {
-                        matches!(&obj.payload, PyObjectPayload::Instance(inst)
-                            if inst.attrs.read().contains_key("__weakref_ref__"))
-                    };
-                    // Arc pointer equality fast-path: same object → equal
-                    if (instr.arg == 2 || instr.arg == 3)
-                        && PyObjectRef::ptr_eq(a, b)
-                        && !compares_weak_ref(a)
-                    {
-                        let result = instr.arg == 2; // Eq=true, Ne=false
-                        cmp_jump_lookahead!(
-                            result,
-                            frame,
-                            instr_base,
-                            instr_count,
-                            profiling,
-                            self.profiler,
-                            instr.op
-                        )
-                    } else {
-                        match (&a.payload, &b.payload) {
-                            (
-                                PyObjectPayload::Int(PyInt::Small(x)),
-                                PyObjectPayload::Int(PyInt::Small(y)),
-                            ) => {
-                                let result = match instr.arg {
-                                    0 => x < y,  // Lt
-                                    1 => x <= y, // Le
-                                    2 => x == y, // Eq
-                                    3 => x != y, // Ne
-                                    4 => x > y,  // Gt
-                                    _ => x >= y, // Ge (5)
-                                };
+                Opcode::CompareOp if instr.arg <= 9 => {
+                    match crate::vm_fast_compare::try_fast_compare(frame, instr) {
+                        crate::vm_fast_compare::FastCompareResult::Bool(result) => {
+                            if instr.arg <= 5 {
                                 cmp_jump_lookahead!(
                                     result,
                                     frame,
@@ -2428,175 +2393,14 @@ impl VirtualMachine {
                                     self.profiler,
                                     instr.op
                                 )
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let (xv, yv) = (*x, *y);
-                                let result = match instr.arg {
-                                    0 => xv < yv,
-                                    1 => xv <= yv,
-                                    2 => xv == yv,
-                                    3 => xv != yv,
-                                    4 => xv > yv,
-                                    _ => xv >= yv,
-                                };
-                                cmp_jump_lookahead!(
-                                    result,
-                                    frame,
-                                    instr_base,
-                                    instr_count,
-                                    profiling,
-                                    self.profiler,
-                                    instr.op
-                                )
-                            }
-                            // String equality (hot for dict lookups, isinstance checks)
-                            (PyObjectPayload::Str(x), PyObjectPayload::Str(y))
-                                if instr.arg == 2 || instr.arg == 3 =>
-                            {
-                                let eq = x == y;
-                                let result = if instr.arg == 2 { eq } else { !eq };
-                                cmp_jump_lookahead!(
-                                    result,
-                                    frame,
-                                    instr_base,
-                                    instr_count,
-                                    profiling,
-                                    self.profiler,
-                                    instr.op
-                                )
-                            }
-                            _ => self.execute_one(instr),
-                        }
-                    }
-                }
-                // Inline is/is not comparisons (CompareOp arg 8/9)
-                Opcode::CompareOp if instr.arg == 8 || instr.arg == 9 => {
-                    let len = frame.stack.len();
-                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let a = sget!(frame, len - 2);
-                    let b = sget!(frame, len - 1);
-                    let same = PyObjectRef::ptr_eq(a, b)
-                        || matches!((&a.payload, &b.payload),
-                            (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
-                        || matches!((&a.payload, &b.payload),
-                            (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
-                    let result = if instr.arg == 8 { same } else { !same };
-                    unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
-                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
-                    let len = frame.stack.len();
-                    let needle = sget!(frame, len - 2);
-                    let haystack = sget!(frame, len - 1);
-                    let found = match &haystack.payload {
-                        PyObjectPayload::Dict(map) => {
-                            let r = unsafe { &*map.data_ptr() };
-                            let found = match &needle.payload {
-                                PyObjectPayload::Str(s) => {
-                                    Some(r.contains_key(&BorrowedStrKey(s.as_str())))
-                                }
-                                PyObjectPayload::Int(PyInt::Small(n)) => {
-                                    Some(r.contains_key(&BorrowedIntKey(*n)))
-                                }
-                                PyObjectPayload::Bool(b) => {
-                                    Some(r.contains_key(&BorrowedIntKey(*b as i64)))
-                                }
-                                _ => None,
-                            };
-                            found
-                        }
-                        PyObjectPayload::Set(items) => {
-                            let r = unsafe { &*items.data_ptr() };
-                            match &needle.payload {
-                                PyObjectPayload::Str(s) => Some(
-                                    r.contains_key(&HashableKey::str_key(s.to_compact_string())),
-                                ),
-                                PyObjectPayload::Int(PyInt::Small(n)) => {
-                                    Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n))))
-                                }
-                                PyObjectPayload::Bool(b) => {
-                                    Some(r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64))))
-                                }
-                                _ => {
-                                    if let Ok(hk) = HashableKey::from_object(needle) {
-                                        Some(r.contains_key(&hk))
-                                    } else {
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                        PyObjectPayload::List(items) => {
-                            let items = unsafe { &*items.data_ptr() };
-                            Some(items.iter().any(|x| {
-                                PyObjectRef::ptr_eq(x, needle)
-                                    || match (&x.payload, &needle.payload) {
-                                        (
-                                            PyObjectPayload::Int(PyInt::Small(a)),
-                                            PyObjectPayload::Int(PyInt::Small(b)),
-                                        ) => a == b,
-                                        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => {
-                                            a == b
-                                        }
-                                        (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => {
-                                            a == b
-                                        }
-                                        (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
-                                            a == b
-                                        }
-                                        (PyObjectPayload::None, PyObjectPayload::None) => true,
-                                        (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
-                                            a.len() == b.len()
-                                                && a.iter().zip(b.iter()).all(|(ai, bi)| {
-                                                    ferrython_core::object::helpers::partial_cmp_objects(
-                                                        ai, bi,
-                                                    ) == Some(std::cmp::Ordering::Equal)
-                                                })
-                                        }
-                                        _ => x.is_same(needle),
-                                    }
-                            }))
-                        }
-                        PyObjectPayload::Tuple(items) => Some(items.iter().any(|x| {
-                            PyObjectRef::ptr_eq(x, needle)
-                                || match (&x.payload, &needle.payload) {
-                                    (
-                                        PyObjectPayload::Int(PyInt::Small(a)),
-                                        PyObjectPayload::Int(PyInt::Small(b)),
-                                    ) => a == b,
-                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
-                                    (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
-                                        a == b
-                                    }
-                                    (PyObjectPayload::None, PyObjectPayload::None) => true,
-                                    (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => a
-                                        .len()
-                                        == b.len()
-                                        && a.iter().zip(b.iter()).all(|(ai, bi)| {
-                                            ferrython_core::object::helpers::partial_cmp_objects(
-                                                ai, bi,
-                                            ) == Some(std::cmp::Ordering::Equal)
-                                        }),
-                                    _ => x.is_same(needle),
-                                }
-                        })),
-                        PyObjectPayload::Str(haystack_s) => {
-                            if let PyObjectPayload::Str(needle_s) = &needle.payload {
-                                Some(haystack_s.contains(needle_s.as_str()))
                             } else {
-                                None
+                                crate::vm_fast_compare::store_compare_bool(frame, result);
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
-                        _ => None,
-                    };
-                    if let Some(is_in) = found {
-                        let result = if instr.arg == 6 { is_in } else { !is_in };
-                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
+                        crate::vm_fast_compare::FastCompareResult::Fallback => {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 // Inline LoadGlobal: check per-frame cache, then globals, then builtins

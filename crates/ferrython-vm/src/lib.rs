@@ -15,6 +15,7 @@ pub(crate) mod vm_exec_compile;
 mod vm_execute_one;
 mod vm_fast_binary;
 mod vm_fast_collections;
+mod vm_fast_compare;
 mod vm_fast_paths;
 mod vm_helpers;
 mod vm_import;
