@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:27:10+08:00
+Last updated: 2026-05-28T08:32:27+08:00
 
 ## 代码质量重构进度
 
@@ -1127,6 +1127,9 @@ Last updated: 2026-05-28T08:27:10+08:00
   - 第五十六批继续 `operator` 分层：新增 `collection_modules/operator/callables.rs`，拆出 `itemgetter`、`attrgetter`、`methodcaller` 和 `length_hint` callable factory 及其 builtin-bound method dispatch helper；`operator.rs` 从约 1222 行降到约 755 行，新增 callable 子文件约 415 行，`CODE_HEALTH_BASELINE.md` 已刷新。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `operator.itemgetter/attrgetter/methodcaller/length_hint` smoke。
   - commit：`3753f9d refactor: split operator callables`。
+  - 第五十七批继续 `math_modules` 分层：新增 `math_modules/functions.rs`，把 `math` module factory、math builtin 函数、`ldexp`/`remainder` FFI 和整数/浮点共享 helper 从根文件移出；`math_modules.rs` 从约 1245 行降到约 21 行聚合模块，`functions.rs` 约 1225 行，并保留 `fractions` 通过 sibling helper 复用 `index_bigint`/`bigint_to_object`。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `math/fractions/statistics/cmath/decimal` smoke。
+  - commit：`b2c6e30 refactor: split math module functions`。
 
 ## 修复原则
 
