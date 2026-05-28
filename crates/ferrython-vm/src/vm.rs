@@ -840,123 +840,38 @@ impl VirtualMachine {
                     }
                 }
                 // Inline PopJumpIfFalse for primitive types (hot in conditionals/loops)
-                Opcode::PopJumpIfFalse => {
-                    // SAFETY: stack non-empty for well-formed bytecode
-                    let v = spop!(frame);
-                    match &v.payload {
-                        PyObjectPayload::Bool(b) => {
-                            if !b {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::None => {
+                Opcode::PopJumpIfFalse => match crate::vm_fast_compare::try_fast_pop_jump(frame) {
+                    crate::vm_fast_compare::FastPopJumpResult::Bool(truth) => {
+                        if !truth {
                             frame.ip = instr.arg as usize;
-                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        PyObjectPayload::Int(PyInt::Small(n)) => {
-                            if *n == 0 {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Str(s) => {
-                            if s.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::List(items) => {
-                            if unsafe { &*items.data_ptr() }.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Tuple(items) => {
-                            if items.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Dict(map) => {
-                            if unsafe { &*map.data_ptr() }.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Float(f) => {
-                            if *f == 0.0 {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => {
-                            if !self.vm_is_truthy(&v)? {
-                                let cs_len = self.call_stack.len();
-                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                    instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
-                }
-                Opcode::PopJumpIfTrue => {
-                    // SAFETY: stack non-empty for well-formed bytecode
-                    let v = spop!(frame);
-                    match &v.payload {
-                        PyObjectPayload::Bool(b) => {
-                            if *b {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
+                    crate::vm_fast_compare::FastPopJumpResult::Fallback(value) => {
+                        if !self.vm_is_truthy(&value)? {
+                            let cs_len = self.call_stack.len();
+                            unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
+                                instr.arg as usize;
                         }
-                        PyObjectPayload::None => hot_ok!(profiling, self.profiler, instr.op),
-                        PyObjectPayload::Int(PyInt::Small(n)) => {
-                            if *n != 0 {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Str(s) => {
-                            if !s.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::List(items) => {
-                            if !unsafe { &*items.data_ptr() }.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Tuple(items) => {
-                            if !items.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Dict(map) => {
-                            if !unsafe { &*map.data_ptr() }.is_empty() {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Float(f) => {
-                            if *f != 0.0 {
-                                frame.ip = instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => {
-                            if self.vm_is_truthy(&v)? {
-                                let cs_len = self.call_stack.len();
-                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
-                                    instr.arg as usize;
-                            }
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
-                }
+                },
+                Opcode::PopJumpIfTrue => match crate::vm_fast_compare::try_fast_pop_jump(frame) {
+                    crate::vm_fast_compare::FastPopJumpResult::Bool(truth) => {
+                        if truth {
+                            frame.ip = instr.arg as usize;
+                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    }
+                    crate::vm_fast_compare::FastPopJumpResult::Fallback(value) => {
+                        if self.vm_is_truthy(&value)? {
+                            let cs_len = self.call_stack.len();
+                            unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
+                                instr.arg as usize;
+                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    }
+                },
                 // Inline unconditional jumps (trivial but saves dispatch)
                 Opcode::JumpForward | Opcode::JumpAbsolute => {
                     frame.ip = instr.arg as usize;
@@ -5416,243 +5331,113 @@ impl VirtualMachine {
                 Opcode::CompareOpPopJumpIfFalse => {
                     let cmp_op = instr.arg >> 24;
                     let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
-                    let len = frame.stack.len();
-                    if len >= 2 {
-                        if cmp_op == 10 {
-                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                            match self.exec_compare_ops(cmp_instr) {
-                                Ok(result) => {
-                                    if result.is_none() {
-                                        let frame = self.call_stack.last_mut().unwrap();
-                                        let v = spop!(frame);
-                                        let is_false =
-                                            matches!(&v.payload, PyObjectPayload::Bool(false));
-                                        if is_false {
-                                            self.call_stack.last_mut().unwrap().ip = jump_target;
-                                        }
-                                    }
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                }
-                                Err(e) => Err(e),
+                    match crate::vm_fast_compare::try_fast_compare_jump(frame, instr) {
+                        crate::vm_fast_compare::FastCompareJumpResult::Bool(is_true) => {
+                            if !is_true {
+                                frame.ip = jump_target;
                             }
-                        } else {
-                            let a = sget!(frame, len - 2);
-                            let b = sget!(frame, len - 1);
-                            let fast_result = match (&a.payload, &b.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => match cmp_op {
-                                    0 => Some(*x < *y),
-                                    1 => Some(*x <= *y),
-                                    2 => Some(*x == *y),
-                                    3 => Some(*x != *y),
-                                    4 => Some(*x > *y),
-                                    5 => Some(*x >= *y),
-                                    _ => None,
-                                },
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    match cmp_op {
-                                        0 => Some(*x < *y),
-                                        1 => Some(*x <= *y),
-                                        2 => Some(*x == *y),
-                                        3 => Some(*x != *y),
-                                        4 => Some(*x > *y),
-                                        5 => Some(*x >= *y),
-                                        _ => None,
-                                    }
-                                }
-                                _ => None,
-                            };
-                            if let Some(is_true) = fast_result {
-                                // Pop both operands without intermediate Arc operations
-                                let len = frame.stack.len();
-                                unsafe {
-                                    let _a = std::ptr::read(frame.stack.as_ptr().add(len - 1));
-                                    let _b = std::ptr::read(frame.stack.as_ptr().add(len - 2));
-                                    frame.stack.set_len(len - 2);
-                                }
-                                if !is_true {
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                // Fallback: execute CompareOp, then check result
-                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                                let result = self.exec_compare_ops(cmp_instr)?;
-                                if result.is_none() {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    let v = spop!(frame);
-                                    let is_false = match &v.payload {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                            let result = self.exec_compare_ops(cmp_instr)?;
+                            if result.is_none() {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                let v = spop!(frame);
+                                let is_false = if cmp_op == 10 {
+                                    matches!(&v.payload, PyObjectPayload::Bool(false))
+                                } else {
+                                    match &v.payload {
                                         PyObjectPayload::Bool(b) => !b,
                                         PyObjectPayload::None => true,
                                         PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
                                         _ => !self.vm_is_truthy(&v)?,
-                                    };
-                                    if is_false {
-                                        let cs_len = self.call_stack.len();
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }
-                                            .ip = jump_target;
                                     }
+                                };
+                                if is_false {
+                                    let cs_len = self.call_stack.len();
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
+                                        jump_target;
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
                             }
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
+                        }
                     }
                 }
                 // 4-way superinstruction: LoadFast + LoadConst + CompareOp + PopJumpIfFalse
                 // Zero-clone — reads local and constant by reference, no stack ops at all
                 Opcode::LoadFastCompareConstJump => {
                     let cmp_op = instr.arg >> 28;
-                    let local_idx = ((instr.arg >> 20) & 0xFF) as usize;
-                    let const_idx = ((instr.arg >> 12) & 0xFF) as usize;
                     let jump_target = (instr.arg & 0xFFF) as usize;
-                    // Read local by reference — no clone
-                    match slocal!(frame, local_idx) {
-                        Some(local) => {
-                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
-                            let fast_result = match (&local.payload, &c.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => match cmp_op {
-                                    0 => Some(*x < *y),
-                                    1 => Some(*x <= *y),
-                                    2 => Some(*x == *y),
-                                    3 => Some(*x != *y),
-                                    4 => Some(*x > *y),
-                                    5 => Some(*x >= *y),
-                                    _ => None,
-                                },
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    match cmp_op {
-                                        0 => Some(*x < *y),
-                                        1 => Some(*x <= *y),
-                                        2 => Some(*x == *y),
-                                        3 => Some(*x != *y),
-                                        4 => Some(*x > *y),
-                                        5 => Some(*x >= *y),
-                                        _ => None,
-                                    }
-                                }
-                                _ => None,
-                            };
-                            if let Some(is_true) = fast_result {
-                                if !is_true {
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
-                                spush!(frame, local.clone());
-                                spush!(frame, c.clone());
-                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                                let result = self.exec_compare_ops(cmp_instr)?;
-                                if result.is_none() {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    let v = spop!(frame);
-                                    let is_false = match &v.payload {
-                                        PyObjectPayload::Bool(b) => !b,
-                                        PyObjectPayload::None => true,
-                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                        _ => !self.vm_is_truthy(&v)?,
-                                    };
-                                    if is_false {
-                                        let cs_len = self.call_stack.len();
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }
-                                            .ip = jump_target;
-                                    }
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                    match crate::vm_fast_compare::try_fast_compare_jump(frame, instr) {
+                        crate::vm_fast_compare::FastCompareJumpResult::Bool(is_true) => {
+                            if !is_true {
+                                frame.ip = jump_target;
                             }
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        None => Self::err_unbound_local(&frame.code.varnames, local_idx),
+                        crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                            let result = self.exec_compare_ops(cmp_instr)?;
+                            if result.is_none() {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                let v = spop!(frame);
+                                let is_false = match &v.payload {
+                                    PyObjectPayload::Bool(b) => !b,
+                                    PyObjectPayload::None => true,
+                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                    _ => !self.vm_is_truthy(&v)?,
+                                };
+                                if is_false {
+                                    let cs_len = self.call_stack.len();
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
+                                        jump_target;
+                                }
+                            }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
+                        }
                     }
                 }
                 // 4-way superinstruction: LoadFast + LoadFast + CompareOp + PopJumpIfFalse
                 // Zero-clone — reads both locals by reference, no stack ops at all
                 Opcode::LoadFastLoadFastCompareJump => {
                     let cmp_op = instr.arg >> 28;
-                    let idx1 = ((instr.arg >> 20) & 0xFF) as usize;
-                    let idx2 = ((instr.arg >> 12) & 0xFF) as usize;
                     let jump_target = (instr.arg & 0xFFF) as usize;
-                    match (slocal!(frame, idx1), slocal!(frame, idx2)) {
-                        (Some(a), Some(b)) => {
-                            let fast_result = match (&a.payload, &b.payload) {
-                                (
-                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                ) => match cmp_op {
-                                    0 => Some(*x < *y),
-                                    1 => Some(*x <= *y),
-                                    2 => Some(*x == *y),
-                                    3 => Some(*x != *y),
-                                    4 => Some(*x > *y),
-                                    5 => Some(*x >= *y),
-                                    _ => None,
-                                },
-                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    match cmp_op {
-                                        0 => Some(*x < *y),
-                                        1 => Some(*x <= *y),
-                                        2 => Some(*x == *y),
-                                        3 => Some(*x != *y),
-                                        4 => Some(*x > *y),
-                                        5 => Some(*x >= *y),
-                                        _ => None,
-                                    }
-                                }
-                                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
-                                    match cmp_op {
-                                        0 => Some(x < y),
-                                        1 => Some(x <= y),
-                                        2 => Some(x == y),
-                                        3 => Some(x != y),
-                                        4 => Some(x > y),
-                                        5 => Some(x >= y),
-                                        _ => None,
-                                    }
-                                }
-                                _ => None,
-                            };
-                            if let Some(is_true) = fast_result {
-                                if !is_true {
-                                    frame.ip = jump_target;
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
-                                spush!(frame, a.clone());
-                                spush!(frame, b.clone());
-                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
-                                let result = self.exec_compare_ops(cmp_instr)?;
-                                if result.is_none() {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    let v = spop!(frame);
-                                    let is_false = match &v.payload {
-                                        PyObjectPayload::Bool(b) => !b,
-                                        PyObjectPayload::None => true,
-                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
-                                        _ => !self.vm_is_truthy(&v)?,
-                                    };
-                                    if is_false {
-                                        let cs_len = self.call_stack.len();
-                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }
-                                            .ip = jump_target;
-                                    }
-                                }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                    match crate::vm_fast_compare::try_fast_compare_jump(frame, instr) {
+                        crate::vm_fast_compare::FastCompareJumpResult::Bool(is_true) => {
+                            if !is_true {
+                                frame.ip = jump_target;
                             }
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        _ => {
-                            // One of the locals is unbound
-                            if slocal!(frame, idx1).is_none() {
-                                Self::err_unbound_local(&frame.code.varnames, idx1)
-                            } else {
-                                Self::err_unbound_local(&frame.code.varnames, idx2)
+                        crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                            let result = self.exec_compare_ops(cmp_instr)?;
+                            if result.is_none() {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                let v = spop!(frame);
+                                let is_false = match &v.payload {
+                                    PyObjectPayload::Bool(b) => !b,
+                                    PyObjectPayload::None => true,
+                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                    _ => !self.vm_is_truthy(&v)?,
+                                };
+                                if is_false {
+                                    let cs_len = self.call_stack.len();
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip =
+                                        jump_target;
+                                }
                             }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
+                            Self::err_unbound_local(&frame.code.varnames, idx)
                         }
                     }
                 }
