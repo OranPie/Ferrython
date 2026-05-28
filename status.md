@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:44:55+08:00
+Last updated: 2026-05-28T08:51:34+08:00
 
 ## 代码质量重构进度
 
@@ -1136,6 +1136,9 @@ Last updated: 2026-05-28T08:44:55+08:00
   - 第五十九批继续 `math_modules/functions` 普通函数分组：新增 `functions/elementary.rs`，拆出 sqrt/ceil/floor/fabs/pow/log/三角函数/角度转换/isnan/isinf/isfinite；新增 `functions/combinatorics.rs`，拆出 gcd/factorial/isqrt/comb/perm/prod/lcm。`functions.rs` 从约 793 行降到约 343 行，并退出当前 `CODE_HEALTH_BASELINE.md` item-density 热点列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 elementary、combinatorics、hypot/frexp/ldexp 和 `fractions.Fraction` smoke。
   - commit：`07ec3c3 refactor: split math function groups`。
+  - 第六十批开始 `decimal` 内部分层：新增 `math_modules/decimal/context.rs`，拆出 signal 类型、flags/traps dict 和 Context clear/copy helper；新增 `math_modules/decimal/digits.rs`，拆出 long-division digit vector helper 和 precision truncation/rounding helper。`decimal.rs` 从约 1815 行降到约 1502 行，并从当前 item-density 热点中降级。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal arithmetic/division/quantize、getcontext/Context、clear_flags/clear_traps 和 signal flags smoke。
+  - commit：`119bbb2 refactor: split decimal helpers`。
 
 ## 修复原则
 
