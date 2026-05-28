@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T05:16:30+08:00
+Last updated: 2026-05-29T05:23:41+08:00
 
 ## 代码质量重构进度
 
@@ -1310,6 +1310,10 @@ Last updated: 2026-05-29T05:16:30+08:00
   - 体检结果：`vm.rs` 从 1972 行降到 1887 行，`vm_fast_method.rs` 从约 378 行扩到 596 行；刷新后当前最大 Rust 文件为 `ferrypip cli.rs`（1921）、`vm.rs`（1887）、`object/payload.rs`（1878）和 `object/helpers.rs`（1812）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过普通 method call、`CallMethodPopTop` 丢弃返回值、属性写入和递归 method call smoke。
   - commit：`d85dc64 refactor: split vm python method frame helper`。
+  - 第一百一十一批处理当前最大 Rust 文件 `ferrython-pip/src/cli.rs`（2026-05-29 05:23:41 CST）：新增 `cli/project.rs`，拆出 editable install、project install、project extras、setup.cfg install、setup.py dependency heuristic parser 和 project fallback 到 requirements.txt 的逻辑；`cli.rs` 保留 clap command model、主 dispatch、requirements parsing、install/uninstall/list/download/freeze/check 等命令流程。
+  - 体检结果：`cli.rs` 从 1921 行降到 1379 行，新 `cli/project.rs` 为 547 行；刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`object/payload.rs`（1878）、`object/helpers.rs`（1812）和 `parser/expressions.rs`（1803）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-pip`、`cargo build -p ferrython-pip --bin ferrypip`，并用新生成的 `target/debug/ferrypip` 通过 `--help`、空 site `list --format freeze`、`config --list`、`hash Cargo.toml`、无项目目录 `project` 预期错误和临时 `pyproject.toml` 项目 smoke。
+  - commit：`cd076c7 refactor: split ferrypip project commands`。
 
 ## 修复原则
 
