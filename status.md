@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T00:53:34+08:00
+Last updated: 2026-05-29T00:59:36+08:00
 
 ## 代码质量重构进度
 
@@ -1190,6 +1190,9 @@ Last updated: 2026-05-29T00:53:34+08:00
   - 第七十七批开始直接处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 00:53:34 CST）：新增 `vm_fast_binary.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 BinaryAdd/Subtract/Multiply/Modulo/FloorDivide/TrueDivide 及对应 inplace opcode 的热路径 helper；`vm.rs` 从 9155 行降到 8916 行，`vm_fast_binary.rs` 为 263 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 int/float/string/list/tuple 二元运算 smoke。
   - commit：`d155cad refactor: split vm fast binary paths`。
+  - 第七十八批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 00:59:36 CST）：新增 `vm_fast_collections.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 BinarySubscr、StoreSubscr、ListAppend、MapAdd、SetAdd 的 list/tuple/dict/str/set 快路径；`vm.rs` 从 8916 行降到 8682 行，`vm_fast_collections.rs` 为 248 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 list/tuple/dict/str 下标、list/dict 写入、list/dict/set comprehension smoke。
+  - commit：`9e272ec refactor: split vm fast collection paths`。
 
 ## 修复原则
 
