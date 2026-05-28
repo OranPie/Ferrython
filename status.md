@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T06:15:01+08:00
+Last updated: 2026-05-29T06:19:13+08:00
 
 ## 代码质量重构进度
 
@@ -1354,6 +1354,10 @@ Last updated: 2026-05-29T06:15:01+08:00
   - 体检结果：`peephole.rs` 从 1567 行降到 841 行，进入 1000 行可接受范围；新 `superinstructions.rs` 为 732 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`opcodes/arithmetic.rs`（1506）、`vm_helpers.rs`（1470）和 `parser/statements.rs`（1458）。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-compiler`。
   - commit：`54ce30c refactor: split peephole superinstructions`。
+  - 第一百二十二批处理 VM arithmetic opcode 大文件 `opcodes/arithmetic.rs`（2026-05-29 06:19:13 CST）：新增 `opcodes/arithmetic/unary.rs` 和 `opcodes/arithmetic/subscript.rs`，拆出 unary opcode handlers、weak proxy arithmetic unwrap、binary/store/delete subscript handlers；主文件保留 binary/inplace arithmetic dispatch、dunder dispatch helpers、PEP 604 union helper 和 percent-format 子模块。
+  - 体检结果：`opcodes/arithmetic.rs` 从 1506 行降到 749 行，进入 1000 行可接受范围；新 `subscript.rs` 为 674 行，`unary.rs` 为 106 行。刷新后当前最大 Rust 文件为 `vm.rs`（1887）、`vm_helpers.rs`（1470）、`parser/statements.rs`（1458）和 `object/methods_type.rs`（1438）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`。
+  - commit：`9362398 refactor: split arithmetic opcode handlers`。
 
 ## 修复原则
 
