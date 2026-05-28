@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T00:59:36+08:00
+Last updated: 2026-05-29T01:05:49+08:00
 
 ## 代码质量重构进度
 
@@ -1193,6 +1193,9 @@ Last updated: 2026-05-29T00:59:36+08:00
   - 第七十八批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 00:59:36 CST）：新增 `vm_fast_collections.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 BinarySubscr、StoreSubscr、ListAppend、MapAdd、SetAdd 的 list/tuple/dict/str/set 快路径；`vm.rs` 从 8916 行降到 8682 行，`vm_fast_collections.rs` 为 248 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 list/tuple/dict/str 下标、list/dict 写入、list/dict/set comprehension smoke。
   - commit：`9e272ec refactor: split vm fast collection paths`。
+  - 第七十九批继续处理最大文件 `ferrython-vm/src/vm.rs`（2026-05-29 01:05:49 CST）：新增 `vm_fast_compare.rs`，从 `run_frame` 巨型 dispatch loop 中拆出 CompareOp 的基础比较、identity 比较和 `in/not in` 快路径 bool 计算；保留原 `cmp_jump_lookahead!` 控制流在主 loop 内；`vm.rs` 从 8682 行降到 8486 行，`vm_fast_compare.rs` 为 161 行。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `< <= == != > >=`、`is/is not`、dict/set/list/tuple/str `in/not in` smoke。
+  - commit：`ea8eed8 refactor: split vm fast compare paths`。
 
 ## 修复原则
 
