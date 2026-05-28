@@ -1,10 +1,11 @@
 //! Fast method-call helpers for builtin receiver paths.
 
 use crate::frame::Frame;
+use crate::vm::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    FxHashKeyMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    FxHashKeyMap, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
 
@@ -22,6 +23,109 @@ pub(crate) enum FastMethodPopTopResult {
     HandledChain,
     Fallback,
     Error(PyException),
+}
+
+impl VirtualMachine {
+    pub(crate) fn call_builtin_method_fallback(
+        &mut self,
+        frame: &mut Frame,
+        arg_count: usize,
+    ) -> PyResult<PyObjectRef> {
+        if arg_count == 1 {
+            let a0 = pop_stack(frame);
+            let receiver = pop_stack(frame);
+            let name_obj = pop_stack(frame);
+            let PyObjectPayload::Str(ref name) = name_obj.payload else {
+                return Ok(PyObject::none());
+            };
+            return self.call_builtin_method_fallback_1(receiver, name.as_str(), a0);
+        }
+
+        if arg_count == 0 {
+            let receiver = pop_stack(frame);
+            let name_obj = pop_stack(frame);
+            let PyObjectPayload::Str(ref name) = name_obj.payload else {
+                return Ok(PyObject::none());
+            };
+            return self.call_builtin_method_fallback_0(receiver, name.as_str());
+        }
+
+        let mut args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            args.push(pop_stack(frame));
+        }
+        args.reverse();
+        let receiver = pop_stack(frame);
+        let name_obj = pop_stack(frame);
+        let PyObjectPayload::Str(ref name) = name_obj.payload else {
+            return Ok(PyObject::none());
+        };
+        crate::builtins::call_method(&receiver, name.as_str(), &args)
+    }
+
+    fn call_builtin_method_fallback_0(
+        &mut self,
+        receiver: PyObjectRef,
+        name: &str,
+    ) -> PyResult<PyObjectRef> {
+        if name == "sort" && matches!(&receiver.payload, PyObjectPayload::List(_)) {
+            let mut values = if let PyObjectPayload::List(items) = &receiver.payload {
+                items.read().clone()
+            } else {
+                Vec::new()
+            };
+            self.vm_sort(&mut values).and_then(|()| {
+                if let PyObjectPayload::List(items) = &receiver.payload {
+                    *items.write() = values;
+                }
+                Ok(PyObject::none())
+            })
+        } else {
+            crate::builtins::call_method(&receiver, name, &[])
+        }
+    }
+
+    fn call_builtin_method_fallback_1(
+        &mut self,
+        receiver: PyObjectRef,
+        name: &str,
+        a0: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        if name == "join"
+            && matches!(
+                &receiver.payload,
+                PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_)
+            )
+            && is_vm_collectable_join_arg(&a0)
+        {
+            return self.collect_iterable(&a0).and_then(|items| {
+                crate::builtins::call_method(&receiver, name, &[PyObject::list(items)])
+            });
+        }
+
+        if is_set_collect_method(name)
+            && matches!(
+                &receiver.payload,
+                PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+            )
+            && is_vm_collectable_set_arg(&a0)
+        {
+            return self.collect_iterable(&a0).and_then(|items| {
+                crate::builtins::call_method(&receiver, name, &[PyObject::list(items)])
+            });
+        }
+
+        if name == "extend" && matches!(&receiver.payload, PyObjectPayload::List(_)) {
+            if list_extend_needs_vm_collect(&a0) {
+                return self.collect_iterable(&a0).and_then(|items| {
+                    crate::builtins::call_method(&receiver, "extend", &[PyObject::list(items)])
+                });
+            }
+            return crate::builtins::call_method(&receiver, name, &[a0]);
+        }
+
+        crate::builtins::call_method(&receiver, name, &[a0])
+    }
 }
 
 #[inline(always)]
@@ -347,6 +451,69 @@ fn simple_hashable_key(obj: &PyObjectRef) -> Option<HashableKey> {
         PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
         _ => None,
     }
+}
+
+#[inline(always)]
+fn is_vm_collectable_join_arg(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::Generator(_)
+            | PyObjectPayload::Instance(_)
+            | PyObjectPayload::Iterator(_)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::WeakValueIter(_)
+            | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::RevRefIter { .. }
+    )
+}
+
+#[inline(always)]
+fn is_vm_collectable_set_arg(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_) | PyObjectPayload::Iterator(_)
+    )
+}
+
+#[inline(always)]
+fn list_extend_needs_vm_collect(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_) => true,
+        PyObjectPayload::Iterator(iter_data) => matches!(
+            &*iter_data.read(),
+            IteratorData::Enumerate { .. }
+                | IteratorData::Zip { .. }
+                | IteratorData::MapOne { .. }
+                | IteratorData::Map { .. }
+                | IteratorData::Filter { .. }
+                | IteratorData::FilterFalse { .. }
+                | IteratorData::Sentinel { .. }
+        ),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn is_set_collect_method(name: &str) -> bool {
+    matches!(
+        name,
+        "union"
+            | "intersection"
+            | "difference"
+            | "symmetric_difference"
+            | "update"
+            | "intersection_update"
+            | "difference_update"
+            | "symmetric_difference_update"
+            | "issubset"
+            | "issuperset"
+            | "isdisjoint"
+            | "__or__"
+            | "__and__"
+            | "__sub__"
+            | "__xor__"
+    )
 }
 
 #[inline(always)]
