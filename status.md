@@ -1154,6 +1154,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十五批继续 `math_modules/decimal` 分层（2026-05-28 09:32:54 CST）：新增 `math_modules/decimal/class_methods.rs`，拆出 `Decimal` class 扩展方法注册（quantize/sqrt/ln/exp、分类方法、copy/normalize/as_tuple/copy_sign、pow/mod/floordiv/bool/round/max/min/compare/integral/log/fma/number_class 和 `__new__`）；`decimal.rs` 从约 1314 行降到约 763 行，`class_methods.rs` 约 586 行，`decimal.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal arithmetic/quantize/copy/normalize/as_tuple/copy_sign/pow/mod/floordiv/bool/round/max/min/compare/radix/integral/log/fma/same_quantum/number_class/classification/context smoke。
   - commit：`92b457a refactor: split decimal class methods`。
+  - 第六十六批继续 `serial_modules/csv_module` 分层（2026-05-28 18:30:45 CST）：新增 `csv_module/{dialect,reader,writer,dict_io}.rs`，把 dialect registry/Sniffer、reader dialect extraction 和 parse、writer quoting/write row、DictReader/DictWriter helper 从根文件拆出；`csv_module.rs` 从约 1167 行降到 153 行，拆分后 5 个文件合计 1165 行，最大新子文件 `dict_io.rs` 为 322 行，`CODE_HEALTH_BASELINE.md` 已刷新。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 csv reader/dialect registry/list/get/unregister、registered dialect reader、writer/DictWriter object smoke、DictReader、Sniffer 和 `field_size_limit` smoke；Python class `Sink.write` 状态回写仍是既有不完整语义，本批未混入修复。
+  - commit：`ce0189d refactor: split csv module`。
 
 ## 修复原则
 
