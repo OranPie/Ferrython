@@ -1151,6 +1151,9 @@ Last updated: 2026-05-28T08:57:50+08:00
   - 第六十四批继续 `concurrency_modules/threading` 分层（2026-05-28 09:24:07 CST）：新增 `threading/{thread_class,module_fns,sync_primitives}.rs` 和 `threading/sync_primitives/{locks,semaphores,events,condition_timer}.rs`，拆出 `Thread` 类、模块级函数、Lock/RLock、Semaphore/BoundedSemaphore、Event/Barrier、Condition/Timer 构造逻辑；`threading.rs` 从约 1185 行降到约 64 行，最大新子文件 `thread_class.rs` 约 356 行，`threading.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `threading` active/current/enumerate/main/local/get_ident/stack_size、Lock/RLock、Semaphore/BoundedSemaphore、Event、Barrier、Timer 和默认 Thread smoke；`Thread(name="...")` 仍是既有 kwargs 不完整语义，本批未混入修复。
   - commit：`81c40ce refactor: split threading module`。
+  - 第六十五批继续 `math_modules/decimal` 分层（2026-05-28 09:32:54 CST）：新增 `math_modules/decimal/class_methods.rs`，拆出 `Decimal` class 扩展方法注册（quantize/sqrt/ln/exp、分类方法、copy/normalize/as_tuple/copy_sign、pow/mod/floordiv/bool/round/max/min/compare/integral/log/fma/number_class 和 `__new__`）；`decimal.rs` 从约 1314 行降到约 763 行，`class_methods.rs` 约 586 行，`decimal.rs` 已退出当前 `CODE_HEALTH_BASELINE.md` longest Rust files 列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 Decimal arithmetic/quantize/copy/normalize/as_tuple/copy_sign/pow/mod/floordiv/bool/round/max/min/compare/radix/integral/log/fma/same_quantum/number_class/classification/context smoke。
+  - commit：`92b457a refactor: split decimal class methods`。
 
 ## 修复原则
 
