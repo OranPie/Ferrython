@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use super::methods::CompareOp;
 use super::methods::PyObjectMethods;
 use super::payload::*;
+use super::ClassData;
 
 // ── Post-call intercept fast flag ──
 // Set when asyncio.run(), __import__(), importlib.import_module(), or reload()

@@ -1,6 +1,7 @@
 //! The Python object model — `PyObject`, `PyObjectRef`, `PyObjectPayload`.
 
 mod cell_map;
+mod class_data;
 mod constructors;
 pub mod helpers;
 mod methods;
@@ -16,6 +17,7 @@ mod str_repr;
 
 // Re-export all public types and functions
 pub use cell_map::*;
+pub use class_data::*;
 pub use constructors::alloc_list_box_empty;
 pub use constructors::alloc_map_inner;
 pub use constructors::alloc_tuple_box_empty;

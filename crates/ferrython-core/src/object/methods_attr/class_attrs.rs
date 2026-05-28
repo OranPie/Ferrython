@@ -4,6 +4,7 @@ use compact_str::CompactString;
 use std::rc::Rc;
 
 use super::*;
+use crate::object::ClassData;
 
 pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Option<PyObjectRef> {
     // Special class attributes

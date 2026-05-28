@@ -7,6 +7,7 @@ use compact_str::CompactString;
 use super::helpers::*;
 use super::methods::PyObjectMethods;
 use super::payload::*;
+use super::ClassData;
 
 pub(super) fn bytes_fromhex_data(obj: &PyObjectRef) -> Result<Vec<u8>, PyException> {
     let s = match &obj.payload {

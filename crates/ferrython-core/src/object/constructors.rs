@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use super::methods::PyObjectMethods;
 use super::payload::*;
+use super::ClassData;
 
 // ── Thread-local freelists ──
 // Each thread (including parallel test threads) gets its own independent
