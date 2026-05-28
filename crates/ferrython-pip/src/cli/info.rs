@@ -1,7 +1,7 @@
 use crate::{pypi, registry};
 
 use super::cache::cache_dir;
-use super::parse_version_specifier;
+use super::install::parse_version_specifier;
 
 pub(super) fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
     let exe = std::env::current_exe().unwrap_or_default();

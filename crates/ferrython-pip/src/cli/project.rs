@@ -1,6 +1,8 @@
 use crate::{metadata::PackageMetadata, resolver};
 
-use super::{install_packages, parse_requirements_file, parse_version_specifier, status};
+use super::install::{install_packages, parse_version_specifier};
+use super::output::status;
+use super::requirements::parse_requirements_file;
 
 /// Install a package in editable mode: writes a .pth file pointing at the source directory.
 pub(super) fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), String> {
