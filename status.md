@@ -1246,6 +1246,10 @@ Last updated: 2026-05-29T02:59:38+08:00
   - 体检结果：`vm.rs` 从 2811 行降到 2706 行，`vm_fast_call.rs` 从 334 行扩到 450 行；当前最大文件变为 `vm_helpers.rs`（2799 行），下一批应优先拆 `vm_helpers.rs` 的 repr/format/iteration/generator 职责组。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 global simple return、trivial const return、recursive base case、global builtin fallback、closure return 和 two-arg simple call smoke。
   - commit：`1cc3bec refactor: split vm global function calls`。
+  - 第九十五批转向当前最大文件 `ferrython-vm/src/vm_helpers.rs`（2026-05-29 03:32:08 CST）：新增 `vm_text.rs`，把 VM-aware `str`/`repr`、`str.format`、format field 解析和 `call_close_on` 从 `vm_helpers.rs` 拆出；`vm_helpers.rs` 保留 dunder/descriptor 基础工具、hash/iteration/generator/sort/post-call intercept 职责，避免继续把文本格式化逻辑和迭代运行时逻辑混在同一个文件。
+  - 体检结果：`vm_helpers.rs` 从 2799 行降到 2294 行，新 `vm_text.rs` 为 513 行；当前最大文件重新变为 `vm.rs`（2706 行），其次是 `ferrython-pip/src/cli.rs`（2620 行）和 `builtins/core_fns.rs`（2522 行）。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过自定义 `__str__/__repr__`、`str.format` 转换/宽度、format 字段 attr/item access、list/tuple/dict/set repr、异常 `str(e)` 和 args repr smoke。
+  - commit：`6cb5e7c refactor: split vm text helpers`。
 
 ## 修复原则
 
