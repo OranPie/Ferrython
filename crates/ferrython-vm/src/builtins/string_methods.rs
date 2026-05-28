@@ -1,7 +1,7 @@
 //! String method dispatch (upper, lower, split, replace, strip, join, find, format, etc.)
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     alloc_list_box_empty, check_args_min, checked_repeat_len, index_to_i64, index_to_usize_repeat,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -11,13 +11,17 @@ use indexmap::IndexMap;
 
 use super::apply_format_spec_str;
 
+mod encoding;
 mod fast_ops;
+mod formatting;
 mod punycode;
 
+use encoding::str_encode;
 use fast_ops::{
     fast_count, fast_find, join_str_slice, replace_into_compact, split_single_byte_into,
     split_whitespace_into,
 };
+use formatting::{resolve_format_field, resolve_nested_spec};
 pub(crate) use punycode::{punycode_decode_bytes, punycode_encode_str};
 
 /// Extract a string value from a PyObject, accepting both Str payload and str subclasses.
@@ -65,102 +69,6 @@ fn normalize_index(idx: i64, len: i64) -> usize {
     } else {
         (idx as usize).min(len as usize)
     }
-}
-
-/// Resolve a format field like "0", "0.attr", "0[key]", "0.attr[0]", or "name".
-/// Supports chained attribute access (`.`) and getitem (`[...]`) in any order.
-fn resolve_format_field(field_name: &str, args: &[PyObjectRef]) -> Option<PyObjectRef> {
-    // Parse the base name: everything before the first '.' or '['
-    let base_end = field_name
-        .find(|c: char| c == '.' || c == '[')
-        .unwrap_or(field_name.len());
-    let base_name = &field_name[..base_end];
-    let rest = &field_name[base_end..];
-
-    // Resolve base value from positional args or kwargs
-    let mut current = if let Ok(idx) = base_name.parse::<usize>() {
-        args.get(idx)?.clone()
-    } else {
-        // Named field — look in kwargs (last arg if it's a dict from **kwargs unpacking)
-        // For now, named fields aren't supported without kwargs unpacking at call site
-        return None;
-    };
-
-    // Process accessor chain: .attr and [key] in sequence
-    let mut chars = rest.chars().peekable();
-    while let Some(&c) = chars.peek() {
-        if c == '.' {
-            chars.next(); // consume '.'
-            let mut attr = String::new();
-            while let Some(&nc) = chars.peek() {
-                if nc == '.' || nc == '[' {
-                    break;
-                }
-                attr.push(nc);
-                chars.next();
-            }
-            if let Some(v) = current.get_attr(&attr) {
-                current = v;
-            } else {
-                return Some(PyObject::str_val(CompactString::from("")));
-            }
-        } else if c == '[' {
-            chars.next(); // consume '['
-            let mut key = String::new();
-            for nc in chars.by_ref() {
-                if nc == ']' {
-                    break;
-                }
-                key.push(nc);
-            }
-            // Try integer index first, then string key
-            if let Ok(idx) = key.parse::<i64>() {
-                let key_obj = PyObject::int(idx);
-                if let Ok(v) = current.get_item(&key_obj) {
-                    current = v;
-                } else {
-                    return Some(PyObject::str_val(CompactString::from("")));
-                }
-            } else {
-                let key_obj = PyObject::str_val(CompactString::from(key));
-                if let Ok(v) = current.get_item(&key_obj) {
-                    current = v;
-                } else {
-                    return Some(PyObject::str_val(CompactString::from("")));
-                }
-            }
-        } else {
-            break;
-        }
-    }
-
-    Some(current)
-}
-
-/// Resolve nested `{N}` references in a format spec.
-/// E.g., `{1}>{2}` with args=['hi', '*', 10] → `*>10`
-fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
-    let mut result = String::new();
-    let mut chars = spec.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            let mut ref_name = String::new();
-            for c in chars.by_ref() {
-                if c == '}' {
-                    break;
-                }
-                ref_name.push(c);
-            }
-            if let Ok(idx) = ref_name.parse::<usize>() {
-                if let Some(val) = args.get(idx) {
-                    result.push_str(&val.py_to_string());
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 pub(crate) fn call_str_method(
@@ -728,158 +636,7 @@ pub(crate) fn call_str_method(
             } else {
                 "strict".to_string()
             };
-            match encoding.as_str() {
-                "utf-8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
-                "ascii" | "us-ascii" | "us_ascii" => {
-                    let mut result = Vec::new();
-                    for ch in s.chars() {
-                        if ch.is_ascii() {
-                            result.push(ch as u8);
-                        } else if errors.as_str() == "surrogateescape"
-                            && (ch as u32) >= 0x80
-                            && (ch as u32) <= 0xFF
-                        {
-                            // Our surrogateescape fallback uses U+0080..U+00FF as
-                            // the escape range (see bytes.decode). Reverse it here.
-                            result.push(ch as u8);
-                        } else {
-                            match errors.as_str() {
-                                "ignore" => {}
-                                "replace" => result.push(b'?'),
-                                "xmlcharrefreplace" => {
-                                    result
-                                        .extend_from_slice(format!("&#{};", ch as u32).as_bytes());
-                                }
-                                _ => {
-                                    return Err(PyException::new(
-                                        ExceptionKind::UnicodeEncodeError,
-                                        format!(
-                                            "'ascii' codec can't encode character '\\u{:04x}' in position", ch as u32
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    Ok(PyObject::bytes(result))
-                }
-                "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
-                    let mut result = Vec::new();
-                    for ch in s.chars() {
-                        if (ch as u32) <= 0xFF {
-                            result.push(ch as u8);
-                        } else {
-                            match errors.as_str() {
-                                "ignore" => {}
-                                "replace" => result.push(b'?'),
-                                _ => {
-                                    return Err(PyException::new(
-                                        ExceptionKind::UnicodeEncodeError,
-                                        format!(
-                                            "'latin-1' codec can't encode character '\\u{:04x}'",
-                                            ch as u32
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    Ok(PyObject::bytes(result))
-                }
-                "utf-16" | "utf16" => {
-                    let mut bytes = vec![0xFF_u8, 0xFE]; // BOM (little-endian)
-                    for unit in s.encode_utf16() {
-                        bytes.extend_from_slice(&unit.to_le_bytes());
-                    }
-                    Ok(PyObject::bytes(bytes))
-                }
-                "utf-16-le" | "utf16-le" | "utf-16le" | "utf16le" => {
-                    let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-                    Ok(PyObject::bytes(bytes))
-                }
-                "utf-16-be" | "utf16-be" | "utf-16be" | "utf16be" => {
-                    let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
-                    Ok(PyObject::bytes(bytes))
-                }
-                "utf-32" | "utf32" => {
-                    let mut bytes = vec![0xFF_u8, 0xFE, 0x00, 0x00]; // BOM
-                    for ch in s.chars() {
-                        bytes.extend_from_slice(&(ch as u32).to_le_bytes());
-                    }
-                    Ok(PyObject::bytes(bytes))
-                }
-                "utf-32-le" | "utf32-le" | "utf-32le" | "utf32le" => {
-                    let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
-                    Ok(PyObject::bytes(bytes))
-                }
-                "utf-32-be" | "utf32-be" | "utf-32be" | "utf32be" => {
-                    let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
-                    Ok(PyObject::bytes(bytes))
-                }
-                "cp1252" | "windows-1252" | "windows1252" => {
-                    let mut result = Vec::new();
-                    for ch in s.chars() {
-                        let u = ch as u32;
-                        if u < 0x80 || (0xA0..=0xFF).contains(&u) {
-                            result.push(u as u8);
-                        } else {
-                            let byte = match u {
-                                0x20AC => Some(0x80u8),
-                                0x201A => Some(0x82),
-                                0x0192 => Some(0x83),
-                                0x201E => Some(0x84),
-                                0x2026 => Some(0x85),
-                                0x2020 => Some(0x86),
-                                0x2021 => Some(0x87),
-                                0x02C6 => Some(0x88),
-                                0x2030 => Some(0x89),
-                                0x0160 => Some(0x8A),
-                                0x2039 => Some(0x8B),
-                                0x0152 => Some(0x8C),
-                                0x017D => Some(0x8E),
-                                0x2018 => Some(0x91),
-                                0x2019 => Some(0x92),
-                                0x201C => Some(0x93),
-                                0x201D => Some(0x94),
-                                0x2022 => Some(0x95),
-                                0x2013 => Some(0x96),
-                                0x2014 => Some(0x97),
-                                0x02DC => Some(0x98),
-                                0x2122 => Some(0x99),
-                                0x0161 => Some(0x9A),
-                                0x203A => Some(0x9B),
-                                0x0153 => Some(0x9C),
-                                0x017E => Some(0x9E),
-                                0x0178 => Some(0x9F),
-                                _ => None,
-                            };
-                            match byte {
-                                Some(b) => result.push(b),
-                                None => match errors.as_str() {
-                                    "ignore" => {}
-                                    "replace" => result.push(b'?'),
-                                    _ => {
-                                        return Err(PyException::new(
-                                            ExceptionKind::UnicodeEncodeError,
-                                            format!(
-                                                "'cp1252' codec can't encode character '\\u{:04x}'",
-                                                u
-                                            ),
-                                        ))
-                                    }
-                                },
-                            }
-                        }
-                    }
-                    Ok(PyObject::bytes(result))
-                }
-                "punycode" => crate::builtins::string_methods::punycode_encode_str(s),
-                "idna" => Ok(PyObject::bytes(s.to_ascii_lowercase().into_bytes())),
-                _ => Err(PyException::value_error(format!(
-                    "unknown encoding: {}",
-                    encoding
-                ))),
-            }
+            str_encode(s, &encoding, &errors)
         }
         "partition" => {
             check_args_min("partition", args, 1)?;
