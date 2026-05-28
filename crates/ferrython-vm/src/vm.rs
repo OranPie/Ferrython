@@ -1133,287 +1133,29 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else if call_kind > 0 {
                             let args_start = func_idx + 1;
-                            // ── Mini-interpreter: inline base-case returns ──
-                            // Pattern: LoadFastCompareConstJump → LoadFast → ReturnValue
-                            // Skips frame creation entirely for leaf returns (e.g., fib base case)
-                            let mut mini_result: Option<PyObjectRef> = None;
-                            // Trivial closure: body is just LOAD_DEREF X; RETURN_VALUE
-                            // Skip frame creation, directly read the cell
-                            if call_kind == 4 {
-                                if let PyObjectPayload::Function(pf) =
-                                    &sget!(frame, func_idx).payload
-                                {
-                                    let instrs = &pf.code.instructions;
-                                    if instrs.len() == 2
-                                        && instrs[0].op == Opcode::LoadDeref
-                                        && instrs[1].op == Opcode::ReturnValue
-                                    {
-                                        let cell_idx = instrs[0].arg as usize;
-                                        let n_cell = pf.code.cellvars.len();
-                                        if cell_idx >= n_cell
-                                            && cell_idx - n_cell < pf.closure.len()
-                                        {
-                                            let cell = &pf.closure[cell_idx - n_cell];
-                                            if let Some(val) = unsafe { &*cell.data_ptr() } {
-                                                mini_result = Some(val.clone());
-                                            }
-                                        }
-                                    } else if instrs.len() == 1
-                                        && instrs[0].op == Opcode::LoadConstReturnValue
-                                    {
-                                        // Closure that returns a constant
-                                        mini_result =
-                                            Some(pf.constant_cache[instrs[0].arg as usize].clone());
+                            let args: Vec<PyObjectRef> = frame.stack
+                                [args_start..args_start + arg_count]
+                                .iter()
+                                .cloned()
+                                .collect();
+                            let mini_result = if let PyObjectPayload::Function(pf) =
+                                &sget!(frame, func_idx).payload
+                            {
+                                match call_kind {
+                                    1 if arg_count > 0 => {
+                                        Self::try_inline_simple_function_args(pf, &args)
                                     }
+                                    2 => Self::try_inline_recursive_base_case(
+                                        &frame.code.instructions,
+                                        &frame.constant_cache,
+                                        &args,
+                                    ),
+                                    4 => Self::try_inline_closure_return(pf),
+                                    _ => None,
                                 }
-                            } else if call_kind == 1 && arg_count > 0 {
-                                // Trivial simple-function inlining for functions with args
-                                if let PyObjectPayload::Function(pf) =
-                                    &sget!(frame, func_idx).payload
-                                {
-                                    let instrs = &pf.code.instructions;
-                                    match instrs.len() {
-                                        1 => match instrs[0].op {
-                                            // def f(a): return a
-                                            Opcode::LoadFastReturnValue => {
-                                                let li = instrs[0].arg as usize;
-                                                if li < arg_count {
-                                                    mini_result =
-                                                        Some(sget!(frame, args_start + li).clone());
-                                                }
-                                            }
-                                            // def f(a): return CONST
-                                            Opcode::LoadConstReturnValue => {
-                                                mini_result = Some(
-                                                    pf.constant_cache[instrs[0].arg as usize]
-                                                        .clone(),
-                                                );
-                                            }
-                                            _ => {}
-                                        },
-                                        2 => {
-                                            // def add(a, b): return a + b (fused)
-                                            if instrs[0].op == Opcode::LoadFastLoadFastBinaryAdd
-                                                && instrs[1].op == Opcode::ReturnValue
-                                            {
-                                                let ai = (instrs[0].arg >> 16) as usize;
-                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
-                                                if ai < arg_count && bi < arg_count {
-                                                    let a = sget!(frame, args_start + ai);
-                                                    let b = sget!(frame, args_start + bi);
-                                                    mini_result = match (&a.payload, &b.payload) {
-                                                        (
-                                                            PyObjectPayload::Int(PyInt::Small(x)),
-                                                            PyObjectPayload::Int(PyInt::Small(y)),
-                                                        ) => match x.checked_add(*y) {
-                                                            Some(r) => Some(PyObject::int(r)),
-                                                            None => {
-                                                                use num_bigint::BigInt;
-                                                                Some(PyObject::big_int(
-                                                                    BigInt::from(*x)
-                                                                        + BigInt::from(*y),
-                                                                ))
-                                                            }
-                                                        },
-                                                        (
-                                                            PyObjectPayload::Float(x),
-                                                            PyObjectPayload::Float(y),
-                                                        ) => Some(PyObject::float(*x + *y)),
-                                                        (
-                                                            PyObjectPayload::Int(PyInt::Small(x)),
-                                                            PyObjectPayload::Float(y),
-                                                        ) => Some(PyObject::float(*x as f64 + *y)),
-                                                        (
-                                                            PyObjectPayload::Float(x),
-                                                            PyObjectPayload::Int(PyInt::Small(y)),
-                                                        ) => Some(PyObject::float(*x + *y as f64)),
-                                                        _ => None,
-                                                    };
-                                                }
-                                            }
-                                            // def f(a): return a (unfused)
-                                            else if instrs[0].op == Opcode::LoadFast
-                                                && instrs[1].op == Opcode::ReturnValue
-                                            {
-                                                let li = instrs[0].arg as usize;
-                                                if li < arg_count {
-                                                    mini_result =
-                                                        Some(sget!(frame, args_start + li).clone());
-                                                }
-                                            }
-                                        }
-                                        3 => {
-                                            // def sub(a, b): return a - b
-                                            if instrs[0].op == Opcode::LoadFastLoadFast
-                                                && instrs[2].op == Opcode::ReturnValue
-                                            {
-                                                let ai = (instrs[0].arg >> 16) as usize;
-                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
-                                                if ai < arg_count && bi < arg_count {
-                                                    let a = sget!(frame, args_start + ai);
-                                                    let b = sget!(frame, args_start + bi);
-                                                    if instrs[1].op == Opcode::BinarySubtract {
-                                                        mini_result = match (&a.payload, &b.payload)
-                                                        {
-                                                            (
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    x,
-                                                                )),
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    y,
-                                                                )),
-                                                            ) => match x.checked_sub(*y) {
-                                                                Some(r) => Some(PyObject::int(r)),
-                                                                None => {
-                                                                    use num_bigint::BigInt;
-                                                                    Some(PyObject::big_int(
-                                                                        BigInt::from(*x)
-                                                                            - BigInt::from(*y),
-                                                                    ))
-                                                                }
-                                                            },
-                                                            (
-                                                                PyObjectPayload::Float(x),
-                                                                PyObjectPayload::Float(y),
-                                                            ) => Some(PyObject::float(*x - *y)),
-                                                            _ => None,
-                                                        };
-                                                    } else if instrs[1].op == Opcode::BinaryMultiply
-                                                    {
-                                                        mini_result = match (&a.payload, &b.payload)
-                                                        {
-                                                            (
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    x,
-                                                                )),
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    y,
-                                                                )),
-                                                            ) => match x.checked_mul(*y) {
-                                                                Some(r) => Some(PyObject::int(r)),
-                                                                None => {
-                                                                    use num_bigint::BigInt;
-                                                                    Some(PyObject::big_int(
-                                                                        BigInt::from(*x)
-                                                                            * BigInt::from(*y),
-                                                                    ))
-                                                                }
-                                                            },
-                                                            (
-                                                                PyObjectPayload::Float(x),
-                                                                PyObjectPayload::Float(y),
-                                                            ) => Some(PyObject::float(*x * *y)),
-                                                            _ => None,
-                                                        };
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            } else if call_kind == 2 {
-                                let instrs = &frame.code.instructions;
-                                if instrs.len() > 2
-                                    && instrs[0].op == Opcode::LoadFastCompareConstJump
-                                {
-                                    let packed = instrs[0].arg;
-                                    let cmp_op = packed >> 28;
-                                    let local_idx = ((packed >> 20) & 0xFF) as usize;
-                                    let const_idx = ((packed >> 12) & 0xFF) as usize;
-                                    if local_idx < arg_count {
-                                        let arg_ref = sget!(frame, args_start + local_idx);
-                                        let const_ref = unsafe {
-                                            frame.constant_cache.get_unchecked(const_idx)
-                                        };
-                                        let cmp_result =
-                                            match (&arg_ref.payload, &const_ref.payload) {
-                                                (
-                                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                                ) => match cmp_op {
-                                                    0 => Some(*x < *y),
-                                                    1 => Some(*x <= *y),
-                                                    2 => Some(*x == *y),
-                                                    3 => Some(*x != *y),
-                                                    4 => Some(*x > *y),
-                                                    5 => Some(*x >= *y),
-                                                    _ => None,
-                                                },
-                                                _ => None,
-                                            };
-                                        if let Some(cmp_val) = cmp_result {
-                                            if cmp_val {
-                                                // True branch: next instruction is return
-                                                if instrs[1].op == Opcode::LoadFastReturnValue {
-                                                    let ret_local = instrs[1].arg as usize;
-                                                    mini_result = Some(if ret_local < arg_count {
-                                                        sget!(frame, args_start + ret_local).clone()
-                                                    } else {
-                                                        PyObject::none()
-                                                    });
-                                                } else if instrs[1].op == Opcode::LoadFast
-                                                    && instrs[2].op == Opcode::ReturnValue
-                                                {
-                                                    let ret_local = instrs[1].arg as usize;
-                                                    mini_result = Some(if ret_local < arg_count {
-                                                        sget!(frame, args_start + ret_local).clone()
-                                                    } else {
-                                                        PyObject::none()
-                                                    });
-                                                } else if instrs[1].op
-                                                    == Opcode::LoadConstReturnValue
-                                                {
-                                                    mini_result = Some(unsafe {
-                                                        frame
-                                                            .constant_cache
-                                                            .get_unchecked(instrs[1].arg as usize)
-                                                            .clone()
-                                                    });
-                                                }
-                                            } else if !cmp_val {
-                                                let jt = (packed & 0xFFF) as usize;
-                                                if jt < instrs.len() {
-                                                    if instrs[jt].op == Opcode::LoadFastReturnValue
-                                                    {
-                                                        let ret_local = instrs[jt].arg as usize;
-                                                        mini_result =
-                                                            Some(if ret_local < arg_count {
-                                                                sget!(frame, args_start + ret_local)
-                                                                    .clone()
-                                                            } else {
-                                                                PyObject::none()
-                                                            });
-                                                    } else if instrs[jt].op == Opcode::LoadFast
-                                                        && jt + 1 < instrs.len()
-                                                        && instrs[jt + 1].op == Opcode::ReturnValue
-                                                    {
-                                                        let ret_local = instrs[jt].arg as usize;
-                                                        mini_result =
-                                                            Some(if ret_local < arg_count {
-                                                                sget!(frame, args_start + ret_local)
-                                                                    .clone()
-                                                            } else {
-                                                                PyObject::none()
-                                                            });
-                                                    } else if instrs[jt].op
-                                                        == Opcode::LoadConstReturnValue
-                                                    {
-                                                        mini_result = Some(unsafe {
-                                                            frame
-                                                                .constant_cache
-                                                                .get_unchecked(
-                                                                    instrs[jt].arg as usize,
-                                                                )
-                                                                .clone()
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            } else {
+                                None
+                            };
                             if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
                                 // Base case resolved without frame creation
                                 unsafe {
@@ -2484,250 +2226,27 @@ impl VirtualMachine {
                         } else if call_kind > 0 {
                             let stack_len = frame.stack.len();
                             let args_start = stack_len - arg_count;
-                            // ── Mini-interpreter: inline base-case returns ──
-                            // For recursive calls, check if first instr is LoadFastCompareConstJump
-                            // and resolve the comparison directly against args on parent stack.
-                            let mut mini_result: Option<PyObjectRef> = None;
-                            if call_kind == 2 {
-                                let instrs = &frame.code.instructions;
-                                if instrs.len() > 2
-                                    && instrs[0].op == Opcode::LoadFastCompareConstJump
-                                {
-                                    let packed = instrs[0].arg;
-                                    let cmp_op = packed >> 28;
-                                    let local_idx = ((packed >> 20) & 0xFF) as usize;
-                                    let const_idx = ((packed >> 12) & 0xFF) as usize;
-                                    if local_idx < arg_count {
-                                        let arg_ref = sget!(frame, args_start + local_idx);
-                                        let const_ref = unsafe {
-                                            frame.constant_cache.get_unchecked(const_idx)
-                                        };
-                                        let cmp_result =
-                                            match (&arg_ref.payload, &const_ref.payload) {
-                                                (
-                                                    PyObjectPayload::Int(PyInt::Small(x)),
-                                                    PyObjectPayload::Int(PyInt::Small(y)),
-                                                ) => match cmp_op {
-                                                    0 => Some(*x < *y),
-                                                    1 => Some(*x <= *y),
-                                                    2 => Some(*x == *y),
-                                                    3 => Some(*x != *y),
-                                                    4 => Some(*x > *y),
-                                                    5 => Some(*x >= *y),
-                                                    _ => None,
-                                                },
-                                                _ => None,
-                                            };
-                                        if let Some(cmp_val) = cmp_result {
-                                            if cmp_val {
-                                                if instrs[1].op == Opcode::LoadFastReturnValue {
-                                                    let ret_local = instrs[1].arg as usize;
-                                                    mini_result = Some(if ret_local < arg_count {
-                                                        sget!(frame, args_start + ret_local).clone()
-                                                    } else {
-                                                        PyObject::none()
-                                                    });
-                                                } else if instrs[1].op == Opcode::LoadFast
-                                                    && instrs[2].op == Opcode::ReturnValue
-                                                {
-                                                    let ret_local = instrs[1].arg as usize;
-                                                    mini_result = Some(if ret_local < arg_count {
-                                                        sget!(frame, args_start + ret_local).clone()
-                                                    } else {
-                                                        PyObject::none()
-                                                    });
-                                                } else if instrs[1].op
-                                                    == Opcode::LoadConstReturnValue
-                                                {
-                                                    mini_result = Some(unsafe {
-                                                        frame
-                                                            .constant_cache
-                                                            .get_unchecked(instrs[1].arg as usize)
-                                                            .clone()
-                                                    });
-                                                }
-                                            } else if !cmp_val {
-                                                let jt = (packed & 0xFFF) as usize;
-                                                if jt < instrs.len() {
-                                                    if instrs[jt].op == Opcode::LoadFastReturnValue
-                                                    {
-                                                        let ret_local = instrs[jt].arg as usize;
-                                                        mini_result =
-                                                            Some(if ret_local < arg_count {
-                                                                sget!(frame, args_start + ret_local)
-                                                                    .clone()
-                                                            } else {
-                                                                PyObject::none()
-                                                            });
-                                                    } else if instrs[jt].op == Opcode::LoadFast
-                                                        && jt + 1 < instrs.len()
-                                                        && instrs[jt + 1].op == Opcode::ReturnValue
-                                                    {
-                                                        let ret_local = instrs[jt].arg as usize;
-                                                        mini_result =
-                                                            Some(if ret_local < arg_count {
-                                                                sget!(frame, args_start + ret_local)
-                                                                    .clone()
-                                                            } else {
-                                                                PyObject::none()
-                                                            });
-                                                    } else if instrs[jt].op
-                                                        == Opcode::LoadConstReturnValue
-                                                    {
-                                                        mini_result = Some(unsafe {
-                                                            frame
-                                                                .constant_cache
-                                                                .get_unchecked(
-                                                                    instrs[jt].arg as usize,
-                                                                )
-                                                                .clone()
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // call_kind==1: trivial simple function with args
-                            if call_kind == 1 && arg_count > 0 && mini_result.is_none() {
+                            let args: Vec<PyObjectRef> = frame.stack
+                                [args_start..args_start + arg_count]
+                                .iter()
+                                .cloned()
+                                .collect();
+                            let mini_result =
                                 if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                                    let instrs = &pf.code.instructions;
-                                    match instrs.len() {
-                                        1 => match instrs[0].op {
-                                            Opcode::LoadFastReturnValue => {
-                                                let li = instrs[0].arg as usize;
-                                                if li < arg_count {
-                                                    mini_result =
-                                                        Some(sget!(frame, args_start + li).clone());
-                                                }
-                                            }
-                                            Opcode::LoadConstReturnValue => {
-                                                mini_result = Some(
-                                                    pf.constant_cache[instrs[0].arg as usize]
-                                                        .clone(),
-                                                );
-                                            }
-                                            _ => {}
-                                        },
-                                        2 => {
-                                            if instrs[0].op == Opcode::LoadFastLoadFastBinaryAdd
-                                                && instrs[1].op == Opcode::ReturnValue
-                                            {
-                                                let ai = (instrs[0].arg >> 16) as usize;
-                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
-                                                if ai < arg_count && bi < arg_count {
-                                                    let a = sget!(frame, args_start + ai);
-                                                    let b = sget!(frame, args_start + bi);
-                                                    mini_result = match (&a.payload, &b.payload) {
-                                                        (
-                                                            PyObjectPayload::Int(PyInt::Small(x)),
-                                                            PyObjectPayload::Int(PyInt::Small(y)),
-                                                        ) => match x.checked_add(*y) {
-                                                            Some(r) => Some(PyObject::int(r)),
-                                                            None => {
-                                                                use num_bigint::BigInt;
-                                                                Some(PyObject::big_int(
-                                                                    BigInt::from(*x)
-                                                                        + BigInt::from(*y),
-                                                                ))
-                                                            }
-                                                        },
-                                                        (
-                                                            PyObjectPayload::Float(x),
-                                                            PyObjectPayload::Float(y),
-                                                        ) => Some(PyObject::float(*x + *y)),
-                                                        (
-                                                            PyObjectPayload::Int(PyInt::Small(x)),
-                                                            PyObjectPayload::Float(y),
-                                                        ) => Some(PyObject::float(*x as f64 + *y)),
-                                                        (
-                                                            PyObjectPayload::Float(x),
-                                                            PyObjectPayload::Int(PyInt::Small(y)),
-                                                        ) => Some(PyObject::float(*x + *y as f64)),
-                                                        _ => None,
-                                                    };
-                                                }
-                                            } else if instrs[0].op == Opcode::LoadFast
-                                                && instrs[1].op == Opcode::ReturnValue
-                                            {
-                                                let li = instrs[0].arg as usize;
-                                                if li < arg_count {
-                                                    mini_result =
-                                                        Some(sget!(frame, args_start + li).clone());
-                                                }
-                                            }
+                                    match call_kind {
+                                        1 if arg_count > 0 => {
+                                            Self::try_inline_simple_function_args(pf, &args)
                                         }
-                                        3 => {
-                                            if instrs[0].op == Opcode::LoadFastLoadFast
-                                                && instrs[2].op == Opcode::ReturnValue
-                                            {
-                                                let ai = (instrs[0].arg >> 16) as usize;
-                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
-                                                if ai < arg_count && bi < arg_count {
-                                                    let a = sget!(frame, args_start + ai);
-                                                    let b = sget!(frame, args_start + bi);
-                                                    if instrs[1].op == Opcode::BinarySubtract {
-                                                        mini_result = match (&a.payload, &b.payload)
-                                                        {
-                                                            (
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    x,
-                                                                )),
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    y,
-                                                                )),
-                                                            ) => match x.checked_sub(*y) {
-                                                                Some(r) => Some(PyObject::int(r)),
-                                                                None => {
-                                                                    use num_bigint::BigInt;
-                                                                    Some(PyObject::big_int(
-                                                                        BigInt::from(*x)
-                                                                            - BigInt::from(*y),
-                                                                    ))
-                                                                }
-                                                            },
-                                                            (
-                                                                PyObjectPayload::Float(x),
-                                                                PyObjectPayload::Float(y),
-                                                            ) => Some(PyObject::float(*x - *y)),
-                                                            _ => None,
-                                                        };
-                                                    } else if instrs[1].op == Opcode::BinaryMultiply
-                                                    {
-                                                        mini_result = match (&a.payload, &b.payload)
-                                                        {
-                                                            (
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    x,
-                                                                )),
-                                                                PyObjectPayload::Int(PyInt::Small(
-                                                                    y,
-                                                                )),
-                                                            ) => match x.checked_mul(*y) {
-                                                                Some(r) => Some(PyObject::int(r)),
-                                                                None => {
-                                                                    use num_bigint::BigInt;
-                                                                    Some(PyObject::big_int(
-                                                                        BigInt::from(*x)
-                                                                            * BigInt::from(*y),
-                                                                    ))
-                                                                }
-                                                            },
-                                                            (
-                                                                PyObjectPayload::Float(x),
-                                                                PyObjectPayload::Float(y),
-                                                            ) => Some(PyObject::float(*x * *y)),
-                                                            _ => None,
-                                                        };
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
+                                        2 => Self::try_inline_recursive_base_case(
+                                            &frame.code.instructions,
+                                            &frame.constant_cache,
+                                            &args,
+                                        ),
+                                        _ => None,
                                     }
-                                }
-                            }
+                                } else {
+                                    None
+                                };
                             if let Some(ret_val) = mini_result.filter(|_| !trace_active_now) {
                                 // Base case resolved without frame creation
                                 frame.stack.truncate(args_start);
