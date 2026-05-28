@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-28T08:39:03+08:00
+Last updated: 2026-05-28T08:44:55+08:00
 
 ## 代码质量重构进度
 
@@ -1133,6 +1133,9 @@ Last updated: 2026-05-28T08:39:03+08:00
   - 第五十八批继续 `math_modules/functions` 内部分层：新增 `math_modules/number.rs`，拆出 `math_number_to_float`、`index_bigint`、`bigint_to_object`、BigInt isqrt/log 和 integral conversion helper；新增 `math_modules/functions/special.rs`，拆出 `erf`、`erfc`、`gamma`、`lgamma`、`fsum` 和 `dist` 及 Lanczos/ldexp helper。`functions.rs` 从约 1225 行降到约 793 行，`number.rs` 约 249 行，`special.rs` 约 207 行。
   - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 `math.gcd/isqrt/comb/perm/fsum/dist/gamma/lgamma/erf/erfc` 和 `fractions.Fraction` smoke；`gamma/erf/erfc` 采用既有近似实现的容差断言。
   - commit：`5d25a05 refactor: split math helper internals`。
+  - 第五十九批继续 `math_modules/functions` 普通函数分组：新增 `functions/elementary.rs`，拆出 sqrt/ceil/floor/fabs/pow/log/三角函数/角度转换/isnan/isinf/isfinite；新增 `functions/combinatorics.rs`，拆出 gcd/factorial/isqrt/comb/perm/prod/lcm。`functions.rs` 从约 793 行降到约 343 行，并退出当前 `CODE_HEALTH_BASELINE.md` item-density 热点列表。
+  - focused 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo build -p ferrython-cli --bin ferrython`，并用新生成的 `target/debug/ferrython` 通过 elementary、combinatorics、hypot/frexp/ldexp 和 `fractions.Fraction` smoke。
+  - commit：`07ec3c3 refactor: split math function groups`。
 
 ## 修复原则
 
