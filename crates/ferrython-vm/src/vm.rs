@@ -5,9 +5,9 @@ use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    has_descriptor_get, lookup_in_class_mro, IteratorData, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE,
-    CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
+    lookup_in_class_mro, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_SETATTR,
+    CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
@@ -4744,491 +4744,54 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Inline LoadAttr fast path for simple instance attribute reads
-                // Fused LoadFast + LoadAttr — common in `x = obj.attr` patterns
-                Opcode::LoadFastLoadAttr => {
-                    let local_idx = (instr.arg >> 16) as usize;
-                    let name_idx = (instr.arg & 0xFFFF) as usize;
-                    let name = &frame.code.names[name_idx];
-                    let obj = match slocal!(frame, local_idx) {
-                        Some(val) => val,
-                        None => {
-                            return Self::err_unbound_local(&frame.code.varnames, local_idx)
-                                .map(|_| PyObject::none());
-                        }
-                    };
-                    // Inline Instance attr fast path
-                    let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
-                            && !inst.attrs.read().contains_key("__deque__")
-                        {
-                            if name.as_str() == "__class__" {
-                                Some(inst.class.clone())
-                            } else {
-                                let attrs = unsafe { &*inst.attrs.data_ptr() };
-                                if let Some(v) = attrs.get(name.as_str()) {
-                                    match &v.payload {
-                                        PyObjectPayload::Function(_)
-                                        | PyObjectPayload::Property(_) => None,
-                                        _ => Some(v.clone()),
-                                    }
-                                } else {
-                                    let _ = attrs;
-                                    // Instance dict miss — check vtable for class-level data attrs
-                                    if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
-                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                            let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                            if !vt.is_empty() {
-                                                if let Some(class_val) = vt.get(name.as_str()) {
-                                                    match &class_val.payload {
-                                                        PyObjectPayload::Function(_)
-                                                        | PyObjectPayload::NativeFunction(_)
-                                                        | PyObjectPayload::NativeClosure {
-                                                            ..
-                                                        }
-                                                        | PyObjectPayload::Property(_)
-                                                        | PyObjectPayload::ClassMethod(_)
-                                                        | PyObjectPayload::StaticMethod(_) => None,
-                                                        // cached_property descriptor — must invoke, not return raw
-                                                        PyObjectPayload::Instance(cp_inst)
-                                                            if cp_inst
-                                                                .attrs
-                                                                .read()
-                                                                .contains_key(
-                                                                    "__cached_property_func__",
-                                                                ) =>
-                                                        {
-                                                            None
-                                                        }
-                                                        _ => Some(class_val.clone()),
-                                                    }
-                                                } else {
-                                                    None
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(val) = fast_val {
-                        spush!(frame, val);
+                // Fast attribute and method loads for simple instance/builtin paths.
+                Opcode::LoadFastLoadAttr
+                | Opcode::LoadFastLoadAttrStoreFast
+                | Opcode::LoadFastLoadMethod
+                | Opcode::LoadAttr => match crate::vm_fast_attr::try_fast_attr(frame, instr) {
+                    crate::vm_fast_attr::FastAttrResult::Handled => {
                         hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        // Decompose: push local, then execute LoadAttr
-                        spush!(frame, obj.clone());
-                        let attr_instr = Instruction::new(Opcode::LoadAttr, name_idx as u32);
-                        self.execute_one(attr_instr)
                     }
-                }
-                // Fused LoadFast + LoadAttr + StoreFast — eliminates one dispatch for `x = obj.attr`
-                Opcode::LoadFastLoadAttrStoreFast => {
-                    let local_idx = ((instr.arg >> 20) & 0x3FF) as usize;
-                    let name_idx = ((instr.arg >> 10) & 0x3FF) as usize;
-                    let store_idx = (instr.arg & 0x3FF) as usize;
-                    let name = &frame.code.names[name_idx];
-                    let obj = match slocal!(frame, local_idx) {
-                        Some(val) => val,
-                        None => {
-                            return Self::err_unbound_local(&frame.code.varnames, local_idx)
-                                .map(|_| PyObject::none());
-                        }
-                    };
-                    // Inline Instance attr fast path with IC
-                    let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
-                            && !inst.attrs.read().contains_key("__deque__")
-                        {
-                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                // Check inline cache first
-                                let ip = frame.ip as u32;
-                                if let Some(cached) = frame
-                                    .attr_ic
-                                    .as_ref()
-                                    .and_then(|ic| ic.lookup(ip, cd.class_version))
-                                {
-                                    Some(cached.clone())
-                                } else if name.as_str() == "__class__" {
-                                    Some(inst.class.clone())
-                                } else {
-                                    let attrs = unsafe { &*inst.attrs.data_ptr() };
-                                    if let Some(v) = attrs.get(name.as_str()) {
-                                        match &v.payload {
-                                            PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property(_) => None,
-                                            _ => Some(v.clone()),
-                                        }
-                                    } else {
-                                        let _ = attrs;
-                                        // Instance dict miss — check vtable for class-level attrs
-                                        let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                        if !vt.is_empty() {
-                                            if let Some(class_val) = vt.get(name.as_str()) {
-                                                match &class_val.payload {
-                                                    PyObjectPayload::Function(_)
-                                                    | PyObjectPayload::NativeFunction(_)
-                                                    | PyObjectPayload::NativeClosure { .. }
-                                                    | PyObjectPayload::Property(_)
-                                                    | PyObjectPayload::ClassMethod(_)
-                                                    | PyObjectPayload::StaticMethod(_) => None,
-                                                    // cached_property descriptor — must invoke, not return raw
-                                                    PyObjectPayload::Instance(cp_inst)
-                                                        if cp_inst.attrs.read().contains_key(
-                                                            "__cached_property_func__",
-                                                        ) =>
-                                                    {
-                                                        None
-                                                    }
-                                                    _ => {
-                                                        // Cache class-level non-descriptor attrs
-                                                        let val = class_val.clone();
-                                                        frame
-                                                            .attr_ic
-                                                            .get_or_insert_with(|| {
-                                                                Box::new(AttrInlineCache::empty())
-                                                            })
-                                                            .insert(
-                                                                ip,
-                                                                cd.class_version,
-                                                                val.clone(),
-                                                            );
-                                                        Some(val)
-                                                    }
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                }
-                            } else {
-                                None
+                    crate::vm_fast_attr::FastAttrResult::Fallback => {
+                        let result = match instr.op {
+                            Opcode::LoadFastLoadAttr => {
+                                let name_idx = (instr.arg & 0xFFFF) as usize;
+                                self.execute_one(Instruction::new(
+                                    Opcode::LoadAttr,
+                                    name_idx as u32,
+                                ))
                             }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(val) = fast_val {
-                        sset_local!(frame, store_idx, val);
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        // Decompose: push local, execute LoadAttr, re-acquire frame for store
-                        spush!(frame, obj.clone());
-                        let attr_instr = Instruction::new(Opcode::LoadAttr, name_idx as u32);
-                        let result = self.execute_one(attr_instr);
-                        if result.is_ok() {
-                            // Re-acquire frame reference (execute_one may have invalidated it)
-                            let cs_len = self.call_stack.len();
-                            let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
-                            let val = spop!(frame2);
-                            sset_local!(frame2, store_idx, val);
-                        }
+                            Opcode::LoadFastLoadAttrStoreFast => {
+                                let name_idx = ((instr.arg >> 10) & 0x3FF) as usize;
+                                let store_idx = (instr.arg & 0x3FF) as usize;
+                                let result = self.execute_one(Instruction::new(
+                                    Opcode::LoadAttr,
+                                    name_idx as u32,
+                                ));
+                                if result.is_ok() {
+                                    let cs_len = self.call_stack.len();
+                                    let frame2 =
+                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
+                                    let value = spop!(frame2);
+                                    sset_local!(frame2, store_idx, value);
+                                }
+                                result
+                            }
+                            Opcode::LoadFastLoadMethod => {
+                                let name_idx = (instr.arg & 0xFFFF) as usize;
+                                self.execute_one(Instruction::new(
+                                    Opcode::LoadMethod,
+                                    name_idx as u32,
+                                ))
+                            }
+                            _ => self.execute_one(instr),
+                        };
                         result
                     }
-                }
-                // Fused LoadFast + LoadMethod — avoids one dispatch per method call
-                Opcode::LoadFastLoadMethod => {
-                    let local_idx = (instr.arg >> 16) as usize;
-                    let name_idx = (instr.arg & 0xFFFF) as usize;
-                    let obj = match slocal!(frame, local_idx) {
-                        Some(val) => val.clone(),
-                        None => {
-                            return Self::err_unbound_local(&frame.code.varnames, local_idx)
-                                .map(|_| PyObject::none());
-                        }
-                    };
-                    // Determine fast_kind based on object type
-                    let mut fast_kind: u8 = 0;
-                    let mut fast_val: Option<PyObjectRef> = None;
-                    match &obj.payload {
-                        PyObjectPayload::Instance(inst) => {
-                            let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
-                            if skip_ga
-                                && inst.dict_storage.is_none()
-                                && !inst.is_special
-                                && !inst.attrs.read().contains_key("__deque__")
-                            {
-                                let name = &frame.code.names[name_idx];
-                                if name.as_str() != "__class__" && name.as_str() != "__dict__" {
-                                    let class = &inst.class;
-                                    if let PyObjectPayload::Class(cd) = &class.payload {
-                                        // Check inline cache first (avoids vtable lock + hash probe)
-                                        let ip = frame.ip as u32;
-                                        if let Some(cached) = frame
-                                            .attr_ic
-                                            .as_ref()
-                                            .and_then(|ic| ic.lookup(ip, cd.class_version))
-                                        {
-                                            if matches!(
-                                                &cached.payload,
-                                                PyObjectPayload::Function(_)
-                                            ) {
-                                                fast_kind = 1;
-                                                fast_val = Some(cached.clone());
-                                            } else if let PyObjectPayload::NativeFunction(nf) =
-                                                &cached.payload
-                                            {
-                                                fast_kind = if native_function_binds_to_class(
-                                                    cd,
-                                                    name,
-                                                    nf.name.as_str(),
-                                                ) {
-                                                    1
-                                                } else {
-                                                    2
-                                                };
-                                                fast_val = Some(cached.clone());
-                                            }
-                                        }
-                                        if fast_kind == 0 {
-                                            // Use vtable (single lock, single hash probe) instead of namespace.read()
-                                            let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                            let method_hit = if !vt.is_empty() {
-                                                vt.get(name.as_str()).cloned()
-                                            } else {
-                                                let _ = vt;
-                                                unsafe { &*cd.namespace.data_ptr() }
-                                                    .get(name.as_str())
-                                                    .cloned()
-                                            };
-                                            if let Some(class_val) = method_hit {
-                                                if matches!(
-                                                    &class_val.payload,
-                                                    PyObjectPayload::Function(_)
-                                                ) {
-                                                    fast_kind = 1;
-                                                    frame
-                                                        .attr_ic
-                                                        .get_or_insert_with(|| {
-                                                            Box::new(AttrInlineCache::empty())
-                                                        })
-                                                        .insert(
-                                                            ip,
-                                                            cd.class_version,
-                                                            class_val.clone(),
-                                                        );
-                                                    fast_val = Some(class_val);
-                                                } else if let PyObjectPayload::NativeFunction(nf) =
-                                                    &class_val.payload
-                                                {
-                                                    fast_kind = if native_function_binds_to_class(
-                                                        cd,
-                                                        name,
-                                                        nf.name.as_str(),
-                                                    ) {
-                                                        1
-                                                    } else {
-                                                        2
-                                                    };
-                                                    frame
-                                                        .attr_ic
-                                                        .get_or_insert_with(|| {
-                                                            Box::new(AttrInlineCache::empty())
-                                                        })
-                                                        .insert(
-                                                            ip,
-                                                            cd.class_version,
-                                                            class_val.clone(),
-                                                        );
-                                                    fast_val = Some(class_val);
-                                                }
-                                            } else if let Some(v) =
-                                                unsafe { &*inst.attrs.data_ptr() }
-                                                    .get(name.as_str())
-                                                    .cloned()
-                                            {
-                                                fast_kind = 2;
-                                                fast_val = Some(v);
-                                            } else if unsafe { &*cd.method_vtable.data_ptr() }
-                                                .is_empty()
-                                            {
-                                                if let Some(method) =
-                                                    lookup_in_class_mro(class, name.as_str())
-                                                {
-                                                    if matches!(
-                                                        &method.payload,
-                                                        PyObjectPayload::Function(_)
-                                                    ) {
-                                                        fast_kind = 1;
-                                                        frame
-                                                            .attr_ic
-                                                            .get_or_insert_with(|| {
-                                                                Box::new(AttrInlineCache::empty())
-                                                            })
-                                                            .insert(
-                                                                ip,
-                                                                cd.class_version,
-                                                                method.clone(),
-                                                            );
-                                                        fast_val = Some(method);
-                                                    } else if let PyObjectPayload::NativeFunction(
-                                                        nf,
-                                                    ) = &method.payload
-                                                    {
-                                                        fast_kind =
-                                                            if native_function_binds_to_class(
-                                                                cd,
-                                                                name,
-                                                                nf.name.as_str(),
-                                                            ) {
-                                                                1
-                                                            } else {
-                                                                2
-                                                            };
-                                                        frame
-                                                            .attr_ic
-                                                            .get_or_insert_with(|| {
-                                                                Box::new(AttrInlineCache::empty())
-                                                            })
-                                                            .insert(
-                                                                ip,
-                                                                cd.class_version,
-                                                                method.clone(),
-                                                            );
-                                                        fast_val = Some(method);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        PyObjectPayload::List(_)
-                        | PyObjectPayload::Dict(_)
-                        | PyObjectPayload::Str(_)
-                        | PyObjectPayload::Tuple(_)
-                        | PyObjectPayload::Set(_)
-                        | PyObjectPayload::ByteArray(_)
-                        | PyObjectPayload::Bytes(_)
-                        | PyObjectPayload::InstanceDict(_) => {
-                            let name = &frame.code.names[name_idx];
-                            if name.as_str() != "__class__" {
-                                fast_kind = 3;
-                            }
-                        }
-                        _ => {}
+                    crate::vm_fast_attr::FastAttrResult::UnboundLocal(idx) => {
+                        Self::err_unbound_local(&frame.code.varnames, idx)
                     }
-                    match fast_kind {
-                        1 => {
-                            // method + receiver protocol
-                            spush!(frame, fast_val.unwrap());
-                            spush!(frame, obj);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        2 => {
-                            // None sentinel + callable
-                            spush!(frame, PyObject::none());
-                            spush!(frame, fast_val.unwrap());
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        3 => {
-                            // Builtin: Str name tag + receiver (cached to avoid allocation)
-                            let name_obj = cached_method_name(frame.code.names[name_idx].as_str())
-                                .unwrap_or_else(|| {
-                                    PyObject::str_val(frame.code.names[name_idx].clone())
-                                });
-                            spush!(frame, name_obj);
-                            spush!(frame, obj);
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => {
-                            // Fallback: push local to stack, execute LoadMethod
-                            spush!(frame, obj);
-                            let method_instr =
-                                Instruction::new(Opcode::LoadMethod, name_idx as u32);
-                            self.execute_one(method_instr)
-                        }
-                    }
-                }
-                Opcode::LoadAttr => {
-                    let name = &frame.code.names[instr.arg as usize];
-                    let obj = sget!(frame, frame.stack.len() - 1);
-                    // Fast path: Instance with no __getattribute__ override (cached flag)
-                    let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0
-                            && !inst.attrs.read().contains_key("__deque__")
-                        {
-                            // Check instance dict first (most common case — data attrs like p.x)
-                            let attrs = unsafe { &*inst.attrs.data_ptr() };
-                            if let Some(v) = attrs.get(name.as_str()) {
-                                match &v.payload {
-                                    PyObjectPayload::Function(_) | PyObjectPayload::Property(_) => {
-                                        None
-                                    }
-                                    // Data descriptors in class take priority over instance dict
-                                    _ if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0 => None,
-                                    _ => Some(v.clone()),
-                                }
-                            } else if name.as_str() == "__class__" {
-                                // __class__ is a data descriptor — only checked on dict miss
-                                Some(inst.class.clone())
-                            } else if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
-                                // Instance dict miss — check vtable for class attrs
-                                if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                    let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                    if !vt.is_empty() {
-                                        if let Some(class_val) = vt.get(name.as_str()) {
-                                            match &class_val.payload {
-                                                PyObjectPayload::Function(_)
-                                                | PyObjectPayload::NativeFunction(_)
-                                                | PyObjectPayload::NativeClosure { .. }
-                                                | PyObjectPayload::Property(_)
-                                                | PyObjectPayload::ClassMethod(_)
-                                                | PyObjectPayload::StaticMethod(_) => None,
-                                                // cached_property descriptor — must invoke, not return raw
-                                                PyObjectPayload::Instance(cp_inst)
-                                                    if cp_inst.attrs.read().contains_key(
-                                                        "__cached_property_func__",
-                                                    ) =>
-                                                {
-                                                    None
-                                                }
-                                                // Custom descriptor with __get__ — must invoke, not return raw
-                                                _ if has_descriptor_get(class_val) => None,
-                                                _ => Some(class_val.clone()),
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(val) = fast_val {
-                        let len = frame.stack.len();
-                        unsafe { *frame.stack.get_unchecked_mut(len - 1) = val };
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
+                },
                 // Inline LoadName: check global cache, fallback to full path
                 // In module scope locals==globals, so global_cache covers LoadName too
                 Opcode::LoadName => {

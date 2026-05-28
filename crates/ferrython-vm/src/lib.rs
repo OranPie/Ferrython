@@ -13,6 +13,7 @@ mod vm_entry;
 mod vm_exception;
 pub(crate) mod vm_exec_compile;
 mod vm_execute_one;
+mod vm_fast_attr;
 mod vm_fast_binary;
 mod vm_fast_build;
 mod vm_fast_collections;
