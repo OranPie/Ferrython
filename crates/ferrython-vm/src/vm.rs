@@ -8,7 +8,7 @@ use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
-use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
+use ferrython_core::types::PyInt;
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -2441,567 +2441,167 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
-                        // Fast path for builtin type methods (list.append, dict.get, etc.)
-                        // LoadMethod pushes [name_as_Str, receiver] for builtin types
                         let is_builtin_str =
                             matches!(&sget!(frame, base_idx).payload, PyObjectPayload::Str(_));
                         if is_builtin_str {
-                            // Check for ultra-fast inline list.append / list.pop
-                            let is_list_append = arg_count == 1
-                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
-                                    (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "append");
-                            let is_list_pop = !is_list_append
-                                && arg_count == 0
-                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
-                                    (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
-                            if is_list_append {
-                                // Stack: [name, receiver, val] — peek receiver, pop val + truncate
-                                let len = frame.stack.len();
-                                unsafe {
-                                    let val = std::ptr::read(frame.stack.as_ptr().add(len - 1));
-                                    let receiver = &*frame.stack.as_ptr().add(len - 2);
-                                    if let PyObjectPayload::List(items) = &receiver.payload {
-                                        let vec = &mut *items.data_ptr();
-                                        vec.push(val);
-                                    }
-                                    // Drop name + receiver, replace with None
-                                    let _receiver =
-                                        std::ptr::read(frame.stack.as_ptr().add(len - 2));
-                                    let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
-                                    frame.stack.set_len(len - 3);
-                                }
-                                chain_pop_none!(
-                                    frame,
-                                    instr_base,
-                                    instr_count,
-                                    profiling,
-                                    self.profiler,
-                                    instr.op
-                                )
-                            } else if is_list_pop {
-                                let len = frame.stack.len();
-                                unsafe {
-                                    let receiver = &*frame.stack.as_ptr().add(len - 1);
-                                    if let PyObjectPayload::List(items) = &receiver.payload {
-                                        let vec = &mut *items.data_ptr();
-                                        match vec.pop() {
-                                            Some(val) => {
-                                                let _receiver = std::ptr::read(
-                                                    frame.stack.as_ptr().add(len - 1),
-                                                );
-                                                let _name = std::ptr::read(
-                                                    frame.stack.as_ptr().add(len - 2),
-                                                );
-                                                frame.stack.set_len(len - 2);
-                                                spush!(frame, val);
-                                                hot_ok!(profiling, self.profiler, instr.op)
-                                            }
-                                            None => {
-                                                Err(PyException::index_error("pop from empty list"))
-                                            }
-                                        }
-                                    } else {
-                                        unreachable!()
-                                    }
-                                }
-                            } else if arg_count == 1
-                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
-                                    (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
-                            {
-                                // Inline dict.get(key) — keep borrowed lookups for the
-                                // common keys and fall back for all other hashable keys.
-                                let key_obj = spop!(frame);
-                                let receiver = spop!(frame);
-                                {
-                                    let _ = spop!(frame);
-                                } // name
-                                if let PyObjectPayload::Dict(map) = &receiver.payload {
-                                    let r = unsafe { &*map.data_ptr() };
-                                    let val = match &key_obj.payload {
-                                        PyObjectPayload::Str(s) => {
-                                            r.get(&BorrowedStrKey(s.as_str())).cloned()
-                                        }
-                                        PyObjectPayload::Int(PyInt::Small(n)) => {
-                                            r.get(&BorrowedIntKey(*n)).cloned()
-                                        }
-                                        PyObjectPayload::Bool(b) => {
-                                            r.get(&BorrowedIntKey(*b as i64)).cloned()
-                                        }
-                                        _ => {
-                                            let key = key_obj.to_hashable_key()?;
-                                            r.get(&key).cloned()
-                                        }
-                                    }
-                                    .unwrap_or_else(PyObject::none);
-                                    spush!(frame, val);
+                            match crate::vm_fast_method::try_fast_builtin_method(frame, arg_count) {
+                                crate::vm_fast_method::FastMethodResult::Handled(result) => {
+                                    spush!(frame, result);
                                     hot_ok!(profiling, self.profiler, instr.op)
-                                } else {
-                                    unreachable!()
                                 }
-                            } else {
-                                // Inline fast paths for common methods — check type+name first, then pop
-                                let inline_kind: u8 = {
-                                    let name_s = if let PyObjectPayload::Str(n) =
-                                        &sget!(frame, base_idx).payload
-                                    {
-                                        n.as_str()
-                                    } else {
-                                        ""
-                                    };
-                                    let recv = &sget!(frame, base_idx + 1).payload;
-                                    match (name_s, recv, arg_count) {
-                                        ("strip", PyObjectPayload::Str(_), 0) => 1,
-                                        ("lstrip", PyObjectPayload::Str(_), 0) => 2,
-                                        ("rstrip", PyObjectPayload::Str(_), 0) => 3,
-                                        ("lower", PyObjectPayload::Str(_), 0) => 4,
-                                        ("upper", PyObjectPayload::Str(_), 0) => 5,
-                                        ("add", PyObjectPayload::Set(_), 1) => 6,
-                                        ("startswith", PyObjectPayload::Str(_), 1) => 7,
-                                        ("endswith", PyObjectPayload::Str(_), 1) => 8,
-                                        _ => 0,
-                                    }
-                                };
-                                if inline_kind >= 1 && inline_kind <= 5 {
-                                    // 0-arg str methods
-                                    let receiver = spop!(frame);
-                                    {
-                                        let _ = spop!(frame);
-                                    } // name
-                                    if let PyObjectPayload::Str(s) = &receiver.payload {
-                                        let result = match inline_kind {
-                                            1 => PyObject::str_val(CompactString::from(s.trim())),
-                                            2 => PyObject::str_val(CompactString::from(
-                                                s.trim_start(),
-                                            )),
-                                            3 => {
-                                                PyObject::str_val(CompactString::from(s.trim_end()))
-                                            }
-                                            4 => PyObject::str_val(CompactString::from(
-                                                s.to_lowercase(),
-                                            )),
-                                            _ => PyObject::str_val(CompactString::from(
-                                                s.to_uppercase(),
-                                            )),
-                                        };
-                                        spush!(frame, result);
-                                    }
-                                    hot_ok!(profiling, self.profiler, instr.op)
-                                } else if inline_kind == 6 {
-                                    // set.add(item)
-                                    let item = spop!(frame);
-                                    let receiver = spop!(frame);
-                                    {
-                                        let _ = spop!(frame);
-                                    } // name
-                                    if let PyObjectPayload::Set(set) = &receiver.payload {
-                                        let hk = match &item.payload {
-                                            PyObjectPayload::Str(s) => {
-                                                Some(HashableKey::str_key(s.to_compact_string()))
-                                            }
-                                            PyObjectPayload::Int(i) => {
-                                                Some(HashableKey::Int(i.clone()))
-                                            }
-                                            PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
-                                            _ => None,
-                                        };
-                                        if let Some(k) = hk {
-                                            // entry API: skip value write + old value drop for duplicates
-                                            unsafe { &mut *set.data_ptr() }
-                                                .entry(k)
-                                                .or_insert(item);
-                                            chain_pop_none!(
-                                                frame,
-                                                instr_base,
-                                                instr_count,
-                                                profiling,
-                                                self.profiler,
-                                                instr.op
-                                            )
-                                        } else {
-                                            // Non-hashable: use general dispatch
-                                            match crate::builtins::call_method(
-                                                &receiver,
-                                                "add",
-                                                &[item],
-                                            ) {
-                                                Ok(result) => {
-                                                    spush!(frame, result);
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                Err(e) => Err(e),
-                                            }
-                                        }
-                                    } else {
-                                        unreachable!()
-                                    }
-                                } else if inline_kind == 7 || inline_kind == 8 {
-                                    // str.startswith / str.endswith
-                                    let arg = spop!(frame);
-                                    let receiver = spop!(frame);
-                                    {
-                                        let _ = spop!(frame);
-                                    } // name
-                                    if let (PyObjectPayload::Str(s), PyObjectPayload::Str(prefix)) =
-                                        (&receiver.payload, &arg.payload)
-                                    {
-                                        let result = if inline_kind == 7 {
-                                            s.starts_with(prefix.as_str())
-                                        } else {
-                                            s.ends_with(prefix.as_str())
-                                        };
-                                        spush!(frame, PyObject::bool_val(result));
-                                        hot_ok!(profiling, self.profiler, instr.op)
-                                    } else {
-                                        // Not both strings — use general dispatch
-                                        let name = if inline_kind == 7 {
-                                            "startswith"
-                                        } else {
-                                            "endswith"
-                                        };
-                                        match crate::builtins::call_method(&receiver, name, &[arg])
-                                        {
-                                            Ok(result) => {
-                                                spush!(frame, result);
-                                                hot_ok!(profiling, self.profiler, instr.op)
-                                            }
-                                            Err(e) => Err(e),
-                                        }
-                                    }
-                                } else {
-                                    // General builtin method dispatch — direct type dispatch
-                                    // (bypasses call_method's __sizeof__ check + type re-match)
-                                    // __sizeof__ is a universal method handled only in call_method;
-                                    // gate on first byte to cheaply skip direct dispatch for dunders.
-                                    if arg_count == 1 {
+                                crate::vm_fast_method::FastMethodResult::HandledNone => {
+                                    chain_pop_none!(
+                                        frame,
+                                        instr_base,
+                                        instr_count,
+                                        profiling,
+                                        self.profiler,
+                                        instr.op
+                                    )
+                                }
+                                crate::vm_fast_method::FastMethodResult::Fallback => {
+                                    let call_result = if arg_count == 1 {
                                         let a0 = spop!(frame);
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            // str.join with generator/lazy iter: collect via VM first
-                                            // list.extend with generator/lazy iter/instance: collect via VM first
-                                            let a0_result: Result<PyObjectRef, PyException> =
-                                                if name.as_str() == "join"
-                                                    && matches!(
-                                                        &receiver.payload,
-                                                        PyObjectPayload::Str(_)
-                                                            | PyObjectPayload::Bytes(_)
-                                                            | PyObjectPayload::ByteArray(_)
-                                                    )
-                                                {
-                                                    match &a0.payload {
-                                                        PyObjectPayload::Generator(_)
+                                            let n = name.as_str();
+                                            if n == "join"
+                                                && matches!(
+                                                    &receiver.payload,
+                                                    PyObjectPayload::Str(_)
+                                                        | PyObjectPayload::Bytes(_)
+                                                        | PyObjectPayload::ByteArray(_)
+                                                )
+                                                && matches!(
+                                                    &a0.payload,
+                                                    PyObjectPayload::Generator(_)
                                                         | PyObjectPayload::Instance(_)
                                                         | PyObjectPayload::Iterator(_)
                                                         | PyObjectPayload::VecIter(_)
                                                         | PyObjectPayload::WeakValueIter(_)
                                                         | PyObjectPayload::WeakKeyIter(_)
                                                         | PyObjectPayload::RefIter { .. }
-                                                        | PyObjectPayload::RevRefIter { .. } => {
-                                                            self.collect_iterable(&a0)
-                                                                .map(PyObject::list)
-                                                        }
-                                                        _ => Ok(a0),
-                                                    }
-                                                } else if matches!(
-                                                    name.as_str(),
-                                                    "union"
-                                                        | "intersection"
-                                                        | "difference"
-                                                        | "symmetric_difference"
-                                                        | "update"
-                                                        | "intersection_update"
-                                                        | "difference_update"
-                                                        | "symmetric_difference_update"
-                                                        | "issubset"
-                                                        | "issuperset"
-                                                        | "isdisjoint"
-                                                        | "__or__"
-                                                        | "__and__"
-                                                        | "__sub__"
-                                                        | "__xor__"
-                                                ) && matches!(
-                                                    &receiver.payload,
-                                                    PyObjectPayload::Set(_)
-                                                        | PyObjectPayload::FrozenSet(_)
-                                                ) {
-                                                    match &a0.payload {
-                                                        PyObjectPayload::Generator(_)
-                                                        | PyObjectPayload::Instance(_)
-                                                        | PyObjectPayload::Iterator(_) => self
-                                                            .collect_iterable(&a0)
-                                                            .map(PyObject::list),
-                                                        _ => Ok(a0),
-                                                    }
-                                                } else if name.as_str() == "extend"
-                                                    && matches!(
-                                                        &receiver.payload,
-                                                        PyObjectPayload::List(_)
-                                                    )
-                                                {
-                                                    match &a0.payload {
-                                                        PyObjectPayload::Generator(_)
-                                                        | PyObjectPayload::Instance(_) => self
-                                                            .collect_iterable(&a0)
-                                                            .map(PyObject::list),
-                                                        PyObjectPayload::Iterator(iter_data) => {
-                                                            let needs_vm = matches!(
-                                                                &*iter_data.read(),
-                                                                IteratorData::Enumerate { .. }
-                                                                    | IteratorData::Zip { .. }
-                                                                    | IteratorData::MapOne { .. }
-                                                                    | IteratorData::Map { .. }
-                                                                    | IteratorData::Filter { .. }
-                                                                    | IteratorData::FilterFalse { .. }
-                                                                    | IteratorData::Sentinel { .. }
-                                                            );
-                                                            if needs_vm {
-                                                                self.collect_iterable(&a0)
-                                                                    .map(PyObject::list)
-                                                            } else {
-                                                                Ok(a0)
-                                                            }
-                                                        }
-                                                        _ => Ok(a0),
-                                                    }
-                                                } else {
-                                                    Ok(a0)
-                                                };
-                                            let result = a0_result.and_then(|a0| {
-                                                let n = name.as_str();
-                                                // Dunder methods (start with '_') go through call_method for __sizeof__ etc.
-                                                if n.as_bytes().first() == Some(&b'_') {
-                                                    return crate::builtins::call_method(
-                                                        &receiver,
-                                                        n,
-                                                        &[a0],
-                                                    );
-                                                }
-                                                match &receiver.payload {
-                                                    PyObjectPayload::Str(s) => {
-                                                        crate::builtins::call_str_method(
-                                                            s.as_str(),
-                                                            n,
-                                                            &[a0],
-                                                        )
-                                                    }
-                                                    PyObjectPayload::List(items) => {
-                                                        crate::builtins::call_list_method(
-                                                            &receiver,
-                                                            items,
-                                                            n,
-                                                            &[a0],
-                                                        )
-                                                    }
-                                                    PyObjectPayload::Dict(map)
-                                                    | PyObjectPayload::MappingProxy(map) => {
-                                                        crate::builtins::call_dict_method(
-                                                            map,
-                                                            n,
-                                                            &[a0],
-                                                            Some(receiver.clone()),
-                                                        )
-                                                    }
-                                                    PyObjectPayload::Set(m) => {
-                                                        crate::builtins::call_set_method(
-                                                            m,
-                                                            n,
-                                                            &[a0],
-                                                        )
-                                                    }
-                                                    PyObjectPayload::Tuple(items) => {
-                                                        crate::builtins::call_tuple_method(
-                                                            items,
-                                                            n,
-                                                            &[a0],
-                                                        )
-                                                    }
-                                                    _ => crate::builtins::call_method(
-                                                        &receiver,
-                                                        n,
-                                                        &[a0],
-                                                    ),
-                                                }
-                                            });
-                                            match result {
-                                                Ok(result) => {
-                                                    spush!(frame, result);
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                Err(e) => Err(e),
-                                            }
-                                        } else {
-                                            unreachable!()
-                                        }
-                                    } else if arg_count == 2 {
-                                        let a1 = spop!(frame);
-                                        let a0 = spop!(frame);
-                                        let receiver = spop!(frame);
-                                        let name_obj = spop!(frame);
-                                        if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            let n = name.as_str();
-                                            let result = if n.as_bytes().first() == Some(&b'_') {
-                                                crate::builtins::call_method(
-                                                    &receiver,
-                                                    n,
-                                                    &[a0, a1],
+                                                        | PyObjectPayload::RevRefIter { .. }
                                                 )
-                                            } else {
-                                                match &receiver.payload {
-                                                    PyObjectPayload::Str(s) => {
-                                                        crate::builtins::call_str_method(
-                                                            s.as_str(),
-                                                            n,
-                                                            &[a0, a1],
-                                                        )
-                                                    }
-                                                    PyObjectPayload::List(items) => {
-                                                        crate::builtins::call_list_method(
-                                                            &receiver,
-                                                            items,
-                                                            n,
-                                                            &[a0, a1],
-                                                        )
-                                                    }
-                                                    PyObjectPayload::Dict(map)
-                                                    | PyObjectPayload::MappingProxy(map) => {
-                                                        crate::builtins::call_dict_method(
-                                                            map,
-                                                            n,
-                                                            &[a0, a1],
-                                                            Some(receiver.clone()),
-                                                        )
-                                                    }
-                                                    PyObjectPayload::Set(m) => {
-                                                        crate::builtins::call_set_method(
-                                                            m,
-                                                            n,
-                                                            &[a0, a1],
-                                                        )
-                                                    }
-                                                    _ => crate::builtins::call_method(
+                                            {
+                                                self.collect_iterable(&a0).and_then(|items| {
+                                                    crate::builtins::call_method(
                                                         &receiver,
                                                         n,
-                                                        &[a0, a1],
-                                                    ),
+                                                        &[PyObject::list(items)],
+                                                    )
+                                                })
+                                            } else if matches!(
+                                                n,
+                                                "union"
+                                                    | "intersection"
+                                                    | "difference"
+                                                    | "symmetric_difference"
+                                                    | "update"
+                                                    | "intersection_update"
+                                                    | "difference_update"
+                                                    | "symmetric_difference_update"
+                                                    | "issubset"
+                                                    | "issuperset"
+                                                    | "isdisjoint"
+                                                    | "__or__"
+                                                    | "__and__"
+                                                    | "__sub__"
+                                                    | "__xor__"
+                                            ) && matches!(
+                                                &receiver.payload,
+                                                PyObjectPayload::Set(_)
+                                                    | PyObjectPayload::FrozenSet(_)
+                                            ) && matches!(
+                                                &a0.payload,
+                                                PyObjectPayload::Generator(_)
+                                                    | PyObjectPayload::Instance(_)
+                                                    | PyObjectPayload::Iterator(_)
+                                            ) {
+                                                self.collect_iterable(&a0).and_then(|items| {
+                                                    crate::builtins::call_method(
+                                                        &receiver,
+                                                        n,
+                                                        &[PyObject::list(items)],
+                                                    )
+                                                })
+                                            } else if n == "extend"
+                                                && matches!(
+                                                    &receiver.payload,
+                                                    PyObjectPayload::List(_)
+                                                )
+                                            {
+                                                let needs_vm_collect = match &a0.payload {
+                                                    PyObjectPayload::Generator(_)
+                                                    | PyObjectPayload::Instance(_) => true,
+                                                    PyObjectPayload::Iterator(iter_data) => {
+                                                        matches!(
+                                                            &*iter_data.read(),
+                                                            IteratorData::Enumerate { .. }
+                                                                | IteratorData::Zip { .. }
+                                                                | IteratorData::MapOne { .. }
+                                                                | IteratorData::Map { .. }
+                                                                | IteratorData::Filter { .. }
+                                                                | IteratorData::FilterFalse { .. }
+                                                                | IteratorData::Sentinel { .. }
+                                                        )
+                                                    }
+                                                    _ => false,
+                                                };
+                                                if needs_vm_collect {
+                                                    self.collect_iterable(&a0).and_then(|items| {
+                                                        crate::builtins::call_method(
+                                                            &receiver,
+                                                            "extend",
+                                                            &[PyObject::list(items)],
+                                                        )
+                                                    })
+                                                } else {
+                                                    crate::builtins::call_method(
+                                                        &receiver,
+                                                        n,
+                                                        &[a0],
+                                                    )
                                                 }
-                                            };
-                                            match result {
-                                                Ok(result) => {
-                                                    spush!(frame, result);
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                Err(e) => Err(e),
+                                            } else {
+                                                crate::builtins::call_method(&receiver, n, &[a0])
                                             }
                                         } else {
-                                            unreachable!()
+                                            Ok(PyObject::none())
                                         }
                                     } else if arg_count == 0 {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                             let n = name.as_str();
-                                            // list.sort() needs VM-level __lt__ dispatch for
-                                            // user types (namedtuples, custom classes, etc.).
-                                            if n == "sort" {
-                                                if matches!(
+                                            if n == "sort"
+                                                && matches!(
                                                     &receiver.payload,
                                                     PyObjectPayload::List(_)
-                                                ) {
-                                                    let mut v =
-                                                        if let PyObjectPayload::List(items) =
-                                                            &receiver.payload
-                                                        {
-                                                            items.read().clone()
-                                                        } else {
-                                                            Vec::new()
-                                                        };
-                                                    match self.vm_sort(&mut v) {
-                                                        Ok(()) => {
-                                                            if let PyObjectPayload::List(items) =
-                                                                &receiver.payload
-                                                            {
-                                                                *items.write() = v;
-                                                            }
-                                                            spush!(frame, PyObject::none());
-                                                            hot_ok!(
-                                                                profiling,
-                                                                self.profiler,
-                                                                instr.op
-                                                            )
-                                                        }
-                                                        Err(e) => Err(e),
+                                                )
+                                            {
+                                                let mut values =
+                                                    if let PyObjectPayload::List(items) =
+                                                        &receiver.payload
+                                                    {
+                                                        items.read().clone()
+                                                    } else {
+                                                        Vec::new()
+                                                    };
+                                                self.vm_sort(&mut values).and_then(|()| {
+                                                    if let PyObjectPayload::List(items) =
+                                                        &receiver.payload
+                                                    {
+                                                        *items.write() = values;
                                                     }
-                                                } else {
-                                                    match crate::builtins::call_method(
-                                                        &receiver,
-                                                        n,
-                                                        &[],
-                                                    ) {
-                                                        Ok(result) => {
-                                                            spush!(frame, result);
-                                                            hot_ok!(
-                                                                profiling,
-                                                                self.profiler,
-                                                                instr.op
-                                                            )
-                                                        }
-                                                        Err(e) => Err(e),
-                                                    }
-                                                }
+                                                    Ok(PyObject::none())
+                                                })
                                             } else {
-                                                let result = if n.as_bytes().first() == Some(&b'_')
-                                                {
-                                                    crate::builtins::call_method(&receiver, n, &[])
-                                                } else {
-                                                    match &receiver.payload {
-                                                        PyObjectPayload::Str(s) => {
-                                                            crate::builtins::call_str_method(
-                                                                s.as_str(),
-                                                                n,
-                                                                &[],
-                                                            )
-                                                        }
-                                                        PyObjectPayload::List(items) => {
-                                                            crate::builtins::call_list_method(
-                                                                &receiver,
-                                                                items,
-                                                                n,
-                                                                &[],
-                                                            )
-                                                        }
-                                                        PyObjectPayload::Dict(map)
-                                                        | PyObjectPayload::MappingProxy(map) => {
-                                                            crate::builtins::call_dict_method(
-                                                                map,
-                                                                n,
-                                                                &[],
-                                                                Some(receiver.clone()),
-                                                            )
-                                                        }
-                                                        PyObjectPayload::Set(m) => {
-                                                            crate::builtins::call_set_method(
-                                                                m,
-                                                                n,
-                                                                &[],
-                                                            )
-                                                        }
-                                                        _ => crate::builtins::call_method(
-                                                            &receiver,
-                                                            n,
-                                                            &[],
-                                                        ),
-                                                    }
-                                                };
-                                                match result {
-                                                    Ok(result) => {
-                                                        spush!(frame, result);
-                                                        hot_ok!(profiling, self.profiler, instr.op)
-                                                    }
-                                                    Err(e) => Err(e),
-                                                }
+                                                crate::builtins::call_method(&receiver, n, &[])
                                             }
                                         } else {
-                                            unreachable!()
+                                            Ok(PyObject::none())
                                         }
                                     } else {
                                         let mut args = Vec::with_capacity(arg_count);
@@ -3012,22 +2612,24 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            match crate::builtins::call_method(
+                                            crate::builtins::call_method(
                                                 &receiver,
                                                 name.as_str(),
                                                 &args,
-                                            ) {
-                                                Ok(result) => {
-                                                    spush!(frame, result);
-                                                    hot_ok!(profiling, self.profiler, instr.op)
-                                                }
-                                                Err(e) => Err(e),
-                                            }
+                                            )
                                         } else {
-                                            unreachable!()
+                                            Ok(PyObject::none())
                                         }
+                                    };
+                                    match call_result {
+                                        Ok(result) => {
+                                            spush!(frame, result);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        Err(err) => Err(err),
                                     }
                                 }
+                                crate::vm_fast_method::FastMethodResult::Error(err) => Err(err),
                             }
                         } else {
                             self.execute_one(instr)

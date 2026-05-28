@@ -19,6 +19,7 @@ mod vm_fast_build;
 mod vm_fast_collections;
 mod vm_fast_compare;
 mod vm_fast_iter;
+mod vm_fast_method;
 mod vm_fast_paths;
 mod vm_fast_unary_bitwise;
 mod vm_helpers;
