@@ -1,6 +1,7 @@
 //! Main compiler: walks the AST and emits bytecode into `CodeObject`s.
 
 mod expressions;
+mod patterns;
 mod statements;
 
 use compact_str::CompactString;
