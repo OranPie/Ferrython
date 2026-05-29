@@ -307,6 +307,7 @@ pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<Co
                         | "str"
                         | "float"
                         | "complex"
+                        | "dict"
                         | "list"
                         | "tuple"
                         | "set"

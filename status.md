@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T19:06:23+08:00
+Last updated: 2026-05-29T22:58:51+08:00
 
 ## CPython 兼容修复进度
 
@@ -60,6 +60,19 @@ Last updated: 2026-05-29T19:06:23+08:00
   - `git diff --check`
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_tee test_itertools.TestBasicOps.test_tee_reenter`
   - `target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_pickling test_itertools.TestBasicOps.test_takewhile test_itertools.TestBasicOps.test_dropwhile test_itertools.TestExamples.test_takewhile test_itertools.TestExamples.test_dropwhile`
+
+- 已推进 `dict` key/error/fromkeys 兼容修复：
+  - dict 查找、包含、插入、删除、`get()`、`setdefault()`、`pop()`、`update()` 等路径会传播自定义 key `__eq__` 抛出的异常，并保持原 key 作为 `KeyError.args[0]`。
+  - `dict.clear()` / `dict.copy()` 补齐参数数量校验，`dict.keys/items/values(self)` 支持类式调用。
+  - `dict()` 构造 dict subclass 时优先走 mapping protocol，`dict.fromkeys()` 支持生成器、dict subclass、`__new__` 返回非 dict mapping、以及 subclass `__setitem__` 异常传播。
+  - 空 `**kwargs` 的 `CALL_FUNCTION_EX` 归一到普通 positional 调用，修复 `f(*args, **{})` 绕过 native/class-bound dispatch 的问题。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `target/debug/ferrython tools/run_cpython_tests.py -vv test_dict.DictTest.test_fromkeys test_dict.DictTest.test_dict_copy_order test_dict.DictTest.test_copy test_dict.DictTest.test_clear test_dict.DictTest.test_bad_key test_dict.DictTest.test_getitem`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_dict.DictTest.test_update test_dict.DictTest.test_setdefault test_dict.DictTest.test_pop test_dict.DictTest.test_popitem test_dict.DictTest.test_contains test_dict.DictTest.test_fromkeys test_dict.DictTest.test_bad_key`
 
 ## 代码质量重构进度
 

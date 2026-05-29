@@ -390,7 +390,7 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
         PyObjectPayload::Dict(map) => {
             let hk = key.to_hashable_key()?;
             if is_hidden_dict_key(&hk) {
-                return Err(PyException::key_error(key.repr()));
+                return Err(PyException::key_error_value(key.clone()));
             }
             let map_r = map.read();
             if let Some(val) = map_r.get(&hk) {
@@ -423,15 +423,15 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                         "tuple" => PyObject::tuple(vec![]),
                         "set" => PyObject::set(new_fx_hashkey_map()),
                         "dict" => PyObject::dict(new_fx_hashkey_map()),
-                        _ => return Err(PyException::key_error(key.repr())),
+                        _ => return Err(PyException::key_error_value(key.clone())),
                     },
-                    _ => return Err(PyException::key_error(key.repr())),
+                    _ => return Err(PyException::key_error_value(key.clone())),
                 };
                 // Store the default value
                 map.write().insert(hk, default.clone());
                 return Ok(default);
             }
-            Err(PyException::key_error(key.repr()))
+            Err(PyException::key_error_value(key.clone()))
         }
         PyObjectPayload::MappingProxy(map) => {
             let hk = key.to_hashable_key()?;
@@ -448,7 +448,7 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                     return Err(err);
                 }
             }
-            Err(PyException::key_error(key.repr()))
+            Err(PyException::key_error_value(key.clone()))
         }
         PyObjectPayload::Str(s) => {
             let idx = index_to_i64(key).map_err(|e| {

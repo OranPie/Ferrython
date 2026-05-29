@@ -13,6 +13,9 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        if kwargs.is_empty() {
+            return self.call_object(func, pos_args);
+        }
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
                 let globals = pyfunc.globals.clone();

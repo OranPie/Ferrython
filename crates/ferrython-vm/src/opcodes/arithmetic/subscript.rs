@@ -7,10 +7,28 @@ use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     index_to_i64, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
 
 // ── Group 6: Subscript operations ────────────────────────────────────
+#[inline]
+fn clear_key_compare_error() {
+    let _ = take_pending_eq_error();
+}
+
+#[inline]
+fn finish_key_compare() -> Result<(), PyException> {
+    match take_pending_eq_error() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+#[inline]
+fn missing_key_error(key: &PyObjectRef) -> PyException {
+    PyException::key_error_value(key.clone())
+}
+
 impl VirtualMachine {
     pub(crate) fn exec_subscript_ops(
         &mut self,
@@ -173,7 +191,7 @@ impl VirtualMachine {
                                 let result = self.call_object(missing, vec![key])?;
                                 self.vm_push(result);
                             } else {
-                                return Err(PyException::key_error(key.py_to_string()));
+                                return Err(missing_key_error(&key));
                             }
                             return Ok(None);
                         }
@@ -194,7 +212,7 @@ impl VirtualMachine {
                                     let result = self.call_object(missing, vec![key])?;
                                     self.vm_push(result);
                                 } else {
-                                    return Err(PyException::key_error(key.py_to_string()));
+                                    return Err(missing_key_error(&key));
                                 }
                             }
                             return Ok(None);
@@ -218,7 +236,9 @@ impl VirtualMachine {
                 }
                 if let PyObjectPayload::Dict(map) = &obj.payload {
                     let hk = self.vm_to_hashable_key(&key)?;
+                    clear_key_compare_error();
                     let existing = map.read().get(&hk).cloned();
+                    finish_key_compare()?;
                     if let Some(val) = existing {
                         self.vm_push(val);
                     } else {
@@ -227,11 +247,20 @@ impl VirtualMachine {
                         let factory = map.read().get(&factory_key).cloned();
                         if let Some(factory) = factory {
                             let default = self.call_object(factory, vec![])?;
-                            map.write().insert(hk, default.clone());
+                            {
+                                let mut w = map.write();
+                                clear_key_compare_error();
+                                w.insert(hk.clone(), default.clone());
+                                if let Some(err) = take_pending_eq_error() {
+                                    let _ = w.swap_remove(&hk);
+                                    clear_key_compare_error();
+                                    return Err(err);
+                                }
+                            }
                             self.vm_push(default);
                             return Ok(None);
                         } else {
-                            return Err(PyException::key_error(key.py_to_string()));
+                            return Err(missing_key_error(&key));
                         }
                     }
                 } else if let PyObjectPayload::InstanceDict(attrs) = &obj.payload {
@@ -239,7 +268,7 @@ impl VirtualMachine {
                     if let Some(val) = attrs.read().get(&key_str).cloned() {
                         self.vm_push(val);
                     } else {
-                        return Err(PyException::key_error(key.py_to_string()));
+                        return Err(missing_key_error(&key));
                     }
                 } else {
                     self.vm_push(obj.get_item(&key)?);
@@ -368,7 +397,14 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(map) => {
                         let hk = self.vm_to_hashable_key(&key)?;
-                        map.write().insert(hk, value);
+                        let mut w = map.write();
+                        clear_key_compare_error();
+                        w.insert(hk.clone(), value);
+                        if let Some(err) = take_pending_eq_error() {
+                            let _ = w.swap_remove(&hk);
+                            clear_key_compare_error();
+                            return Err(err);
+                        }
                     }
                     PyObjectPayload::ByteArray(ref bytes) => {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
@@ -621,14 +657,21 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(map) => {
                         let hk = self.vm_to_hashable_key(&key)?;
-                        if map.write().swap_remove(&hk).is_none() {
-                            return Err(PyException::key_error(key.repr()));
+                        let removed = {
+                            let mut w = map.write();
+                            clear_key_compare_error();
+                            let removed = w.swap_remove(&hk);
+                            finish_key_compare()?;
+                            removed
+                        };
+                        if removed.is_none() {
+                            return Err(missing_key_error(&key));
                         }
                     }
                     PyObjectPayload::InstanceDict(attrs) => {
                         let key_str = CompactString::from(key.py_to_string());
                         if attrs.write().swap_remove(&key_str).is_none() {
-                            return Err(PyException::key_error(key.repr()));
+                            return Err(missing_key_error(&key));
                         }
                     }
                     PyObjectPayload::Instance(inst) => {
@@ -638,8 +681,15 @@ impl VirtualMachine {
                         }
                         if let Some(ref ds) = inst.dict_storage {
                             let hk = self.vm_to_hashable_key(&key)?;
-                            if ds.write().swap_remove(&hk).is_none() {
-                                return Err(PyException::key_error(key.repr()));
+                            let removed = {
+                                let mut w = ds.write();
+                                clear_key_compare_error();
+                                let removed = w.swap_remove(&hk);
+                                finish_key_compare()?;
+                                removed
+                            };
+                            if removed.is_none() {
+                                return Err(missing_key_error(&key));
                             }
                             return Ok(None);
                         }

@@ -75,7 +75,21 @@ impl VirtualMachine {
             PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_)
                 if bbm.method_name.as_str() == "fromkeys" =>
             {
-                Ok(Some(builtins::core_fns::builtin_dict_fromkeys(args)?))
+                if !args.is_empty()
+                    && matches!(
+                        &args[0].payload,
+                        PyObjectPayload::Generator(_)
+                            | PyObjectPayload::Instance(_)
+                            | PyObjectPayload::Iterator(_)
+                    )
+                {
+                    let mut resolved = Vec::with_capacity(args.len());
+                    resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                    resolved.extend_from_slice(&args[1..]);
+                    Ok(Some(builtins::core_fns::builtin_dict_fromkeys(&resolved)?))
+                } else {
+                    Ok(Some(builtins::core_fns::builtin_dict_fromkeys(args)?))
+                }
             }
             PyObjectPayload::Str(_)
             | PyObjectPayload::List(_)

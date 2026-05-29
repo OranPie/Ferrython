@@ -884,13 +884,29 @@ impl PartialEq for HashableKey {
                 }
                 false
             }
-            (HashableKey::Custom { object, .. }, other) => {
+            (
+                HashableKey::Custom {
+                    hash_value, object, ..
+                },
+                other,
+            ) => {
+                if *hash_value != hash_key_like_python(other) {
+                    return false;
+                }
                 if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
                     return result;
                 }
                 false
             }
-            (other, HashableKey::Custom { object, .. }) => {
+            (
+                other,
+                HashableKey::Custom {
+                    hash_value, object, ..
+                },
+            ) => {
+                if *hash_value != hash_key_like_python(other) {
+                    return false;
+                }
                 if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
                     return result;
                 }
@@ -1017,7 +1033,7 @@ impl indexmap::Equivalent<HashableKey> for BorrowedIntKey {
         match key {
             HashableKey::Int(PyInt::Small(n)) => *n == self.0,
             HashableKey::Bool(b) => (*b as i64) == self.0,
-            HashableKey::Custom { object, .. } => {
+            HashableKey::Custom { hash_value, object } if *hash_value == self.0 => {
                 call_eq_dispatch(object, &PyObject::int(self.0)).unwrap_or(false)
             }
             _ => false,

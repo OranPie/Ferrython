@@ -1,5 +1,5 @@
 use ferrython_core::error::PyResult;
-use ferrython_core::object::{NativeFunctionData, PyObjectRef};
+use ferrython_core::object::{NativeFunctionData, PyObject, PyObjectPayload, PyObjectRef};
 
 use crate::VirtualMachine;
 
@@ -11,6 +11,13 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         if let Some(result) = self.call_ast_or_type_native_object(nf_data, &args)? {
             return Ok(result);
+        }
+        if nf_data.name.as_str() == "dict.fromkeys"
+            && args.len() >= 2
+            && matches!(&args[0].payload, PyObjectPayload::Class(_))
+        {
+            let value = args.get(2).cloned().unwrap_or_else(PyObject::none);
+            return self.dict_fromkeys_for_class(&args[0], &args[1], value);
         }
         if nf_data.name.as_str() == "property.__get__" {
             return self.call_property_get_native(&args);

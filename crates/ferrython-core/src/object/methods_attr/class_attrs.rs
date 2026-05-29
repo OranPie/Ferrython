@@ -71,6 +71,16 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
             Ok(PyObject::list(mro_list))
         }));
     }
+    if name == "fromkeys" && class_has_builtin_dict_base(cd) {
+        if let Some(method) = resolve_builtin_type_method("dict", "fromkeys") {
+            return Some(PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: obj.clone(),
+                    method,
+                },
+            }));
+        }
+    }
     // Check own namespace first, then bases
     if let Some(v) = cd.namespace.read().get(name).cloned() {
         match &v.payload {
@@ -105,6 +115,16 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
                             },
                         }));
                     }
+                    PyObjectPayload::NativeFunction(_)
+                        if name == "fromkeys" && bcd.name.as_str() == "dict" =>
+                    {
+                        return Some(PyObjectRef::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: v,
+                            },
+                        }));
+                    }
                     _ => return Some(v),
                 }
             }
@@ -113,6 +133,18 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
                 if let Some(v) = py_get_attr(base, name) {
                     return Some(v);
                 }
+            }
+        } else if let PyObjectPayload::BuiltinType(base_name) = &base.payload {
+            if let Some(v) = base.get_attr(name) {
+                if name == "fromkeys" && base_name.as_str() == "dict" {
+                    return Some(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: obj.clone(),
+                            method: v,
+                        },
+                    }));
+                }
+                return Some(v);
             }
         } else if let Some(v) = base.get_attr(name) {
             return Some(v);
@@ -240,4 +272,21 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
         }));
     }
     None
+}
+
+fn class_has_builtin_dict_base(cd: &ClassData) -> bool {
+    if cd
+        .builtin_base_name
+        .as_ref()
+        .is_some_and(|base| base.as_str() == "dict")
+    {
+        return true;
+    }
+    cd.bases.iter().any(|base| match &base.payload {
+        PyObjectPayload::BuiltinType(name) => name.as_str() == "dict",
+        PyObjectPayload::Class(base_cd) => {
+            base_cd.name.as_str() == "dict" || class_has_builtin_dict_base(base_cd)
+        }
+        _ => false,
+    })
 }

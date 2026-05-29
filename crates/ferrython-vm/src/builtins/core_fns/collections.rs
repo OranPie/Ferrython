@@ -426,8 +426,12 @@ pub(crate) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Set(_) => Ok(PyObject::dict(dict_pair_items(&args[0])?)),
         _ => {
-            // Try to handle instances with dict_storage (OrderedDict, dict subclasses)
+            // Dict subclasses may override keys()/__iter__; use the mapping
+            // protocol before cloning their internal storage.
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(map) = dict_from_mapping(&args[0])? {
+                    return Ok(PyObject::dict(map));
+                }
                 if let Some(ref ds) = inst.dict_storage {
                     let read = ds.read();
                     return Ok(PyObject::dict(read.clone()));
@@ -647,10 +651,10 @@ pub(crate) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
             }
         }
         _ => {
-            return Err(PyException::type_error(format!(
-                "'{}' object is not iterable",
-                iterable.type_name()
-            )));
+            for item in iterable.to_list()? {
+                let hk = item.to_hashable_key()?;
+                map.insert(hk, value.clone());
+            }
         }
     }
     Ok(PyObject::dict(map))

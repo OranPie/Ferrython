@@ -54,6 +54,27 @@ impl VirtualMachine {
         args: &[PyObjectRef],
     ) -> PyResult<Option<PyObjectRef>> {
         let PyObjectPayload::BuiltinType(tn) = &bbm.receiver.payload else {
+            if bbm.method_name.as_str() == "fromkeys" {
+                if let PyObjectPayload::Instance(inst) = &bbm.receiver.payload {
+                    if inst.dict_storage.is_some() {
+                        let call_args = if args
+                            .first()
+                            .is_some_and(|arg| PyObjectRef::ptr_eq(arg, &bbm.receiver))
+                        {
+                            &args[1..]
+                        } else {
+                            args
+                        };
+                        let Some(iterable) = call_args.first() else {
+                            return Ok(None);
+                        };
+                        let value = call_args.get(1).cloned().unwrap_or_else(PyObject::none);
+                        return self
+                            .dict_fromkeys_for_class(&inst.class, iterable, value)
+                            .map(Some);
+                    }
+                }
+            }
             if bbm.method_name.as_str() == "fromkeys"
                 && matches!(
                     bbm.receiver.payload,

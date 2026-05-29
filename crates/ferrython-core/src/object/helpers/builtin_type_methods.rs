@@ -3,7 +3,7 @@
 use super::super::methods::{CompareOp, PyObjectMethods};
 use super::super::payload::*;
 use super::{property_field, property_init_doc, property_set_doc, unwrap_builtin_subclass};
-use crate::error::PyException;
+use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::object::ClassData;
 use crate::types::HashableKey;
@@ -382,6 +382,15 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
         (_, "__init__") => Some(PyObject::native_function("builtin.__init__", |_args| {
             Ok(PyObject::none())
         })),
+        ("dict", "keys") => Some(PyObject::native_function("dict.keys", |args| {
+            dict_storage_view(args, "keys", "dict.keys")
+        })),
+        ("dict", "values") => Some(PyObject::native_function("dict.values", |args| {
+            dict_storage_view(args, "values", "dict.values")
+        })),
+        ("dict", "items") => Some(PyObject::native_function("dict.items", |args| {
+            dict_storage_view(args, "items", "dict.items")
+        })),
         // dict.__getitem__(self, key) — access dict_storage on dict subclass
         ("dict", "__getitem__") => Some(PyObject::native_function("dict.__getitem__", |args| {
             if args.len() != 2 {
@@ -696,5 +705,45 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             Ok(PyObject::int(size))
         })),
         _ => None,
+    }
+}
+
+fn dict_storage_view(args: &[PyObjectRef], view: &str, name: &str) -> PyResult<PyObjectRef> {
+    if args.len() != 1 {
+        return Err(PyException::type_error(format!(
+            "{}() takes exactly 1 argument",
+            name
+        )));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+            Ok(dict_view_payload(map.clone(), Some(args[0].clone()), view))
+        }
+        PyObjectPayload::Instance(inst) => {
+            if let Some(ref ds) = inst.dict_storage {
+                Ok(dict_view_payload(ds.clone(), Some(args[0].clone()), view))
+            } else {
+                Err(PyException::type_error(format!(
+                    "{}() requires a dict instance",
+                    name
+                )))
+            }
+        }
+        _ => Err(PyException::type_error(format!(
+            "{}() requires a dict instance",
+            name
+        ))),
+    }
+}
+
+fn dict_view_payload(
+    map: std::rc::Rc<PyCell<FxHashKeyMap>>,
+    owner: Option<PyObjectRef>,
+    view: &str,
+) -> PyObjectRef {
+    match view {
+        "keys" => PyObject::wrap(PyObjectPayload::DictKeys { map, owner }),
+        "values" => PyObject::wrap(PyObjectPayload::DictValues { map, owner }),
+        _ => PyObject::wrap(PyObjectPayload::DictItems { map, owner }),
     }
 }

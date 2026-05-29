@@ -7,7 +7,9 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     FxHashKeyMap, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt};
+use ferrython_core::types::{
+    take_pending_eq_error, BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt,
+};
 use std::rc::Rc;
 
 use crate::vm_method_cache::{is_interned_append, is_interned_pop};
@@ -24,6 +26,19 @@ pub(crate) enum FastMethodPopTopResult {
     HandledChain,
     Fallback,
     Error(PyException),
+}
+
+#[inline(always)]
+fn clear_key_compare_error() {
+    let _ = take_pending_eq_error();
+}
+
+#[inline(always)]
+fn finish_key_compare() -> PyResult<()> {
+    match take_pending_eq_error() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 #[inline(always)]
@@ -163,6 +178,18 @@ impl VirtualMachine {
         {
             return self.collect_iterable(&a0).and_then(|items| {
                 crate::builtins::call_method(&receiver, name, &[PyObject::list(items)])
+            });
+        }
+
+        if name == "fromkeys"
+            && matches!(
+                &receiver.payload,
+                PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_)
+            )
+            && is_vm_collectable_dict_fromkeys_arg(&a0)
+        {
+            return self.collect_iterable(&a0).and_then(|items| {
+                crate::builtins::core_fns::builtin_dict_fromkeys(&[PyObject::list(items)])
             });
         }
 
@@ -336,6 +363,7 @@ fn try_builtin_method_0(frame: &mut Frame, base_idx: usize, name: &str) -> FastM
 #[inline(always)]
 fn try_builtin_method_1(frame: &mut Frame, base_idx: usize, name: &str) -> FastMethodResult {
     if name == "join"
+        || name == "fromkeys"
         || name == "extend"
         || matches!(
             name,
@@ -485,13 +513,34 @@ fn dict_get(
     key: &PyObjectRef,
 ) -> PyResult<PyObjectRef> {
     let entries = unsafe { &*map.data_ptr() };
-    Ok(match &key.payload {
-        PyObjectPayload::Str(s) => entries.get(&BorrowedStrKey(s.as_str())).cloned(),
-        PyObjectPayload::Int(PyInt::Small(n)) => entries.get(&BorrowedIntKey(*n)).cloned(),
-        PyObjectPayload::Bool(b) => entries.get(&BorrowedIntKey(*b as i64)).cloned(),
-        _ => entries.get(&key.to_hashable_key()?).cloned(),
-    }
-    .unwrap_or_else(PyObject::none))
+    let found = match &key.payload {
+        PyObjectPayload::Str(s) => {
+            clear_key_compare_error();
+            let found = entries.get(&BorrowedStrKey(s.as_str())).cloned();
+            finish_key_compare()?;
+            found
+        }
+        PyObjectPayload::Int(PyInt::Small(n)) => {
+            clear_key_compare_error();
+            let found = entries.get(&BorrowedIntKey(*n)).cloned();
+            finish_key_compare()?;
+            found
+        }
+        PyObjectPayload::Bool(b) => {
+            clear_key_compare_error();
+            let found = entries.get(&BorrowedIntKey(*b as i64)).cloned();
+            finish_key_compare()?;
+            found
+        }
+        _ => {
+            let key = key.to_hashable_key()?;
+            clear_key_compare_error();
+            let found = entries.get(&key).cloned();
+            finish_key_compare()?;
+            found
+        }
+    };
+    Ok(found.unwrap_or_else(PyObject::none))
 }
 
 #[inline(always)]
@@ -522,6 +571,14 @@ fn is_vm_collectable_join_arg(obj: &PyObjectRef) -> bool {
 
 #[inline(always)]
 fn is_vm_collectable_set_arg(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_) | PyObjectPayload::Iterator(_)
+    )
+}
+
+#[inline(always)]
+fn is_vm_collectable_dict_fromkeys_arg(obj: &PyObjectRef) -> bool {
     matches!(
         &obj.payload,
         PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_) | PyObjectPayload::Iterator(_)
