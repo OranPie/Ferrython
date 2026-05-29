@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T07:55:07+08:00
+Last updated: 2026-05-29T08:35:31+08:00
 
 ## 代码质量重构进度
 
@@ -590,6 +590,14 @@ Last updated: 2026-05-29T07:55:07+08:00
   - `deque.maxlen` 写入按 CPython 抛只读 `AttributeError`。
   - `test.support.unlink()` 兼容 Ferrython 当前 generic `OSError`，缺失测试文件不再中断 CPython 用例。
 
+- 2026-05-29 deque live iterator 修复：
+  - `collections.deque` 构造器收敛为 marker-storage 实例，不再为每个 deque 创建捕获 backing storage 的 class closure，避免 GC 无法遍历闭包捕获导致 iterator cycle 不可回收。
+  - 新增 deque live iterator payload，`iter(deque)` / `reversed(deque)` 持有源 deque、记录创建时长度，并在长度变化时按 CPython 抛 `RuntimeError: deque mutated during iteration`。
+  - deque 正向/反向 iterator 纳入 cycle GC tracking，并为 `type(reversed(deque()))(deque_obj)` 提供可调用 iterator type 构造路径。
+  - core truthiness 对 deque marker 读取 `_data` 长度，修复 `bool(deque())` / sequence truth 测试。
+  - focused 验证 12 项全过，覆盖 iterator mutation、empty-deque mutation、`reversed_new`、container iterator GC、truth、basics/maxlen/copy/subclass/addmul。
+  - 完整 `test_deque` 当前：`run=79 pass=71 fail=3 err=2 skip=3`；剩余为 recursive pickle/repeat identity、deque iterator pickle 和超大 index。
+
 - 2026-05-26 追加：
   - cycle GC 纳入 heap class、bound method、builtin bound method，并遍历 class namespace/MRO/cache/vtable、bound method receiver/function，补齐 weakref cycle tests 里 class 与 callback bound method 的可达性分析。
   - cycle GC 对 weakref ref 的 registry callback 额外计入内部引用，避免 weakref callback closure 被候选集错误漏算。
@@ -945,13 +953,13 @@ Last updated: 2026-05-29T07:55:07+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 `collections.deque` 构造器、deque 子类 marker storage 和 copy/`__copy__` 语义。
+- 当前待提交代码修复涉及 deque live iterator、constructor marker-storage 收敛和 deque truthiness。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
 - `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy` 当前模块级通过：`run=75 pass=75 fail=0 err=0 skip=0`。
-  - 下一步：继续处理 `deque` iterator mutation、递归 pickle/repeat、reversed iterator type 和超大 index，或扫描新的低成本 CPython 模块。
+  - 下一步：继续处理 `deque` iterator pickle、递归 pickle/repeat identity 和超大 index，或扫描新的低成本 CPython 模块。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -1006,6 +1014,11 @@ Last updated: 2026-05-29T07:55:07+08:00
   - 修复：deque `copy()` / `__copy__()` 返回同类对象并保留 maxlen/storage；类级 `collections.deque.__init__` 支持 kwargs `maxlen`、多余位置参数校验和 descriptor self 校验。
   - 验证：focused 9 项全过，覆盖 `test_init`、constructor iterator cases、subclass basics/copy_pickle/subclass_with_kwargs、copy/copy_method 和 addmul。
   - 完整 `test_deque` 当前：`run=79 pass=68 fail=6 err=2 skip=3`；剩余为 container iterator cycle、recursive pickle/repeat identity、iterator mutation RuntimeError、`reversed(list)` type callable 和超大 index。
+- `test_deque` live iterator / truth 批次：
+  - 修复：deque 正向/反向迭代器改为 live source iterator，检测长度变异并持有 source 供 cycle GC 遍历。
+  - 修复：stdlib `collections.deque` constructor 不再创建 per-instance data-capturing closure class，统一走 marker storage，关闭 deque iterator cycle GC 泄漏。
+  - 修复：`type(reversed(deque()))(deque_obj)` 构造反向 deque iterator，deque marker truthiness 读取 `_data` 长度。
+  - 验证：focused 12 项全过；完整 `test_deque` 当前：`run=79 pass=71 fail=3 err=2 skip=3`。
 
 
 - 已开始 Phase4/Phase5 VM 拆分：

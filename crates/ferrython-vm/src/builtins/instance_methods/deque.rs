@@ -2,11 +2,12 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::{checked_repeat_len, guard_eager_allocation};
 use ferrython_core::object::{
-    CompareOp, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CompareOp, DequeIterData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    SyncUsize,
 };
-use std::rc::Rc;
 
 pub(crate) fn call_deque_method(
+    receiver: &PyObjectRef,
     inst: &ferrython_core::object::InstanceData,
     method: &str,
     args: &[PyObjectRef],
@@ -496,7 +497,7 @@ pub(crate) fn call_deque_method(
                     "__ne__() takes exactly one argument",
                 ));
             }
-            let eq = call_deque_method(inst, "__eq__", args)?;
+            let eq = call_deque_method(receiver, inst, "__eq__", args)?;
             Ok(PyObject::bool_val(!eq.is_truthy()))
         }
         "__lt__" | "__le__" | "__gt__" | "__ge__" => {
@@ -672,6 +673,20 @@ pub(crate) fn call_deque_method(
                 "deque index out of range",
             ))
         }
+        "__reversed__" => {
+            let len = get_data()
+                .to_list()
+                .map(|items| items.len())
+                .unwrap_or_default();
+            Ok(PyObject::tracked(PyObjectPayload::DequeIter(Box::new(
+                DequeIterData {
+                    source: receiver.clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: len,
+                    reverse: true,
+                },
+            ))))
+        }
         "__setitem__" => {
             if args.len() != 2 {
                 return Err(PyException::type_error(
@@ -711,16 +726,18 @@ pub(crate) fn call_deque_method(
             ))
         }
         "__iter__" => {
-            let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                    PyCell::new(ferrython_core::object::IteratorData::List {
-                        items: list.read().clone(),
-                        index: 0,
-                    }),
-                ))));
-            }
-            Ok(data)
+            let len = get_data()
+                .to_list()
+                .map(|items| items.len())
+                .unwrap_or_default();
+            Ok(PyObject::tracked(PyObjectPayload::DequeIter(Box::new(
+                DequeIterData {
+                    source: receiver.clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: len,
+                    reverse: false,
+                },
+            ))))
         }
         _ => Err(PyException::attribute_error(format!(
             "deque has no attribute '{}'",

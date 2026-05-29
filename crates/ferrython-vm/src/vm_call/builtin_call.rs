@@ -1,8 +1,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::PyObjectRef;
+use ferrython_core::object::{DequeIterData, PyObject, PyObjectPayload, PyObjectRef, SyncUsize};
 
 use crate::builtins;
+use crate::builtins::deque_storage_len;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -14,6 +15,28 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         if name.as_str() == "__build_class__" {
             return self.build_class(args);
+        }
+        if matches!(name.as_str(), "_deque_iterator" | "_deque_reverse_iterator") {
+            if args.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "{}() takes exactly one argument",
+                    name
+                )));
+            }
+            let PyObjectPayload::Instance(inst) = &args[0].payload else {
+                return Err(PyException::type_error("expected deque object"));
+            };
+            if !inst.attrs.read().contains_key("__deque__") {
+                return Err(PyException::type_error("expected deque object"));
+            }
+            return Ok(PyObject::tracked(PyObjectPayload::DequeIter(Box::new(
+                DequeIterData {
+                    source: args[0].clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: deque_storage_len(&args[0]).unwrap_or_default(),
+                    reverse: name.as_str() == "_deque_reverse_iterator",
+                },
+            ))));
         }
         if matches!(
             name.as_str(),

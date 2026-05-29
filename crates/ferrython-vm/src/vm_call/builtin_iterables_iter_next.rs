@@ -1,9 +1,11 @@
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    DequeIterData, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    SyncUsize,
 };
 use std::rc::Rc;
 
+use crate::builtins::deque_storage_len;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -18,6 +20,16 @@ impl VirtualMachine {
             return Ok(None);
         };
 
+        if inst.attrs.read().contains_key("__deque__") {
+            return Ok(Some(PyObject::tracked(PyObjectPayload::DequeIter(
+                Box::new(DequeIterData {
+                    source: args[0].clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: deque_storage_len(&args[0]).unwrap_or_default(),
+                    reverse: false,
+                }),
+            ))));
+        }
         if let Some(raw_iter) = Self::resolve_instance_dunder(&args[0], "__iter__") {
             let iter_method = self.resolve_descriptor(&raw_iter, &args[0])?;
             let result = self.call_object(iter_method, vec![])?;

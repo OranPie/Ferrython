@@ -514,6 +514,7 @@ fn is_vm_collectable_join_arg(obj: &PyObjectRef) -> bool {
             | PyObjectPayload::VecIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::DequeIter(_)
             | PyObjectPayload::RefIter { .. }
             | PyObjectPayload::RevRefIter { .. }
     )

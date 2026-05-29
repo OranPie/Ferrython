@@ -17,6 +17,7 @@ impl VirtualMachine {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } = &bbm.receiver.payload
         {

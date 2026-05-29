@@ -1,8 +1,11 @@
 use ferrython_core::error::PyResult;
-use ferrython_core::object::{IteratorData, PyCell, PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    DequeIterData, IteratorData, PyCell, PyObject, PyObjectPayload, PyObjectRef, SyncUsize,
+};
 use std::rc::Rc;
 
 use crate::builtins;
+use crate::builtins::deque_storage_len;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
@@ -16,7 +19,17 @@ impl VirtualMachine {
         if matches!(&args[0].payload, PyObjectPayload::List(_)) {
             return builtins::dispatch("reversed", &[args[0].clone()]).map(Some);
         }
-        if let PyObjectPayload::Instance(_) = &args[0].payload {
+        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            if inst.attrs.read().contains_key("__deque__") {
+                return Ok(Some(PyObject::tracked(PyObjectPayload::DequeIter(
+                    Box::new(DequeIterData {
+                        source: args[0].clone(),
+                        index: SyncUsize::new(0),
+                        expected_len: deque_storage_len(&args[0]).unwrap_or_default(),
+                        reverse: true,
+                    }),
+                ))));
+            }
             if let Some(rev_method) = Self::resolve_instance_dunder(&args[0], "__reversed__") {
                 return self.call_object(rev_method, vec![]).map(Some);
             }

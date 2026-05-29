@@ -297,6 +297,9 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             data.index.set(usize::MAX);
             Ok(result)
         }
+        PyObjectPayload::DequeIter(_) => Err(PyException::type_error(
+            "lazy iterator requires VM to collect",
+        )),
         PyObjectPayload::RefIter { source, index } => {
             if index.get() == usize::MAX {
                 return Ok(vec![]);

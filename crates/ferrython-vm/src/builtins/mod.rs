@@ -27,7 +27,7 @@ pub(crate) use format_helpers::{
     apply_format_spec_float, apply_format_spec_int, apply_format_spec_str, format_float_repr,
 };
 pub use instance_methods::resolve_type_class_method;
-pub(crate) use iter_helpers::get_iter_from_obj_pub;
+pub(crate) use iter_helpers::{advance_deque_iter, deque_storage_len, get_iter_from_obj_pub};
 pub use iter_helpers::{iter_advance, iter_next_value};
 pub(crate) use type_methods::partial_cmp_for_sort;
 
@@ -404,7 +404,7 @@ fn call_instance_method(
     }
     // Deque methods (except extend/extendleft which need VM for iterable collection)
     if inst.attrs.read().contains_key("__deque__") {
-        return call_deque_method(inst, method, args);
+        return call_deque_method(receiver, inst, method, args);
     }
     // StringIO methods
     if inst.attrs.read().contains_key("__stringio__") {

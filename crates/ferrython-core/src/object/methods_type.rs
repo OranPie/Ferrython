@@ -49,6 +49,13 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => "list_iterator",
+        PyObjectPayload::DequeIter(data) => {
+            if data.reverse {
+                "_deque_reverse_iterator"
+            } else {
+                "_deque_iterator"
+            }
+        }
         PyObjectPayload::RevRefIter { .. } => "list_reverseiterator",
         PyObjectPayload::Iterator(iter_data) => {
             let guard = iter_data.read();
@@ -124,6 +131,14 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
                 if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
                     return (nc.func)(&[]).map_or(false, |referent| referent.is_truthy());
                 }
+            }
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        return !items.read().is_empty();
+                    }
+                }
+                return false;
             }
             // Builtin base type subclass: delegate truthiness to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -638,6 +653,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
         PyObjectPayload::RevRefIter { .. } => "<iterator>".into(),
         PyObjectPayload::Range(rd) => {

@@ -509,6 +509,8 @@ define_builtin_type_cache!(
     (TYPE_CELL, "cell"),
     (TYPE_ITERATOR, "iterator"),
     (TYPE_LIST_ITERATOR, "list_iterator"),
+    (TYPE_DEQUE_ITERATOR, "_deque_iterator"),
+    (TYPE_DEQUE_REVERSE_ITERATOR, "_deque_reverse_iterator"),
     (TYPE_TUPLE_ITERATOR, "tuple_iterator"),
     (TYPE_STR_ITERATOR, "str_ascii_iterator"),
     (TYPE_DICT_ITEMITERATOR, "dict_itemiterator"),
@@ -1020,6 +1022,11 @@ impl PyObject {
             }
         }
         let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(map))));
+        track_object(&obj);
+        obj
+    }
+    pub fn tracked(payload: PyObjectPayload) -> PyObjectRef {
+        let obj = Self::wrap(payload);
         track_object(&obj);
         obj
     }

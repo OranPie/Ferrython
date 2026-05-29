@@ -158,6 +158,7 @@ fn is_gc_payload(payload: &PyObjectPayload) -> bool {
             | PyObjectPayload::VecIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::DequeIter(_)
             | PyObjectPayload::RefIter { .. }
             | PyObjectPayload::RevRefIter { .. }
             | PyObjectPayload::DictKeys { .. }
@@ -244,6 +245,7 @@ fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
             .iter()
             .flat_map(|(ref_obj, value)| [ref_obj.clone(), value.clone()])
             .collect(),
+        PyObjectPayload::DequeIter(data) => vec![data.source.clone()],
         PyObjectPayload::Iterator(iter_data) => {
             let data = iter_data.read();
             iterator_refs(&data)

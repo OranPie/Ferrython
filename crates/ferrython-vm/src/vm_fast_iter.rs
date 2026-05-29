@@ -1,5 +1,6 @@
 //! Fast iterator setup and `ForIterStoreFast` helpers for the VM dispatch loop.
 
+use crate::builtins::advance_deque_iter;
 use crate::frame::Frame;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::PyException;
@@ -38,6 +39,7 @@ pub(crate) fn try_fast_get_iter(frame: &mut Frame) -> FastGetIterResult {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Generator(_) => FastGetIterResult::Handled,
@@ -96,6 +98,18 @@ pub(crate) fn try_fast_for_iter(
             }
             FastForIterResult::Handled
         }
+        PyObjectPayload::DequeIter(data) => match advance_deque_iter(data) {
+            Ok(Some(value)) => {
+                push(frame, value);
+                FastForIterResult::Handled
+            }
+            Ok(None) => {
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+                FastForIterResult::Handled
+            }
+            Err(err) => FastForIterResult::Error(err),
+        },
         PyObjectPayload::RefIter { source, index } => {
             try_for_ref_iter(frame, jump_target, source, index, instr_base, instr_count)
         }
@@ -795,6 +809,11 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
                 Some(None)
             }
         }
+        PyObjectPayload::DequeIter(data) => match advance_deque_iter(data) {
+            Ok(Some(value)) => Some(Some(value)),
+            Ok(None) => Some(None),
+            Err(_) => None,
+        },
         PyObjectPayload::RefIter { source, index } => {
             if index.get() == usize::MAX {
                 return Some(None);

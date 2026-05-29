@@ -1,4 +1,5 @@
 use crate::builtins;
+use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
@@ -146,6 +147,7 @@ impl VirtualMachine {
                     WeakKeyIterKind::Items => PyObject::tuple(vec![key, value.clone()]),
                 }));
             },
+            PyObjectPayload::DequeIter(data) => advance_deque_iter(data),
             PyObjectPayload::RefIter { source, index } => {
                 if index.get() == usize::MAX {
                     return Ok(None);

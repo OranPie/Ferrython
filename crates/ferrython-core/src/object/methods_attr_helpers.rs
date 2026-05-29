@@ -514,6 +514,7 @@ pub(super) fn instance_builtin_method(
                 | "__getitem__"
                 | "__setitem__"
                 | "__delitem__"
+                | "__reversed__"
         ) {
             return Some(make_bound(name));
         }

@@ -159,6 +159,7 @@ pub(super) fn non_instance_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjec
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } => iterator_attr(obj, name),
         PyObjectPayload::BuiltinBoundMethod(_) => builtin_bound_method_attr(obj, name),

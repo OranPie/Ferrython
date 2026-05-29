@@ -1,8 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    call_callable, is_hidden_dict_key, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    WeakKeyIterKind, WeakValueIterKind,
+    call_callable, is_hidden_dict_key, DequeIterData, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef, WeakKeyIterKind, WeakValueIterKind,
 };
 
 use super::core_fns::get_iter_from_obj;
@@ -467,6 +467,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 WeakKeyIterKind::Items => PyObject::tuple(vec![key, value.clone()]),
             }));
         },
+        PyObjectPayload::DequeIter(data) => advance_deque_iter(data),
         PyObjectPayload::RefIter { source, index } => {
             if index.get() == usize::MAX {
                 return Ok(None);
@@ -537,6 +538,56 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
         }
         _ => Err(PyException::type_error("iter_next_value on non-iterator")),
     }
+}
+
+pub(crate) fn deque_storage(obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return Ok(None);
+    };
+    if !inst.attrs.read().contains_key("__deque__") {
+        return Ok(None);
+    }
+    Ok(inst.attrs.read().get("_data").cloned())
+}
+
+pub(crate) fn deque_storage_len(obj: &PyObjectRef) -> Option<usize> {
+    let data = deque_storage(obj).ok().flatten()?;
+    let PyObjectPayload::List(items) = &data.payload else {
+        return None;
+    };
+    Some(items.read().len())
+}
+
+pub(crate) fn advance_deque_iter(data: &DequeIterData) -> PyResult<Option<PyObjectRef>> {
+    let Some(storage) = deque_storage(&data.source)? else {
+        data.index.set(usize::MAX);
+        return Ok(None);
+    };
+    let PyObjectPayload::List(items) = &storage.payload else {
+        data.index.set(usize::MAX);
+        return Ok(None);
+    };
+    let idx = data.index.get();
+    if idx == usize::MAX {
+        return Ok(None);
+    }
+    let read = items.read();
+    if read.len() != data.expected_len {
+        data.index.set(usize::MAX);
+        return Err(PyException::runtime_error("deque mutated during iteration"));
+    }
+    if idx >= data.expected_len {
+        data.index.set(usize::MAX);
+        return Ok(None);
+    }
+    let pos = if data.reverse {
+        data.expected_len - idx - 1
+    } else {
+        idx
+    };
+    let value = read[pos].clone();
+    data.index.set(idx + 1);
+    Ok(Some(value))
 }
 
 /// Public access to get_iter_from_obj for lazy iterator construction.

@@ -1,4 +1,5 @@
 use crate::builtins;
+use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
@@ -94,6 +95,7 @@ impl VirtualMachine {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. } = &iterable.payload
         {
@@ -263,6 +265,7 @@ impl VirtualMachine {
                             | PyObjectPayload::VecIter(_)
                             | PyObjectPayload::WeakValueIter(_)
                             | PyObjectPayload::WeakKeyIter(_)
+                            | PyObjectPayload::DequeIter(_)
                             | PyObjectPayload::RefIter { .. }
                             | PyObjectPayload::RevRefIter { .. }
                     ) {
@@ -333,6 +336,13 @@ impl VirtualMachine {
             PyObjectPayload::WeakKeyIter(_) => {
                 let mut items = Vec::new();
                 while let Some(item) = self.vm_iter_next(obj)? {
+                    items.push(item);
+                }
+                Ok(items)
+            }
+            PyObjectPayload::DequeIter(data) => {
+                let mut items = Vec::new();
+                while let Some(item) = advance_deque_iter(data)? {
                     items.push(item);
                 }
                 Ok(items)
@@ -662,6 +672,7 @@ impl VirtualMachine {
             | PyObjectPayload::VecIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::DequeIter(_)
             | PyObjectPayload::RefIter { .. }
             | PyObjectPayload::RevRefIter { .. }
             | PyObjectPayload::Generator(_) => obj.clone(),

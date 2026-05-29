@@ -701,6 +701,14 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => Some(PyObject::builtin_type_by_name("list_iterator")),
+        PyObjectPayload::DequeIter(data) => {
+            let name = if data.reverse {
+                "_deque_reverse_iterator"
+            } else {
+                "_deque_iterator"
+            };
+            Some(PyObject::builtin_type_by_name(name))
+        }
         PyObjectPayload::RevRefIter { .. } => {
             Some(PyObject::builtin_type_by_name("list_reverseiterator"))
         }

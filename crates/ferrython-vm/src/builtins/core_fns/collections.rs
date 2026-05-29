@@ -2,14 +2,15 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, guarded_push, new_fx_hashkey_flatmap, new_fx_hashkey_map,
-    FxHashKeyMap, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    SyncUsize,
+    DequeIterData, FxHashKeyMap, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef, SyncUsize,
 };
 use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
 use super::super::iter_advance;
+use super::super::iter_helpers::deque_storage_len;
 
 pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("reversed", args, 1)?;
@@ -20,6 +21,18 @@ pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             source: obj.clone(),
             index: SyncUsize::new(len),
         }));
+    }
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.read().contains_key("__deque__") {
+            return Ok(PyObject::tracked(PyObjectPayload::DequeIter(Box::new(
+                DequeIterData {
+                    source: obj.clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: deque_storage_len(obj).unwrap_or_default(),
+                    reverse: true,
+                },
+            ))));
+        }
     }
     if let Some(reversed_attr) = obj.get_attr("__reversed__") {
         if !matches!(&reversed_attr.payload, PyObjectPayload::None) {
@@ -122,6 +135,7 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Generator(_)
@@ -181,6 +195,7 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     | PyObjectPayload::VecIter(_)
                     | PyObjectPayload::WeakValueIter(_)
                     | PyObjectPayload::WeakKeyIter(_)
+                    | PyObjectPayload::DequeIter(_)
                     | PyObjectPayload::RefIter { .. }
                     | PyObjectPayload::RevRefIter { .. } => Some(iter_attr.clone()),
                     // __iter__ is a bound method — call it
@@ -402,6 +417,7 @@ pub(crate) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::VecIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
+        | PyObjectPayload::DequeIter(_)
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Set(_) => Ok(PyObject::dict(dict_pair_items(&args[0])?)),

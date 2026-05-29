@@ -800,6 +800,14 @@ pub struct WeakKeyIterData {
     pub kind: WeakKeyIterKind,
 }
 
+#[derive(Clone, Debug)]
+pub struct DequeIterData {
+    pub source: PyObjectRef,
+    pub index: SyncUsize,
+    pub expected_len: usize,
+    pub reverse: bool,
+}
+
 /// Boxed range data — moved out of enum to shrink PyObjectPayload from 32→24 bytes.
 #[derive(Clone, Debug)]
 pub struct RangeData {
@@ -874,6 +882,7 @@ pub enum PyObjectPayload {
     VecIter(Box<VecIterData>),
     WeakValueIter(Box<WeakValueIterData>),
     WeakKeyIter(Box<WeakKeyIterData>),
+    DequeIter(Box<DequeIterData>),
     /// Lazy reference iterator — holds a reference to the source container (list/tuple)
     /// and iterates by index without cloning elements upfront. Saves n Rc::clone at
     /// creation + n Rc::drop at destruction. CPython-style: just a pointer + position.
@@ -1053,6 +1062,7 @@ impl fmt::Debug for PyObjectPayload {
                     data.entries.len()
                 )
             }
+            Self::DequeIter(data) => write!(f, "DequeIter({})", data.index.get()),
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::RevRefIter { index, .. } => write!(f, "RevRefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
