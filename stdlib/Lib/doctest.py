@@ -83,11 +83,7 @@ def _extract_examples(docstring):
                 out_stripped = out.lstrip()
                 if out_stripped.startswith('>>> ') or out_stripped.startswith('... '):
                     break
-                if out_stripped == '' and i + 1 < len(lines):
-                    next_stripped = lines[i + 1].lstrip()
-                    if next_stripped.startswith('>>> ') or next_stripped == '':
-                        break
-                if out_stripped == '' and i + 1 >= len(lines):
+                if out_stripped == '':
                     break
                 want_lines.append(out[indent:] if len(out) > indent else out)
                 i += 1
@@ -192,6 +188,7 @@ class DocTestRunner:
         return TestResults(failed=self._failed, attempted=self._attempted)
 
     def _output_matches(self, got, want):
+        want = want.replace('<BLANKLINE>', '')
         if got == want:
             return True
         # Normalize trailing whitespace

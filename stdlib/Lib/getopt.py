@@ -4,7 +4,12 @@ This module helps scripts to parse the command line arguments in sys.argv.
 It supports the same conventions as the Unix getopt() function.
 """
 
-__all__ = ['GetoptError', 'error', 'getopt', 'gnu_getopt']
+import os
+
+__all__ = [
+    'GetoptError', 'error', 'getopt', 'gnu_getopt',
+    'do_longs', 'do_shorts', 'long_has_args', 'short_has_arg',
+]
 
 
 class GetoptError(Exception):
@@ -55,6 +60,14 @@ def gnu_getopt(args, shortopts, longopts=[]):
     else:
         longopts = list(longopts)
 
+    if shortopts.startswith('+'):
+        shortopts = shortopts[1:]
+        all_options_first = True
+    elif os.environ.get("POSIXLY_CORRECT"):
+        all_options_first = True
+    else:
+        all_options_first = False
+
     while args:
         if args[0] == '--':
             prog_args += args[1:]
@@ -63,11 +76,38 @@ def gnu_getopt(args, shortopts, longopts=[]):
             opts, args = do_longs(opts, args[0][2:], longopts, args[1:])
         elif args[0].startswith('-') and args[0] != '-':
             opts, args = do_shorts(opts, args[0][1:], shortopts, args[1:])
+        elif all_options_first:
+            prog_args += args
+            break
         else:
             prog_args.append(args[0])
             args = args[1:]
 
     return opts, prog_args
+
+
+def short_has_arg(opt, shortopts):
+    for i, shortopt in enumerate(shortopts):
+        if opt == shortopt != ':':
+            return shortopts.startswith(':', i + 1)
+    raise GetoptError('option -%s not recognized' % opt, opt)
+
+
+def long_has_args(opt, longopts):
+    possibilities = [lo for lo in longopts if lo.startswith(opt)]
+    if not possibilities:
+        raise GetoptError('option --%s not recognized' % opt, opt)
+    if opt in possibilities:
+        return False, opt
+    if opt + '=' in possibilities:
+        return True, opt
+    if len(possibilities) > 1:
+        raise GetoptError('option --%s not a unique prefix' % opt, opt)
+    match = possibilities[0]
+    has_arg = match.endswith('=')
+    if has_arg:
+        match = match[:-1]
+    return has_arg, match
 
 
 def do_longs(opts, opt, longopts, args):
@@ -77,28 +117,7 @@ def do_longs(opts, opt, longopts, args):
     else:
         optarg = None
 
-    has_arg = False
-    match = None
-    for lo in longopts:
-        if lo == opt:
-            match = lo
-            break
-        if lo == opt + '=':
-            match = lo
-            has_arg = True
-            break
-        if lo.startswith(opt):
-            match = lo
-            has_arg = lo.endswith('=')
-            break
-        if lo.startswith(opt + '='):
-            match = lo
-            has_arg = True
-            break
-
-    if match is None:
-        raise GetoptError('option --%s not recognized' % opt, opt)
-
+    has_arg, opt = long_has_args(opt, longopts)
     if has_arg:
         if optarg is None:
             if not args:
@@ -107,8 +126,7 @@ def do_longs(opts, opt, longopts, args):
     elif optarg is not None:
         raise GetoptError('option --%s must not have an argument' % opt, opt)
 
-    opt_name = match.rstrip('=')
-    opts.append(('--' + opt_name, optarg or ''))
+    opts.append(('--' + opt, optarg or ''))
     return opts, args
 
 
@@ -118,10 +136,7 @@ def do_shorts(opts, optstring, shortopts, args):
     while i < len(optstring):
         opt = optstring[i]
         i += 1
-        if shortopts.find(opt) < 0:
-            raise GetoptError('option -%s not recognized' % opt, opt)
-        idx = shortopts.index(opt)
-        if idx + 1 < len(shortopts) and shortopts[idx + 1] == ':':
+        if short_has_arg(opt, shortopts):
             if i < len(optstring):
                 optarg = optstring[i:]
                 i = len(optstring)

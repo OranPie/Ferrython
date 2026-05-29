@@ -94,6 +94,42 @@ pub(super) fn create_environ_object() -> PyObjectRef {
             }
         }),
     );
+    let d4 = data_ref.clone();
+    attrs.insert(
+        CompactString::from("pop"),
+        PyObject::native_closure("pop", move |args| {
+            let real_args =
+                if args.len() > 1 && matches!(&args[0].payload, PyObjectPayload::Module(_)) {
+                    &args[1..]
+                } else {
+                    args
+                };
+            if real_args.is_empty() {
+                return Err(PyException::type_error("pop expected at least 1 argument"));
+            }
+            if real_args.len() > 2 {
+                return Err(PyException::type_error("pop expected at most 2 arguments"));
+            }
+
+            let key_str = real_args[0].py_to_string();
+            match std::env::var(&key_str) {
+                Ok(val) => {
+                    unsafe {
+                        std::env::remove_var(&key_str);
+                    }
+                    if let PyObjectPayload::Dict(dd) = &d4.payload {
+                        dd.write()
+                            .swap_remove(&HashableKey::str_key(CompactString::from(&key_str)));
+                    }
+                    Ok(PyObject::str_val(CompactString::from(val)))
+                }
+                Err(_) => real_args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| PyException::key_error(format!("'{}'", key_str))),
+            }
+        }),
+    );
     attrs.insert(
         CompactString::from("keys"),
         PyObject::native_closure("keys", move |_| {

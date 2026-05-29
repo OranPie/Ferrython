@@ -1,8 +1,21 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T18:59:16+08:00
+Last updated: 2026-05-29T19:06:23+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `getopt` 小兼容修复：
+  - `getopt` 补齐公开 helper：`short_has_arg()`、`long_has_args()`、`do_longs()` 和 `do_shorts()` 进入 `__all__`。
+  - `long_has_args()` 对 exact match、参数型 long option、唯一前缀和歧义前缀按 CPython 语义处理。
+  - `gnu_getopt()` 支持 `+` 前缀和 `POSIXLY_CORRECT` 环境变量，进入 POSIX 模式后在首个非 option 参数处停止解析。
+  - `os.environ` 补齐 mapping 风格 `pop(key[, default])`，同时移除进程环境变量和内部 `_data`。
+  - `doctest` 普通空行不再被收进 expected output，显式 `<BLANKLINE>` 仍表示期望空白行，修复 Library Reference 示例误报。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `target/debug/ferrython -c "import os; os.environ['FERRYTHON_POP_TEST']='x'; print(os.environ.pop('FERRYTHON_POP_TEST')); print(os.environ.pop('FERRYTHON_POP_TEST', 'missing')); print('FERRYTHON_POP_TEST' in os.environ);"`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_getopt`
 
 - 已推进 `keyword` / `fnmatch` 小兼容修复：
   - `keyword.iskeyword` 和 `issoftkeyword` 绑定到初始关键字集合，不再受用户重新赋值 `kwlist` / `softkwlist` 影响。
