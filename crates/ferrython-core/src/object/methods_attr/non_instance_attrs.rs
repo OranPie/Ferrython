@@ -376,6 +376,11 @@ fn constant_value_to_obj(c: &ferrython_bytecode::code::ConstantValue) -> PyObjec
 fn iterator_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     match name {
         "__next__" | "__iter__" | "__length_hint__" => Some(bound_builtin(obj, name)),
+        "__reduce__" | "__reduce_ex__" | "__copy__" | "__deepcopy__"
+            if iterator_supports_reduce(obj) =>
+        {
+            Some(bound_builtin(obj, name))
+        }
         "__setstate__" if iterator_supports_setstate(obj) => Some(bound_builtin(obj, name)),
         "__class__" => Some(PyObject::builtin_type(CompactString::from("iterator"))),
         _ => None,

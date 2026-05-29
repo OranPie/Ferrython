@@ -4,7 +4,7 @@ use ferrython_core::object::{
     make_builtin, make_module, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
@@ -236,64 +236,55 @@ fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ))))
 }
 
+fn islice_index_arg(obj: &PyObjectRef, default: usize, allow_none: bool) -> PyResult<usize> {
+    if allow_none && matches!(&obj.payload, PyObjectPayload::None) {
+        return Ok(default);
+    }
+    match obj.to_index() {
+        Ok(PyInt::Small(n)) if n >= 0 => Ok(n as usize),
+        Ok(PyInt::Small(_)) | Ok(PyInt::Big(_)) | Err(_) => Err(PyException::value_error(
+            "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
+        )),
+    }
+}
+
 fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
         return Err(PyException::type_error(
             "islice() requires at least 2 arguments",
         ));
     }
-    let items = args[0].to_list()?;
-    let total = items.len();
+    if args.len() > 4 {
+        return Err(PyException::type_error(
+            "islice() takes at most 4 arguments",
+        ));
+    }
     let (start, stop, step) = if args.len() == 2 {
-        // islice(iterable, stop) — stop=None means no limit
-        let stop = if matches!(&args[1].payload, PyObjectPayload::None) {
-            total
-        } else {
-            args[1].to_int()? as usize
-        };
+        let stop = islice_index_arg(&args[1], usize::MAX, true)?;
         (0usize, stop, 1usize)
     } else if args.len() == 3 {
-        // islice(iterable, start, stop)
-        let s = if matches!(&args[1].payload, PyObjectPayload::None) {
-            0
-        } else {
-            args[1].to_int()? as usize
-        };
-        let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
-            total
-        } else {
-            args[2].to_int()? as usize
-        };
+        let s = islice_index_arg(&args[1], 0, true)?;
+        let stop = islice_index_arg(&args[2], usize::MAX, true)?;
         (s, stop, 1usize)
     } else {
-        // islice(iterable, start, stop, step)
-        let s = if matches!(&args[1].payload, PyObjectPayload::None) {
-            0
-        } else {
-            args[1].to_int()? as usize
-        };
-        let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
-            total
-        } else {
-            args[2].to_int()? as usize
-        };
-        let step = if matches!(&args[3].payload, PyObjectPayload::None) {
-            1
-        } else {
-            args[3].to_int()? as usize
-        };
+        let s = islice_index_arg(&args[1], 0, true)?;
+        let stop = islice_index_arg(&args[2], usize::MAX, true)?;
+        let step = islice_index_arg(&args[3], 1, true)?;
+        if step == 0 {
+            return Err(PyException::value_error(
+                "Step for islice() must be a positive integer or None.",
+            ));
+        }
         (s, stop, step)
     };
-    let result: Vec<PyObjectRef> = items
-        .into_iter()
-        .skip(start)
-        .take(stop.saturating_sub(start))
-        .step_by(step.max(1))
-        .collect();
+    let source = args[0].get_iter()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-        PyCell::new(IteratorData::List {
-            items: result,
+        PyCell::new(IteratorData::Islice {
+            source,
             index: 0,
+            next_yield: start,
+            stop,
+            step,
         }),
     ))))
 }
@@ -314,23 +305,17 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args
     };
-    let lists: Vec<Vec<PyObjectRef>> = iter_args
+    let sources: Vec<PyObjectRef> = iter_args
         .iter()
-        .map(|a| a.to_list())
+        .map(|a| a.get_iter())
         .collect::<Result<Vec<_>, _>>()?;
-    let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
-    let mut result = Vec::new();
-    for i in 0..max_len {
-        let tuple: Vec<PyObjectRef> = lists
-            .iter()
-            .map(|l| l.get(i).cloned().unwrap_or_else(|| fillvalue.clone()))
-            .collect();
-        result.push(PyObject::tuple(tuple));
-    }
+    let active = vec![true; sources.len()];
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-        PyCell::new(IteratorData::List {
-            items: result,
-            index: 0,
+        PyCell::new(IteratorData::ZipLongest {
+            sources,
+            active,
+            fillvalue,
+            cached_tuple: None,
         }),
     ))))
 }

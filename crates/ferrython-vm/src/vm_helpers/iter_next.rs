@@ -2,6 +2,9 @@ use crate::builtins;
 use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::{
+    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+};
 use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, WeakKeyIterKind,
     WeakValueIterKind,
@@ -21,17 +24,12 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::RangeIter(ri) => {
-                let current = ri.current.get();
-                let done = if ri.step > 0 {
-                    current >= ri.stop
-                } else {
-                    current <= ri.stop
-                };
-                if done {
-                    Ok(None)
-                } else {
-                    ri.current.set(current + ri.step);
-                    Ok(Some(PyObject::int(current)))
+                match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                    Some((value, next)) => {
+                        ri.current.set(next);
+                        Ok(Some(PyObject::int(value)))
+                    }
+                    None => Ok(None),
                 }
             }
             PyObjectPayload::Instance(_) => {
@@ -63,12 +61,21 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Iterator(iter_data_arc) => {
-                // Check for lazy iterators first
                 {
-                    let data = iter_data_arc.read();
-                    match &*data {
+                    let mut data = iter_data_arc.write();
+                    match &mut *data {
+                        IteratorData::BigRange(iter) => {
+                            if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
+                                return Ok(None);
+                            }
+                            let value = py_int_from_bigint(range_iter_item_bigint(iter));
+                            iter.index += 1;
+                            return Ok(Some(value));
+                        }
                         IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
+                        | IteratorData::ZipLongest { .. }
+                        | IteratorData::Islice { .. }
                         | IteratorData::MapOne { .. }
                         | IteratorData::Map { .. }
                         | IteratorData::Filter { .. }
@@ -275,6 +282,97 @@ impl VirtualMachine {
                     return Ok(None); // All exhausted at same time
                 }
                 Ok(Some(PyObject::tuple(items)))
+            }
+            IteratorData::ZipLongest {
+                sources,
+                active,
+                fillvalue,
+                ..
+            } => {
+                let srcs = sources.clone();
+                let fill = fillvalue.clone();
+                let mut active_state = active.clone();
+                drop(data);
+                if active_state.iter().all(|flag| !*flag) {
+                    return Ok(None);
+                }
+                let mut items = Vec::with_capacity(srcs.len());
+                let mut yielded_real = false;
+                for (idx, src) in srcs.iter().enumerate() {
+                    if !active_state.get(idx).copied().unwrap_or(false) {
+                        items.push(fill.clone());
+                        continue;
+                    }
+                    match self.vm_iter_next(src)? {
+                        Some(value) => {
+                            yielded_real = true;
+                            items.push(value);
+                        }
+                        None => {
+                            if let Some(flag) = active_state.get_mut(idx) {
+                                *flag = false;
+                            }
+                            items.push(fill.clone());
+                        }
+                    }
+                }
+                let mut data = iter_data_arc.write();
+                if let IteratorData::ZipLongest { active, .. } = &mut *data {
+                    *active = active_state;
+                }
+                if yielded_real {
+                    Ok(Some(PyObject::tuple(items)))
+                } else {
+                    Ok(None)
+                }
+            }
+            IteratorData::Islice {
+                source,
+                index,
+                next_yield,
+                stop,
+                step,
+            } => {
+                let src = source.clone();
+                let mut idx = *index;
+                let mut next = *next_yield;
+                let stop_at = *stop;
+                let step_by = (*step).max(1);
+                drop(data);
+                while idx < stop_at {
+                    match self.vm_iter_next(&src)? {
+                        Some(value) => {
+                            if idx == next {
+                                next = next.saturating_add(step_by);
+                                idx = idx.saturating_add(1);
+                                let mut data = iter_data_arc.write();
+                                if let IteratorData::Islice {
+                                    index, next_yield, ..
+                                } = &mut *data
+                                {
+                                    *index = idx;
+                                    *next_yield = next;
+                                }
+                                return Ok(Some(value));
+                            }
+                            idx = idx.saturating_add(1);
+                        }
+                        None => {
+                            let mut data = iter_data_arc.write();
+                            if let IteratorData::Islice { source, index, .. } = &mut *data {
+                                *source = PyObject::none();
+                                *index = stop_at;
+                            }
+                            return Ok(None);
+                        }
+                    }
+                }
+                let mut data = iter_data_arc.write();
+                if let IteratorData::Islice { source, index, .. } = &mut *data {
+                    *source = PyObject::none();
+                    *index = stop_at;
+                }
+                Ok(None)
             }
             IteratorData::MapOne { func, source } => {
                 let f = func.clone();

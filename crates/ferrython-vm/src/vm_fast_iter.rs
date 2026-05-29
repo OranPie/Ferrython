@@ -4,6 +4,9 @@ use crate::builtins::advance_deque_iter;
 use crate::frame::Frame;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::PyException;
+use ferrython_core::object::helpers::{
+    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+};
 use ferrython_core::object::{
     is_hidden_dict_key, GeneratorState, IteratorData, PyCell, PyObject, PyObjectPayload,
     PyObjectRef, SyncUsize,
@@ -71,18 +74,15 @@ pub(crate) fn try_fast_for_iter(
     let iter = unsafe { frame.peek_unchecked().clone() };
     match &iter.payload {
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            let done = if ri.step > 0 {
-                cur >= ri.stop
-            } else {
-                cur <= ri.stop
-            };
-            if done {
-                drop_stack_top(frame);
-                frame.ip = jump_target;
-            } else {
-                ri.current.set(cur + ri.step);
-                push(frame, PyObject::int(cur));
+            match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                Some((value, next)) => {
+                    ri.current.set(next);
+                    push(frame, PyObject::int(value));
+                }
+                None => {
+                    drop_stack_top(frame);
+                    frame.ip = jump_target;
+                }
             }
             FastForIterResult::Handled
         }
@@ -155,25 +155,24 @@ pub(crate) fn try_fast_for_iter_store(
     let iter = unsafe { frame.peek_unchecked().clone() };
     match &iter.payload {
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            let done = if ri.step > 0 {
-                cur >= ri.stop
-            } else {
-                cur <= ri.stop
-            };
-            if done {
-                drop_stack_top(frame);
-                frame.ip = jump_target;
-            } else {
-                ri.current.set(cur + ri.step);
-                let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
-                if let Some(ref mut arc) = dest_slot {
-                    if let Some(obj) = PyObjectRef::get_mut(arc) {
-                        obj.payload = PyObjectPayload::Int(PyInt::Small(cur));
-                        return FastForIterStoreResult::HandledChain;
+            match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                Some((value, next)) => {
+                    ri.current.set(next);
+                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
+                    if let Some(ref mut arc) = dest_slot {
+                        if let Some(obj) = PyObjectRef::get_mut(arc) {
+                            obj.payload = PyObjectPayload::Int(PyInt::Small(value));
+                            return FastForIterStoreResult::HandledChain;
+                        }
                     }
+                    *dest_slot = Some(PyObject::wrap_leaf(PyObjectPayload::Int(PyInt::Small(
+                        value,
+                    ))));
                 }
-                *dest_slot = Some(PyObject::wrap_leaf(PyObjectPayload::Int(PyInt::Small(cur))));
+                None => {
+                    drop_stack_top(frame);
+                    frame.ip = jump_target;
+                }
             }
             FastForIterStoreResult::HandledChain
         }
@@ -254,18 +253,26 @@ fn try_store_from_iterator_data(
             stop,
             step,
         } => {
-            let done = if *step > 0 {
-                *current >= *stop
+            if let Some((value, next)) = range_next_i64(*current, *stop, *step) {
+                let value = PyObject::int(value);
+                *current = next;
+                drop(data);
+                set_local(frame, store_idx, value);
             } else {
-                *current <= *stop
-            };
-            if done {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterStoreResult::HandledChain
+        }
+        IteratorData::BigRange(iter) => {
+            if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
                 drop(data);
                 drop_stack_top(frame);
                 frame.ip = jump_target;
             } else {
-                let value = PyObject::int(*current);
-                *current += *step;
+                let value = py_int_from_bigint(range_iter_item_bigint(iter));
+                iter.index += 1;
                 drop(data);
                 set_local(frame, store_idx, value);
             }
@@ -329,18 +336,26 @@ fn try_for_iterator_data(
             stop,
             step,
         } => {
-            let done = if *step > 0 {
-                *current >= *stop
+            if let Some((value, next)) = range_next_i64(*current, *stop, *step) {
+                let value = PyObject::int(value);
+                *current = next;
+                drop(data);
+                push(frame, value);
             } else {
-                *current <= *stop
-            };
-            if done {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterResult::Handled
+        }
+        IteratorData::BigRange(iter) => {
+            if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
                 drop(data);
                 drop_stack_top(frame);
                 frame.ip = jump_target;
             } else {
-                let value = PyObject::int(*current);
-                *current += *step;
+                let value = py_int_from_bigint(range_iter_item_bigint(iter));
+                iter.index += 1;
                 drop(data);
                 push(frame, value);
             }
@@ -769,17 +784,20 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
                     current,
                     stop,
                     step,
-                } => {
-                    let done = if *step > 0 {
-                        *current >= *stop
-                    } else {
-                        *current <= *stop
-                    };
-                    if done {
+                } => match range_next_i64(*current, *stop, *step) {
+                    Some((value, next)) => {
+                        let value = PyObject::int(value);
+                        *current = next;
+                        Some(Some(value))
+                    }
+                    None => Some(None),
+                },
+                IteratorData::BigRange(iter) => {
+                    if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
                         Some(None)
                     } else {
-                        let value = PyObject::int(*current);
-                        *current += *step;
+                        let value = py_int_from_bigint(range_iter_item_bigint(iter));
+                        iter.index += 1;
                         Some(Some(value))
                     }
                 }
@@ -787,17 +805,12 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
             }
         }
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            let done = if ri.step > 0 {
-                cur >= ri.stop
-            } else {
-                cur <= ri.stop
-            };
-            if done {
-                Some(None)
-            } else {
-                ri.current.set(cur + ri.step);
-                Some(Some(PyObject::int(cur)))
+            match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                Some((value, next)) => {
+                    ri.current.set(next);
+                    Some(Some(PyObject::int(value)))
+                }
+                None => Some(None),
             }
         }
         PyObjectPayload::VecIter(data) => {

@@ -8,6 +8,7 @@ pub use crate::object::{
 };
 use crate::types::{PyFunction, PyInt};
 use compact_str::CompactString;
+use num_bigint::BigInt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::fmt;
@@ -827,6 +828,15 @@ pub struct RangeIterData {
     pub step: i64,
 }
 
+/// Big integer range iterator state for ranges that cannot be represented in i64.
+#[derive(Clone, Debug)]
+pub struct BigRangeIterData {
+    pub start: BigInt,
+    pub stop: BigInt,
+    pub step: BigInt,
+    pub index: BigInt,
+}
+
 /// The actual data of a Python value.
 /// All variants ≤ 16 bytes of data so the enum (with tag) fits in 24 bytes.
 #[derive(Clone)]
@@ -1262,6 +1272,7 @@ pub enum IteratorData {
         stop: i64,
         step: i64,
     },
+    BigRange(BigRangeIterData),
     Str {
         chars: Vec<char>,
         index: usize,
@@ -1276,6 +1287,19 @@ pub enum IteratorData {
         strict: bool,
         cached_tuple: Option<PyObjectRef>,
         items_buf: Vec<PyObjectRef>,
+    },
+    ZipLongest {
+        sources: Vec<PyObjectRef>,
+        active: Vec<bool>,
+        fillvalue: PyObjectRef,
+        cached_tuple: Option<PyObjectRef>,
+    },
+    Islice {
+        source: PyObjectRef,
+        index: usize,
+        next_yield: usize,
+        stop: usize,
+        step: usize,
     },
     MapOne {
         func: PyObjectRef,

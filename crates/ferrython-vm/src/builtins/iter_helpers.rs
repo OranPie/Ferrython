@@ -1,5 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::{
+    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+};
 use ferrython_core::object::{
     call_callable, is_hidden_dict_key, DequeIterData, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef, WeakKeyIterKind, WeakValueIterKind,
@@ -38,17 +41,20 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     current,
                     stop,
                     step,
-                } => {
-                    let done = if *step > 0 {
-                        *current >= *stop
-                    } else {
-                        *current <= *stop
-                    };
-                    if done {
+                } => match range_next_i64(*current, *stop, *step) {
+                    Some((value, next)) => {
+                        let v = PyObject::int(value);
+                        *current = next;
+                        Ok(Some((iter_obj.clone(), v)))
+                    }
+                    None => Ok(None),
+                },
+                IteratorData::BigRange(iter) => {
+                    if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
                         Ok(None)
                     } else {
-                        let v = PyObject::int(*current);
-                        *current += *step;
+                        let v = py_int_from_bigint(range_iter_item_bigint(iter));
+                        iter.index += 1;
                         Ok(Some((iter_obj.clone(), v)))
                     }
                 }
@@ -145,6 +151,8 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 // Lazy iterators that truly need VM context (call user functions)
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
+                | IteratorData::ZipLongest { .. }
+                | IteratorData::Islice { .. }
                 | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
@@ -162,18 +170,13 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             }
         }
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            let done = if ri.step > 0 {
-                cur >= ri.stop
-            } else {
-                cur <= ri.stop
-            };
-            if done {
-                Ok(None)
-            } else {
-                let v = PyObject::int(cur);
-                ri.current.set(cur + ri.step);
-                Ok(Some((iter_obj.clone(), v)))
+            match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                Some((value, next)) => {
+                    let v = PyObject::int(value);
+                    ri.current.set(next);
+                    Ok(Some((iter_obj.clone(), v)))
+                }
+                None => Ok(None),
             }
         }
         PyObjectPayload::VecIter(data) => {
@@ -318,17 +321,20 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                     current,
                     stop,
                     step,
-                } => {
-                    let done = if *step > 0 {
-                        *current >= *stop
-                    } else {
-                        *current <= *stop
-                    };
-                    if done {
+                } => match range_next_i64(*current, *stop, *step) {
+                    Some((value, next)) => {
+                        let v = PyObject::int(value);
+                        *current = next;
+                        Ok(Some(v))
+                    }
+                    None => Ok(None),
+                },
+                IteratorData::BigRange(iter) => {
+                    if range_iter_len_bigint(iter) == num_bigint::BigInt::from(0) {
                         Ok(None)
                     } else {
-                        let v = PyObject::int(*current);
-                        *current += *step;
+                        let v = py_int_from_bigint(range_iter_item_bigint(iter));
+                        iter.index += 1;
                         Ok(Some(v))
                     }
                 }
@@ -402,18 +408,13 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
             }
         }
         PyObjectPayload::RangeIter(ri) => {
-            let cur = ri.current.get();
-            let done = if ri.step > 0 {
-                cur >= ri.stop
-            } else {
-                cur <= ri.stop
-            };
-            if done {
-                Ok(None)
-            } else {
-                let v = PyObject::int(cur);
-                ri.current.set(cur + ri.step);
-                Ok(Some(v))
+            match range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                Some((value, next)) => {
+                    let v = PyObject::int(value);
+                    ri.current.set(next);
+                    Ok(Some(v))
+                }
+                None => Ok(None),
             }
         }
         PyObjectPayload::VecIter(data) => {

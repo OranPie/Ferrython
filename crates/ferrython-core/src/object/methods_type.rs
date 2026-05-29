@@ -64,6 +64,8 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 IteratorData::Filter { .. } => "filter",
                 IteratorData::FilterFalse { .. } => "itertools.filterfalse",
                 IteratorData::Zip { .. } => "zip",
+                IteratorData::ZipLongest { .. } => "itertools.zip_longest",
+                IteratorData::Islice { .. } => "itertools.islice",
                 IteratorData::Enumerate { .. } => "enumerate",
                 IteratorData::Sentinel { .. } => "callable_iterator",
                 IteratorData::TakeWhile { .. } => "itertools.takewhile",
@@ -75,7 +77,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 IteratorData::Starmap { .. } => "itertools.starmap",
                 IteratorData::Tee { .. } => "itertools._tee",
                 IteratorData::HeldIter { .. } => "iterator",
-                IteratorData::Range { .. } => "range_iterator",
+                IteratorData::Range { .. } | IteratorData::BigRange(_) => "range_iterator",
                 IteratorData::List { .. } => "list_iterator",
                 IteratorData::Tuple { .. } => "tuple_iterator",
                 IteratorData::Str { .. } => "str_ascii_iterator",
@@ -123,6 +125,7 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
         PyObjectPayload::Set(m) => !m.read().is_empty(),
         PyObjectPayload::FrozenSet(m) => !m.is_empty(),
         PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => !m.read().is_empty(),
+        PyObjectPayload::Range(rd) => !super::helpers::range_data_is_empty(rd),
         PyObjectPayload::DictKeys { map, .. }
         | PyObjectPayload::DictValues { map, .. }
         | PyObjectPayload::DictItems { map, .. } => !map.read().is_empty(),

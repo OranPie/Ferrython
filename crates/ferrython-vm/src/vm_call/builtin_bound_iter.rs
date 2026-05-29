@@ -1,6 +1,6 @@
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    BuiltinBoundMethodData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 
 use crate::vm_call::iterator_state::set_iterator_state;
@@ -38,52 +38,117 @@ impl VirtualMachine {
                 "__setstate__" => {
                     return set_iterator_state(&bbm.receiver, args).map(Some);
                 }
+                "__copy__" => {
+                    if let Some(copy) = copy_islice_iterator(&bbm.receiver)? {
+                        return Ok(Some(copy));
+                    }
+                }
+                "__deepcopy__" => {
+                    if args.len() > 1 {
+                        return Err(PyException::type_error(
+                            "__deepcopy__() takes at most one argument",
+                        ));
+                    }
+                    if let Some(copy) = copy_islice_iterator(&bbm.receiver)? {
+                        return Ok(Some(copy));
+                    }
+                }
+                "__reduce__" | "__reduce_ex__" => {
+                    if bbm.method_name.as_str() == "__reduce_ex__" && args.len() != 1 {
+                        return Err(PyException::type_error(
+                            "__reduce_ex__() takes exactly one argument",
+                        ));
+                    }
+                    if let Some(reduced) = reduce_islice_iterator(&bbm.receiver)? {
+                        return Ok(Some(reduced));
+                    }
+                }
                 _ => {}
             }
         }
 
-        if let PyObjectPayload::Range(rd) = &bbm.receiver.payload {
-            let (rs, re, rst) = (rd.start, rd.stop, rd.step);
+        if let PyObjectPayload::Range(_rd) = &bbm.receiver.payload {
             match bbm.method_name.as_str() {
-                "count" => {
-                    if args.is_empty() {
-                        return Err(PyException::type_error(
-                            "count() takes exactly one argument",
-                        ));
-                    }
-                    let val = args[0].to_int().unwrap_or(i64::MIN);
-                    let found = if rst > 0 {
-                        val >= rs && val < re && (val - rs) % rst == 0
-                    } else if rst < 0 {
-                        val <= rs && val > re && (rs - val) % (-rst) == 0
-                    } else {
-                        false
-                    };
-                    return Ok(Some(PyObject::int(if found { 1 } else { 0 })));
-                }
-                "index" => {
-                    if args.is_empty() {
-                        return Err(PyException::type_error(
-                            "index() takes exactly one argument",
-                        ));
-                    }
-                    let val = args[0].to_int().unwrap_or(i64::MIN);
-                    let in_range = if rst > 0 {
-                        val >= rs && val < re && (val - rs) % rst == 0
-                    } else if rst < 0 {
-                        val <= rs && val > re && (rs - val) % (-rst) == 0
-                    } else {
-                        false
-                    };
-                    if in_range {
-                        return Ok(Some(PyObject::int((val - rs) / rst)));
-                    }
-                    return Err(PyException::value_error(format!("{} is not in range", val)));
-                }
+                "__contains__" | "count" | "index" => return Ok(None),
                 _ => {}
             }
         }
 
         Ok(None)
     }
+}
+
+fn islice_state(receiver: &PyObjectRef) -> Option<(PyObjectRef, usize, usize, usize, usize)> {
+    let PyObjectPayload::Iterator(iter_data) = &receiver.payload else {
+        return None;
+    };
+    let data = iter_data.read();
+    if let IteratorData::Islice {
+        source,
+        index,
+        next_yield,
+        stop,
+        step,
+    } = &*data
+    {
+        Some((source.clone(), *index, *next_yield, *stop, *step))
+    } else {
+        None
+    }
+}
+
+fn copy_islice_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    Ok(
+        islice_state(receiver).map(|(source, index, next_yield, stop, step)| {
+            PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+                ferrython_core::object::PyCell::new(IteratorData::Islice {
+                    source,
+                    index,
+                    next_yield,
+                    stop,
+                    step,
+                }),
+            )))
+        }),
+    )
+}
+
+fn reduce_islice_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    let Some((source, index, next_yield, stop, step)) = islice_state(receiver) else {
+        return Ok(None);
+    };
+    let constructor = PyObject::native_closure("itertools.islice.__rebuild__", move |args| {
+        if args.len() != 5 {
+            return Err(PyException::type_error("invalid islice reduce state"));
+        }
+        let as_usize = |obj: &PyObjectRef, default: usize| -> usize {
+            obj.as_int()
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(default)
+        };
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+            ferrython_core::object::PyCell::new(IteratorData::Islice {
+                source: args[0].clone(),
+                index: as_usize(&args[1], 0),
+                next_yield: as_usize(&args[2], 0),
+                stop: as_usize(&args[3], usize::MAX),
+                step: as_usize(&args[4], 1).max(1),
+            }),
+        ))))
+    });
+    let arg_obj = |value: usize| {
+        i64::try_from(value)
+            .map(PyObject::int)
+            .unwrap_or_else(|_| PyObject::big_int(num_bigint::BigInt::from(value)))
+    };
+    Ok(Some(PyObject::tuple(vec![
+        constructor,
+        PyObject::tuple(vec![
+            source,
+            arg_obj(index),
+            arg_obj(next_yield),
+            arg_obj(stop),
+            arg_obj(step),
+        ]),
+    ])))
 }

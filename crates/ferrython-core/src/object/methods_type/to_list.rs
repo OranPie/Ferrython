@@ -1,6 +1,7 @@
 use crate::error::{ExceptionKind, PyException, PyResult};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use num_traits::ToPrimitive;
 
 use super::super::helpers::*;
 use super::super::methods::PyObjectMethods;
@@ -185,15 +186,19 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
         }
         PyObjectPayload::Range(rd) => {
-            guard_eager_allocation(
-                range_len(rd.start, rd.stop, rd.step).max(0) as usize,
-                "range -> list",
-            )?;
+            let len = range_data_len_bigint(rd);
+            guard_eager_allocation(len.to_usize().unwrap_or(usize::MAX), "range -> list")?;
             let mut result = Vec::new();
-            let mut val = rd.start;
-            while (rd.step > 0 && val < rd.stop) || (rd.step < 0 && val > rd.stop) {
-                guarded_push(&mut result, PyObject::int(val), "range -> list")?;
-                val += rd.step;
+            let mut idx = num_bigint::BigInt::from(0);
+            while idx < len {
+                let value = range_item_bigint(rd, &idx);
+                let item = if let Some(value) = value.to_i64() {
+                    PyObject::int(value)
+                } else {
+                    PyObject::big_int(value)
+                };
+                guarded_push(&mut result, item, "range -> list")?;
+                idx += 1;
             }
             Ok(result)
         }
@@ -222,12 +227,29 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                         "range iterator -> list",
                     )?;
                     let mut result = Vec::new();
-                    let mut val = *current;
-                    while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
-                        guarded_push(&mut result, PyObject::int(val), "range iterator -> list")?;
-                        val += *step;
+                    while let Some((value, next)) = range_next_i64(*current, *stop, *step) {
+                        guarded_push(&mut result, PyObject::int(value), "range iterator -> list")?;
+                        *current = next;
                     }
                     *current = *stop;
+                    Ok(result)
+                }
+                IteratorData::BigRange(iter) => {
+                    let len = range_iter_len_bigint(iter);
+                    guard_eager_allocation(
+                        len.to_usize().unwrap_or(usize::MAX),
+                        "range iterator -> list",
+                    )?;
+                    let mut result = Vec::new();
+                    while range_iter_len_bigint(iter) > num_bigint::BigInt::from(0) {
+                        let value = range_iter_item_bigint(iter);
+                        guarded_push(
+                            &mut result,
+                            py_int_from_bigint(value),
+                            "range iterator -> list",
+                        )?;
+                        iter.index += 1;
+                    }
                     Ok(result)
                 }
                 IteratorData::Str { chars, index } => {
@@ -253,6 +275,8 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 }
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
+                | IteratorData::ZipLongest { .. }
+                | IteratorData::Islice { .. }
                 | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
@@ -279,10 +303,9 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 "range iterator -> list",
             )?;
             let mut result = Vec::new();
-            let mut val = ri.current.get();
-            while (ri.step > 0 && val < ri.stop) || (ri.step < 0 && val > ri.stop) {
-                guarded_push(&mut result, PyObject::int(val), "range iterator -> list")?;
-                val += ri.step;
+            while let Some((value, next)) = range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                guarded_push(&mut result, PyObject::int(value), "range iterator -> list")?;
+                ri.current.set(next);
             }
             ri.current.set(ri.stop);
             Ok(result)

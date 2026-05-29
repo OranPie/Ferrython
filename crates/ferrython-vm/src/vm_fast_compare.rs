@@ -274,9 +274,9 @@ fn try_contains_compare(frame: &Frame, op: u32) -> FastCompareResult {
         }
         PyObjectPayload::List(items) => {
             let items = unsafe { &*items.data_ptr() };
-            Some(items.iter().any(|x| fast_same_or_equal(x, needle)))
+            fast_contains_items(items, needle)
         }
-        PyObjectPayload::Tuple(items) => Some(items.iter().any(|x| fast_same_or_equal(x, needle))),
+        PyObjectPayload::Tuple(items) => fast_contains_items(items, needle),
         PyObjectPayload::Str(haystack_s) => {
             if let PyObjectPayload::Str(needle_s) = &needle.payload {
                 Some(haystack_s.contains(needle_s.as_str()))
@@ -291,6 +291,26 @@ fn try_contains_compare(frame: &Frame, op: u32) -> FastCompareResult {
     } else {
         FastCompareResult::Fallback
     }
+}
+
+#[inline(always)]
+fn fast_contains_items(items: &[PyObjectRef], needle: &PyObjectRef) -> Option<bool> {
+    if !fast_membership_safe(needle) || !items.iter().all(fast_membership_safe) {
+        return None;
+    }
+    Some(items.iter().any(|x| fast_same_or_equal(x, needle)))
+}
+
+#[inline(always)]
+fn fast_membership_safe(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::None
+            | PyObjectPayload::Bool(_)
+            | PyObjectPayload::Int(_)
+            | PyObjectPayload::Float(_)
+            | PyObjectPayload::Str(_)
+    )
 }
 
 #[inline(always)]

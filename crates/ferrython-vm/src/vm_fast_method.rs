@@ -536,6 +536,8 @@ fn list_extend_needs_vm_collect(obj: &PyObjectRef) -> bool {
             &*iter_data.read(),
             IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
+                | IteratorData::ZipLongest { .. }
+                | IteratorData::Islice { .. }
                 | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }

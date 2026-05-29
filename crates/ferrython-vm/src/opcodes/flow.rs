@@ -214,6 +214,8 @@ impl VirtualMachine {
                             &*data,
                             IteratorData::Enumerate { .. }
                                 | IteratorData::Zip { .. }
+                                | IteratorData::ZipLongest { .. }
+                                | IteratorData::Islice { .. }
                                 | IteratorData::MapOne { .. }
                                 | IteratorData::Map { .. }
                                 | IteratorData::Filter { .. }

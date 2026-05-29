@@ -1,4 +1,5 @@
 use ferrython_core::error::PyResult;
+use ferrython_core::object::helpers::range_next_i64;
 use ferrython_core::object::{PyObject, PyObjectRef, RangeIterData};
 
 use crate::VirtualMachine;
@@ -28,7 +29,15 @@ impl VirtualMachine {
         let n = range_len(current, iter.stop, iter.step);
         let total = self.sum_range(total, current, iter.stop, iter.step)?;
         if n > 0 {
-            iter.current.set(current + iter.step * n);
+            let mut next = current;
+            for _ in 0..n {
+                if let Some((_, after)) = range_next_i64(next, iter.stop, iter.step) {
+                    next = after;
+                } else {
+                    break;
+                }
+            }
+            iter.current.set(next);
         }
         Ok(total)
     }

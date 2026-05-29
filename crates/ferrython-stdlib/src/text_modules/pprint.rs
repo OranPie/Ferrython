@@ -49,6 +49,7 @@ fn pformat_value(
                             .join(", ")
                     ),
                     HashableKey::FrozenSet(_) => "frozenset(...)".to_string(),
+                    HashableKey::Range(_) => "range(...)".to_string(),
                     HashableKey::Bytes(_)
                     | HashableKey::Identity(_, _)
                     | HashableKey::Custom { .. } => "...".to_string(),

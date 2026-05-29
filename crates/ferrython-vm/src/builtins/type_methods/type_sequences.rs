@@ -9,9 +9,21 @@ use ferrython_core::object::{
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
+use num_bigint::BigInt;
+use num_traits::{ToPrimitive, Zero};
 use std::rc::Rc;
 
 use super::partial_cmp_for_sort;
+
+fn sequence_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<bool> {
+    if PyObjectRef::ptr_eq(item, target) {
+        return Ok(true);
+    }
+    if item.compare(target, CompareOp::Eq)?.is_truthy() {
+        return Ok(true);
+    }
+    Ok(target.compare(item, CompareOp::Eq)?.is_truthy())
+}
 
 pub(crate) fn call_list_method(
     receiver: &PyObjectRef,
@@ -27,9 +39,7 @@ pub(crate) fn call_list_method(
             let snapshot = items.read().clone();
             let mut c = 0usize;
             for item in &snapshot {
-                if PyObjectRef::ptr_eq(item, target)
-                    || item.compare(target, CompareOp::Eq)?.is_truthy()
-                {
+                if sequence_item_matches(item, target)? {
                     c += 1;
                 }
             }
@@ -61,9 +71,7 @@ pub(crate) fn call_list_method(
                 len
             };
             for i in start..stop {
-                if PyObjectRef::ptr_eq(&snapshot[i], target)
-                    || snapshot[i].compare(target, CompareOp::Eq)?.is_truthy()
-                {
+                if sequence_item_matches(&snapshot[i], target)? {
                     return Ok(PyObject::int(i as i64));
                 }
             }
@@ -119,9 +127,7 @@ pub(crate) fn call_list_method(
             let snapshot = items.read().clone();
             let mut pos = None;
             for (i, item) in snapshot.iter().enumerate() {
-                if PyObjectRef::ptr_eq(item, target)
-                    || item.compare(target, CompareOp::Eq)?.is_truthy()
-                {
+                if sequence_item_matches(item, target)? {
                     pos = Some(i);
                     break;
                 }
@@ -197,11 +203,13 @@ pub(crate) fn call_list_method(
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
             let target = &args[0];
-            let found = items
-                .read()
-                .iter()
-                .any(|x| x.py_to_string() == target.py_to_string());
-            Ok(PyObject::bool_val(found))
+            let snapshot = items.read().clone();
+            for item in &snapshot {
+                if sequence_item_matches(item, target)? {
+                    return Ok(PyObject::bool_val(true));
+                }
+            }
+            Ok(PyObject::bool_val(false))
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;
@@ -543,19 +551,6 @@ pub(crate) fn call_list_method(
     }
 }
 
-fn range_len_i128_local(start: i64, stop: i64, step: i64) -> i128 {
-    let start = start as i128;
-    let stop = stop as i128;
-    let step = step as i128;
-    if step > 0 && start < stop {
-        (stop - start + step - 1) / step
-    } else if step < 0 && start > stop {
-        (start - stop - step - 1) / (-step)
-    } else {
-        0
-    }
-}
-
 pub(crate) fn call_range_method(
     receiver: &PyObjectRef,
     rd: &ferrython_core::object::RangeData,
@@ -564,7 +559,7 @@ pub(crate) fn call_range_method(
 ) -> PyResult<PyObjectRef> {
     match method {
         "__len__" => Ok(PyObject::int(
-            range_len_i128_local(rd.start, rd.stop, rd.step).min(i64::MAX as i128) as i64,
+            ferrython_core::object::helpers::range_data_len_i128(rd).min(i64::MAX as i128) as i64,
         )),
         "__iter__" => receiver.get_iter(),
         "__contains__" => {
@@ -577,20 +572,72 @@ pub(crate) fn call_range_method(
         }
         "count" => {
             check_args_min("range.count", args, 1)?;
-            Ok(PyObject::int(if receiver.contains(&args[0])? {
-                1
+            if let Some(value) = ferrython_core::object::helpers::py_int_bigint(&args[0]) {
+                Ok(PyObject::int(
+                    if ferrython_core::object::helpers::range_contains_bigint(rd, &value) {
+                        1
+                    } else {
+                        0
+                    },
+                ))
             } else {
-                0
-            }))
+                let len = ferrython_core::object::helpers::range_data_len_bigint(rd);
+                if len > BigInt::from(1024usize) {
+                    return Ok(PyObject::int(0));
+                }
+                let mut count = 0i64;
+                let mut idx = BigInt::zero();
+                while idx < len {
+                    let value = ferrython_core::object::helpers::range_item_bigint(rd, &idx);
+                    let candidate = if let Some(value) = value.to_i64() {
+                        PyObject::int(value)
+                    } else {
+                        PyObject::big_int(value)
+                    };
+                    if sequence_item_matches(&candidate, &args[0])? {
+                        count += 1;
+                    }
+                    idx += 1;
+                }
+                Ok(PyObject::int(count))
+            }
         }
         "index" => {
             check_args_min("range.index", args, 1)?;
-            let val = args[0].to_int().unwrap_or(i64::MIN);
-            let in_range = receiver.contains(&args[0])?;
-            if in_range {
-                return Ok(PyObject::int((val - rd.start) / rd.step));
+            if let Some(value) = ferrython_core::object::helpers::py_int_bigint(&args[0]) {
+                if ferrython_core::object::helpers::range_contains_bigint(rd, &value) {
+                    let (start, _, step) = ferrython_core::object::helpers::range_parts_bigint(rd);
+                    let idx = (value - start) / step;
+                    if let Some(idx) = idx.to_i64() {
+                        return Ok(PyObject::int(idx));
+                    }
+                    return Ok(PyObject::big_int(idx));
+                }
+            } else {
+                let len = ferrython_core::object::helpers::range_data_len_bigint(rd);
+                if len <= BigInt::from(1024usize) {
+                    let mut idx = BigInt::zero();
+                    while idx < len {
+                        let value = ferrython_core::object::helpers::range_item_bigint(rd, &idx);
+                        let candidate = if let Some(value) = value.to_i64() {
+                            PyObject::int(value)
+                        } else {
+                            PyObject::big_int(value)
+                        };
+                        if sequence_item_matches(&candidate, &args[0])? {
+                            if let Some(idx) = idx.to_i64() {
+                                return Ok(PyObject::int(idx));
+                            }
+                            return Ok(PyObject::big_int(idx));
+                        }
+                        idx += 1;
+                    }
+                }
             }
-            Err(PyException::value_error(format!("{} is not in range", val)))
+            Err(PyException::value_error(format!(
+                "{} is not in range",
+                args[0].py_to_string()
+            )))
         }
         _ => Err(PyException::attribute_error(format!(
             "'range' object has no attribute '{}'",
@@ -609,17 +656,19 @@ pub(crate) fn call_tuple_method(
         "count" => {
             check_args_min("count", args, 1)?;
             let target = &args[0];
-            let c = items
-                .iter()
-                .filter(|x| x.py_to_string() == target.py_to_string())
-                .count();
+            let mut c = 0usize;
+            for item in items {
+                if sequence_item_matches(item, target)? {
+                    c += 1;
+                }
+            }
             Ok(PyObject::int(c as i64))
         }
         "index" => {
             check_args_min("index", args, 1)?;
             let target = &args[0];
             for (i, x) in items.iter().enumerate() {
-                if x.py_to_string() == target.py_to_string() {
+                if sequence_item_matches(x, target)? {
                     return Ok(PyObject::int(i as i64));
                 }
             }
@@ -635,10 +684,12 @@ pub(crate) fn call_tuple_method(
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
             let target = &args[0];
-            let found = items
-                .iter()
-                .any(|x| x.py_to_string() == target.py_to_string());
-            Ok(PyObject::bool_val(found))
+            for item in items {
+                if sequence_item_matches(item, target)? {
+                    return Ok(PyObject::bool_val(true));
+                }
+            }
+            Ok(PyObject::bool_val(false))
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;

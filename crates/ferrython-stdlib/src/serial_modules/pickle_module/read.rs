@@ -1,5 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::{
+    py_int_bigint, range_data_from_bigints, range_iterator_from_data,
+};
 use ferrython_core::object::{
     DequeIterData, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     SyncUsize,
@@ -374,6 +377,53 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                 "__builtin__" | "builtins",
                 "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool",
             ) => Ok(PyObject::builtin_type(CompactString::from(name.as_str()))),
+            ("__builtin__" | "builtins", "range") => {
+                if arg_list.is_empty() || arg_list.len() > 3 {
+                    return Err(PyException::type_error("range expected 1 to 3 arguments"));
+                }
+                let index_arg = |obj: &PyObjectRef| -> PyResult<(i64, PyObjectRef)> {
+                    let index = obj.to_index().map_err(|err| {
+                        if err.kind == ExceptionKind::TypeError {
+                            PyException::type_error("range() integer expected")
+                        } else {
+                            err
+                        }
+                    })?;
+                    let saturated = match &index {
+                        ferrython_core::types::PyInt::Small(n) => *n,
+                        ferrython_core::types::PyInt::Big(n)
+                            if n.sign() == num_bigint::Sign::Minus =>
+                        {
+                            i64::MIN
+                        }
+                        ferrython_core::types::PyInt::Big(_) => i64::MAX,
+                    };
+                    Ok((saturated, index.to_object()))
+                };
+                let (start, stop, step, start_obj, stop_obj, step_obj) = match arg_list.len() {
+                    1 => {
+                        let (stop, stop_obj) = index_arg(&arg_list[0])?;
+                        (0, stop, 1, PyObject::int(0), stop_obj, PyObject::int(1))
+                    }
+                    2 => {
+                        let (start, start_obj) = index_arg(&arg_list[0])?;
+                        let (stop, stop_obj) = index_arg(&arg_list[1])?;
+                        (start, stop, 1, start_obj, stop_obj, PyObject::int(1))
+                    }
+                    _ => {
+                        let (start, start_obj) = index_arg(&arg_list[0])?;
+                        let (stop, stop_obj) = index_arg(&arg_list[1])?;
+                        let (step, step_obj) = index_arg(&arg_list[2])?;
+                        if step == 0 {
+                            return Err(PyException::value_error("range() arg 3 must not be zero"));
+                        }
+                        (start, stop, step, start_obj, stop_obj, step_obj)
+                    }
+                };
+                Ok(PyObject::range_with_objects(
+                    start, stop, step, start_obj, stop_obj, step_obj,
+                ))
+            }
             ("__builtin__" | "builtins", "__ferrython_seqiter__") => {
                 use ferrython_core::object::IteratorData;
                 let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
@@ -384,6 +434,54 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         obj: source,
                         index,
                         exhausted,
+                    }),
+                ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_rangeiter__") => {
+                if arg_list.len() != 3 {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: invalid range iterator state",
+                    ));
+                }
+                let part = |obj: &PyObjectRef| -> PyResult<num_bigint::BigInt> {
+                    let index = obj.to_index().map_err(|err| {
+                        if err.kind == ExceptionKind::TypeError {
+                            PyException::type_error("range() integer expected")
+                        } else {
+                            err
+                        }
+                    })?;
+                    py_int_bigint(&index.to_object())
+                        .ok_or_else(|| PyException::type_error("range() integer expected"))
+                };
+                let start = part(&arg_list[0])?;
+                let stop = part(&arg_list[1])?;
+                let step = part(&arg_list[2])?;
+                if step == num_bigint::BigInt::from(0) {
+                    return Err(PyException::value_error("range() arg 3 must not be zero"));
+                }
+                let rd = range_data_from_bigints(start, stop, step);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(range_iterator_from_data(&rd)),
+                ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_islice__") => {
+                use ferrython_core::object::IteratorData;
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let as_usize = |idx: usize, default: usize| -> usize {
+                    arg_list
+                        .get(idx)
+                        .and_then(|value| value.as_int())
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(default)
+                };
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::Islice {
+                        source,
+                        index: as_usize(1, 0),
+                        next_yield: as_usize(2, 0),
+                        stop: as_usize(3, usize::MAX),
+                        step: as_usize(4, 1).max(1),
                     }),
                 ))))
             }

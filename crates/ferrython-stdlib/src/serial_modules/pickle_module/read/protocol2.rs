@@ -63,8 +63,9 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                 } else if s == "00" {
                     stack.push(PklStackItem::Value(PyObject::bool_val(false)));
                 } else {
-                    let val: i64 = s.parse().unwrap_or(0);
-                    stack.push(PklStackItem::Value(PyObject::int(val)));
+                    stack.push(PklStackItem::Value(super::protocol0::pkl_parse_text_int(
+                        s,
+                    )?));
                 }
             }
             b'G' => {

@@ -5,6 +5,9 @@ use super::{index_to_i128_unbounded, is_hidden_dict_key};
 use crate::error::{PyException, PyResult};
 use crate::object::methods::PyObjectMethods;
 use compact_str::CompactString;
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     let start = start as i128;
@@ -19,8 +22,200 @@ pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     }
 }
 
-pub(crate) fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+pub fn range_len(start: i64, stop: i64, step: i64) -> i64 {
     range_len_i128(start, stop, step).min(i64::MAX as i128) as i64
+}
+
+pub fn range_next_i64(current: i64, stop: i64, step: i64) -> Option<(i64, i64)> {
+    let done = if step > 0 {
+        current >= stop
+    } else {
+        current <= stop
+    };
+    if done {
+        None
+    } else {
+        Some((current, current.checked_add(step).unwrap_or(stop)))
+    }
+}
+
+pub fn range_bound_bigint(obj: Option<&PyObjectRef>, fallback: i64) -> BigInt {
+    match obj.map(|value| &value.payload) {
+        Some(PyObjectPayload::Int(n)) => n.to_bigint(),
+        Some(PyObjectPayload::Bool(flag)) => BigInt::from(if *flag { 1 } else { 0 }),
+        Some(PyObjectPayload::Instance(inst)) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .map(|value| range_bound_bigint(Some(value), fallback))
+            .unwrap_or_else(|| BigInt::from(fallback)),
+        _ => BigInt::from(fallback),
+    }
+}
+
+pub fn range_parts_bigint(rd: &RangeData) -> (BigInt, BigInt, BigInt) {
+    (
+        range_bound_bigint(rd.start_obj.as_ref(), rd.start),
+        range_bound_bigint(rd.stop_obj.as_ref(), rd.stop),
+        range_bound_bigint(rd.step_obj.as_ref(), rd.step),
+    )
+}
+
+pub fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
+    if step.is_positive() && start < stop {
+        let diff = stop - start;
+        (diff + step - BigInt::one()) / step
+    } else if step.is_negative() && start > stop {
+        let step_abs = -step;
+        let diff = start - stop;
+        (diff + &step_abs - BigInt::one()) / step_abs
+    } else {
+        BigInt::zero()
+    }
+}
+
+pub fn range_data_len_bigint(rd: &RangeData) -> BigInt {
+    let (start, stop, step) = range_parts_bigint(rd);
+    range_len_bigint(&start, &stop, &step)
+}
+
+pub fn range_data_len_i128(rd: &RangeData) -> i128 {
+    let len = range_data_len_bigint(rd);
+    len.to_i128().unwrap_or_else(|| {
+        if len.is_negative() {
+            i128::MIN
+        } else {
+            i128::MAX
+        }
+    })
+}
+
+pub fn range_data_is_empty(rd: &RangeData) -> bool {
+    range_data_len_bigint(rd).is_zero()
+}
+
+pub fn range_item_bigint(rd: &RangeData, index: &BigInt) -> BigInt {
+    let (start, _, step) = range_parts_bigint(rd);
+    start + step * index
+}
+
+pub fn range_iter_item_bigint(iter: &BigRangeIterData) -> BigInt {
+    &iter.start + &iter.step * &iter.index
+}
+
+pub fn range_iter_len_bigint(iter: &BigRangeIterData) -> BigInt {
+    let current = range_iter_item_bigint(iter);
+    range_len_bigint(&current, &iter.stop, &iter.step)
+}
+
+pub fn py_int_from_bigint(value: BigInt) -> PyObjectRef {
+    if let Some(value) = value.to_i64() {
+        PyObject::int(value)
+    } else {
+        PyObject::big_int(value)
+    }
+}
+
+pub fn range_data_from_bigints(start: BigInt, stop: BigInt, step: BigInt) -> RangeData {
+    let saturate = |value: &BigInt| {
+        value.to_i64().unwrap_or_else(|| {
+            if value.is_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
+    };
+    RangeData {
+        start: saturate(&start),
+        stop: saturate(&stop),
+        step: saturate(&step),
+        start_obj: Some(py_int_from_bigint(start)),
+        stop_obj: Some(py_int_from_bigint(stop)),
+        step_obj: Some(py_int_from_bigint(step)),
+    }
+}
+
+pub fn py_int_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => Some(n.to_bigint()),
+        PyObjectPayload::Bool(flag) => Some(BigInt::from(if *flag { 1 } else { 0 })),
+        PyObjectPayload::Float(value) if value.fract() == 0.0 => value.to_i64().map(BigInt::from),
+        PyObjectPayload::Complex { real, imag } if *imag == 0.0 && real.fract() == 0.0 => {
+            real.to_i64().map(BigInt::from)
+        }
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .and_then(py_int_bigint),
+        _ => None,
+    }
+}
+
+pub fn py_exact_numeric_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(n) => Some(n.to_bigint()),
+        PyObjectPayload::Bool(flag) => Some(BigInt::from(if *flag { 1 } else { 0 })),
+        PyObjectPayload::Float(value) if value.fract() == 0.0 => value.to_i64().map(BigInt::from),
+        PyObjectPayload::Complex { real, imag } if *imag == 0.0 && real.fract() == 0.0 => {
+            real.to_i64().map(BigInt::from)
+        }
+        _ => None,
+    }
+}
+
+pub fn range_contains_bigint(rd: &RangeData, value: &BigInt) -> bool {
+    let (start, stop, step) = range_parts_bigint(rd);
+    if step.is_positive() {
+        value >= &start && value < &stop && (value - start).mod_floor(&step).is_zero()
+    } else if step.is_negative() {
+        let step_abs = -step;
+        value <= &start && value > &stop && (start - value).mod_floor(&step_abs).is_zero()
+    } else {
+        false
+    }
+}
+
+pub fn range_canonical_parts(rd: &RangeData) -> (BigInt, Option<BigInt>, Option<BigInt>) {
+    let len = range_data_len_bigint(rd);
+    if len.is_zero() {
+        return (BigInt::zero(), None, None);
+    }
+    let start = range_item_bigint(rd, &BigInt::zero());
+    if len == BigInt::one() {
+        return (len, Some(start), None);
+    }
+    let step = range_parts_bigint(rd).2;
+    (len, Some(start), Some(step))
+}
+
+pub fn range_iterator_from_data(rd: &RangeData) -> IteratorData {
+    let (start, stop, step) = range_parts_bigint(rd);
+    if let (Some(start_i64), Some(stop_i64), Some(step_i64)) =
+        (start.to_i64(), stop.to_i64(), step.to_i64())
+    {
+        IteratorData::Range {
+            current: start_i64,
+            stop: stop_i64,
+            step: step_i64,
+        }
+    } else {
+        IteratorData::BigRange(BigRangeIterData {
+            start,
+            stop,
+            step,
+            index: BigInt::zero(),
+        })
+    }
+}
+
+pub fn iterator_supports_reduce(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::Iterator(iter_data)
+            if matches!(&*iter_data.read(), IteratorData::Islice { .. })
+    )
 }
 
 pub(in crate::object) fn float_to_str(f: f64) -> String {
@@ -765,32 +960,91 @@ pub(in crate::object) fn get_slice_impl(
             Ok(PyObject::bytes(result))
         }
         PyObjectPayload::Range(rd) => {
-            let len = range_len_i128(rd.start, rd.stop, rd.step);
-            let (sv, ev, slice_step) = resolve_slice_i128(start, stop, step, len)?;
-            let mut result = Vec::new();
-            let mut i = sv;
-            if slice_step > 0 {
-                while i < ev && i < len {
-                    let value = rd.start as i128 + i * rd.step as i128;
-                    if let Ok(value) = i64::try_from(value) {
-                        result.push(PyObject::int(value));
+            let len = range_data_len_bigint(rd);
+            let clamp_index = |value: BigInt, step_negative: bool| {
+                if value.is_negative() {
+                    let lower = if step_negative {
+                        -BigInt::one()
                     } else {
-                        result.push(PyObject::big_int(value.into()));
-                    }
-                    i += slice_step;
-                }
-            } else if slice_step < 0 {
-                while i > ev && i >= 0 {
-                    let value = rd.start as i128 + i * rd.step as i128;
-                    if let Ok(value) = i64::try_from(value) {
-                        result.push(PyObject::int(value));
+                        BigInt::zero()
+                    };
+                    if value <= -&len {
+                        lower
                     } else {
-                        result.push(PyObject::big_int(value.into()));
+                        (len.clone() + value).max(lower)
                     }
-                    i += slice_step;
+                } else if step_negative {
+                    value.min(&len - BigInt::one())
+                } else {
+                    value.min(len.clone())
                 }
+            };
+            let slice_step = step
+                .as_ref()
+                .and_then(|s| {
+                    if matches!(s.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })
+                .map(index_to_i128_unbounded)
+                .transpose()?
+                .map(BigInt::from)
+                .unwrap_or_else(BigInt::one);
+            if slice_step.is_zero() {
+                return Err(PyException::value_error("slice step cannot be zero"));
             }
-            Ok(PyObject::list(result))
+            let step_negative = slice_step.is_negative();
+            let default_start = if step_negative {
+                &len - BigInt::one()
+            } else {
+                BigInt::zero()
+            };
+            let default_stop = if step_negative {
+                -&len - BigInt::one()
+            } else {
+                len.clone()
+            };
+            let slice_start = start
+                .as_ref()
+                .and_then(|s| {
+                    if matches!(s.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })
+                .map(index_to_i128_unbounded)
+                .transpose()?
+                .map(BigInt::from)
+                .map(|value| clamp_index(value, step_negative))
+                .unwrap_or(default_start);
+            let slice_stop = stop
+                .as_ref()
+                .and_then(|s| {
+                    if matches!(s.payload, PyObjectPayload::None) {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })
+                .map(index_to_i128_unbounded)
+                .transpose()?
+                .map(BigInt::from)
+                .map(|value| clamp_index(value, step_negative))
+                .unwrap_or(default_stop);
+            let slice_len = range_len_bigint(&slice_start, &slice_stop, &slice_step);
+            let new_start = range_item_bigint(rd, &slice_start);
+            let new_step = range_parts_bigint(rd).2 * &slice_step;
+            let new_stop = if slice_len.is_zero() {
+                new_start.clone()
+            } else {
+                &new_start + &new_step * slice_len
+            };
+            Ok(PyObject::wrap(PyObjectPayload::Range(Box::new(
+                range_data_from_bigints(new_start, new_stop, new_step),
+            ))))
         }
         _ => Err(PyException::type_error(format!(
             "'{}' object is not subscriptable",

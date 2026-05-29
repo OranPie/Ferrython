@@ -121,6 +121,15 @@ fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
     }
 }
 
+fn instance_defines_eq_or_ne(obj: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        lookup_in_class_mro(&inst.class, "__eq__").is_some()
+            || lookup_in_class_mro(&inst.class, "__ne__").is_some()
+    } else {
+        false
+    }
+}
+
 fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
     if PyObjectRef::ptr_eq(child, parent) {
         return false;
@@ -363,10 +372,14 @@ fn compare_dict_item_values_equal(left: &PyObjectRef, right: &PyObjectRef) -> bo
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
     // Unwrap builtin subclass instances for comparison
-    let ua = unwrap_builtin_subclass(a);
-    let ub = unwrap_builtin_subclass(b);
-    if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
-        return py_compare(&ua, &ub, op);
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne)
+        || (!instance_defines_eq_or_ne(a) && !instance_defines_eq_or_ne(b))
+    {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
+            return py_compare(&ua, &ub, op);
+        }
     }
     match (&a.payload, &b.payload) {
         (PyObjectPayload::Tuple(a_items), PyObjectPayload::Tuple(b_items)) => {
@@ -698,6 +711,12 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         op,
         CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge
     ) {
+        if matches!(
+            (&a.payload, &b.payload),
+            (PyObjectPayload::Range(_), PyObjectPayload::Range(_))
+        ) {
+            return Err(set_order_type_error(a, b, op));
+        }
         if matches!(
             (&a.payload, &b.payload),
             (PyObjectPayload::Complex { .. }, _) | (_, PyObjectPayload::Complex { .. })

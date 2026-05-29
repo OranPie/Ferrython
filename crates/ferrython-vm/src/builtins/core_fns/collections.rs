@@ -5,7 +5,7 @@ use ferrython_core::object::{
     DequeIterData, FxHashKeyMap, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef, SyncUsize,
 };
-use ferrython_core::types::{take_pending_eq_error, HashableKey};
+use ferrython_core::types::{take_pending_eq_error, HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
@@ -21,6 +21,21 @@ pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             source: obj.clone(),
             index: SyncUsize::new(len),
         }));
+    }
+    if let PyObjectPayload::Range(rd) = &obj.payload {
+        let len = ferrython_core::object::helpers::range_data_len_bigint(rd);
+        if len == num_bigint::BigInt::from(0) {
+            return Ok(PyObject::range(0, 0, 1).get_iter()?);
+        }
+        let last_index = &len - num_bigint::BigInt::from(1);
+        let last = ferrython_core::object::helpers::range_item_bigint(rd, &last_index);
+        let (start, _, step) = ferrython_core::object::helpers::range_parts_bigint(rd);
+        let stop = start - &step;
+        let reverse_step = -step;
+        let reversed = PyObject::wrap(PyObjectPayload::Range(Box::new(
+            ferrython_core::object::helpers::range_data_from_bigints(last, stop, reverse_step),
+        )));
+        return reversed.get_iter();
     }
     if let PyObjectPayload::Instance(inst) = &obj.payload {
         if inst.attrs.read().contains_key("__deque__") {
@@ -141,11 +156,9 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         | PyObjectPayload::Generator(_)
         | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range(rd) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::Range {
-                current: rd.start,
-                stop: rd.stop,
-                step: rd.step,
-            }),
+            PyCell::new(ferrython_core::object::helpers::range_iterator_from_data(
+                rd,
+            )),
         )))),
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
             Ok(PyObject::wrap(PyObjectPayload::RefIter {
@@ -247,58 +260,48 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     }
 }
 
+fn range_index_arg(obj: &PyObjectRef) -> PyResult<(i64, PyObjectRef)> {
+    let index = obj.to_index().map_err(|err| {
+        if err.kind == ExceptionKind::TypeError {
+            PyException::type_error("range() integer expected")
+        } else {
+            err
+        }
+    })?;
+    let saturated = match &index {
+        PyInt::Small(n) => *n,
+        PyInt::Big(n) if n.sign() == num_bigint::Sign::Minus => i64::MIN,
+        PyInt::Big(_) => i64::MAX,
+    };
+    Ok((saturated, index.to_object()))
+}
+
 pub(crate) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (start, stop, step, start_obj, stop_obj, step_obj) = match args.len() {
         1 => {
-            let stop = args[0]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
+            let (stop, stop_obj) = range_index_arg(&args[0])?;
             (
                 0i64,
                 stop,
                 1i64,
                 PyObject::int(0),
-                args[0].clone(),
+                stop_obj,
                 PyObject::int(1),
             )
         }
         2 => {
-            let start = args[0]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            let stop = args[1]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            (
-                start,
-                stop,
-                1,
-                args[0].clone(),
-                args[1].clone(),
-                PyObject::int(1),
-            )
+            let (start, start_obj) = range_index_arg(&args[0])?;
+            let (stop, stop_obj) = range_index_arg(&args[1])?;
+            (start, stop, 1, start_obj, stop_obj, PyObject::int(1))
         }
         3 => {
-            let start = args[0]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            let stop = args[1]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
-            let step = args[2]
-                .as_int()
-                .ok_or_else(|| PyException::type_error("range() integer expected"))?;
+            let (start, start_obj) = range_index_arg(&args[0])?;
+            let (stop, stop_obj) = range_index_arg(&args[1])?;
+            let (step, step_obj) = range_index_arg(&args[2])?;
             if step == 0 {
                 return Err(PyException::value_error("range() arg 3 must not be zero"));
             }
-            (
-                start,
-                stop,
-                step,
-                args[0].clone(),
-                args[1].clone(),
-                args[2].clone(),
-            )
+            (start, stop, step, start_obj, stop_obj, step_obj)
         }
         _ => return Err(PyException::type_error("range expected 1 to 3 arguments")),
     };

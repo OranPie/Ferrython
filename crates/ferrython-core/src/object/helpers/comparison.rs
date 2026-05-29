@@ -1,7 +1,7 @@
 //! Object comparison helpers.
 
 use super::super::payload::*;
-use super::{is_hidden_dict_key, range_len};
+use super::{is_hidden_dict_key, range_canonical_parts};
 use crate::object::methods::PyObjectMethods;
 use crate::types::PyInt;
 use compact_str::CompactString;
@@ -324,23 +324,7 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             }
         }
         (PyObjectPayload::Range(r1), PyObjectPayload::Range(r2)) => {
-            // CPython: ranges are equal if they produce the same sequence
-            // Simple shortcut: normalize empty ranges
-            let len1 = range_len(r1.start, r1.stop, r1.step);
-            let len2 = range_len(r2.start, r2.stop, r2.step);
-            if len1 == 0 && len2 == 0 {
-                return Some(std::cmp::Ordering::Equal);
-            }
-            if len1 != len2 {
-                return None;
-            }
-            if r1.start != r2.start {
-                return None;
-            }
-            if len1 == 1 {
-                return Some(std::cmp::Ordering::Equal);
-            }
-            if r1.step == r2.step {
+            if range_canonical_parts(r1) == range_canonical_parts(r2) {
                 Some(std::cmp::Ordering::Equal)
             } else {
                 None

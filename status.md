@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T08:58:59+08:00
+Last updated: 2026-05-29T10:23:12+08:00
 
 ## 代码质量重构进度
 
@@ -1454,9 +1454,18 @@ Last updated: 2026-05-29T08:58:59+08:00
 - 候选通用修复方向：
   - 对 `__setstate__` 等 pickle state API 做通用 iterator 支持。
 
+## 当前修复批次
+
+- Range 兼容性批次（2026-05-29 10:23 CST）：
+  - `range` 构造、长度、切片、truthiness、contains/count/index、hash/equality 和 pickle 统一使用保留的 Python integer 边界，避免大整数 range 被 i64 截断。
+  - `iter(range(...))` 和 `reversed(range(...))` 支持超出 i64 的 BigInt 状态；普通 i64 range iterator 保留快速路径，并用 checked step 推进避免极端 step debug overflow。
+  - `range_iterator` pickle 保持反序列化后类型为 `range_iterator`，覆盖普通、部分消费和 exhausted 大整数 iterator。
+  - `itertools.islice` 和 `zip_longest` 改为 lazy source iterator，避免为了 range 对比提前 materialize 超大 iterable；`islice` 同步补齐参数校验、`__index__` 支持、copy/deepcopy/pickle 协议和 exhausted 后释放 source 引用。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v test_range`（run=24 pass=24 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_islice`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestVariousIteratorArgs.test_islice`（pass=1）、range BigInt/reversed/pickle smoke、islice source-release smoke、`git diff --check`。
+
 ## 后续修复队列
 
-1. `test_iter` 当前模块级已过，list/tuple iterator pickle focused 已过，dict/set iterator cycle focused 已过；继续按 case 扫描 copy/weakref/deque 小批队列，找出后续失败或 stack overflow 的真实触发用例。
+1. `test_range` 当前模块级已过；继续按 case 扫描 `test_itertools` 的 `zip_longest`/`islice` 周边 copy、pickle、GC 小批队列，找出后续失败或 stack overflow 的真实触发用例。
 2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：

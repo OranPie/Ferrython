@@ -1,7 +1,7 @@
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    call_callable, make_builtin, make_module, new_fx_hashkey_map, FxAttrMap, InstanceData, PyCell,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    call_callable, make_builtin, make_module, new_fx_hashkey_map, FxAttrMap, InstanceData,
+    IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -71,6 +71,28 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
         PyObjectPayload::Dict(map) => Ok(PyObject::dict(map.read().clone())),
         PyObjectPayload::Set(set) => Ok(PyObject::set_from_flatmap(set.read().clone())),
+        PyObjectPayload::Iterator(iter_data) => {
+            let data = iter_data.read();
+            if let IteratorData::Islice {
+                source,
+                index,
+                next_yield,
+                stop,
+                step,
+            } = &*data
+            {
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::Islice {
+                        source: source.clone(),
+                        index: *index,
+                        next_yield: *next_yield,
+                        stop: *stop,
+                        step: *step,
+                    }),
+                ))));
+            }
+            Ok(obj.clone())
+        }
         PyObjectPayload::Instance(inst) => {
             if let Some(copy_fn) = obj.get_attr("__copy__") {
                 return call_callable(&copy_fn, &[]);
@@ -174,6 +196,31 @@ fn deep_copy_with_memo(
             let result = PyObject::set(new_set);
             memo.insert(ptr, result.clone());
             Ok(result)
+        }
+        PyObjectPayload::Iterator(iter_data) => {
+            let data = iter_data.read();
+            if let IteratorData::Islice {
+                source,
+                index,
+                next_yield,
+                stop,
+                step,
+            } = &*data
+            {
+                let source = deep_copy_with_memo(source, memo)?;
+                let result = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::Islice {
+                        source,
+                        index: *index,
+                        next_yield: *next_yield,
+                        stop: *stop,
+                        step: *step,
+                    },
+                ))));
+                memo.insert(ptr, result.clone());
+                return Ok(result);
+            }
+            Ok(obj.clone())
         }
         PyObjectPayload::Instance(inst) => {
             if let Some(deepcopy_fn) = obj.get_attr("__deepcopy__") {

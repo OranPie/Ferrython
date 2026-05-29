@@ -335,6 +335,20 @@ fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
             refs.extend(items_buf.iter().cloned());
             refs
         }
+        IteratorData::ZipLongest {
+            sources,
+            fillvalue,
+            cached_tuple,
+            ..
+        } => {
+            let mut refs = sources.clone();
+            refs.push(fillvalue.clone());
+            if let Some(tuple) = cached_tuple {
+                refs.push(tuple.clone());
+            }
+            refs
+        }
+        IteratorData::Islice { source, .. } => vec![source.clone()],
         IteratorData::MapOne { func, source }
         | IteratorData::Filter { func, source }
         | IteratorData::FilterFalse { func, source }
@@ -380,9 +394,10 @@ fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
             }
             refs
         }
-        IteratorData::Range { .. } | IteratorData::Str { .. } | IteratorData::Count { .. } => {
-            Vec::new()
-        }
+        IteratorData::Range { .. }
+        | IteratorData::BigRange(_)
+        | IteratorData::Str { .. }
+        | IteratorData::Count { .. } => Vec::new(),
     }
 }
 

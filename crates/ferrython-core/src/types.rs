@@ -1,7 +1,9 @@
 //! Auxiliary Python types: `PyInt`, `PyFunction`, `HashableKey`.
 
 use crate::error::{PyException, PyResult};
-use crate::object::{new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef, StrRepr};
+use crate::object::{
+    new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef, RangeData, StrRepr,
+};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::CodeObject;
@@ -132,6 +134,14 @@ impl PyInt {
         match self {
             PyInt::Small(n) => BigInt::from(*n),
             PyInt::Big(n) => n.as_ref().clone(),
+        }
+    }
+    #[inline]
+    pub fn from_bigint(value: BigInt) -> Self {
+        if let Some(small) = value.to_i64() {
+            PyInt::Small(small)
+        } else {
+            PyInt::Big(Box::new(value))
         }
     }
 
@@ -542,6 +552,7 @@ pub enum HashableKey {
     Bytes(Box<Vec<u8>>),
     Tuple(Box<Vec<HashableKey>>),
     FrozenSet(Rc<FrozenSetKeyData>),
+    Range(Box<RangeKeyData>),
     /// Identity-based key using the Arc pointer address, preserving the original object.
     Identity(usize, PyObjectRef),
     /// Custom hashable key for objects with __hash__/__eq__.
@@ -552,6 +563,24 @@ pub enum HashableKey {
 }
 
 impl Eq for HashableKey {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RangeKeyData {
+    len: PyInt,
+    start: Option<PyInt>,
+    step: Option<PyInt>,
+}
+
+impl RangeKeyData {
+    fn from_range(rd: &RangeData) -> Self {
+        let (len, start, step) = crate::object::helpers::range_canonical_parts(rd);
+        RangeKeyData {
+            len: PyInt::from_bigint(len),
+            start: start.map(PyInt::from_bigint),
+            step: step.map(PyInt::from_bigint),
+        }
+    }
+}
 
 const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 24);
 
@@ -589,6 +618,9 @@ impl HashableKey {
                     keys.push(HashableKey::from_object(item)?);
                 }
                 Ok(HashableKey::Tuple(Box::new(keys)))
+            }
+            PyObjectPayload::Range(rd) => {
+                Ok(HashableKey::Range(Box::new(RangeKeyData::from_range(rd))))
             }
             PyObjectPayload::FrozenSet(m) => {
                 let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
@@ -674,6 +706,7 @@ impl HashableKey {
                 }
                 PyObject::frozenset(map)
             }
+            HashableKey::Range(_) => PyObject::str_val(CompactString::from("range")),
             HashableKey::Identity(_ptr, obj) => obj.clone(),
             HashableKey::Custom { object, .. } => object.clone(),
         }
@@ -767,6 +800,19 @@ pub fn hash_key_like_python(key: &HashableKey) -> i64 {
             }
             h as i64
         }
+        HashableKey::Range(data) => {
+            let mut h: u64 =
+                0x345678 ^ (hash_key_like_python(&HashableKey::Int(data.len.clone())) as u64);
+            if let Some(start) = &data.start {
+                h = h.wrapping_mul(1_000_003)
+                    ^ (hash_key_like_python(&HashableKey::Int(start.clone())) as u64);
+            }
+            if let Some(step) = &data.step {
+                h = h.wrapping_mul(1_000_003)
+                    ^ (hash_key_like_python(&HashableKey::Int(step.clone())) as u64);
+            }
+            h as i64
+        }
         HashableKey::FrozenSet(items) => items.py_hash(),
         HashableKey::Bytes(b) => {
             let mut h: u64 = 5381;
@@ -800,6 +846,8 @@ impl PartialEq for HashableKey {
             (HashableKey::Tuple(a), HashableKey::Tuple(b)) => a == b,
             // FrozenSet/FrozenSet
             (HashableKey::FrozenSet(a), HashableKey::FrozenSet(b)) => a == b,
+            // Range/Range
+            (HashableKey::Range(a), HashableKey::Range(b)) => a == b,
             // Bool/Int cross-comparison (True == 1, False == 0)
             (HashableKey::Bool(b), HashableKey::Int(n))
             | (HashableKey::Int(n), HashableKey::Bool(b)) => *n == PyInt::Small(*b as i64),
@@ -908,6 +956,10 @@ impl Hash for HashableKey {
                     items.hash_cache.set(Some(cached));
                     cached.hash(state);
                 }
+            }
+            HashableKey::Range(data) => {
+                8u8.hash(state);
+                data.hash(state);
             }
             HashableKey::Identity(ptr, _) => {
                 7u8.hash(state);

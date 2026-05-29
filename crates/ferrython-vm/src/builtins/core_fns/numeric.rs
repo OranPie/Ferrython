@@ -1,5 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::helpers::range_next_i64;
 use ferrython_core::object::{
     check_args, check_args_min, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -175,16 +176,9 @@ pub(crate) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     return sum_items(&items, start_val);
                 }
             };
-            if ri.step > 0 {
-                while current < ri.stop {
-                    total = total.wrapping_add(current);
-                    current += ri.step;
-                }
-            } else {
-                while current > ri.stop {
-                    total = total.wrapping_add(current);
-                    current += ri.step;
-                }
+            while let Some((value, next)) = range_next_i64(current, ri.stop, ri.step) {
+                total = total.wrapping_add(value);
+                current = next;
             }
             return Ok(PyObject::int(total));
         }

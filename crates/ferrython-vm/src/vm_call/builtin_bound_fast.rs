@@ -58,6 +58,7 @@ impl VirtualMachine {
                     ) || matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
                         let data = d.read();
                         matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                            | IteratorData::ZipLongest { .. } | IteratorData::Islice { .. }
                             | IteratorData::MapOne { .. }
                             | IteratorData::Map { .. } | IteratorData::Filter { .. }
                             | IteratorData::FilterFalse { .. }

@@ -2,11 +2,25 @@ use crate::builtins;
 use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::{range_len, range_next_i64};
 use ferrython_core::object::{
     IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::PyInt;
 use indexmap::IndexMap;
 use std::rc::Rc;
+
+fn islice_index_arg(obj: &PyObjectRef, default: usize, allow_none: bool) -> PyResult<usize> {
+    if allow_none && matches!(&obj.payload, PyObjectPayload::None) {
+        return Ok(default);
+    }
+    match obj.to_index() {
+        Ok(PyInt::Small(n)) if n >= 0 => Ok(n as usize),
+        Ok(PyInt::Small(_)) | Ok(PyInt::Big(_)) | Err(_) => Err(PyException::value_error(
+            "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
+        )),
+    }
+}
 
 impl VirtualMachine {
     /// VM-level itertools.islice: lazily takes items from any iterable (including generators).
@@ -16,152 +30,48 @@ impl VirtualMachine {
                 "islice() requires at least 2 arguments",
             ));
         }
+        if args.len() > 4 {
+            return Err(PyException::type_error(
+                "islice() takes at most 4 arguments",
+            ));
+        }
         let iterable = &args[0];
         // None stop means no limit (use usize::MAX as sentinel)
         let (start, stop, step) = if args.len() == 2 {
-            let stop = if matches!(&args[1].payload, PyObjectPayload::None) {
-                usize::MAX
-            } else {
-                args[1].to_int()? as usize
-            };
+            let stop = islice_index_arg(&args[1], usize::MAX, true)?;
             (0usize, stop, 1usize)
         } else if args.len() == 3 {
-            let s = if matches!(&args[1].payload, PyObjectPayload::None) {
-                0
-            } else {
-                args[1].to_int()? as usize
-            };
-            let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
-                usize::MAX
-            } else {
-                args[2].to_int()? as usize
-            };
+            let s = islice_index_arg(&args[1], 0, true)?;
+            let stop = islice_index_arg(&args[2], usize::MAX, true)?;
             (s, stop, 1usize)
         } else {
-            let s = if matches!(&args[1].payload, PyObjectPayload::None) {
-                0
-            } else {
-                args[1].to_int()? as usize
-            };
-            let stop = if matches!(&args[2].payload, PyObjectPayload::None) {
-                usize::MAX
-            } else {
-                args[2].to_int()? as usize
-            };
-            let st = if matches!(&args[3].payload, PyObjectPayload::None) {
-                1
-            } else {
-                args[3].to_int()? as usize
-            };
-            (s, stop, st.max(1))
+            let s = islice_index_arg(&args[1], 0, true)?;
+            let stop = islice_index_arg(&args[2], usize::MAX, true)?;
+            let st = islice_index_arg(&args[3], 1, true)?;
+            if st == 0 {
+                return Err(PyException::value_error(
+                    "Step for islice() must be a positive integer or None.",
+                ));
+            }
+            (s, stop, st)
         };
 
-        // For generators: consume items one at a time, only up to `stop`
-        if let PyObjectPayload::Generator(gen_arc) = &iterable.payload {
-            let gen_arc = gen_arc.clone();
-            let mut result = Vec::new();
-            let mut idx = 0usize;
-            let mut next_yield = start;
-            loop {
-                if result.len() >= stop.saturating_sub(start) {
-                    break;
-                }
-                if idx >= stop {
-                    break;
-                }
-                match self.resume_generator(&gen_arc, PyObject::none()) {
-                    Ok(value) => {
-                        if idx == next_yield {
-                            result.push(value);
-                            next_yield += step;
-                        }
-                        idx += 1;
-                    }
-                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
-                    Err(e) => return Err(e),
-                }
-            }
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                PyCell::new(IteratorData::List {
-                    items: result,
-                    index: 0,
-                }),
-            ))));
-        }
-
-        // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_)
-        | PyObjectPayload::RangeIter(..)
-        | PyObjectPayload::VecIter(_)
-        | PyObjectPayload::WeakValueIter(_)
-        | PyObjectPayload::WeakKeyIter(_)
-        | PyObjectPayload::DequeIter(_)
-        | PyObjectPayload::RefIter { .. }
-        | PyObjectPayload::RevRefIter { .. } = &iterable.payload
-        {
-            let mut result = Vec::new();
-            let mut idx = 0usize;
-            let mut next_yield = start;
-            loop {
-                if idx >= stop {
-                    break;
-                }
-                match self.advance_lazy_iterator(iterable) {
-                    Ok(Some(value)) => {
-                        if idx == next_yield {
-                            result.push(value);
-                            next_yield += step;
-                        }
-                        idx += 1;
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        // Try non-lazy advance
-                        match builtins::iter_advance(iterable) {
-                            Ok(Some((_, value))) => {
-                                if idx == next_yield {
-                                    result.push(value);
-                                    next_yield += step;
-                                }
-                                idx += 1;
-                            }
-                            Ok(None) => break,
-                            Err(_) => return Err(e),
-                        }
-                    }
-                }
-            }
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                PyCell::new(IteratorData::List {
-                    items: result,
-                    index: 0,
-                }),
-            ))));
-        }
-
-        // For Instance with __iter__/__next__: iterate through VM
-        if let PyObjectPayload::Instance(_) = &iterable.payload {
+        let source = if let PyObjectPayload::Instance(_) = &iterable.payload {
             if let Some(iter_method) = iterable.get_attr("__iter__") {
-                let iter_obj = self.call_object(iter_method, vec![])?;
-                // Recurse with the iterator
-                let mut new_args = args.to_vec();
-                new_args[0] = iter_obj;
-                return self.vm_itertools_islice(&new_args);
+                self.call_object(iter_method, vec![])?
+            } else {
+                iterable.get_iter()?
             }
-        }
-
-        // Fallback: eagerly collect then slice (works for lists, tuples, etc.)
-        let items = iterable.to_list()?;
-        let result: Vec<PyObjectRef> = items
-            .into_iter()
-            .skip(start)
-            .take(stop.saturating_sub(start))
-            .step_by(step)
-            .collect();
+        } else {
+            iterable.get_iter()?
+        };
         Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::List {
-                items: result,
+            PyCell::new(IteratorData::Islice {
+                source,
                 index: 0,
+                next_yield: start,
+                stop,
+                step,
             }),
         ))))
     }
@@ -433,6 +343,8 @@ impl VirtualMachine {
                         &*data,
                         IteratorData::Enumerate { .. }
                             | IteratorData::Zip { .. }
+                            | IteratorData::ZipLongest { .. }
+                            | IteratorData::Islice { .. }
                             | IteratorData::MapOne { .. }
                             | IteratorData::Map { .. }
                             | IteratorData::Filter { .. }
@@ -551,15 +463,11 @@ impl VirtualMachine {
                         stop,
                         step,
                     } => {
-                        let len = if *step > 0 {
-                            ((*stop - *current).max(0) + *step - 1) / *step
-                        } else {
-                            ((*current - *stop).max(0) + (-*step) - 1) / (-*step)
-                        };
+                        let len = range_len(*current, *stop, *step);
                         let mut result = Vec::with_capacity(len as usize);
-                        while (*step > 0 && *current < *stop) || (*step < 0 && *current > *stop) {
-                            let value = PyObject::int(*current);
-                            *current += *step;
+                        while let Some((value, next)) = range_next_i64(*current, *stop, *step) {
+                            let value = PyObject::int(value);
+                            *current = next;
                             result.push(
                                 self.call_object_one_arg_fast_or_fallback(func.clone(), value)?,
                             );
@@ -620,18 +528,14 @@ impl VirtualMachine {
             }
             PyObjectPayload::RangeIter(ri) => {
                 let mut current = ri.current.get();
-                let len = if ri.step > 0 {
-                    ((ri.stop - current).max(0) + ri.step - 1) / ri.step
-                } else {
-                    ((current - ri.stop).max(0) + (-ri.step) - 1) / (-ri.step)
-                };
+                let len = range_len(current, ri.stop, ri.step);
                 let mut result = Vec::with_capacity(len as usize);
-                while (ri.step > 0 && current < ri.stop) || (ri.step < 0 && current > ri.stop) {
+                while let Some((value, next)) = range_next_i64(current, ri.stop, ri.step) {
                     result.push(self.call_object_one_arg_fast_or_fallback(
                         func.clone(),
-                        PyObject::int(current),
+                        PyObject::int(value),
                     )?);
-                    current += ri.step;
+                    current = next;
                 }
                 ri.current.set(ri.stop);
                 Ok(result)

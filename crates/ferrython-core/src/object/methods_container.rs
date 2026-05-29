@@ -5,7 +5,8 @@ use crate::intern::intern_or_new;
 use crate::types::{take_pending_eq_error, FrozenSetKeyData, HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use num_bigint::Sign;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive, Zero};
 use std::rc::Rc;
 
 use super::helpers::*;
@@ -44,7 +45,10 @@ fn element_matches(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
     if PyObjectRef::ptr_eq(a, b) {
         return Ok(true);
     }
-    Ok(a.compare(b, CompareOp::Eq)?.is_truthy())
+    if a.compare(b, CompareOp::Eq)?.is_truthy() {
+        return Ok(true);
+    }
+    Ok(b.compare(a, CompareOp::Eq)?.is_truthy())
 }
 
 fn set_membership_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
@@ -215,13 +219,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             )))
         }
         PyObjectPayload::Range(rd) => {
-            let len = range_len_i128(rd.start, rd.stop, rd.step);
-            if len > isize::MAX as i128 {
+            let len = range_data_len_bigint(rd);
+            if len > BigInt::from(isize::MAX) {
                 Err(PyException::overflow_error(
                     "Python int too large to convert to C ssize_t",
                 ))
             } else {
-                Ok(len as usize)
+                Ok(len.to_usize().unwrap_or(0))
             }
         }
         PyObjectPayload::Iterator(iter_data) => {
@@ -239,6 +243,16 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                         ))
                     } else {
                         Ok(len as usize)
+                    }
+                }
+                IteratorData::BigRange(iter) => {
+                    let len = range_iter_len_bigint(iter);
+                    if len > BigInt::from(isize::MAX) {
+                        Err(PyException::overflow_error(
+                            "Python int too large to convert to C ssize_t",
+                        ))
+                    } else {
+                        Ok(len.to_usize().unwrap_or(0))
                     }
                 }
                 IteratorData::List { items, index } => Ok(items.len() - index),
@@ -467,20 +481,19 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
         }
         PyObjectPayload::Range(rd) => {
             let idx = match key.to_index()? {
-                PyInt::Small(n) => n as i128,
-                PyInt::Big(n) if n.sign() == Sign::Minus => i128::MIN,
-                PyInt::Big(_) => i128::MAX,
+                PyInt::Small(n) => BigInt::from(n),
+                PyInt::Big(n) => n.as_ref().clone(),
             };
-            let len = range_len_i128(rd.start, rd.stop, rd.step);
-            let actual = if idx < 0 { len + idx } else { idx };
-            if actual < 0 || actual >= len {
+            let len = range_data_len_bigint(rd);
+            let actual = if idx.is_negative() { &len + idx } else { idx };
+            if actual.is_negative() || actual >= len {
                 return Err(PyException::index_error("range object index out of range"));
             }
-            let value = rd.start as i128 + actual * rd.step as i128;
-            if let Ok(value) = i64::try_from(value) {
+            let value = range_item_bigint(rd, &actual);
+            if let Some(value) = value.to_i64() {
                 Ok(PyObject::int(value))
             } else {
-                Ok(PyObject::big_int(value.into()))
+                Ok(PyObject::big_int(value))
             }
         }
         PyObjectPayload::Instance(inst) => {
@@ -645,17 +658,26 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
         }
         PyObjectPayload::Range(rd) => {
-            if let Some(val) = item.as_int() {
-                let val = val as i128;
-                let start = rd.start as i128;
-                let stop = rd.stop as i128;
-                let step = rd.step as i128;
-                if rd.step > 0 {
-                    Ok(val >= start && val < stop && (val - start) % step == 0)
-                } else {
-                    Ok(val <= start && val > stop && (start - val) % (-step) == 0)
-                }
+            if let Some(val) = py_exact_numeric_bigint(item) {
+                Ok(range_contains_bigint(rd, &val))
             } else {
+                let len = range_data_len_bigint(rd);
+                if len > BigInt::from(1024usize) {
+                    return Ok(false);
+                }
+                let mut idx = BigInt::zero();
+                while idx < len {
+                    let value = range_item_bigint(rd, &idx);
+                    let candidate = if let Some(value) = value.to_i64() {
+                        PyObject::int(value)
+                    } else {
+                        PyObject::big_int(value)
+                    };
+                    if element_matches(&candidate, item)? {
+                        return Ok(true);
+                    }
+                    idx += 1;
+                }
                 Ok(false)
             }
         }
@@ -677,6 +699,16 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                         } else {
                             Ok(val <= current && val > stop && (current - val) % (-step) == 0)
                         }
+                    } else {
+                        Ok(false)
+                    }
+                }
+                IteratorData::BigRange(iter) => {
+                    if let Some(val) = py_exact_numeric_bigint(item) {
+                        let current = range_iter_item_bigint(iter);
+                        let rd =
+                            range_data_from_bigints(current, iter.stop.clone(), iter.step.clone());
+                        Ok(range_contains_bigint(&rd, &val))
                     } else {
                         Ok(false)
                     }
@@ -843,11 +875,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             ))))
         }
         PyObjectPayload::Range(rd) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::Range {
-                current: rd.start,
-                stop: rd.stop,
-                step: rd.step,
-            }),
+            PyCell::new(range_iterator_from_data(rd)),
         )))),
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)

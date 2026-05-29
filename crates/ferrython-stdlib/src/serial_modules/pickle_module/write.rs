@@ -1,5 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::{py_int_from_bigint, range_iter_item_bigint};
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -17,6 +18,15 @@ use memo::{
 use super::shared::{
     exception_pickle_state, format_float_repr, hashable_key_to_pyobj, operator_reduce_target,
 };
+
+fn range_pickle_args(rd: &ferrython_core::object::RangeData) -> Vec<PyObjectRef> {
+    let (start, stop, step) = ferrython_core::object::helpers::range_parts_bigint(rd);
+    vec![
+        ferrython_core::object::helpers::py_int_from_bigint(start),
+        ferrython_core::object::helpers::py_int_from_bigint(stop),
+        ferrython_core::object::helpers::py_int_from_bigint(step),
+    ]
+}
 
 fn pickle_serialize_operator_reduce_p0(
     func_name: &str,
@@ -196,6 +206,13 @@ pub(super) fn pickle_serialize_p0(
             pickle_serialize_p0(&PyObject::list(list_items), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::Range(rd) => {
+            buf.extend_from_slice(b"cbuiltins\nrange\n(");
+            for arg in range_pickle_args(rd) {
+                pickle_serialize_p0(&arg, buf, memo)?;
+            }
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::Instance(inst) => {
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
@@ -271,21 +288,10 @@ pub(super) fn pickle_serialize_p0(
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::RangeIter(ri) => {
-            let mut items = Vec::new();
-            let mut c = ri.current.get();
-            if ri.step > 0 {
-                while c < ri.stop {
-                    items.push(PyObject::int(c));
-                    c += ri.step;
-                }
-            } else if ri.step < 0 {
-                while c > ri.stop {
-                    items.push(PyObject::int(c));
-                    c += ri.step;
-                }
-            }
-            buf.extend_from_slice(b"cbuiltins\niter\n(");
-            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n(");
+            pickle_serialize_p0(&PyObject::int(ri.current.get()), buf, memo)?;
+            pickle_serialize_p0(&PyObject::int(ri.stop), buf, memo)?;
+            pickle_serialize_p0(&PyObject::int(ri.step), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::Iterator(arc) => {
@@ -306,20 +312,24 @@ pub(super) fn pickle_serialize_p0(
                     stop,
                     step,
                 } => {
-                    let mut items = Vec::new();
-                    let mut c = *current;
-                    if *step > 0 {
-                        while c < *stop {
-                            items.push(PyObject::int(c));
-                            c += step;
-                        }
-                    } else if *step < 0 {
-                        while c > *stop {
-                            items.push(PyObject::int(c));
-                            c += step;
-                        }
-                    }
-                    items
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n(");
+                    pickle_serialize_p0(&PyObject::int(*current), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*stop), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*step), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
+                IteratorData::BigRange(iter) => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n(");
+                    pickle_serialize_p0(
+                        &py_int_from_bigint(range_iter_item_bigint(iter)),
+                        buf,
+                        memo,
+                    )?;
+                    pickle_serialize_p0(&py_int_from_bigint(iter.stop.clone()), buf, memo)?;
+                    pickle_serialize_p0(&py_int_from_bigint(iter.step.clone()), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
                 }
                 IteratorData::DictKeys { keys, index } => {
                     keys.iter().skip(*index).cloned().collect()
@@ -340,6 +350,22 @@ pub(super) fn pickle_serialize_p0(
                     pickle_serialize_p0(source, buf, memo)?;
                     pickle_serialize_p0(&PyObject::int(*index), buf, memo)?;
                     pickle_serialize_p0(&PyObject::bool_val(*exhausted), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
+                IteratorData::Islice {
+                    source,
+                    index,
+                    next_yield,
+                    stop,
+                    step,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_islice__\n(");
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*index as i64), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*next_yield as i64), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*stop as i64), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*step as i64), buf, memo)?;
                     buf.extend_from_slice(b"tR");
                     return Ok(());
                 }
@@ -747,6 +773,11 @@ pub(super) fn pickle_serialize_p2(
             pickle_serialize_p2(&PyObject::list(list_items), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::Range(rd) => {
+            buf.extend_from_slice(b"cbuiltins\nrange\n");
+            pickle_serialize_p2(&PyObject::tuple(range_pickle_args(rd)), buf, memo)?;
+            buf.push(b'R');
+        }
         PyObjectPayload::Instance(inst) => {
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;
@@ -841,22 +872,17 @@ pub(super) fn pickle_serialize_p2(
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::RangeIter(ri) => {
-            let mut items = Vec::new();
-            let mut c = ri.current.get();
-            if ri.step > 0 {
-                while c < ri.stop {
-                    items.push(PyObject::int(c));
-                    c += ri.step;
-                }
-            } else if ri.step < 0 {
-                while c > ri.stop {
-                    items.push(PyObject::int(c));
-                    c += ri.step;
-                }
-            }
-            buf.extend_from_slice(b"cbuiltins\niter\n(");
-            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
-            buf.extend_from_slice(b"tR");
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n");
+            pickle_serialize_p2(
+                &PyObject::tuple(vec![
+                    PyObject::int(ri.current.get()),
+                    PyObject::int(ri.stop),
+                    PyObject::int(ri.step),
+                ]),
+                buf,
+                memo,
+            )?;
+            buf.push(b'R');
         }
         PyObjectPayload::Iterator(arc) => {
             use ferrython_core::object::IteratorData;
@@ -876,20 +902,32 @@ pub(super) fn pickle_serialize_p2(
                     stop,
                     step,
                 } => {
-                    let mut items = Vec::new();
-                    let mut c = *current;
-                    if *step > 0 {
-                        while c < *stop {
-                            items.push(PyObject::int(c));
-                            c += step;
-                        }
-                    } else if *step < 0 {
-                        while c > *stop {
-                            items.push(PyObject::int(c));
-                            c += step;
-                        }
-                    }
-                    items
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            PyObject::int(*current),
+                            PyObject::int(*stop),
+                            PyObject::int(*step),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::BigRange(iter) => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            py_int_from_bigint(range_iter_item_bigint(iter)),
+                            py_int_from_bigint(iter.stop.clone()),
+                            py_int_from_bigint(iter.step.clone()),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
                 }
                 IteratorData::DictKeys { keys, index } => {
                     keys.iter().skip(*index).cloned().collect()
@@ -912,6 +950,28 @@ pub(super) fn pickle_serialize_p2(
                             source.clone(),
                             PyObject::int(*index),
                             PyObject::bool_val(*exhausted),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::Islice {
+                    source,
+                    index,
+                    next_yield,
+                    stop,
+                    step,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_islice__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            source.clone(),
+                            PyObject::int(*index as i64),
+                            PyObject::int(*next_yield as i64),
+                            PyObject::int(*stop as i64),
+                            PyObject::int(*step as i64),
                         ]),
                         buf,
                         memo,

@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) fn pkl_parse_text_int(s: &str) -> PyResult<PyObjectRef> {
+    if let Ok(value) = s.parse::<i64>() {
+        Ok(PyObject::int(value))
+    } else {
+        let value = s.parse::<num_bigint::BigInt>().map_err(|_| {
+            PyException::runtime_error(format!("UnpicklingError: invalid INT value '{}'", s))
+        })?;
+        Ok(PyObject::big_int(value))
+    }
+}
+
 pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
     let mut pos: usize = 0;
     let mut stack: Vec<PklStackItem> = Vec::new();
@@ -23,13 +34,7 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                 } else if s == "00" {
                     stack.push(PklStackItem::Value(PyObject::bool_val(false)));
                 } else {
-                    let val: i64 = s.parse().map_err(|_| {
-                        PyException::runtime_error(format!(
-                            "UnpicklingError: invalid INT value '{}'",
-                            s
-                        ))
-                    })?;
-                    stack.push(PklStackItem::Value(PyObject::int(val)));
+                    stack.push(PklStackItem::Value(pkl_parse_text_int(s)?));
                 }
             }
             b'L' => {
@@ -41,8 +46,7 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                     })?
                     .trim()
                     .trim_end_matches('L');
-                let val: i64 = s.parse().unwrap_or(0);
-                stack.push(PklStackItem::Value(PyObject::int(val)));
+                stack.push(PklStackItem::Value(pkl_parse_text_int(s)?));
             }
             b'F' => {
                 let line = p0_read_line(data, &mut pos);
