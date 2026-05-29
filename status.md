@@ -1,8 +1,19 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T18:50:55+08:00
+Last updated: 2026-05-29T18:59:16+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `keyword` / `fnmatch` 小兼容修复：
+  - `keyword.iskeyword` 和 `issoftkeyword` 绑定到初始关键字集合，不再受用户重新赋值 `kwlist` / `softkwlist` 影响。
+  - `os.path` 补齐 POSIX `normcase()`，供 `fnmatch` 和路径相关模块调用。
+  - `fnmatch` 补齐 str/bytes 混用 `TypeError`、bytes 模式按 latin-1 语义匹配、POSIX case-preserving 处理，以及 `translate('[^x]')` 中字面 `^` 的转义。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_keyword`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_fnmatch`
 
 - 已推进 `csv` / `tempfile` / `decimal` 小兼容修复：
   - `csv` module 补齐 `__doc__`、`__version__`、`__all__` 和可捕获的 `csv.Error`，并为 reader/writer 暴露只读 `dialect` 属性。

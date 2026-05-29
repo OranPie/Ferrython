@@ -17,6 +17,7 @@ pub fn create_os_path_module() -> PyObjectRef {
             ("splitext", make_builtin(os_path_splitext)),
             ("split", make_builtin(os_path_split)),
             ("isabs", make_builtin(os_path_isabs)),
+            ("normcase", make_builtin(os_path_normcase)),
             ("normpath", make_builtin(os_path_normpath)),
             ("expanduser", make_builtin(os_path_expanduser)),
             ("expandvars", make_builtin(os_path_expandvars)),
@@ -174,6 +175,12 @@ fn os_path_isabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bool_val(
         std::path::Path::new(&args[0].py_to_string()).is_absolute(),
     ))
+}
+fn os_path_normcase(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.normcase", args, 1)?;
+    Ok(PyObject::str_val(CompactString::from(
+        args[0].py_to_string(),
+    )))
 }
 fn os_path_normpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.normpath", args, 1)?;
