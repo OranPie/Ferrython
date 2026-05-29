@@ -853,7 +853,10 @@ fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // Obtain a proper iterator over the input
     let source = args[0].get_iter()?;
+    make_tee_legs(source, n)
+}
 
+fn make_tee_legs(source: PyObjectRef, n: usize) -> PyResult<PyObjectRef> {
     // Shared source cell and shared buffer
     let source_cell = Rc::new(PyCell::new(source));
     let buffer_cell: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(Vec::new()));
