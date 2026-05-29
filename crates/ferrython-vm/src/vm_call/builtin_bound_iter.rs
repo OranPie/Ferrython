@@ -39,7 +39,7 @@ impl VirtualMachine {
                     return set_iterator_state(&bbm.receiver, args).map(Some);
                 }
                 "__copy__" => {
-                    if let Some(copy) = copy_islice_iterator(&bbm.receiver)? {
+                    if let Some(copy) = copy_reducible_iterator(&bbm.receiver)? {
                         return Ok(Some(copy));
                     }
                 }
@@ -49,7 +49,7 @@ impl VirtualMachine {
                             "__deepcopy__() takes at most one argument",
                         ));
                     }
-                    if let Some(copy) = copy_islice_iterator(&bbm.receiver)? {
+                    if let Some(copy) = copy_reducible_iterator(&bbm.receiver)? {
                         return Ok(Some(copy));
                     }
                 }
@@ -59,7 +59,7 @@ impl VirtualMachine {
                             "__reduce_ex__() takes exactly one argument",
                         ));
                     }
-                    if let Some(reduced) = reduce_islice_iterator(&bbm.receiver)? {
+                    if let Some(reduced) = reduce_reducible_iterator(&bbm.receiver)? {
                         return Ok(Some(reduced));
                     }
                 }
@@ -113,6 +113,38 @@ fn copy_islice_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>>
     )
 }
 
+fn copy_reducible_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    if let Some(copy) = copy_islice_iterator(receiver)? {
+        return Ok(Some(copy));
+    }
+    let PyObjectPayload::Iterator(iter_data) = &receiver.payload else {
+        return Ok(None);
+    };
+    let data = iter_data.read();
+    let copy = match &*data {
+        IteratorData::TakeWhile { func, source, done } => Some(IteratorData::TakeWhile {
+            func: func.clone(),
+            source: source.clone(),
+            done: *done,
+        }),
+        IteratorData::DropWhile {
+            func,
+            source,
+            dropping,
+        } => Some(IteratorData::DropWhile {
+            func: func.clone(),
+            source: source.clone(),
+            dropping: *dropping,
+        }),
+        _ => None,
+    };
+    Ok(copy.map(|data| {
+        PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+            ferrython_core::object::PyCell::new(data),
+        )))
+    }))
+}
+
 fn reduce_islice_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
     let Some((source, index, next_yield, stop, step)) = islice_state(receiver) else {
         return Ok(None);
@@ -151,4 +183,67 @@ fn reduce_islice_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef
             arg_obj(step),
         ]),
     ])))
+}
+
+fn reduce_reducible_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    if let Some(reduced) = reduce_islice_iterator(receiver)? {
+        return Ok(Some(reduced));
+    }
+    let PyObjectPayload::Iterator(iter_data) = &receiver.payload else {
+        return Ok(None);
+    };
+    let data = iter_data.read();
+    match &*data {
+        IteratorData::TakeWhile { func, source, done } => {
+            let constructor =
+                PyObject::native_closure("itertools.takewhile.__rebuild__", move |args| {
+                    if args.len() != 3 {
+                        return Err(PyException::type_error("invalid takewhile reduce state"));
+                    }
+                    Ok(PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+                        ferrython_core::object::PyCell::new(IteratorData::TakeWhile {
+                            func: args[0].clone(),
+                            source: args[1].clone(),
+                            done: args[2].is_truthy(),
+                        }),
+                    ))))
+                });
+            Ok(Some(PyObject::tuple(vec![
+                constructor,
+                PyObject::tuple(vec![
+                    func.clone(),
+                    source.clone(),
+                    PyObject::bool_val(*done),
+                ]),
+            ])))
+        }
+        IteratorData::DropWhile {
+            func,
+            source,
+            dropping,
+        } => {
+            let constructor =
+                PyObject::native_closure("itertools.dropwhile.__rebuild__", move |args| {
+                    if args.len() != 3 {
+                        return Err(PyException::type_error("invalid dropwhile reduce state"));
+                    }
+                    Ok(PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+                        ferrython_core::object::PyCell::new(IteratorData::DropWhile {
+                            func: args[0].clone(),
+                            source: args[1].clone(),
+                            dropping: args[2].is_truthy(),
+                        }),
+                    ))))
+                });
+            Ok(Some(PyObject::tuple(vec![
+                constructor,
+                PyObject::tuple(vec![
+                    func.clone(),
+                    source.clone(),
+                    PyObject::bool_val(*dropping),
+                ]),
+            ])))
+        }
+        _ => Ok(None),
+    }
 }

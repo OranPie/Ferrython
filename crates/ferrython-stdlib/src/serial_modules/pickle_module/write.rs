@@ -28,6 +28,68 @@ fn range_pickle_args(rd: &ferrython_core::object::RangeData) -> Vec<PyObjectRef>
     ]
 }
 
+fn pickle_global_function_parts(
+    obj: &PyObjectRef,
+    func: &ferrython_core::types::PyFunction,
+) -> Option<(String, String)> {
+    let module = func
+        .globals
+        .read()
+        .get("__name__")
+        .map(|value| value.py_to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "__main__".to_string());
+    let name = func.qualname.to_string();
+    if name.contains("<locals>") {
+        return None;
+    }
+    let module_obj = if module == "__main__" {
+        None
+    } else {
+        crate::get_current_sys_module()
+            .and_then(|sys| sys.get_attr("modules"))
+            .and_then(|modules| {
+                if let PyObjectPayload::Dict(map) = &modules.payload {
+                    map.read()
+                        .get(&HashableKey::str_key(CompactString::from(module.as_str())))
+                        .cloned()
+                } else {
+                    None
+                }
+            })
+    };
+    let resolved = if let Some(module_obj) = module_obj {
+        let mut current = module_obj;
+        let mut ok = true;
+        for part in name.split('.') {
+            if let Some(next) = current.get_attr(part) {
+                current = next;
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        ok.then_some(current)
+    } else {
+        func.globals.read().get(name.as_str()).cloned()
+    };
+    resolved
+        .filter(|candidate| PyObjectRef::ptr_eq(candidate, obj))
+        .map(|_| (module, name))
+}
+
+fn pickle_serialize_function_global_p0(module: &str, name: &str, buf: &mut Vec<u8>) {
+    buf.push(b'c');
+    buf.extend_from_slice(module.as_bytes());
+    buf.push(b'\n');
+    buf.extend_from_slice(name.as_bytes());
+    buf.push(b'\n');
+}
+
+fn pickle_serialize_function_global_p2(module: &str, name: &str, buf: &mut Vec<u8>) {
+    pickle_serialize_function_global_p0(module, name, buf);
+}
+
 fn pickle_serialize_operator_reduce_p0(
     func_name: &str,
     args: &[PyObjectRef],
@@ -141,6 +203,16 @@ pub(super) fn pickle_serialize_p0(
             buf.push(b'S');
             buf.extend_from_slice(&p0_escape_bytes(b));
             buf.push(b'\n');
+        }
+        PyObjectPayload::Function(func) => {
+            if let Some((module, name)) = pickle_global_function_parts(obj, func) {
+                pickle_serialize_function_global_p0(&module, &name, buf);
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
         }
         PyObjectPayload::List(items) => {
             let items = items.read();
@@ -383,6 +455,26 @@ pub(super) fn pickle_serialize_p0(
                     pickle_serialize_p0(&PyObject::list(sources.clone()), buf, memo)?;
                     pickle_serialize_p0(&PyObject::list(active_flags), buf, memo)?;
                     pickle_serialize_p0(fillvalue, buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
+                IteratorData::TakeWhile { func, source, done } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_takewhile__\n(");
+                    pickle_serialize_p0(func, buf, memo)?;
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&PyObject::bool_val(*done), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
+                IteratorData::DropWhile {
+                    func,
+                    source,
+                    dropping,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_dropwhile__\n(");
+                    pickle_serialize_p0(func, buf, memo)?;
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&PyObject::bool_val(*dropping), buf, memo)?;
                     buf.extend_from_slice(b"tR");
                     return Ok(());
                 }
@@ -714,6 +806,16 @@ pub(super) fn pickle_serialize_p2(
             buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
             buf.extend_from_slice(b);
         }
+        PyObjectPayload::Function(func) => {
+            if let Some((module, name)) = pickle_global_function_parts(obj, func) {
+                pickle_serialize_function_global_p2(&module, &name, buf);
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
+        }
         PyObjectPayload::List(items) => {
             let items = items.read();
             buf.push(b']');
@@ -1012,6 +1114,38 @@ pub(super) fn pickle_serialize_p2(
                             PyObject::list(sources.clone()),
                             PyObject::list(active_flags),
                             fillvalue.clone(),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::TakeWhile { func, source, done } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_takewhile__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            func.clone(),
+                            source.clone(),
+                            PyObject::bool_val(*done),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::DropWhile {
+                    func,
+                    source,
+                    dropping,
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_dropwhile__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            func.clone(),
+                            source.clone(),
+                            PyObject::bool_val(*dropping),
                         ]),
                         buf,
                         memo,

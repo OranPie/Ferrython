@@ -496,7 +496,7 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 {
+    if args.len() != 2 {
         return Err(PyException::type_error(
             "dropwhile requires predicate and iterable",
         ));
@@ -513,7 +513,7 @@ fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn itertools_takewhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 {
+    if args.len() != 2 {
         return Err(PyException::type_error(
             "takewhile requires predicate and iterable",
         ));

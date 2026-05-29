@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T11:06:07+08:00
+Last updated: 2026-05-29T11:26:47+08:00
 
 ## 代码质量重构进度
 
@@ -1468,6 +1468,13 @@ Last updated: 2026-05-29T11:06:07+08:00
   - `zip_longest` 参数解析现在只接受 `fillvalue` 关键字，未知关键字抛 `TypeError`；显式传入 `{'fillvalue': ...}` 仍按普通 dict iterable 处理。
   - pickle protocol 0/2 为 `IteratorData::ZipLongest` 保存 source iterator、active flags 和 fillvalue，并通过 `__ferrython_ziplongest__` 恢复为同类 lazy iterator。
   - 验证：`cargo fmt --all`、`cargo build -p ferrython-cli --bin ferrython`、`cargo check -p ferrython-vm`、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_ziplongest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_pickling`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_zip_longest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_bad_iterable`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_zip_longest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_islice`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip`（pass=1）、`target/debug/ferrython -c "from itertools import zip_longest; ..."` 覆盖 dict-as-iterable/fillvalue/unknown keyword smoke、`git diff --check`。
+  - commit：`0c4737d fix: support zip_longest pickling`。
+- `takewhile/dropwhile` 兼容性批次（2026-05-29 11:26 CST）：
+  - `itertools.takewhile` 和 `itertools.dropwhile` 现在严格要求两个参数，拒绝多余参数。
+  - iterator capability 扩展到 `TakeWhile`/`DropWhile`，支持 `__copy__`、`__deepcopy__`、`__reduce__` 和 `__reduce_ex__`，保留 source iterator 与 done/dropping 状态。
+  - pickle protocol 0/2 为 `takewhile`/`dropwhile` iterator 保存 predicate、source 和状态位，并通过内部 reducer 恢复为 lazy iterator。
+  - 模块级 Python 函数支持按 pickle global 规则序列化/反序列化；unpickler 的 tuple/list/dict 收集路径可把 `GLOBAL` stack item 解析为普通 value，供 iterator reducer 参数使用。
+  - 验证：`cargo fmt --all`、`cargo build -p ferrython-cli --bin ferrython`、`cargo check -p ferrython-vm`、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_dropwhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_dropwhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_dropwhile`（pass=1）、manual smoke 覆盖 function protocol 0/2、copy/deepcopy 和部分消费后的 dropwhile pickle、`git diff --check`。
 
 ## 后续修复队列
 

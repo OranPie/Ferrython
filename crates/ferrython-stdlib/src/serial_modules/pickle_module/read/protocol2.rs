@@ -228,62 +228,50 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
             }
             0x85 => {
                 // TUPLE1
-                let v = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE1 stack underflow",
-                        ))
-                    }
-                };
+                let v = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE1 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
                 stack.push(PklStackItem::Value(PyObject::tuple(vec![v])));
             }
             0x86 => {
                 // TUPLE2
-                let b_val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE2 stack underflow",
-                        ))
-                    }
-                };
-                let a_val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE2 stack underflow",
-                        ))
-                    }
-                };
+                let b_val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE2 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
+                let a_val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE2 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
                 stack.push(PklStackItem::Value(PyObject::tuple(vec![a_val, b_val])));
             }
             0x87 => {
                 // TUPLE3
-                let c_val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE3 stack underflow",
-                        ))
-                    }
-                };
-                let b_val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE3 stack underflow",
-                        ))
-                    }
-                };
-                let a_val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: TUPLE3 stack underflow",
-                        ))
-                    }
-                };
+                let c_val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE3 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
+                let b_val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE3 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
+                let a_val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: TUPLE3 stack underflow")
+                    })
+                    .and_then(pkl_stack_item_value)?;
                 stack.push(PklStackItem::Value(PyObject::tuple(vec![
                     a_val, b_val, c_val,
                 ])));
@@ -584,10 +572,8 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
         }
     }
 
-    for item in stack.iter().rev() {
-        if let PklStackItem::Value(v) = item {
-            return Ok(v.clone());
-        }
+    if stack.last().is_some() {
+        return pkl_stack_top_value(&stack);
     }
     Err(PyException::runtime_error(
         "UnpicklingError: empty pickle data",

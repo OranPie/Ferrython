@@ -214,7 +214,12 @@ pub fn iterator_supports_reduce(obj: &PyObjectRef) -> bool {
     matches!(
         &obj.payload,
         PyObjectPayload::Iterator(iter_data)
-            if matches!(&*iter_data.read(), IteratorData::Islice { .. })
+            if matches!(
+                &*iter_data.read(),
+                IteratorData::Islice { .. }
+                    | IteratorData::TakeWhile { .. }
+                    | IteratorData::DropWhile { .. }
+            )
     )
 }
 

@@ -236,11 +236,8 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
         }
     }
 
-    // Return top of stack
-    for item in stack.iter().rev() {
-        if let PklStackItem::Value(v) = item {
-            return Ok(v.clone());
-        }
+    if stack.last().is_some() {
+        return pkl_stack_top_value(&stack);
     }
     Err(PyException::runtime_error(
         "UnpicklingError: empty pickle data",

@@ -167,10 +167,11 @@ fn pkl_pop_to_mark(stack: &mut Vec<PklStackItem>) -> PyResult<Vec<PyObjectRef>> 
         match stack.pop() {
             Some(PklStackItem::Mark) => break,
             Some(PklStackItem::Value(v)) => items.push(v),
-            Some(PklStackItem::Global(..)) => {
-                return Err(PyException::runtime_error(
-                    "UnpicklingError: unexpected global on stack",
-                ));
+            Some(PklStackItem::Global(module, name)) => {
+                let value = pkl_resolve_global_value(&module, &name).ok_or_else(|| {
+                    PyException::runtime_error("UnpicklingError: global not found")
+                })?;
+                items.push(value);
             }
             None => {
                 return Err(PyException::runtime_error(
@@ -183,9 +184,22 @@ fn pkl_pop_to_mark(stack: &mut Vec<PklStackItem>) -> PyResult<Vec<PyObjectRef>> 
     Ok(items)
 }
 
+fn pkl_stack_item_value(item: PklStackItem) -> PyResult<PyObjectRef> {
+    match item {
+        PklStackItem::Value(v) => Ok(v),
+        PklStackItem::Global(module, name) => pkl_resolve_global_value(&module, &name)
+            .ok_or_else(|| PyException::runtime_error("UnpicklingError: global not found")),
+        PklStackItem::Mark => Err(PyException::runtime_error(
+            "UnpicklingError: expected value on stack",
+        )),
+    }
+}
+
 fn pkl_stack_top_value(stack: &[PklStackItem]) -> PyResult<PyObjectRef> {
     match stack.last() {
         Some(PklStackItem::Value(v)) => Ok(v.clone()),
+        Some(PklStackItem::Global(module, name)) => pkl_resolve_global_value(module, name)
+            .ok_or_else(|| PyException::runtime_error("UnpicklingError: global not found")),
         _ => Err(PyException::runtime_error(
             "UnpicklingError: expected value on stack top",
         )),
@@ -301,6 +315,31 @@ fn pkl_resolve_global_class(module: &str, name: &str) -> Option<PyObjectRef> {
     if let Some(module_obj) = pkl_resolve_attr_map_name(&globals_r, module) {
         if let Some(cls) = pkl_resolve_dotted_attr(module_obj, name).and_then(pkl_class_candidate) {
             return Some(cls);
+        }
+    }
+
+    None
+}
+
+fn pkl_resolve_global_value(module: &str, name: &str) -> Option<PyObjectRef> {
+    if let Some(module_obj) = pkl_resolve_sys_module(module) {
+        if let Some(value) = pkl_resolve_dotted_attr(module_obj, name) {
+            return Some(value);
+        }
+    }
+
+    let globals = crate::get_current_globals()?;
+    let globals_r = globals.read();
+    let current_module = globals_r.get("__name__").map(|value| value.py_to_string());
+    if module == "__main__" || current_module.as_deref() == Some(module) {
+        if let Some(value) = pkl_resolve_attr_map_name(&globals_r, name) {
+            return Some(value);
+        }
+    }
+
+    if let Some(module_obj) = pkl_resolve_attr_map_name(&globals_r, module) {
+        if let Some(value) = pkl_resolve_dotted_attr(module_obj, name) {
+            return Some(value);
         }
     }
 
@@ -516,6 +555,34 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         active,
                         fillvalue,
                         cached_tuple: None,
+                    }),
+                ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_takewhile__") => {
+                use ferrython_core::object::IteratorData;
+                let func = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let source = arg_list.get(1).cloned().unwrap_or_else(PyObject::none);
+                let done = arg_list
+                    .get(2)
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(false);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::TakeWhile { func, source, done }),
+                ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_dropwhile__") => {
+                use ferrython_core::object::IteratorData;
+                let func = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let source = arg_list.get(1).cloned().unwrap_or_else(PyObject::none);
+                let dropping = arg_list
+                    .get(2)
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(true);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::DropWhile {
+                        func,
+                        source,
+                        dropping,
                     }),
                 ))))
             }
@@ -820,6 +887,11 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     );
                     PyObject::class(CompactString::from(name.as_str()), vec![], class_namespace)
                 });
+                if arg_list.is_empty() {
+                    if let Some(value) = pkl_resolve_global_value(module, name) {
+                        return Ok(value);
+                    }
+                }
                 Ok(PyObject::instance(cls))
             }
         }
