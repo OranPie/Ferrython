@@ -1,9 +1,9 @@
 //! configparser module implementation.
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args_min, make_builtin, make_module, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject,
+    check_args_min, make_module, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject,
     PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
@@ -12,15 +12,47 @@ use std::rc::Rc;
 
 // ── configparser module ──────────────────────────────────────────────
 pub fn create_configparser_module() -> PyObjectRef {
+    let unset = PyObject::instance(PyObject::class(
+        CompactString::from("_UNSET"),
+        vec![],
+        IndexMap::new(),
+    ));
+    let basic_interpolation = PyObject::class(
+        CompactString::from("BasicInterpolation"),
+        vec![],
+        IndexMap::new(),
+    );
+    let extended_interpolation = PyObject::class(
+        CompactString::from("ExtendedInterpolation"),
+        vec![],
+        IndexMap::new(),
+    );
+    let legacy_interpolation = PyObject::class(
+        CompactString::from("LegacyInterpolation"),
+        vec![],
+        IndexMap::new(),
+    );
+
     // Build ConfigParser as a proper Class so subclasses inherit methods via MRO.
     let mut ns = IndexMap::new();
 
     // __init__: set up per-instance state
     ns.insert(
         CompactString::from("__init__"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_closure("ConfigParser.__init__", |args: &[PyObjectRef]| {
             if !args.is_empty() {
                 if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let kwargs = args
+                        .last()
+                        .filter(|arg| matches!(&arg.payload, PyObjectPayload::Dict(_)));
+                    let kw_get = |name: &str| -> Option<PyObjectRef> {
+                        let PyObjectPayload::Dict(d) = &kwargs?.payload else {
+                            return None;
+                        };
+                        d.read()
+                            .get(&HashableKey::str_key(CompactString::from(name)))
+                            .cloned()
+                    };
                     let mut w = inst.attrs.write();
                     w.insert(
                         CompactString::from("__configparser__"),
@@ -34,54 +66,138 @@ pub fn create_configparser_module() -> PyObjectRef {
                         CompactString::from("_defaults"),
                         PyObject::dict(IndexMap::new()),
                     );
+                    w.insert(
+                        CompactString::from("_dict"),
+                        kw_get("dict_type")
+                            .unwrap_or_else(|| PyObject::builtin_type(CompactString::from("dict"))),
+                    );
+                    w.insert(
+                        CompactString::from("default_section"),
+                        kw_get("default_section")
+                            .unwrap_or_else(|| PyObject::str_val(CompactString::from("DEFAULT"))),
+                    );
+                    w.insert(CompactString::from("converters"), default_converters_dict());
+                    if let Some(defaults) = kw_get("defaults") {
+                        if let PyObjectPayload::Dict(src) = &defaults.payload {
+                            let mut defaults_map = IndexMap::new();
+                            for (key, value) in src.read().iter() {
+                                defaults_map.insert(
+                                    HashableKey::str_key(CompactString::from(
+                                        key.to_object().py_to_string().to_lowercase(),
+                                    )),
+                                    value.clone(),
+                                );
+                            }
+                            w.insert(
+                                CompactString::from("_defaults"),
+                                PyObject::dict(defaults_map),
+                            );
+                        }
+                    }
+                    if let Some(converters) = kw_get("converters") {
+                        if let PyObjectPayload::Dict(src) = &converters.payload {
+                            if let Some(PyObjectPayload::Dict(dst)) =
+                                w.get("converters").map(|obj| &obj.payload)
+                            {
+                                for (key, value) in src.read().iter() {
+                                    dst.write().insert(key.clone(), value.clone());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Ok(PyObject::none())
         }),
     );
 
-    ns.insert(CompactString::from("read"), make_builtin(cp_read));
+    ns.insert(
+        CompactString::from("read"),
+        PyObject::native_function("ConfigParser.read", cp_read),
+    );
     ns.insert(
         CompactString::from("read_string"),
-        make_builtin(cp_read_string),
+        PyObject::native_function("ConfigParser.read_string", cp_read_string),
     );
-    ns.insert(CompactString::from("get"), make_builtin(cp_get));
-    ns.insert(CompactString::from("getint"), make_builtin(cp_getint));
-    ns.insert(CompactString::from("getfloat"), make_builtin(cp_getfloat));
+    ns.insert(
+        CompactString::from("get"),
+        PyObject::native_function("ConfigParser.get", cp_get),
+    );
+    ns.insert(
+        CompactString::from("getint"),
+        PyObject::native_function("ConfigParser.getint", cp_getint),
+    );
+    ns.insert(
+        CompactString::from("getfloat"),
+        PyObject::native_function("ConfigParser.getfloat", cp_getfloat),
+    );
     ns.insert(
         CompactString::from("getboolean"),
-        make_builtin(cp_getboolean),
+        PyObject::native_function("ConfigParser.getboolean", cp_getboolean),
     );
-    ns.insert(CompactString::from("sections"), make_builtin(cp_sections));
+    ns.insert(
+        CompactString::from("sections"),
+        PyObject::native_function("ConfigParser.sections", cp_sections),
+    );
     ns.insert(
         CompactString::from("has_section"),
-        make_builtin(cp_has_section),
+        PyObject::native_function("ConfigParser.has_section", cp_has_section),
     );
     ns.insert(
         CompactString::from("has_option"),
-        make_builtin(cp_has_option),
+        PyObject::native_function("ConfigParser.has_option", cp_has_option),
     );
-    ns.insert(CompactString::from("options"), make_builtin(cp_options));
-    ns.insert(CompactString::from("items"), make_builtin(cp_items));
-    ns.insert(CompactString::from("set"), make_builtin(cp_set));
+    ns.insert(
+        CompactString::from("options"),
+        PyObject::native_function("ConfigParser.options", cp_options),
+    );
+    ns.insert(
+        CompactString::from("items"),
+        PyObject::native_function("ConfigParser.items", cp_items),
+    );
+    ns.insert(
+        CompactString::from("defaults"),
+        PyObject::native_function("ConfigParser.defaults", cp_defaults),
+    );
+    ns.insert(
+        CompactString::from("set"),
+        PyObject::native_function("ConfigParser.set", cp_set),
+    );
     ns.insert(
         CompactString::from("add_section"),
-        make_builtin(cp_add_section),
+        PyObject::native_function("ConfigParser.add_section", cp_add_section),
     );
     ns.insert(
         CompactString::from("remove_section"),
-        make_builtin(cp_remove_section),
+        PyObject::native_function("ConfigParser.remove_section", cp_remove_section),
     );
     ns.insert(
         CompactString::from("remove_option"),
-        make_builtin(cp_remove_option),
+        PyObject::native_function("ConfigParser.remove_option", cp_remove_option),
     );
-    ns.insert(CompactString::from("write"), make_builtin(cp_write));
-    ns.insert(CompactString::from("__getitem__"), make_builtin(cp_getitem));
-    ns.insert(CompactString::from("__setitem__"), make_builtin(cp_setitem));
+    ns.insert(
+        CompactString::from("write"),
+        PyObject::native_function("ConfigParser.write", cp_write),
+    );
+    ns.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_function("ConfigParser.__getitem__", cp_getitem),
+    );
+    ns.insert(
+        CompactString::from("__setitem__"),
+        PyObject::native_function("ConfigParser.__setitem__", cp_setitem),
+    );
     ns.insert(
         CompactString::from("__contains__"),
-        make_builtin(cp_contains),
+        PyObject::native_function("ConfigParser.__contains__", cp_contains),
+    );
+    ns.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_function("ConfigParser.__iter__", cp_iter),
+    );
+    ns.insert(
+        CompactString::from("__len__"),
+        PyObject::native_function("ConfigParser.__len__", cp_len),
     );
 
     let configparser_class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
@@ -496,7 +612,34 @@ pub fn create_configparser_module() -> PyObjectRef {
 
     fn cp_items(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
-            return Ok(PyObject::list(vec![]));
+            let mut items = Vec::new();
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let default_section = inst
+                    .attrs
+                    .read()
+                    .get("default_section")
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_else(|| "DEFAULT".to_string());
+                items.push(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(default_section)),
+                    cp_getitem(&[
+                        args[0].clone(),
+                        PyObject::str_val(CompactString::from("DEFAULT")),
+                    ])?,
+                ]));
+            }
+            if let Some(secs) = get_sections(&args[0]) {
+                for key in secs.read().keys() {
+                    if let HashableKey::Str(section) = key {
+                        let section_obj = PyObject::str_val(section.to_compact_string());
+                        items.push(PyObject::tuple(vec![
+                            section_obj.clone(),
+                            cp_getitem(&[args[0].clone(), section_obj])?,
+                        ]));
+                    }
+                }
+            }
+            return Ok(PyObject::list(items));
         }
         let section = CompactString::from(args[1].py_to_string());
         if let Some(secs) = get_sections(&args[0]) {
@@ -520,6 +663,18 @@ pub fn create_configparser_module() -> PyObjectRef {
             }
         }
         Ok(PyObject::list(vec![]))
+    }
+
+    fn cp_defaults(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Ok(PyObject::dict(IndexMap::new()));
+        }
+        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            if let Some(defaults) = inst.attrs.read().get("_defaults") {
+                return Ok(defaults.clone());
+            }
+        }
+        Ok(PyObject::dict(IndexMap::new()))
     }
 
     fn cp_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -710,6 +865,37 @@ pub fn create_configparser_module() -> PyObjectRef {
         Ok(PyObject::bool_val(false))
     }
 
+    fn cp_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Ok(PyObject::list(vec![]));
+        }
+        let mut keys = Vec::new();
+        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            let default_section = inst
+                .attrs
+                .read()
+                .get("default_section")
+                .map(|v| v.py_to_string())
+                .unwrap_or_else(|| "DEFAULT".to_string());
+            keys.push(PyObject::str_val(CompactString::from(default_section)));
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            for key in secs.read().keys() {
+                if let HashableKey::Str(section) = key {
+                    keys.push(PyObject::str_val(section.to_compact_string()));
+                }
+            }
+        }
+        Ok(PyObject::list(keys))
+    }
+
+    fn cp_len(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let section_count = get_sections(&args[0])
+            .map(|sections| sections.read().len())
+            .unwrap_or(0);
+        Ok(PyObject::int(section_count as i64 + 1))
+    }
+
     // remove_section
     fn cp_remove_section(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         check_args_min("remove_section", args, 2)?;
@@ -817,6 +1003,126 @@ pub fn create_configparser_module() -> PyObjectRef {
             ("ConfigParser", configparser_class.clone()),
             ("RawConfigParser", configparser_class.clone()),
             ("SafeConfigParser", configparser_class),
+            (
+                "DEFAULTSECT",
+                PyObject::str_val(CompactString::from("DEFAULT")),
+            ),
+            ("MAX_INTERPOLATION_DEPTH", PyObject::int(10)),
+            ("_UNSET", unset),
+            (
+                "_default_dict",
+                PyObject::builtin_type(CompactString::from("dict")),
+            ),
+            ("BasicInterpolation", basic_interpolation),
+            ("ExtendedInterpolation", extended_interpolation),
+            ("LegacyInterpolation", legacy_interpolation),
+            (
+                "Interpolation",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            ("Error", PyObject::exception_type(ExceptionKind::Exception)),
+            (
+                "NoSectionError",
+                PyObject::exception_type(ExceptionKind::KeyError),
+            ),
+            (
+                "NoOptionError",
+                PyObject::exception_type(ExceptionKind::KeyError),
+            ),
+            (
+                "DuplicateSectionError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "DuplicateOptionError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "ParsingError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "MissingSectionHeaderError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "InterpolationError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "InterpolationMissingOptionError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "InterpolationSyntaxError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            (
+                "InterpolationDepthError",
+                PyObject::exception_type(ExceptionKind::ValueError),
+            ),
+            ("BOOLEAN_STATES", boolean_states_dict()),
+            ("__all__", configparser_all()),
         ],
+    )
+}
+
+fn default_converters_dict() -> PyObjectRef {
+    let mut map = IndexMap::new();
+    for name in ["boolean", "float", "int"] {
+        map.insert(
+            HashableKey::str_key(CompactString::from(name)),
+            PyObject::none(),
+        );
+    }
+    PyObject::dict(map)
+}
+
+fn boolean_states_dict() -> PyObjectRef {
+    let mut map = IndexMap::new();
+    for (name, value) in [
+        ("1", true),
+        ("yes", true),
+        ("true", true),
+        ("on", true),
+        ("0", false),
+        ("no", false),
+        ("false", false),
+        ("off", false),
+    ] {
+        map.insert(
+            HashableKey::str_key(CompactString::from(name)),
+            PyObject::bool_val(value),
+        );
+    }
+    PyObject::dict(map)
+}
+
+fn configparser_all() -> PyObjectRef {
+    PyObject::list(
+        [
+            "Error",
+            "NoSectionError",
+            "DuplicateSectionError",
+            "DuplicateOptionError",
+            "NoOptionError",
+            "InterpolationError",
+            "InterpolationDepthError",
+            "InterpolationMissingOptionError",
+            "InterpolationSyntaxError",
+            "ParsingError",
+            "MissingSectionHeaderError",
+            "ConfigParser",
+            "SafeConfigParser",
+            "RawConfigParser",
+            "DEFAULTSECT",
+            "MAX_INTERPOLATION_DEPTH",
+            "BasicInterpolation",
+            "ExtendedInterpolation",
+            "LegacyInterpolation",
+        ]
+        .into_iter()
+        .map(|name| PyObject::str_val(CompactString::from(name)))
+        .collect(),
     )
 }

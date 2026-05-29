@@ -3,8 +3,10 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use num_bigint::{BigInt, Sign};
+use num_traits::{ToPrimitive, Zero};
 use std::cell::RefCell;
 
 // ── random module ──
@@ -13,6 +15,22 @@ pub fn create_random_module() -> PyObjectRef {
     make_module(
         "random",
         vec![
+            ("__all__", random_all()),
+            ("BPF", PyObject::int(53)),
+            ("RECIP_BPF", PyObject::float(2.0f64.powi(-53))),
+            ("NV_MAGICCONST", PyObject::float(1.715_527_769_921_413_5)),
+            ("TWOPI", PyObject::float(std::f64::consts::TAU)),
+            ("LOG4", PyObject::float(4.0f64.ln())),
+            ("SG_MAGICCONST", PyObject::float(2.504_077_396_776_274)),
+            ("_e", PyObject::float(std::f64::consts::E)),
+            ("_pi", PyObject::float(std::f64::consts::PI)),
+            ("_sqrt", make_builtin(random_math_sqrt)),
+            ("_acos", make_builtin(random_math_acos)),
+            ("_cos", make_builtin(random_math_cos)),
+            ("_sin", make_builtin(random_math_sin)),
+            ("_exp", make_builtin(random_math_exp)),
+            ("_log", make_builtin(random_math_log)),
+            ("_urandom", make_builtin(random_urandom)),
             ("random", make_builtin(random_random)),
             ("randint", make_builtin(random_randint)),
             ("choice", make_builtin(random_choice)),
@@ -21,237 +39,32 @@ pub fn create_random_module() -> PyObjectRef {
             ("randrange", make_builtin(random_randrange)),
             (
                 "uniform",
-                make_builtin(|args| {
-                    check_args("random.uniform", args, 2)?;
-                    let a = args[0].to_float()?;
-                    let b = args[1].to_float()?;
-                    Ok(PyObject::float(a + simple_random() * (b - a)))
-                }),
+                make_builtin(|args| random_uniform_impl("random.uniform", args)),
             ),
             (
                 "sample",
-                make_builtin(|args| {
-                    check_args("random.sample", args, 2)?;
-                    let items = args[0].to_list()?;
-                    let k = args[1].to_int()? as usize;
-                    if k > items.len() {
-                        return Err(PyException::value_error("Sample larger than population"));
-                    }
-                    let mut result = Vec::with_capacity(k);
-                    let mut pool = items.clone();
-                    for _ in 0..k {
-                        let idx = (simple_random() * pool.len() as f64) as usize;
-                        let idx = idx.min(pool.len() - 1);
-                        result.push(pool.remove(idx));
-                    }
-                    Ok(PyObject::list(result))
-                }),
+                make_builtin(|args| random_sample_impl("random.sample", args)),
             ),
             (
                 "choices",
-                make_builtin(|args| {
-                    if args.is_empty() {
-                        return Err(PyException::type_error(
-                            "random.choices requires at least 1 argument",
-                        ));
-                    }
-                    let items = args[0].to_list()?;
-                    let mut k = 1usize;
-                    let mut weights: Option<Vec<f64>> = None;
-                    for arg in args.iter().skip(1) {
-                        if let PyObjectPayload::Dict(d) = &arg.payload {
-                            let d = d.read();
-                            if let Some(kv) = d.get(&HashableKey::str_key(CompactString::from("k")))
-                            {
-                                k = kv.to_int()? as usize;
-                            }
-                            if let Some(wv) =
-                                d.get(&HashableKey::str_key(CompactString::from("weights")))
-                            {
-                                let wl = wv.to_list()?;
-                                weights =
-                                    Some(wl.iter().map(|w| w.to_float().unwrap_or(1.0)).collect());
-                            }
-                            if let Some(cwv) =
-                                d.get(&HashableKey::str_key(CompactString::from("cum_weights")))
-                            {
-                                let cwl = cwv.to_list()?;
-                                let cw: Vec<f64> =
-                                    cwl.iter().map(|w| w.to_float().unwrap_or(0.0)).collect();
-                                // Convert cumulative weights back to regular weights
-                                let mut w = Vec::with_capacity(cw.len());
-                                for i in 0..cw.len() {
-                                    w.push(if i == 0 { cw[0] } else { cw[i] - cw[i - 1] });
-                                }
-                                weights = Some(w);
-                            }
-                        }
-                    }
-                    if items.is_empty() {
-                        return Err(PyException::value_error(
-                            "Cannot choose from an empty population",
-                        ));
-                    }
-                    let mut result = Vec::with_capacity(k);
-                    if let Some(ref w) = weights {
-                        let total: f64 = w.iter().sum();
-                        for _ in 0..k {
-                            let mut r = simple_random() * total;
-                            let mut chosen = items.len() - 1;
-                            for (i, &weight) in w.iter().enumerate() {
-                                r -= weight;
-                                if r <= 0.0 {
-                                    chosen = i;
-                                    break;
-                                }
-                            }
-                            result.push(items[chosen.min(items.len() - 1)].clone());
-                        }
-                    } else {
-                        for _ in 0..k {
-                            let idx = (simple_random() * items.len() as f64) as usize;
-                            result.push(items[idx.min(items.len() - 1)].clone());
-                        }
-                    }
-                    Ok(PyObject::list(result))
-                }),
+                make_builtin(|args| random_choices_impl("random.choices", args)),
             ),
-            (
-                "gauss",
-                make_builtin(|args| {
-                    let mu = if !args.is_empty() {
-                        args[0].to_float()?
-                    } else {
-                        0.0
-                    };
-                    let sigma = if args.len() > 1 {
-                        args[1].to_float()?
-                    } else {
-                        1.0
-                    };
-                    // Box-Muller transform
-                    let u1 = simple_random().max(1e-10);
-                    let u2 = simple_random();
-                    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-                    Ok(PyObject::float(mu + sigma * z))
-                }),
-            ),
+            ("gauss", make_builtin(|args| random_gauss_impl(args))),
             (
                 "normalvariate",
-                make_builtin(|args| {
-                    let mu = if !args.is_empty() {
-                        args[0].to_float()?
-                    } else {
-                        0.0
-                    };
-                    let sigma = if args.len() > 1 {
-                        args[1].to_float()?
-                    } else {
-                        1.0
-                    };
-                    let u1 = simple_random().max(1e-10);
-                    let u2 = simple_random();
-                    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-                    Ok(PyObject::float(mu + sigma * z))
-                }),
+                make_builtin(|args| random_normalvariate_impl(args)),
             ),
             (
                 "expovariate",
-                make_builtin(|args| {
-                    check_args("random.expovariate", args, 1)?;
-                    let lambd = args[0].to_float()?;
-                    if lambd == 0.0 {
-                        return Err(PyException::value_error("expovariate: lambd must not be 0"));
-                    }
-                    let u = simple_random().max(1e-10);
-                    Ok(PyObject::float(-u.ln() / lambd))
-                }),
+                make_builtin(|args| random_expovariate_impl(args)),
             ),
             (
                 "triangular",
-                make_builtin(|args| {
-                    let low = if !args.is_empty() {
-                        args[0].to_float()?
-                    } else {
-                        0.0
-                    };
-                    let high = if args.len() > 1 {
-                        args[1].to_float()?
-                    } else {
-                        1.0
-                    };
-                    let mode = if args.len() > 2 {
-                        args[2].to_float()?
-                    } else {
-                        (low + high) / 2.0
-                    };
-                    let u = simple_random();
-                    let c = (mode - low) / (high - low);
-                    if u < c {
-                        Ok(PyObject::float(
-                            low + (u * (high - low) * (mode - low)).sqrt(),
-                        ))
-                    } else {
-                        Ok(PyObject::float(
-                            high - ((1.0 - u) * (high - low) * (high - mode)).sqrt(),
-                        ))
-                    }
-                }),
+                make_builtin(|args| random_triangular_impl(args)),
             ),
-            (
-                "getrandbits",
-                make_builtin(|args| {
-                    check_args("random.getrandbits", args, 1)?;
-                    let k = args[0].to_int()? as u32;
-                    if k == 0 {
-                        return Ok(PyObject::int(0));
-                    }
-                    let mut result: i64 = 0;
-                    for _ in 0..k.min(62) {
-                        result = (result << 1) | (if simple_random() < 0.5 { 1 } else { 0 });
-                    }
-                    Ok(PyObject::int(result))
-                }),
-            ),
-            (
-                "getstate",
-                make_builtin(|_| {
-                    RNG.with(|rng| {
-                        let r = rng.borrow();
-                        Ok(PyObject::tuple(vec![
-                            PyObject::int(r.s[0] as i64),
-                            PyObject::int(r.s[1] as i64),
-                            PyObject::int(r.s[2] as i64),
-                            PyObject::int(r.s[3] as i64),
-                        ]))
-                    })
-                }),
-            ),
-            (
-                "setstate",
-                make_builtin(|args| {
-                    if args.is_empty() {
-                        return Err(PyException::type_error("setstate() requires 1 argument"));
-                    }
-                    let state = &args[0];
-                    if let PyObjectPayload::Tuple(items) = &state.payload {
-                        if items.len() >= 4 {
-                            let s0 = items[0].to_int()? as u64;
-                            let s1 = items[1].to_int()? as u64;
-                            let s2 = items[2].to_int()? as u64;
-                            let s3 = items[3].to_int()? as u64;
-                            RNG.with(|rng| {
-                                let mut r = rng.borrow_mut();
-                                r.s = [s0, s1, s2, s3];
-                            });
-                            return Ok(PyObject::none());
-                        }
-                    }
-                    Err(PyException::type_error(
-                        "state must be a 4-tuple of integers",
-                    ))
-                }),
-            ),
+            ("getrandbits", make_builtin(random_getrandbits)),
+            ("getstate", make_builtin(random_getstate)),
+            ("setstate", make_builtin(random_setstate)),
             (
                 "Random",
                 make_builtin(|_args| {
@@ -267,72 +80,43 @@ pub fn create_random_module() -> PyObjectRef {
                     );
                     attrs.insert(
                         CompactString::from("uniform"),
-                        make_builtin(|args| {
-                            check_args("Random.uniform", args, 2)?;
-                            let a = args[0].to_float()?;
-                            let b = args[1].to_float()?;
-                            Ok(PyObject::float(a + simple_random() * (b - a)))
-                        }),
+                        make_builtin(|args| random_uniform_impl("Random.uniform", args)),
                     );
                     attrs.insert(
                         CompactString::from("sample"),
-                        make_builtin(|args| {
-                            check_args("Random.sample", args, 2)?;
-                            let items = args[0].to_list()?;
-                            let k = args[1].to_int()? as usize;
-                            if k > items.len() {
-                                return Err(PyException::value_error(
-                                    "Sample larger than population",
-                                ));
-                            }
-                            let mut result = Vec::with_capacity(k);
-                            let mut pool = items.clone();
-                            for _ in 0..k {
-                                let idx = (simple_random() * pool.len() as f64) as usize;
-                                let idx = idx.min(pool.len() - 1);
-                                result.push(pool.remove(idx));
-                            }
-                            Ok(PyObject::list(result))
-                        }),
+                        make_builtin(|args| random_sample_impl("Random.sample", args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("choices"),
+                        make_builtin(|args| random_choices_impl("Random.choices", args)),
                     );
                     attrs.insert(
                         CompactString::from("gauss"),
-                        make_builtin(|args| {
-                            check_args("Random.gauss", args, 2)?;
-                            let mu = args[0].to_float()?;
-                            let sigma = args[1].to_float()?;
-                            let u1 = simple_random();
-                            let u2 = simple_random();
-                            let z =
-                                (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-                            Ok(PyObject::float(mu + sigma * z))
-                        }),
+                        make_builtin(|args| random_gauss_impl(args)),
                     );
                     attrs.insert(
                         CompactString::from("getrandbits"),
-                        make_builtin(|args| {
-                            check_args("Random.getrandbits", args, 1)?;
-                            let k = args[0].to_int()?;
-                            if k <= 0 {
-                                return Err(PyException::value_error(
-                                    "number of bits must be greater than zero",
-                                ));
-                            }
-                            let val = if k <= 64 {
-                                (simple_random() * (1u64 << k.min(63)) as f64) as i64
-                            } else {
-                                (simple_random() * i64::MAX as f64) as i64
-                            };
-                            Ok(PyObject::int(val))
-                        }),
+                        make_builtin(random_getrandbits),
                     );
                     attrs.insert(
                         CompactString::from("getstate"),
-                        make_builtin(|_| Ok(PyObject::tuple(vec![]))),
+                        make_builtin(|args| random_getstate(args)),
                     );
                     attrs.insert(
                         CompactString::from("setstate"),
-                        make_builtin(|_| Ok(PyObject::none())),
+                        make_builtin(|args| random_setstate(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("normalvariate"),
+                        make_builtin(|args| random_normalvariate_impl(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("expovariate"),
+                        make_builtin(|args| random_expovariate_impl(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("triangular"),
+                        make_builtin(|args| random_triangular_impl(args)),
                     );
                     Ok(PyObject::module_with_attrs(
                         CompactString::from("Random"),
@@ -347,17 +131,58 @@ pub fn create_random_module() -> PyObjectRef {
                     attrs.insert(CompactString::from("random"), make_builtin(random_random));
                     attrs.insert(CompactString::from("randint"), make_builtin(random_randint));
                     attrs.insert(CompactString::from("choice"), make_builtin(random_choice));
+                    attrs.insert(CompactString::from("shuffle"), make_builtin(random_shuffle));
+                    attrs.insert(CompactString::from("seed"), make_builtin(random_seed));
                     attrs.insert(
                         CompactString::from("randrange"),
                         make_builtin(random_randrange),
                     );
                     attrs.insert(
+                        CompactString::from("sample"),
+                        make_builtin(|args| random_sample_impl("SystemRandom.sample", args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("choices"),
+                        make_builtin(|args| random_choices_impl("SystemRandom.choices", args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("uniform"),
+                        make_builtin(|args| random_uniform_impl("SystemRandom.uniform", args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("gauss"),
+                        make_builtin(|args| random_gauss_impl(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("normalvariate"),
+                        make_builtin(|args| random_normalvariate_impl(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("expovariate"),
+                        make_builtin(|args| random_expovariate_impl(args)),
+                    );
+                    attrs.insert(
+                        CompactString::from("triangular"),
+                        make_builtin(|args| random_triangular_impl(args)),
+                    );
+                    attrs.insert(
                         CompactString::from("getrandbits"),
-                        make_builtin(|args| {
-                            check_args("SystemRandom.getrandbits", args, 1)?;
-                            let k = args[0].to_int()?;
-                            let val = (simple_random() * (1u64 << k.min(63)) as f64) as i64;
-                            Ok(PyObject::int(val))
+                        make_builtin(random_getrandbits),
+                    );
+                    attrs.insert(
+                        CompactString::from("getstate"),
+                        make_builtin(|_| {
+                            Err(PyException::not_implemented_error(
+                                "System entropy source does not have state",
+                            ))
+                        }),
+                    );
+                    attrs.insert(
+                        CompactString::from("setstate"),
+                        make_builtin(|_| {
+                            Err(PyException::not_implemented_error(
+                                "System entropy source does not have state",
+                            ))
                         }),
                     );
                     Ok(PyObject::module_with_attrs(
@@ -421,6 +246,379 @@ thread_local! {
 
 fn simple_random() -> f64 {
     RNG.with(|rng| rng.borrow_mut().next_f64())
+}
+
+fn random_all() -> PyObjectRef {
+    PyObject::list(
+        [
+            "Random",
+            "SystemRandom",
+            "random",
+            "seed",
+            "getstate",
+            "setstate",
+            "getrandbits",
+            "randrange",
+            "randint",
+            "choice",
+            "choices",
+            "shuffle",
+            "sample",
+            "uniform",
+            "triangular",
+            "normalvariate",
+            "gauss",
+            "expovariate",
+            "vonmisesvariate",
+            "gammavariate",
+            "betavariate",
+            "paretovariate",
+            "weibullvariate",
+            "lognormvariate",
+        ]
+        .into_iter()
+        .map(|name| PyObject::str_val(CompactString::from(name)))
+        .collect(),
+    )
+}
+
+fn random_math_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._sqrt", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.sqrt()))
+}
+
+fn random_math_acos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._acos", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.acos()))
+}
+
+fn random_math_cos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._cos", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.cos()))
+}
+
+fn random_math_sin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._sin", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.sin()))
+}
+
+fn random_math_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._exp", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.exp()))
+}
+
+fn random_math_log(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(PyException::type_error("log expected 1 or 2 arguments"));
+    }
+    let value = args[0].to_float()?;
+    if args.len() == 2 {
+        return Ok(PyObject::float(value.log(args[1].to_float()?)));
+    }
+    Ok(PyObject::float(value.ln()))
+}
+
+fn random_urandom(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random._urandom", args, 1)?;
+    let n = args[0].to_int()?;
+    if n < 0 {
+        return Err(PyException::value_error("negative argument not allowed"));
+    }
+    let mut bytes = Vec::with_capacity(n as usize);
+    RNG.with(|rng| {
+        let mut r = rng.borrow_mut();
+        while bytes.len() < n as usize {
+            bytes.extend_from_slice(&r.next_u64().to_le_bytes());
+        }
+    });
+    bytes.truncate(n as usize);
+    Ok(PyObject::bytes(bytes))
+}
+
+fn random_uniform_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args(name, args, 2)?;
+    let a = args[0].to_float()?;
+    let b = args[1].to_float()?;
+    Ok(PyObject::float(a + simple_random() * (b - a)))
+}
+
+fn random_gauss_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let mu = if !args.is_empty() {
+        args[0].to_float()?
+    } else {
+        0.0
+    };
+    let sigma = if args.len() > 1 {
+        args[1].to_float()?
+    } else {
+        1.0
+    };
+    let u1 = simple_random().max(1e-10);
+    let u2 = simple_random();
+    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+    Ok(PyObject::float(mu + sigma * z))
+}
+
+fn random_normalvariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    random_gauss_impl(args)
+}
+
+fn random_expovariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.expovariate", args, 1)?;
+    let lambd = args[0].to_float()?;
+    if lambd == 0.0 {
+        return Err(PyException::value_error("expovariate: lambd must not be 0"));
+    }
+    let u = simple_random().max(1e-10);
+    Ok(PyObject::float(-u.ln() / lambd))
+}
+
+fn random_triangular_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let low = if !args.is_empty() {
+        args[0].to_float()?
+    } else {
+        0.0
+    };
+    let high = if args.len() > 1 {
+        args[1].to_float()?
+    } else {
+        1.0
+    };
+    if low == high {
+        return Ok(PyObject::float(low));
+    }
+    let mode = if args.len() > 2 {
+        args[2].to_float()?
+    } else {
+        (low + high) / 2.0
+    };
+    let u = simple_random();
+    let c = (mode - low) / (high - low);
+    if u < c {
+        Ok(PyObject::float(
+            low + (u * (high - low) * (mode - low)).sqrt(),
+        ))
+    } else {
+        Ok(PyObject::float(
+            high - ((1.0 - u) * (high - low) * (high - mode)).sqrt(),
+        ))
+    }
+}
+
+fn kwargs_get<'a>(args: &'a [PyObjectRef], name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Dict(d) = &args.last()?.payload else {
+        return None;
+    };
+    d.read()
+        .get(&HashableKey::str_key(CompactString::from(name)))
+        .cloned()
+}
+
+fn visible_sequence(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+    if matches!(&obj.payload, PyObjectPayload::Dict(_)) {
+        return Err(PyException::type_error("Population must be a sequence"));
+    }
+    obj.to_list()
+}
+
+fn random_sample_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args(name, args, 2)?;
+    if matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
+        return Err(PyException::type_error("Population must be a sequence"));
+    }
+    let k = args[1].to_int()?;
+    if k < 0 {
+        return Err(PyException::value_error("Sample larger than population"));
+    }
+    let k = k as usize;
+    let mut pool = args[0].to_list()?;
+    if k > pool.len() {
+        return Err(PyException::value_error("Sample larger than population"));
+    }
+    let mut result = Vec::with_capacity(k);
+    for _ in 0..k {
+        let idx = (simple_random() * pool.len() as f64) as usize;
+        let idx = idx.min(pool.len().saturating_sub(1));
+        result.push(pool.remove(idx));
+    }
+    Ok(PyObject::list(result))
+}
+
+fn positional_or_kw_population(args: &[PyObjectRef]) -> Option<PyObjectRef> {
+    args.first()
+        .filter(|arg| !matches!(&arg.payload, PyObjectPayload::Dict(_)))
+        .cloned()
+        .or_else(|| kwargs_get(args, "population"))
+}
+
+fn weights_arg(args: &[PyObjectRef]) -> Option<PyObjectRef> {
+    args.iter()
+        .skip(1)
+        .find(|arg| !matches!(&arg.payload, PyObjectPayload::Dict(_)))
+        .cloned()
+        .or_else(|| kwargs_get(args, "weights"))
+}
+
+fn random_choices_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let population = positional_or_kw_population(args)
+        .ok_or_else(|| PyException::type_error(format!("{name} requires population")))?;
+    let items = visible_sequence(&population)?;
+    if items.is_empty() {
+        return Err(PyException::index_error(
+            "Cannot choose from an empty population",
+        ));
+    }
+    let k = kwargs_get(args, "k")
+        .map(|value| value.to_int())
+        .transpose()?
+        .unwrap_or(1);
+    if k <= 0 {
+        return Ok(PyObject::list(vec![]));
+    }
+    let cum_weights = kwargs_get(args, "cum_weights");
+    let weights = weights_arg(args);
+    if cum_weights.is_some() && weights.is_some() {
+        return Err(PyException::type_error(
+            "Cannot specify both weights and cumulative weights",
+        ));
+    }
+    let mut cumulative: Option<Vec<f64>> = None;
+    if let Some(weight_obj) = weights {
+        if !matches!(&weight_obj.payload, PyObjectPayload::None) {
+            let values = weight_obj.to_list()?;
+            if values.len() != items.len() {
+                return Err(PyException::value_error(
+                    "The number of weights does not match the population",
+                ));
+            }
+            let mut running = 0.0;
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                running += value.to_float()?;
+                out.push(running);
+            }
+            cumulative = Some(out);
+        }
+    }
+    if let Some(cum_obj) = cum_weights {
+        let values = cum_obj.to_list()?;
+        if values.len() != items.len() {
+            return Err(PyException::value_error(
+                "The number of weights does not match the population",
+            ));
+        }
+        cumulative = Some(
+            values
+                .iter()
+                .map(PyObjectMethods::to_float)
+                .collect::<PyResult<Vec<_>>>()?,
+        );
+    }
+    let mut result = Vec::with_capacity(k as usize);
+    if let Some(cumulative) = cumulative {
+        let total = *cumulative.last().unwrap_or(&0.0);
+        if total <= 0.0 || !total.is_finite() {
+            return Err(PyException::value_error("Total of weights must be finite"));
+        }
+        for _ in 0..k {
+            let needle = simple_random() * total;
+            let idx = cumulative
+                .iter()
+                .position(|weight| needle < *weight)
+                .unwrap_or_else(|| cumulative.len().saturating_sub(1));
+            result.push(items[idx.min(items.len() - 1)].clone());
+        }
+    } else {
+        for _ in 0..k {
+            let idx = (simple_random() * items.len() as f64) as usize;
+            result.push(items[idx.min(items.len() - 1)].clone());
+        }
+    }
+    Ok(PyObject::list(result))
+}
+
+fn random_getstate(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    RNG.with(|rng| {
+        let r = rng.borrow();
+        Ok(PyObject::tuple(vec![
+            PyObject::big_int(BigInt::from(r.s[0])),
+            PyObject::big_int(BigInt::from(r.s[1])),
+            PyObject::big_int(BigInt::from(r.s[2])),
+            PyObject::big_int(BigInt::from(r.s[3])),
+        ]))
+    })
+}
+
+fn random_setstate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("setstate() requires 1 argument"));
+    }
+    let PyObjectPayload::Tuple(items) = &args[0].payload else {
+        return Err(PyException::type_error(
+            "state must be a 4-tuple of integers",
+        ));
+    };
+    if items.len() < 4 {
+        return Err(PyException::type_error(
+            "state must be a 4-tuple of integers",
+        ));
+    }
+    let s0 = random_state_word(&items[0])?;
+    let s1 = random_state_word(&items[1])?;
+    let s2 = random_state_word(&items[2])?;
+    let s3 = random_state_word(&items[3])?;
+    RNG.with(|rng| {
+        let mut r = rng.borrow_mut();
+        r.s = [s0, s1, s2, s3];
+    });
+    Ok(PyObject::none())
+}
+
+fn random_state_word(obj: &PyObjectRef) -> PyResult<u64> {
+    match &obj.payload {
+        PyObjectPayload::Int(PyInt::Small(value)) => Ok(*value as u64),
+        PyObjectPayload::Int(PyInt::Big(value)) => value
+            .to_u64()
+            .or_else(|| value.to_i64().map(|v| v as u64))
+            .ok_or_else(|| PyException::overflow_error("int too large")),
+        PyObjectPayload::Bool(value) => Ok(u64::from(*value)),
+        _ => Ok(obj.to_int()? as u64),
+    }
+}
+
+fn random_getrandbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.getrandbits", args, 1)?;
+    let k = args[0].to_int()?;
+    if k < 0 {
+        return Err(PyException::value_error(
+            "number of bits must be greater than zero",
+        ));
+    }
+    if k == 0 {
+        return Ok(PyObject::int(0));
+    }
+    let mut value = BigInt::zero();
+    let mut remaining = k as usize;
+    RNG.with(|rng| {
+        let mut r = rng.borrow_mut();
+        while remaining > 0 {
+            let take = remaining.min(64);
+            let mut chunk = r.next_u64();
+            if take < 64 {
+                chunk &= (1u64 << take) - 1;
+            }
+            value = (value.clone() << take) | BigInt::from(chunk);
+            remaining -= take;
+        }
+    });
+    if value.sign() == Sign::NoSign {
+        return Ok(PyObject::int(0));
+    }
+    if let Some(v) = value.to_i64() {
+        Ok(PyObject::int(v))
+    } else {
+        Ok(PyObject::big_int(value))
+    }
 }
 
 fn random_random(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
