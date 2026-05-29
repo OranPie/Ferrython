@@ -1,6 +1,8 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::{
+    lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
@@ -44,6 +46,61 @@ fn pickle_serialize_operator_reduce_p2(
     pickle_serialize_p2(&PyObject::tuple(args.to_vec()), buf, memo)?;
     buf.push(b'R');
     Ok(())
+}
+
+fn instance_state_dict(data_pairs: &[(CompactString, PyObjectRef)]) -> PyObjectRef {
+    let mut pairs = Vec::with_capacity(data_pairs.len());
+    for (key, value) in data_pairs {
+        pairs.push((PyObject::str_val(key.clone()), value.clone()));
+    }
+    PyObject::dict_from_pairs(pairs)
+}
+
+fn class_override_method(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    let method = lookup_in_class_mro(&inst.class, name)?;
+    Some(PyObjectRef::new(PyObject {
+        payload: PyObjectPayload::BoundMethod {
+            receiver: obj.clone(),
+            method,
+        },
+    }))
+}
+
+fn deque_pickle_items(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+    if let Some(method) = class_override_method(obj, "__iter__") {
+        let iter = ferrython_core::object::call_callable(&method, &[])?;
+        if iter.get_attr("__next__").is_none() {
+            return Err(PyException::type_error(format!(
+                "iter() returned non-iterator of type '{}'",
+                iter.type_name()
+            )));
+        }
+        let mut items = Vec::new();
+        loop {
+            let next = iter.get_attr("__next__").ok_or_else(|| {
+                PyException::type_error(format!("'{}' object is not an iterator", iter.type_name()))
+            })?;
+            match ferrython_core::object::call_callable(&next, &[]) {
+                Ok(value) => items.push(value),
+                Err(err) if err.kind == ExceptionKind::StopIteration => break,
+                Err(err) => return Err(err),
+            }
+        }
+        return Ok(items);
+    }
+
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return Ok(vec![]);
+    };
+    let data = inst.attrs.read().get("_data").cloned();
+    if let Some(data) = data {
+        data.to_list()
+    } else {
+        Ok(vec![])
+    }
 }
 
 pub(super) fn pickle_serialize_p0(
@@ -145,26 +202,16 @@ pub(super) fn pickle_serialize_p0(
                 return Ok(());
             }
             let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
-            // Serialize as dict via GLOBAL + REDUCE pattern:
-            // cmodule\nClassName\n( {state_dict} tR
             buf.push(b'c');
             buf.extend_from_slice(module_name.as_bytes());
             buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
-            buf.push(b'(');
-            // Build state dict
-            buf.extend_from_slice(b"(d");
-            let id = **memo;
-            **memo += 1;
-            buf.extend_from_slice(format!("p{}\n", id).as_bytes());
-            for (k, v) in &data_pairs {
-                pickle_serialize_p0(&PyObject::str_val(k.clone()), buf, memo)?;
-                pickle_serialize_p0(v, buf, memo)?;
-                buf.push(b's');
-            }
-            buf.extend_from_slice(b"tR");
+            buf.extend_from_slice(b"(tR");
             p0_emit_put_obj(obj, buf, memo);
+            let state = instance_state_dict(&data_pairs);
+            pickle_serialize_p0(&state, buf, memo)?;
+            buf.push(b'b');
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
@@ -205,6 +252,15 @@ pub(super) fn pickle_serialize_p0(
             pickle_serialize_p0(source, buf, memo)?;
             pickle_serialize_p0(&PyObject::int(idx as i64), buf, memo)?;
             pickle_serialize_p0(&PyObject::bool_val(idx == usize::MAX), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::DequeIter(data) => {
+            let idx = data.index.get();
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_dequeiter__\n(");
+            pickle_serialize_p0(&data.source, buf, memo)?;
+            pickle_serialize_p0(&PyObject::int(idx as i64), buf, memo)?;
+            pickle_serialize_p0(&PyObject::bool_val(idx == usize::MAX), buf, memo)?;
+            pickle_serialize_p0(&PyObject::bool_val(data.reverse), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::VecIter(data) => {
@@ -395,6 +451,12 @@ fn pickle_extract_instance(
             }
         }
     } else {
+        let is_deque = inst.attrs.read().contains_key("__deque__");
+        let deque_items = if is_deque {
+            Some(deque_pickle_items(obj)?)
+        } else {
+            None
+        };
         let attrs_r = inst.attrs.read();
         for (k, v) in attrs_r.iter() {
             match &v.payload {
@@ -402,6 +464,10 @@ fn pickle_extract_instance(
                 | PyObjectPayload::NativeClosure(_)
                 | PyObjectPayload::Function(_)
                 | PyObjectPayload::Class(_) => continue,
+                PyObjectPayload::List(_) if is_deque && k.as_str() == "_data" => {
+                    let items = deque_items.clone().unwrap_or_default();
+                    data_pairs.push((k.clone(), PyObject::list(items)));
+                }
                 _ => data_pairs.push((k.clone(), v.clone())),
             }
         }
@@ -687,26 +753,17 @@ pub(super) fn pickle_serialize_p2(
                 return Ok(());
             }
             let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
-            // cmodule\nClassName\n( {state_dict} t R
             buf.push(b'c');
             buf.extend_from_slice(module_name.as_bytes());
             buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
-            buf.push(b'(');
-            // Build state dict
-            buf.push(b'}');
-            p2_emit_put(buf, memo);
-            if !data_pairs.is_empty() {
-                buf.push(b'(');
-                for (k, v) in &data_pairs {
-                    pickle_serialize_p2(&PyObject::str_val(k.clone()), buf, memo)?;
-                    pickle_serialize_p2(v, buf, memo)?;
-                }
-                buf.push(b'u');
-            }
-            buf.extend_from_slice(b"tR");
+            pickle_serialize_p2(&PyObject::tuple(vec![]), buf, memo)?;
+            buf.push(b'R');
             p2_emit_put_obj(obj, buf, memo);
+            let state = instance_state_dict(&data_pairs);
+            pickle_serialize_p2(&state, buf, memo)?;
+            buf.push(b'b');
         }
         PyObjectPayload::RefIter { source, index } => {
             let idx = index.get();
@@ -755,6 +812,21 @@ pub(super) fn pickle_serialize_p2(
                     source.clone(),
                     PyObject::int(idx as i64),
                     PyObject::bool_val(idx == usize::MAX),
+                ]),
+                buf,
+                memo,
+            )?;
+            buf.push(b'R');
+        }
+        PyObjectPayload::DequeIter(data) => {
+            let idx = data.index.get();
+            buf.extend_from_slice(b"cbuiltins\n__ferrython_dequeiter__\n");
+            pickle_serialize_p2(
+                &PyObject::tuple(vec![
+                    data.source.clone(),
+                    PyObject::int(idx as i64),
+                    PyObject::bool_val(idx == usize::MAX),
+                    PyObject::bool_val(data.reverse),
                 ]),
                 buf,
                 memo,

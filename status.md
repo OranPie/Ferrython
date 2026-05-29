@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T08:35:31+08:00
+Last updated: 2026-05-29T08:58:59+08:00
 
 ## 代码质量重构进度
 
@@ -598,6 +598,15 @@ Last updated: 2026-05-29T08:35:31+08:00
   - focused 验证 12 项全过，覆盖 iterator mutation、empty-deque mutation、`reversed_new`、container iterator GC、truth、basics/maxlen/copy/subclass/addmul。
   - 完整 `test_deque` 当前：`run=79 pass=71 fail=3 err=2 skip=3`；剩余为 recursive pickle/repeat identity、deque iterator pickle 和超大 index。
 
+- 2026-05-29 deque pickle / index / repeat 收尾修复：
+  - pickle instance 序列化改为先构造空实例并立即写入 memo，再通过 `BUILD` 应用 state，递归 deque / deque subclass pickle 反序列化后 self-reference 指向新对象自身。
+  - deque 正向/反向 iterator 增加 pickle reducer/rebuilder，保留源 deque、当前位置、耗尽状态和反向标记；unpickle 后 iterator 继续共享反序列化出的源 deque。
+  - deque pickle state 提取对 deque 子类尊重类级 `__iter__` override；普通 deque 仍直接使用 marker storage，避免不必要迭代开销。
+  - deque `index(x, start, stop)` 的 start/stop 使用 Python index 语义并对超大整数 clamp 到 `[0, len]`，不再因超大边界抛 `int too large`。
+  - tuple repeat 在 `n == 1` 时返回原 tuple 对象，补齐 CPython immutable sequence identity 语义，并关闭 deque suite 中继承的 `seq_tests.CommonTest.test_repeat` 失败。
+  - focused 验证 6 项全过，覆盖 deque iterator pickle、basic/subclass recursive pickle、copy pickle、sequence repeat 和超大 index。
+  - 完整 `test_deque` 当前：`run=79 pass=76 fail=0 err=0 skip=3`。
+
 - 2026-05-26 追加：
   - cycle GC 纳入 heap class、bound method、builtin bound method，并遍历 class namespace/MRO/cache/vtable、bound method receiver/function，补齐 weakref cycle tests 里 class 与 callback bound method 的可达性分析。
   - cycle GC 对 weakref ref 的 registry callback 额外计入内部引用，避免 weakref callback closure 被候选集错误漏算。
@@ -953,13 +962,13 @@ Last updated: 2026-05-29T08:35:31+08:00
 
 ## 当前工作树
 
-- 当前待提交代码修复涉及 deque live iterator、constructor marker-storage 收敛和 deque truthiness。
+- 当前待提交代码修复涉及 deque/deque-iterator pickle、deque index 大整数边界和 tuple repeat identity。
 - 未跟踪项：`.codex-work/`，保留为本地工作资料，不纳入提交。
 
 ## 当前修复候选
 
 - `test_weakref` 当前模块级通过：`run=125 pass=122 fail=0 err=0 skip=3`；`test_copy` 当前模块级通过：`run=75 pass=75 fail=0 err=0 skip=0`。
-  - 下一步：继续处理 `deque` iterator pickle、递归 pickle/repeat identity 和超大 index，或扫描新的低成本 CPython 模块。
+  - 下一步：`test_deque` 已完整通过，可扫描新的低成本 CPython 模块或回到剩余已知 perf/compat 热点。
   - 方向：优先找不需要全量测试的单例失败；遇到长耗时 case 记录并跳过。
 
 ## 已关闭候选
@@ -1019,6 +1028,10 @@ Last updated: 2026-05-29T08:35:31+08:00
   - 修复：stdlib `collections.deque` constructor 不再创建 per-instance data-capturing closure class，统一走 marker storage，关闭 deque iterator cycle GC 泄漏。
   - 修复：`type(reversed(deque()))(deque_obj)` 构造反向 deque iterator，deque marker truthiness 读取 `_data` 长度。
   - 验证：focused 12 项全过；完整 `test_deque` 当前：`run=79 pass=71 fail=3 err=2 skip=3`。
+- `test_deque` pickle / index / repeat 收尾批次：
+  - 修复：pickle instance 走 create-then-memo-then-BUILD 语义，递归 deque state 能引用反序列化中的同一对象。
+  - 修复：deque iterator pickle、deque 子类 `__iter__` override pickle 语义、deque `index` 超大 start/stop clamp 和 tuple `* 1` identity。
+  - 验证：focused 6 项全过；完整 `test_deque` 当前：`run=79 pass=76 fail=0 err=0 skip=3`。
 
 
 - 已开始 Phase4/Phase5 VM 拆分：

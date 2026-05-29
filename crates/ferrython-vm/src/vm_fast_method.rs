@@ -586,7 +586,9 @@ fn call_direct_method(
                 crate::builtins::call_dict_method(map, name, args, Some(receiver.clone()))
             }
             PyObjectPayload::Set(map) => crate::builtins::call_set_method(map, name, args),
-            PyObjectPayload::Tuple(items) => crate::builtins::call_tuple_method(items, name, args),
+            PyObjectPayload::Tuple(items) => {
+                crate::builtins::call_tuple_method(receiver, items, name, args)
+            }
             _ => crate::builtins::call_method(receiver, name, args),
         }
     };

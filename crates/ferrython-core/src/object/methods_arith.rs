@@ -473,6 +473,13 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         (PyObjectPayload::Tuple(items), PyObjectPayload::Int(n))
         | (PyObjectPayload::Int(n), PyObjectPayload::Tuple(items)) => {
+            if matches!(n, PyInt::Small(1)) {
+                return Ok(if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                });
+            }
             let count = index_to_usize_repeat(&n.to_object())?;
             let size = checked_repeat_len(items.len(), count, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
@@ -481,9 +488,16 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             }
             Ok(PyObject::tuple(result))
         }
-        (PyObjectPayload::Tuple(items), PyObjectPayload::Bool(b))
-        | (PyObjectPayload::Bool(b), PyObjectPayload::Tuple(items)) => {
-            let count = *b as usize;
+        (PyObjectPayload::Tuple(items), PyObjectPayload::Bool(flag))
+        | (PyObjectPayload::Bool(flag), PyObjectPayload::Tuple(items)) => {
+            let count = *flag as usize;
+            if count == 1 {
+                return Ok(if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                });
+            }
             let size = checked_repeat_len(items.len(), count, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..count {
@@ -545,11 +559,19 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             Ok(PyObject::list(result))
         }
         (PyObjectPayload::Tuple(items), _) | (_, PyObjectPayload::Tuple(items)) => {
-            let count = index_to_usize_repeat(if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+            let count_obj = if matches!(a.payload, PyObjectPayload::Tuple(_)) {
                 b
             } else {
                 a
-            })?;
+            };
+            if matches!(count_obj.to_index()?, PyInt::Small(1)) {
+                return Ok(if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                });
+            }
+            let count = index_to_usize_repeat(count_obj)?;
             let size = checked_repeat_len(items.len(), count, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..count {

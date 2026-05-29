@@ -1,7 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    DequeIterData, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    SyncUsize,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -414,6 +415,42 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     index: ferrython_core::object::SyncUsize::new(index),
                 }))
             }
+            ("__builtin__" | "builtins", "__ferrython_dequeiter__") => {
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let index = arg_list.get(1).and_then(|v| v.as_int()).unwrap_or(0);
+                let exhausted = arg_list.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+                let reverse = arg_list.get(3).map(|v| v.is_truthy()).unwrap_or(false);
+                let index = if exhausted || index < 0 {
+                    usize::MAX
+                } else {
+                    index as usize
+                };
+                let expected_len = if exhausted {
+                    0
+                } else if let PyObjectPayload::Instance(inst) = &source.payload {
+                    inst.attrs
+                        .read()
+                        .get("_data")
+                        .and_then(|data| {
+                            if let PyObjectPayload::List(items) = &data.payload {
+                                Some(items.read().len())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                Ok(PyObject::tracked(PyObjectPayload::DequeIter(Box::new(
+                    DequeIterData {
+                        source,
+                        index: SyncUsize::new(index),
+                        expected_len,
+                        reverse,
+                    },
+                ))))
+            }
             ("collections", "defaultdict") | ("__main__", "defaultdict") => {
                 let collections = create_collections_module();
                 let cls = collections.get_attr("defaultdict").ok_or_else(|| {
@@ -621,13 +658,6 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                             }
                             return Ok(rebuilt);
                         }
-                        let mut attrs = IndexMap::new();
-                        for (k, v) in map_r.iter() {
-                            if let HashableKey::Str(s) = k {
-                                attrs.insert(s.to_compact_string(), v.clone());
-                            }
-                        }
-                        maybe_add_ast_empty_fields(name, &mut attrs);
                         let cls = pkl_resolve_global_class(module, name).unwrap_or_else(|| {
                             let mut class_namespace = IndexMap::new();
                             class_namespace.insert(
@@ -640,13 +670,25 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                                 class_namespace,
                             )
                         });
+                        let mut attrs = IndexMap::new();
+                        for (k, v) in map_r.iter() {
+                            if let HashableKey::Str(s) = k {
+                                attrs.insert(s.to_compact_string(), v.clone());
+                            }
+                        }
+                        maybe_add_ast_empty_fields(name, &mut attrs);
                         return Ok(PyObject::instance_with_attrs(cls, attrs));
                     }
                 }
-                Err(PyException::runtime_error(format!(
-                    "UnpicklingError: unsupported global {}.{}",
-                    module, name
-                )))
+                let cls = pkl_resolve_global_class(module, name).unwrap_or_else(|| {
+                    let mut class_namespace = IndexMap::new();
+                    class_namespace.insert(
+                        CompactString::from("__module__"),
+                        PyObject::str_val(CompactString::from(module.as_str())),
+                    );
+                    PyObject::class(CompactString::from(name.as_str()), vec![], class_namespace)
+                });
+                Ok(PyObject::instance(cls))
             }
         }
     } else {

@@ -96,6 +96,26 @@ pub(super) fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResul
         return Ok(());
     };
 
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        let map_r = map.read();
+        let has_deque_storage = map_r
+            .get(&HashableKey::str_key(CompactString::from("_data")))
+            .is_some();
+        let has_deque_marker = map_r
+            .get(&HashableKey::str_key(CompactString::from("__deque__")))
+            .is_some();
+        if has_deque_storage || has_deque_marker {
+            let mut attrs = inst.attrs.write();
+            attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
+            attrs
+                .entry(CompactString::from("_data"))
+                .or_insert_with(|| PyObject::list(vec![]));
+            attrs
+                .entry(CompactString::from("__maxlen__"))
+                .or_insert_with(PyObject::none);
+        }
+    }
+
     for (key, value) in map.read().iter() {
         let HashableKey::Str(name) = key else {
             continue;

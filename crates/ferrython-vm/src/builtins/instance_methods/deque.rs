@@ -5,6 +5,8 @@ use ferrython_core::object::{
     CompareOp, DequeIterData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     SyncUsize,
 };
+use ferrython_core::types::PyInt;
+use num_traits::Signed;
 
 pub(crate) fn call_deque_method(
     receiver: &PyObjectRef,
@@ -46,6 +48,26 @@ pub(crate) fn call_deque_method(
             idx.min(len_i)
         };
         actual as usize
+    };
+    let clamp_slice_bound = |obj: &PyObjectRef, len: usize, default: usize| -> PyResult<usize> {
+        let index = if matches!(obj.payload, PyObjectPayload::None) {
+            return Ok(default);
+        } else {
+            obj.to_index()?
+        };
+        match index {
+            PyInt::Small(raw) => {
+                let len_i = len as i64;
+                let bounded = if raw < 0 {
+                    len_i.saturating_add(raw).max(0)
+                } else {
+                    raw.min(len_i)
+                };
+                Ok(bounded as usize)
+            }
+            PyInt::Big(big) if big.is_negative() => Ok(0),
+            PyInt::Big(_) => Ok(len),
+        }
     };
     let deque_item_matches = |item: &PyObjectRef, target: &PyObjectRef| -> PyResult<bool> {
         if PyObjectRef::ptr_eq(item, target) {
@@ -338,23 +360,16 @@ pub(crate) fn call_deque_method(
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let expected_len = list.read().len();
-                let len = expected_len as i64;
-                let start_raw = if args.len() > 1 { args[1].to_int()? } else { 0 };
-                let stop_raw = if args.len() > 2 {
-                    args[2].to_int()?
-                } else {
-                    len
-                };
-                let start = if start_raw < 0 {
-                    (len + start_raw).max(0)
-                } else {
-                    start_raw.min(len)
-                } as usize;
-                let stop = if stop_raw < 0 {
-                    (len + stop_raw).max(0)
-                } else {
-                    stop_raw.min(len)
-                } as usize;
+                let start = args
+                    .get(1)
+                    .map(|arg| clamp_slice_bound(arg, expected_len, 0))
+                    .transpose()?
+                    .unwrap_or(0);
+                let stop = args
+                    .get(2)
+                    .map(|arg| clamp_slice_bound(arg, expected_len, expected_len))
+                    .transpose()?
+                    .unwrap_or(expected_len);
                 for i in start..stop {
                     let item = {
                         let v = list.read();

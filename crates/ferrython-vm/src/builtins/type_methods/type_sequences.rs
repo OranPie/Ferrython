@@ -8,6 +8,7 @@ use ferrython_core::object::{
     check_args_min, checked_repeat_len, CompareOp, PyCell, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::PyInt;
 use std::rc::Rc;
 
 use super::partial_cmp_for_sort;
@@ -599,6 +600,7 @@ pub(crate) fn call_range_method(
 }
 
 pub(crate) fn call_tuple_method(
+    receiver: &PyObjectRef,
     items: &[PyObjectRef],
     method: &str,
     args: &[PyObjectRef],
@@ -662,7 +664,11 @@ pub(crate) fn call_tuple_method(
         }
         "__mul__" | "__rmul__" => {
             check_args_min("__mul__", args, 1)?;
-            let n = index_to_usize_repeat(&args[0])?;
+            let index = args[0].to_index()?;
+            if matches!(index, PyInt::Small(1)) {
+                return Ok(receiver.clone());
+            }
+            let n = index_to_usize_repeat(&index.to_object())?;
             let size = checked_repeat_len(items.len(), n, "tuple repeat")?;
             let mut result = Vec::with_capacity(size);
             for _ in 0..n {
