@@ -369,6 +369,23 @@ pub(super) fn pickle_serialize_p0(
                     buf.extend_from_slice(b"tR");
                     return Ok(());
                 }
+                IteratorData::ZipLongest {
+                    sources,
+                    active,
+                    fillvalue,
+                    ..
+                } => {
+                    let active_flags: Vec<PyObjectRef> = active
+                        .iter()
+                        .map(|flag| PyObject::bool_val(*flag))
+                        .collect();
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_ziplongest__\n(");
+                    pickle_serialize_p0(&PyObject::list(sources.clone()), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::list(active_flags), buf, memo)?;
+                    pickle_serialize_p0(fillvalue, buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
                 _ => {
                     return Err(PyException::runtime_error(format!(
                         "PicklingError: can't pickle object of type {}",
@@ -972,6 +989,29 @@ pub(super) fn pickle_serialize_p2(
                             PyObject::int(*next_yield as i64),
                             PyObject::int(*stop as i64),
                             PyObject::int(*step as i64),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::ZipLongest {
+                    sources,
+                    active,
+                    fillvalue,
+                    ..
+                } => {
+                    let active_flags: Vec<PyObjectRef> = active
+                        .iter()
+                        .map(|flag| PyObject::bool_val(*flag))
+                        .collect();
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_ziplongest__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            PyObject::list(sources.clone()),
+                            PyObject::list(active_flags),
+                            fillvalue.clone(),
                         ]),
                         buf,
                         memo,

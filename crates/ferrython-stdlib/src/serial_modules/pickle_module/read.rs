@@ -485,6 +485,40 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     }),
                 ))))
             }
+            ("__builtin__" | "builtins", "__ferrython_ziplongest__") => {
+                use ferrython_core::object::IteratorData;
+                let sources = arg_list
+                    .first()
+                    .and_then(|obj| {
+                        if let PyObjectPayload::List(items) = &obj.payload {
+                            Some(items.read().clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let active = arg_list
+                    .get(1)
+                    .and_then(|obj| {
+                        if let PyObjectPayload::List(items) = &obj.payload {
+                            Some(items.read().iter().map(|item| item.is_truthy()).collect())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| vec![true; sources.len()]);
+                let mut active = active;
+                active.resize(sources.len(), false);
+                let fillvalue = arg_list.get(2).cloned().unwrap_or_else(PyObject::none);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::ZipLongest {
+                        sources,
+                        active,
+                        fillvalue,
+                        cached_tuple: None,
+                    }),
+                ))))
+            }
             ("__builtin__" | "builtins", "__ferrython_refiter__") => {
                 let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
                 let index = arg_list.get(1).and_then(|v| v.as_int()).unwrap_or(0);

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T10:23:12+08:00
+Last updated: 2026-05-29T11:06:07+08:00
 
 ## 代码质量重构进度
 
@@ -1462,6 +1462,12 @@ Last updated: 2026-05-29T10:23:12+08:00
   - `range_iterator` pickle 保持反序列化后类型为 `range_iterator`，覆盖普通、部分消费和 exhausted 大整数 iterator。
   - `itertools.islice` 和 `zip_longest` 改为 lazy source iterator，避免为了 range 对比提前 materialize 超大 iterable；`islice` 同步补齐参数校验、`__index__` 支持、copy/deepcopy/pickle 协议和 exhausted 后释放 source 引用。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v test_range`（run=24 pass=24 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_islice`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestVariousIteratorArgs.test_islice`（pass=1）、range BigInt/reversed/pickle smoke、islice source-release smoke、`git diff --check`。
+  - commit：`3d615fc fix: improve range compatibility`。
+- `zip_longest` 兼容性批次（2026-05-29 11:06 CST）：
+  - `itertools.zip_longest` 暴露为带名字的 native function，使 VM keyword path 能显式识别并标记 `fillvalue` kwargs，避免把普通尾部 `dict` iterable 误当关键字包。
+  - `zip_longest` 参数解析现在只接受 `fillvalue` 关键字，未知关键字抛 `TypeError`；显式传入 `{'fillvalue': ...}` 仍按普通 dict iterable 处理。
+  - pickle protocol 0/2 为 `IteratorData::ZipLongest` 保存 source iterator、active flags 和 fillvalue，并通过 `__ferrython_ziplongest__` 恢复为同类 lazy iterator。
+  - 验证：`cargo fmt --all`、`cargo build -p ferrython-cli --bin ferrython`、`cargo check -p ferrython-vm`、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_ziplongest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_pickling`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_zip_longest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_bad_iterable`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_zip_longest`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_islice`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip`（pass=1）、`target/debug/ferrython -c "from itertools import zip_longest; ..."` 覆盖 dict-as-iterable/fillvalue/unknown keyword smoke、`git diff --check`。
 
 ## 后续修复队列
 

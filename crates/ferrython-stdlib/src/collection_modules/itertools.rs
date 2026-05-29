@@ -69,7 +69,10 @@ pub fn create_itertools_module() -> PyObjectRef {
                 "islice",
                 PyObject::native_function("itertools.islice", itertools_islice),
             ),
-            ("zip_longest", make_builtin(itertools_zip_longest)),
+            (
+                "zip_longest",
+                PyObject::native_function("itertools.zip_longest", itertools_zip_longest),
+            ),
             ("product", make_builtin(itertools_product)),
             (
                 "accumulate",
@@ -295,10 +298,28 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let iter_args = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let map_r = map.read();
-            if let Some(fv) = map_r.get(&HashableKey::str_key(CompactString::from("fillvalue"))) {
-                fillvalue = fv.clone();
+            if let Some(marker) = map_r.get(&HashableKey::str_key(CompactString::from(
+                "__itertools_zip_longest_kwargs__",
+            ))) {
+                if !marker.is_truthy() {
+                    return Err(PyException::type_error("invalid zip_longest keyword state"));
+                }
+                let allowed = ["fillvalue", "__itertools_zip_longest_kwargs__"];
+                if !map_r.keys().all(
+                    |key| matches!(key, HashableKey::Str(name) if allowed.contains(&name.as_str())),
+                ) {
+                    return Err(PyException::type_error(
+                        "zip_longest() got an unexpected keyword argument",
+                    ));
+                }
+                if let Some(fv) = map_r.get(&HashableKey::str_key(CompactString::from("fillvalue")))
+                {
+                    fillvalue = fv.clone();
+                }
+                &args[..args.len() - 1]
+            } else {
+                args
             }
-            &args[..args.len() - 1]
         } else {
             args
         }

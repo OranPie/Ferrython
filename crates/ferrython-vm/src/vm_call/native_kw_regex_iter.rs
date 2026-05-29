@@ -91,6 +91,20 @@ impl VirtualMachine {
             return self.vm_itertools_groupby(&iterable, key_fn).map(Some);
         }
 
+        if nf_data.name.as_str() == "itertools.zip_longest" && !kwargs.is_empty() {
+            let mut all = pos_args.to_vec();
+            let mut kw_map = IndexMap::new();
+            for (k, v) in kwargs {
+                kw_map.insert(HashableKey::str_key(k.clone()), v.clone());
+            }
+            kw_map.insert(
+                HashableKey::str_key(CompactString::from("__itertools_zip_longest_kwargs__")),
+                PyObject::bool_val(true),
+            );
+            all.push(PyObject::dict(kw_map));
+            return (nf_data.func)(&all).map(Some);
+        }
+
         if nf_data.name.as_str() == "itertools.accumulate"
             && !kwargs.is_empty()
             && !pos_args.is_empty()
