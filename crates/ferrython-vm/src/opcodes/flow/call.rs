@@ -388,8 +388,8 @@ impl VirtualMachine {
                             frame.push(obj);
                         } else if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_))
                         {
+                            frame.push(PyObject::none());
                             frame.push(method);
-                            frame.push(obj);
                         } else {
                             // Already-resolved callable → slow path
                             frame.push(PyObject::none());
