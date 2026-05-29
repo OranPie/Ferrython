@@ -1553,6 +1553,12 @@ Last updated: 2026-05-29T22:58:51+08:00
   - dict lookup/contains 消费 pending custom `__eq__` 错误，避免失败 lookup 后把异常泄漏到后续无关 mapping 比较；保留非自定义 key 碰撞 lookup 的 `KeyError` 语义。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v -f test_userdict`（run=25 pass=25 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -vv test_userdict.UserDictTest.test_getitem test_userdict.UserDictTest.test_read`（pass=2）。
   - 新候选：`test_dict.DictTest.test_bad_key` 仍未按 CPython 对自定义 key `__eq__` 异常全部传播；`test_dict.DictTest.test_getitem` 仍有 error，适合作为下一批 focused mapping 修复。
+- CSV / shlex 兼容性批次（2026-05-29）：
+  - `csv.reader` 对 file-like source 改为 `readline()` 懒读取，保留外层文件游标，修复 `DictReader(... fieldnames=next(csv.reader(file)))` 和 `line_num`/self-iterator 行为；同时补齐 escaped unquoted newline record 拼接、reader iterable 异常传播和 bytes/null 输入错误路径。
+  - `csv` dialect 处理补齐 `Dialect` 子类必填属性校验、只读/不可 copy/pickle 的 dialect 对象标记、writer file `.write` property/绑定方法处理、`None`/bad iterable/bad item 写入错误传播，以及 Sniffer delimiter/quote/header/doublequote/skipinitialspace 启发式。
+  - `shlex` 内置模块新增 `shlex.shlex` 对象、`get_token()`/`push_token()`/iterator/eof/token 属性、`punctuation_chars` 只读行为、POSIX/non-POSIX quote/escape/comment/标点分割，并收紧 `quote()` 的 ASCII safe set，使 unicode shell 参数按 CPython 引号规则输出。
+  - 新候选探测：`test_bisect`、`test_heapq`、`test_base64`、`test_colorsys` 已全绿；`test_hmac`/`test_hashlib`/`test_uuid` 涉及 crypto 或平台接口，未纳入本小批。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo check -p ferrython-cli`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v test_csv`（run=104 pass=103 fail=0 err=0 skip=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_shlex`（run=17 pass=17 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -v test_csv test_shlex test_bisect test_heapq test_base64 test_colorsys`（run=243 pass=242 fail=0 err=0 skip=1）。
 
 ## 后续修复队列
 

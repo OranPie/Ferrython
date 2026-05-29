@@ -1,6 +1,7 @@
 use super::dialect::make_dialect_obj;
 use super::reader::extract_csv_dialect;
 use super::*;
+use ferrython_core::object::call_callable;
 
 pub(super) fn csv_field_needs_escape(
     s: &str,
@@ -54,6 +55,15 @@ fn csv_format_field(
     lineterminator: &str,
     quote_nonnumeric: bool,
 ) -> PyResult<String> {
+    if quoting == 0 && !doublequote && quotechar.is_some() && escapechar.is_some() {
+        let requires_outer_quotes = s.contains(delimiter)
+            || s.contains('\n')
+            || s.contains('\r')
+            || lineterminator.chars().any(|ch| s.contains(ch));
+        if !requires_outer_quotes && quotechar.is_some_and(|ch| s.contains(ch)) {
+            return csv_escape_unquoted(s, delimiter, quotechar, escapechar, lineterminator);
+        }
+    }
     if quoting == 3 {
         if csv_field_needs_escape(s, delimiter, quotechar, lineterminator) {
             return csv_escape_unquoted(s, delimiter, quotechar, escapechar, lineterminator);
@@ -151,7 +161,7 @@ pub(super) fn csv_quote_row(
                 })?;
                 format!("{}{}", quotechar, quotechar)
             } else {
-                let s = csv_field_to_string(item);
+                let s = csv_field_to_string_checked(item)?;
                 csv_format_field(
                     &s,
                     dialect.quoting,
@@ -175,6 +185,20 @@ pub(super) fn csv_field_to_string(item: &PyObjectRef) -> String {
     }
 }
 
+fn csv_field_to_string_checked(item: &PyObjectRef) -> PyResult<String> {
+    match &item.payload {
+        PyObjectPayload::None => Ok(String::new()),
+        PyObjectPayload::Instance(_) => {
+            if let Some(str_fn) = item.get_attr("__str__") {
+                let result = call_callable(&str_fn, &[])?;
+                return Ok(result.py_to_string());
+            }
+            Ok(item.py_to_string())
+        }
+        _ => Ok(item.py_to_string()),
+    }
+}
+
 fn is_csv_numeric_field(item: &PyObjectRef) -> bool {
     matches!(
         item.payload,
@@ -182,16 +206,27 @@ fn is_csv_numeric_field(item: &PyObjectRef) -> bool {
     )
 }
 
+fn resolve_write_method(fileobj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let Some(write_fn) = fileobj.get_attr("write") else {
+        return Err(PyException::type_error(
+            "argument 1 must have a \"write\" method",
+        ));
+    };
+    if let PyObjectPayload::Property(prop) = &write_fn.payload {
+        if let Some(getter) = prop.fget.as_ref() {
+            return call_callable(getter, std::slice::from_ref(fileobj));
+        }
+        return Err(PyException::attribute_error("unreadable attribute"));
+    }
+    Ok(write_fn)
+}
+
 pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.writer requires a file object"));
     }
     let fileobj = args[0].clone();
-    if fileobj.get_attr("write").is_none() {
-        return Err(PyException::type_error(
-            "argument 1 must have a \"write\" method",
-        ));
-    }
+    resolve_write_method(&fileobj)?;
     let dialect = extract_csv_dialect(args, 1)?;
     let delimiter = dialect.delimiter.to_string();
     let lineterminator = dialect.lineterminator.clone();
@@ -220,6 +255,12 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             PyObject::native_closure("csv_writer.writerow", move |a: &[PyObjectRef]| {
                 if a.is_empty() {
                     return Err(PyException::type_error("writerow requires a sequence"));
+                }
+                if matches!(&a[0].payload, PyObjectPayload::None) {
+                    return Err(PyException::new(
+                        ExceptionKind::CsvError,
+                        "iterable expected, not NoneType",
+                    ));
                 }
                 let items = a[0].to_list()?;
                 let fields = csv_quote_row(&items, &dialect_row)?;
@@ -254,20 +295,17 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn write_text_to_file(fileobj: &PyObjectRef, line: &str) -> PyResult<PyObjectRef> {
-    let Some(write_fn) = fileobj.get_attr("write") else {
-        return Err(PyException::attribute_error("object has no write method"));
-    };
+    let write_fn = resolve_write_method(fileobj)?;
     let text = PyObject::str_val(CompactString::from(line));
     match &write_fn.payload {
-        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[text]),
+        PyObjectPayload::NativeFunction(nf) => {
+            if fileobj.get_attr("_bind_methods").is_some() {
+                (nf.func)(&[fileobj.clone(), text])
+            } else {
+                (nf.func)(&[text])
+            }
+        }
         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[text]),
-        PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod(_) => {
-            ferrython_core::error::request_vm_call(write_fn, vec![text]);
-            Ok(PyObject::none())
-        }
-        _ => {
-            ferrython_core::error::request_vm_call(write_fn, vec![text]);
-            Ok(PyObject::none())
-        }
+        _ => call_callable(&write_fn, &[text]),
     }
 }

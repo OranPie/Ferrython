@@ -89,6 +89,74 @@ fn dialect_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     })
 }
 
+fn class_name(obj: &PyObjectRef) -> Option<String> {
+    if let PyObjectPayload::Class(cls) = &obj.payload {
+        Some(cls.name.to_string())
+    } else {
+        None
+    }
+}
+
+fn dialect_target_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+        PyObjectPayload::Class(_) => Some(obj.clone()),
+        _ => None,
+    }
+}
+
+fn class_namespace_has(cls: &PyObjectRef, name: &str) -> bool {
+    match &cls.payload {
+        PyObjectPayload::Class(data) => data.namespace.read().contains_key(name),
+        _ => false,
+    }
+}
+
+fn requires_explicit_dialect_attrs(obj: &PyObjectRef) -> bool {
+    let Some(cls) = dialect_target_class(obj) else {
+        return false;
+    };
+    if class_name(&cls).as_deref() == Some("Dialect") {
+        return true;
+    }
+    if let PyObjectPayload::Class(data) = &cls.payload {
+        return data
+            .bases
+            .iter()
+            .any(|base| class_name(base).as_deref() == Some("Dialect"));
+    }
+    false
+}
+
+fn validate_explicit_dialect_attrs(obj: &PyObjectRef) -> PyResult<()> {
+    if !requires_explicit_dialect_attrs(obj) {
+        return Ok(());
+    }
+    let Some(cls) = dialect_target_class(obj) else {
+        return Ok(());
+    };
+    let missing = [
+        "delimiter",
+        "doublequote",
+        "lineterminator",
+        "quoting",
+        "skipinitialspace",
+    ]
+    .iter()
+    .any(|name| !class_namespace_has(&cls, name));
+    if missing {
+        return Err(csv_error("Dialect class missing required attribute"));
+    }
+    if let Some(quoting) = dialect_attr(obj, "quoting").and_then(|value| value.as_int()) {
+        if quoting != 3 && !class_namespace_has(&cls, "quotechar") {
+            return Err(csv_error(
+                "Dialect class missing required quotechar attribute",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn one_char_value(value: &PyObjectRef, name: &str, allow_none: bool) -> PyResult<Option<char>> {
     match &value.payload {
         PyObjectPayload::None if allow_none => Ok(None),
@@ -115,6 +183,7 @@ fn one_char_value(value: &PyObjectRef, name: &str, allow_none: bool) -> PyResult
 }
 
 fn apply_dialect_obj(entry: &mut CsvDialectEntry, obj: &PyObjectRef) -> PyResult<()> {
+    validate_explicit_dialect_attrs(obj)?;
     if let Some(v) = dialect_attr(obj, "delimiter") {
         entry.delimiter = one_char_value(&v, "delimiter", false)?.unwrap();
     }
@@ -318,6 +387,10 @@ fn readonly_dialect_attr(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Err(PyException::attribute_error("attribute is read-only"))
 }
 
+fn unpickleable_dialect_attr(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Err(PyException::type_error("cannot pickle 'Dialect' instances"))
+}
+
 pub(super) fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
     let mut ns = IndexMap::new();
     ns.insert(
@@ -328,10 +401,30 @@ pub(super) fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
         CompactString::from("__delattr__"),
         make_builtin(readonly_dialect_attr),
     );
+    ns.insert(
+        CompactString::from("__copy__"),
+        make_builtin(unpickleable_dialect_attr),
+    );
+    ns.insert(
+        CompactString::from("__deepcopy__"),
+        make_builtin(unpickleable_dialect_attr),
+    );
+    ns.insert(
+        CompactString::from("__reduce__"),
+        make_builtin(unpickleable_dialect_attr),
+    );
+    ns.insert(
+        CompactString::from("__reduce_ex__"),
+        make_builtin(unpickleable_dialect_attr),
+    );
     let cls = PyObject::class(CompactString::from("Dialect"), vec![], ns);
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        w.insert(
+            CompactString::from("__csv_dialect__"),
+            PyObject::bool_val(true),
+        );
         w.insert(
             CompactString::from("delimiter"),
             PyObject::str_val(CompactString::from(entry.delimiter.to_string().as_str())),
@@ -402,15 +495,7 @@ pub(super) fn csv_sniffer_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
                 // Simple heuristic: check if first line looks like a header (non-numeric)
                 let sample = args[0].py_to_string();
-                if let Some(first_line) = sample.lines().next() {
-                    let has = first_line.split(',').all(|f| {
-                        let trimmed = f.trim().trim_matches('"');
-                        trimmed.parse::<f64>().is_err()
-                    });
-                    Ok(PyObject::bool_val(has))
-                } else {
-                    Ok(PyObject::bool_val(false))
-                }
+                Ok(PyObject::bool_val(has_header_sample(&sample)))
             }),
         );
     }
@@ -419,34 +504,229 @@ pub(super) fn csv_sniffer_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// Sniff a CSV sample to detect delimiter and quotechar.
 pub(super) fn sniff_dialect(sample: &str, delimiters: Option<&str>) -> PyResult<PyObjectRef> {
-    let candidates = delimiters.unwrap_or(",\t;:|");
-    // Count occurrences of each candidate delimiter
+    let candidates = delimiters.unwrap_or(",\t;:|+?");
     let mut best_delim = ',';
-    let mut best_count = 0usize;
+    let mut best_score = isize::MIN;
     for delim in candidates.chars() {
-        let count: usize = sample.lines().map(|line| line.matches(delim).count()).sum();
-        if count > best_count {
-            best_count = count;
+        let counts: Vec<usize> = sample
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.matches(delim).count())
+            .collect();
+        if counts.is_empty() {
+            continue;
+        }
+        let total: usize = counts.iter().sum();
+        let modal = counts
+            .iter()
+            .copied()
+            .filter(|count| *count > 0)
+            .max_by_key(|count| {
+                counts
+                    .iter()
+                    .filter(|candidate| **candidate == *count)
+                    .count()
+            })
+            .unwrap_or(0);
+        let consistent = counts.iter().filter(|count| **count == modal).count();
+        let score = (consistent as isize * 1000) + total as isize - (modal == 0) as isize * 10_000;
+        if score > best_score {
+            best_score = score;
             best_delim = delim;
         }
     }
-    // Detect quotechar
-    let quotechar = if sample.contains('"') {
-        '"'
-    } else if sample.contains('\'') {
-        '\''
-    } else {
-        '"'
-    };
+    let quotechar = guess_quotechar(sample, best_delim);
+    let doublequote = quotechar
+        .map(|q| has_doublequote_pair(sample, q))
+        .unwrap_or(false);
+    let skipinitialspace = has_space_after_delimiter(sample, best_delim);
     let entry = CsvDialectEntry {
         delimiter: best_delim,
-        quotechar: Some(quotechar),
+        quotechar,
         escapechar: None,
-        doublequote: true,
+        doublequote,
         lineterminator: "\r\n".into(),
         quoting: 0,
-        skipinitialspace: false,
+        skipinitialspace,
         strict: false,
     };
     Ok(make_dialect_obj(&entry))
+}
+
+fn quote_delimiter_score(sample: &str, quote: char, delimiter: char) -> usize {
+    let mut score = 0usize;
+    for line in sample.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        for (idx, ch) in chars.iter().enumerate() {
+            if *ch != quote {
+                continue;
+            }
+            let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
+            let next = chars.get(idx + 1).copied();
+            if prev == Some(delimiter)
+                || next == Some(delimiter)
+                || prev.is_none()
+                || next.is_none()
+            {
+                score += 1;
+            }
+        }
+    }
+    score
+}
+
+fn guess_quotechar(sample: &str, delimiter: char) -> Option<char> {
+    let single = quote_delimiter_score(sample, '\'', delimiter);
+    let double = quote_delimiter_score(sample, '"', delimiter);
+    if single == 0 && double == 0 {
+        Some('"')
+    } else if single > double {
+        Some('\'')
+    } else {
+        Some('"')
+    }
+}
+
+fn has_doublequote_pair(sample: &str, quote: char) -> bool {
+    let pair = format!("{quote}{quote}");
+    sample.contains(&pair)
+}
+
+fn has_space_after_delimiter(sample: &str, delimiter: char) -> bool {
+    let mut seen = 0usize;
+    let mut spaced = 0usize;
+    for line in sample.lines() {
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == delimiter {
+                seen += 1;
+                if chars.peek() == Some(&' ') {
+                    spaced += 1;
+                }
+            }
+        }
+    }
+    seen > 0 && spaced * 2 >= seen
+}
+
+fn has_header_sample(sample: &str) -> bool {
+    let lines: Vec<&str> = sample
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() < 2 {
+        return false;
+    }
+    let Ok(dialect_obj) = sniff_dialect(sample, None) else {
+        return false;
+    };
+    let delimiter = dialect_obj
+        .get_attr("delimiter")
+        .and_then(|value| value.py_to_string().chars().next())
+        .unwrap_or(',');
+    let quotechar = dialect_obj
+        .get_attr("quotechar")
+        .and_then(|value| value.py_to_string().chars().next());
+    let rows: Vec<Vec<String>> = lines
+        .iter()
+        .take(21)
+        .map(|line| split_sniffer_row(line, delimiter, quotechar))
+        .collect();
+    let Some(header) = rows.first() else {
+        return false;
+    };
+    let columns = header.len();
+    if columns == 0 {
+        return false;
+    }
+    let mut column_types: Vec<Option<SnifferColumnType>> = vec![None; columns];
+    let mut active = vec![true; columns];
+    for row in rows.iter().skip(1) {
+        if row.len() != columns {
+            continue;
+        }
+        for (col, value) in row.iter().enumerate() {
+            if !active[col] {
+                continue;
+            }
+            let observed = sniffer_column_type(value);
+            match &column_types[col] {
+                None => column_types[col] = Some(observed),
+                Some(existing) if *existing == observed => {}
+                Some(_) => active[col] = false,
+            }
+        }
+    }
+    let mut votes = 0isize;
+    for (col, kind) in column_types.iter().enumerate() {
+        if !active[col] {
+            continue;
+        }
+        let Some(kind) = kind else {
+            continue;
+        };
+        let header_value = header[col].trim();
+        match kind {
+            SnifferColumnType::Numeric => {
+                if header_value.parse::<f64>().is_err() {
+                    votes += 1;
+                } else {
+                    votes -= 1;
+                }
+            }
+            SnifferColumnType::TextLen(len) => {
+                if header_value.len() != *len {
+                    votes += 1;
+                } else {
+                    votes -= 1;
+                }
+            }
+        }
+    }
+    votes > 0
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum SnifferColumnType {
+    Numeric,
+    TextLen(usize),
+}
+
+fn sniffer_column_type(value: &str) -> SnifferColumnType {
+    let trimmed = value.trim();
+    if trimmed.parse::<f64>().is_ok() {
+        SnifferColumnType::Numeric
+    } else {
+        SnifferColumnType::TextLen(trimmed.len())
+    }
+}
+
+fn split_sniffer_row(line: &str, delimiter: char, quotechar: Option<char>) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if Some(ch) == quotechar {
+                if chars.peek().copied() == quotechar {
+                    current.push(ch);
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(ch);
+            }
+        } else if current.trim().is_empty() && Some(ch) == quotechar {
+            in_quotes = true;
+        } else if ch == delimiter {
+            fields.push(current.trim().to_string());
+            current.clear();
+        } else {
+            current.push(ch);
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
 }

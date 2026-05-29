@@ -3,6 +3,7 @@ use super::dialect::{
     csv_error, make_dialect_obj, validate_dialect_entry, CsvDialectEntry, DIALECT_REGISTRY,
 };
 use super::*;
+use ferrython_core::object::call_callable;
 
 /// CSV dialect settings extracted from kwargs.
 #[derive(Clone)]
@@ -321,6 +322,8 @@ fn csv_parse_line_parts(s: &str, dialect: &CsvDialect) -> PyResult<Vec<(String, 
                     ExceptionKind::CsvError,
                     "unexpected end of data",
                 ));
+            } else if quote_just_closed {
+                current.push(ch);
             } else {
                 current.push('\n');
             }
@@ -402,7 +405,28 @@ fn record_needs_more(text: &str, dialect: &CsvDialect) -> bool {
             at_field_start = false;
         }
     }
-    in_quotes
+    in_quotes || has_escaped_record_ending(text, dialect)
+}
+
+fn has_escaped_record_ending(text: &str, dialect: &CsvDialect) -> bool {
+    let Some(escapechar) = dialect.escapechar else {
+        return false;
+    };
+    let without_ending = if let Some(stripped) = text.strip_suffix("\r\n") {
+        stripped
+    } else if let Some(stripped) = text.strip_suffix('\n') {
+        stripped
+    } else if let Some(stripped) = text.strip_suffix('\r') {
+        stripped
+    } else {
+        return false;
+    };
+    let trailing_escapes = without_ending
+        .chars()
+        .rev()
+        .take_while(|ch| *ch == escapechar)
+        .count();
+    trailing_escapes % 2 == 1
 }
 
 pub(super) fn logical_records(
@@ -465,6 +489,152 @@ pub(super) fn text_to_physical_lines(text: &str) -> Vec<PyObjectRef> {
     lines
 }
 
+fn call_source_method(
+    owner: &PyObjectRef,
+    method: &PyObjectRef,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    if matches!(&method.payload, PyObjectPayload::NativeFunction(_))
+        && owner.get_attr("_bind_methods").is_some()
+    {
+        let mut full_args = Vec::with_capacity(args.len() + 1);
+        full_args.push(owner.clone());
+        full_args.extend_from_slice(args);
+        call_callable(method, &full_args)
+    } else {
+        call_callable(method, args)
+    }
+}
+
+fn is_lazy_csv_source(obj: &PyObjectRef) -> bool {
+    obj.get_attr("readline").is_some()
+        || (obj.get_attr("_bind_methods").is_some() && obj.get_attr("__next__").is_some())
+}
+
+struct LazyReaderState {
+    source: PyObjectRef,
+    dialect: CsvDialect,
+    pending: String,
+    line_num: i64,
+    exhausted: bool,
+}
+
+fn next_lazy_record(state: &mut LazyReaderState) -> PyResult<Option<String>> {
+    loop {
+        let read_result = if let Some(readline) = state.source.get_attr("readline") {
+            call_source_method(&state.source, &readline, &[])
+        } else if let Some(next_method) = state.source.get_attr("__next__") {
+            call_source_method(&state.source, &next_method, &[])
+        } else {
+            return Err(PyException::type_error("csv.reader requires an iterable"));
+        };
+        match read_result {
+            Ok(line) => {
+                if matches!(
+                    &line.payload,
+                    PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_)
+                ) {
+                    return Err(PyException::new(
+                        ExceptionKind::CsvError,
+                        "iterator should return strings, not bytes",
+                    ));
+                }
+                if matches!(&line.payload, PyObjectPayload::Str(s) if s.is_empty()) {
+                    state.exhausted = true;
+                    if state.pending.is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(trim_record_ending(std::mem::take(&mut state.pending))));
+                }
+                state.pending.push_str(&line.py_to_string());
+                state.line_num += 1;
+                if record_needs_more(&state.pending, &state.dialect) {
+                    if !state.pending.ends_with('\n') && !state.pending.ends_with('\r') {
+                        state.pending.push('\n');
+                    }
+                    continue;
+                }
+                return Ok(Some(trim_record_ending(std::mem::take(&mut state.pending))));
+            }
+            Err(err) if err.kind == ExceptionKind::StopIteration => {
+                state.exhausted = true;
+                if state.pending.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(trim_record_ending(std::mem::take(&mut state.pending))));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn row_from_record(record: String, dialect: &CsvDialect) -> PyResult<PyObjectRef> {
+    if record.is_empty() {
+        return Ok(PyObject::list(vec![]));
+    }
+    let fields: Vec<PyObjectRef> = csv_parse_line_parts(&record, dialect)?
+        .into_iter()
+        .map(|(field, quoted)| field_to_object(field, quoted, dialect))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyObject::list(fields))
+}
+
+fn make_lazy_csv_reader(source: PyObjectRef, dialect: CsvDialect) -> PyObjectRef {
+    let inst = PyObject::instance(PyObject::class(
+        CompactString::from("csv_reader"),
+        vec![],
+        IndexMap::new(),
+    ));
+    let state = Arc::new(Mutex::new(LazyReaderState {
+        source,
+        dialect: dialect.clone(),
+        pending: String::new(),
+        line_num: 0,
+        exhausted: false,
+    }));
+
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("line_num"), PyObject::int(0));
+    attrs.insert(
+        CompactString::from("dialect"),
+        make_dialect_obj(&dialect.to_entry()),
+    );
+    attrs.insert(CompactString::from("__iter__"), {
+        let self_obj = inst.clone();
+        PyObject::native_closure("csv_reader.__iter__", move |_| Ok(self_obj.clone()))
+    });
+    attrs.insert(CompactString::from("__next__"), {
+        let state_ref = state.clone();
+        let self_obj = inst.clone();
+        PyObject::native_closure("csv_reader.__next__", move |_| {
+            let mut state = state_ref.lock().unwrap();
+            if state.exhausted && state.pending.is_empty() {
+                return Err(PyException::stop_iteration());
+            }
+            let record = next_lazy_record(&mut state)?;
+            if let Some(record) = record {
+                if let PyObjectPayload::Instance(data) = &self_obj.payload {
+                    data.attrs.write().insert(
+                        CompactString::from("line_num"),
+                        PyObject::int(state.line_num),
+                    );
+                }
+                row_from_record(record, &state.dialect)
+            } else {
+                Err(PyException::stop_iteration())
+            }
+        })
+    });
+
+    if let PyObjectPayload::Instance(data) = &inst.payload {
+        let mut target = data.attrs.write();
+        for (key, value) in attrs {
+            target.insert(key, value);
+        }
+    }
+    inst
+}
+
 fn field_to_object(field: String, quoted: bool, dialect: &CsvDialect) -> PyResult<PyObjectRef> {
     if dialect.quoting == 2 && !quoted && !field.is_empty() {
         let value = field.trim().parse::<f64>().map_err(|_| {
@@ -481,10 +651,16 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("csv.reader requires an iterable"));
     }
     let dialect = extract_csv_dialect(args, 1)?;
+    if is_lazy_csv_source(&args[0]) {
+        return Ok(make_lazy_csv_reader(args[0].clone(), dialect));
+    }
     // Try to get lines from the iterable
     let lines = match args[0].to_list() {
         Ok(items) => items,
-        Err(_) => {
+        Err(err) => {
+            if args[0].get_attr("__iter__").is_some() || args[0].get_attr("__next__").is_some() {
+                return Err(err);
+            }
             // Handle StringIO-like objects: call getvalue() or read() to get text
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 let attrs = inst.attrs.read();
@@ -531,12 +707,16 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     // Build a csv_reader instance that supports both iteration (next()) and
     // list-like access (len(), []) for backward compatibility.
-    let line_count = rows.len() as i64;
     let shared_rows = Arc::new(rows);
     let iter_index = Arc::new(Mutex::new(0usize));
+    let inst = PyObject::instance(PyObject::class(
+        CompactString::from("csv_reader"),
+        vec![],
+        IndexMap::new(),
+    ));
 
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("line_num"), PyObject::int(line_count));
+    attrs.insert(CompactString::from("line_num"), PyObject::int(0));
     attrs.insert(
         CompactString::from("dialect"),
         make_dialect_obj(&dialect.to_entry()),
@@ -585,24 +765,13 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ))),
     );
 
-    // __iter__ returns self (the iterator facade)
-    let _idx_ref = iter_index.clone();
-    let _rows_ref = shared_rows.clone();
-    // We create a closure-based iterator that the VM can iterate
+    // __iter__ returns self so all iteration paths share line_num and cursor state.
     attrs.insert(CompactString::from("__iter__"), {
-        // Build a proper Iterator payload for the VM's for-loop
-        let rows_vec = shared_rows.to_vec();
-        let iter_obj = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-            IteratorData::List {
-                items: rows_vec,
-                index: 0,
-            },
-        ))));
-        let it = iter_obj.clone();
+        let self_obj = inst.clone();
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
             NativeClosureData {
                 name: CompactString::from("__iter__"),
-                func: std::rc::Rc::new(move |_args| Ok(it.clone())),
+                func: std::rc::Rc::new(move |_args| Ok(self_obj.clone())),
                 pickle_args: None,
             },
         )))
@@ -611,6 +780,7 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // __next__ for next(reader)
     let rows_ref = shared_rows.clone();
     let idx_ref = iter_index.clone();
+    let self_for_next = inst.clone();
     attrs.insert(
         CompactString::from("__next__"),
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(
@@ -622,6 +792,12 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if *idx < rows_ref.len() {
                         let val = rows_ref[*idx].clone();
                         *idx += 1;
+                        if let PyObjectPayload::Instance(data) = &self_for_next.payload {
+                            data.attrs.write().insert(
+                                CompactString::from("line_num"),
+                                PyObject::int(*idx as i64),
+                            );
+                        }
                         Ok(val)
                     } else {
                         Err(PyException::stop_iteration())
@@ -631,8 +807,11 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ))),
     );
 
-    Ok(PyObject::instance_with_attrs(
-        PyObject::class(CompactString::from("csv_reader"), vec![], IndexMap::new()),
-        attrs,
-    ))
+    if let PyObjectPayload::Instance(data) = &inst.payload {
+        let mut target = data.attrs.write();
+        for (key, value) in attrs {
+            target.insert(key, value);
+        }
+    }
+    Ok(inst)
 }

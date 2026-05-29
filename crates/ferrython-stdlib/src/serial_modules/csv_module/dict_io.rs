@@ -91,14 +91,6 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     let dialect = extract_csv_dialect(args, dict_reader_skip(args))?;
     let records = logical_records(lines, &dialect)?;
-    if records.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::List {
-                items: vec![],
-                index: 0,
-            }),
-        ))));
-    }
     let kwargs = args
         .last()
         .filter(|arg| is_kwargs_dict(arg))
@@ -140,6 +132,8 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         } else {
             fnames.to_list()?.iter().map(|f| f.py_to_string()).collect()
         }
+    } else if records.is_empty() {
+        Vec::new()
     } else {
         // First row is header
         let header = &records[0];
@@ -148,7 +142,9 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             .map(|f| f.to_string())
             .collect()
     };
-    let data_start = if fieldnames.is_empty() {
+    let data_start = if records.is_empty() {
+        0
+    } else if fieldnames.is_empty() {
         1
     } else if args.len() >= 2 && !is_kwargs_dict(&args[1]) {
         0
@@ -216,15 +212,21 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     );
 
     let rows_for_iter = shared_rows.clone();
+    let self_holder: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
+    let self_for_iter = self_holder.clone();
     attrs.insert(
         CompactString::from("__iter__"),
         PyObject::native_closure("DictReader.__iter__", move |_| {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-                PyCell::new(IteratorData::List {
-                    items: rows_for_iter.to_vec(),
-                    index: 0,
-                }),
-            ))))
+            if let Some(obj) = self_for_iter.lock().unwrap().as_ref() {
+                Ok(obj.clone())
+            } else {
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::List {
+                        items: rows_for_iter.to_vec(),
+                        index: 0,
+                    }),
+                ))))
+            }
         }),
     );
 
@@ -244,14 +246,16 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }),
     );
 
-    Ok(PyObject::instance_with_attrs(
+    let obj = PyObject::instance_with_attrs(
         PyObject::class(
             CompactString::from("csv_DictReader"),
             vec![],
             IndexMap::new(),
         ),
         attrs,
-    ))
+    );
+    *self_holder.lock().unwrap() = Some(obj.clone());
+    Ok(obj)
 }
 
 pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

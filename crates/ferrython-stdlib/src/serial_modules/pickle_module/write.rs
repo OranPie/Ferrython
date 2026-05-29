@@ -286,6 +286,9 @@ pub(super) fn pickle_serialize_p0(
             buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__csv_dialect__") {
+                return Err(PyException::type_error("cannot pickle 'Dialect' instances"));
+            }
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
                 return Ok(());
@@ -911,6 +914,9 @@ pub(super) fn pickle_serialize_p2(
             buf.push(b'R');
         }
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__csv_dialect__") {
+                return Err(PyException::type_error("cannot pickle 'Dialect' instances"));
+            }
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;
                 return Ok(());
