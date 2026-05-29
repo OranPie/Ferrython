@@ -1,7 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    make_builtin, make_module, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    make_builtin, make_module, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -19,11 +20,73 @@ static TMPFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static TMPFILE_BUFFERS: std::sync::LazyLock<Mutex<IndexMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
 
+#[cfg(unix)]
+fn read_from_fd(fd: i32, size: isize, is_binary: bool) -> PyResult<PyObjectRef> {
+    let buf = if size < 0 {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 8192];
+        loop {
+            let n = unsafe { libc::read(fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+            if n <= 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n as usize]);
+        }
+        buf
+    } else {
+        let mut buf = vec![0u8; size as usize];
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n < 0 {
+            return Err(PyException::os_error("read failed".to_string()));
+        }
+        buf.truncate(n as usize);
+        buf
+    };
+    if is_binary {
+        Ok(PyObject::bytes(buf))
+    } else {
+        Ok(PyObject::str_val(CompactString::from(
+            String::from_utf8_lossy(&buf).as_ref(),
+        )))
+    }
+}
+
+#[cfg(unix)]
+fn readline_from_fd(fd: i32, is_binary: bool) -> PyResult<PyObjectRef> {
+    let mut buf = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        let n = unsafe { libc::read(fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n < 0 {
+            return Err(PyException::os_error("read failed".to_string()));
+        }
+        if n == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    if is_binary {
+        Ok(PyObject::bytes(buf))
+    } else {
+        Ok(PyObject::str_val(CompactString::from(
+            String::from_utf8_lossy(&buf).as_ref(),
+        )))
+    }
+}
+
 fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Extract keyword args (mode, suffix, prefix, delete)
     let mut mode = String::from("w+b");
     let mut suffix = String::from("");
     let mut delete = true;
+    if let Some(first) = args.first() {
+        if !matches!(&first.payload, PyObjectPayload::Dict(_)) {
+            mode = first.py_to_string();
+        }
+    }
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(d) = &last.payload {
             let d = d.read();
@@ -136,36 +199,21 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 } else {
                     -1
                 };
-                let buf = if size < 0 {
-                    let mut buf = Vec::new();
-                    let mut tmp = [0u8; 8192];
-                    loop {
-                        let n = unsafe {
-                            libc::read(fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len())
-                        };
-                        if n <= 0 {
-                            break;
-                        }
-                        buf.extend_from_slice(&tmp[..n as usize]);
-                    }
-                    buf
-                } else {
-                    let mut buf = vec![0u8; size as usize];
-                    let n =
-                        unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-                    if n < 0 {
-                        return Err(PyException::os_error("read failed".to_string()));
-                    }
-                    buf.truncate(n as usize);
-                    buf
-                };
-                if is_bin_r {
-                    Ok(PyObject::bytes(buf))
-                } else {
-                    Ok(PyObject::str_val(CompactString::from(
-                        String::from_utf8_lossy(&buf).as_ref(),
-                    )))
+                read_from_fd(fd, size, is_bin_r)
+            }),
+        );
+
+        // readline()
+        let s2_line = state.clone();
+        let is_bin_line = is_binary;
+        attrs.insert(
+            CompactString::from("readline"),
+            PyObject::native_closure("readline", move |_a| {
+                let g = s2_line.read();
+                if g.1 {
+                    return Err(PyException::value_error("I/O operation on closed file"));
                 }
+                readline_from_fd(g.0, is_bin_line)
             }),
         );
 
@@ -286,6 +334,36 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(
             CompactString::from("_bind_methods"),
             PyObject::bool_val(true),
+        );
+
+        let s_iter = state.clone();
+        let is_bin_iter = is_binary;
+        attrs.insert(
+            CompactString::from("__iter__"),
+            PyObject::native_closure("__iter__", move |_| {
+                let g = s_iter.read();
+                if g.1 {
+                    return Err(PyException::value_error("I/O operation on closed file"));
+                }
+                let fd = g.0;
+                drop(g);
+                let mut items = Vec::new();
+                loop {
+                    let line = readline_from_fd(fd, is_bin_iter)?;
+                    let is_empty = match &line.payload {
+                        PyObjectPayload::Str(s) => s.is_empty(),
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.is_empty(),
+                        _ => false,
+                    };
+                    if is_empty {
+                        break;
+                    }
+                    items.push(line);
+                }
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::List { items, index: 0 }),
+                ))))
+            }),
         );
 
         let class = PyObject::class(

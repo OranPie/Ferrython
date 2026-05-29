@@ -111,6 +111,31 @@ pub(super) fn native_function_attr(
     nf: &NativeFunctionData,
     name: &str,
 ) -> Option<PyObjectRef> {
+    if nf.name.as_str() == "csv.DictWriter"
+        && matches!(name, "writeheader" | "writerow" | "writerows")
+    {
+        let method_name = CompactString::from(name);
+        let closure_name = CompactString::from(format!("csv.DictWriter.{}", name));
+        return Some(PyObject::native_closure(
+            closure_name.as_str(),
+            move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error(format!(
+                        "descriptor '{}' for 'csv.DictWriter' objects needs an argument",
+                        method_name
+                    )));
+                }
+                let method = args[0].get_attr(method_name.as_str()).ok_or_else(|| {
+                    PyException::attribute_error(format!(
+                        "'{}' object has no attribute '{}'",
+                        args[0].type_name(),
+                        method_name
+                    ))
+                })?;
+                call_callable(&method, &args[1..])
+            },
+        ));
+    }
     match name {
         "__name__" => {
             let name = nf.name.as_str();

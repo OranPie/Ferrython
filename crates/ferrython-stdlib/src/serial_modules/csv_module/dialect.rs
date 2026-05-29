@@ -12,6 +12,9 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\r\n".into(),
+                quoting: 0,
+                skipinitialspace: false,
+                strict: false,
             },
         );
         m.insert(
@@ -22,6 +25,9 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\r\n".into(),
+                quoting: 0,
+                skipinitialspace: false,
+                strict: false,
             },
         );
         m.insert(
@@ -32,6 +38,9 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\n".into(),
+                quoting: 1,
+                skipinitialspace: false,
+                strict: false,
             },
         );
         Mutex::new(m)
@@ -44,6 +53,9 @@ pub(super) struct CsvDialectEntry {
     pub(super) escapechar: Option<char>,
     pub(super) doublequote: bool,
     pub(super) lineterminator: String,
+    pub(super) quoting: i64,
+    pub(super) skipinitialspace: bool,
+    pub(super) strict: bool,
 }
 
 /// csv.register_dialect(name, [dialect], **kwargs)
@@ -58,6 +70,9 @@ pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef
         escapechar: None,
         doublequote: true,
         lineterminator: "\r\n".into(),
+        quoting: 0,
+        skipinitialspace: false,
+        strict: false,
     };
     // Extract kwargs from trailing dict
     for arg in args.iter().skip(1) {
@@ -82,6 +97,19 @@ pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("lineterminator"))) {
                 entry.lineterminator = v.py_to_string();
             }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
+                if let Some(n) = v.as_int() {
+                    entry.quoting = n;
+                }
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from(
+                "skipinitialspace",
+            ))) {
+                entry.skipinitialspace = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("strict"))) {
+                entry.strict = v.is_truthy();
+            }
         } else if let PyObjectPayload::Instance(inst) = &arg.payload {
             let r = inst.attrs.read();
             if let Some(v) = r.get("delimiter") {
@@ -93,6 +121,27 @@ pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef
                 if let Some(c) = v.py_to_string().chars().next() {
                     entry.quotechar = c;
                 }
+            }
+            if let Some(v) = r.get("escapechar") {
+                entry.escapechar = match &v.payload {
+                    PyObjectPayload::None => None,
+                    _ => v.py_to_string().chars().next(),
+                };
+            }
+            if let Some(v) = r.get("doublequote") {
+                entry.doublequote = v.is_truthy();
+            }
+            if let Some(v) = r.get("lineterminator") {
+                entry.lineterminator = v.py_to_string();
+            }
+            if let Some(v) = r.get("quoting").and_then(|v| v.as_int()) {
+                entry.quoting = v;
+            }
+            if let Some(v) = r.get("skipinitialspace") {
+                entry.skipinitialspace = v.is_truthy();
+            }
+            if let Some(v) = r.get("strict") {
+                entry.strict = v.is_truthy();
             }
         }
     }
@@ -142,8 +191,21 @@ pub(super) fn csv_list_dialects(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     Ok(PyObject::list(names))
 }
 
+fn readonly_dialect_attr(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Err(PyException::attribute_error("attribute is read-only"))
+}
+
 pub(super) fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
-    let cls = PyObject::class(CompactString::from("Dialect"), vec![], IndexMap::new());
+    let mut ns = IndexMap::new();
+    ns.insert(
+        CompactString::from("__setattr__"),
+        make_builtin(readonly_dialect_attr),
+    );
+    ns.insert(
+        CompactString::from("__delattr__"),
+        make_builtin(readonly_dialect_attr),
+    );
+    let cls = PyObject::class(CompactString::from("Dialect"), vec![], ns);
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -162,6 +224,15 @@ pub(super) fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
         w.insert(
             CompactString::from("lineterminator"),
             PyObject::str_val(CompactString::from(entry.lineterminator.as_str())),
+        );
+        w.insert(CompactString::from("quoting"), PyObject::int(entry.quoting));
+        w.insert(
+            CompactString::from("skipinitialspace"),
+            PyObject::bool_val(entry.skipinitialspace),
+        );
+        w.insert(
+            CompactString::from("strict"),
+            PyObject::bool_val(entry.strict),
         );
         if let Some(esc) = entry.escapechar {
             w.insert(
@@ -246,6 +317,9 @@ pub(super) fn sniff_dialect(sample: &str, delimiters: Option<&str>) -> PyResult<
         escapechar: None,
         doublequote: true,
         lineterminator: "\r\n".into(),
+        quoting: 0,
+        skipinitialspace: false,
+        strict: false,
     };
     Ok(make_dialect_obj(&entry))
 }

@@ -272,7 +272,16 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         // 1. Check VM cache
         if let Some(module) = self.modules.get(name) {
-            return Ok(module.clone());
+            let module = module.clone();
+            if let Some(ref sys_mod_dict) = self.sys_modules_dict {
+                if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
+                    let key = HashableKey::str_key(CompactString::from(name));
+                    if !d.read().contains_key(&key) {
+                        d.write().insert(key, module.clone());
+                    }
+                }
+            }
+            return Ok(module);
         }
 
         // 1b. Check sys.modules dict (catches dynamically-inserted modules).

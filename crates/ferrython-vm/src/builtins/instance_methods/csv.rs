@@ -3,6 +3,31 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::HashableKey;
 
+fn csv_field_to_string(item: &PyObjectRef) -> String {
+    match &item.payload {
+        PyObjectPayload::None => String::new(),
+        _ => item.py_to_string(),
+    }
+}
+
+fn csv_quote_row(items: &[PyObjectRef]) -> Vec<String> {
+    let single_empty = items.len() == 1 && matches!(&items[0].payload, PyObjectPayload::None);
+    items
+        .iter()
+        .map(|item| {
+            if single_empty {
+                return "\"\"".to_string();
+            }
+            let s = csv_field_to_string(item);
+            if s.contains(',') || s.contains('"') || s.contains('\n') {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn call_csv_writer_method(
     inst: &ferrython_core::object::InstanceData,
     method: &str,
@@ -25,17 +50,7 @@ pub(crate) fn call_csv_writer_method(
                 return Err(PyException::type_error("writerow() requires a sequence"));
             }
             let items = args[0].to_list()?;
-            let fields: Vec<String> = items
-                .iter()
-                .map(|item| {
-                    let s = item.py_to_string();
-                    if s.contains(',') || s.contains('"') || s.contains('\n') {
-                        format!("\"{}\"", s.replace('"', "\"\""))
-                    } else {
-                        s
-                    }
-                })
-                .collect();
+            let fields = csv_quote_row(&items);
             let line = format!("{}\r\n", fields.join(","));
             // Write to the file object's write method or accumulate in _rows
             if let PyObjectPayload::Instance(fobj_inst) = &fileobj.payload {
@@ -83,6 +98,17 @@ pub(crate) fn call_csv_dictwriter_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
+    if let Some(callable) = attrs.get(method).cloned() {
+        drop(attrs);
+        return match &callable.payload {
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(args),
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(args),
+            _ => Err(PyException::attribute_error(format!(
+                "'csv.DictWriter' object has no callable attribute '{}'",
+                method
+            ))),
+        };
+    }
     let fileobj = attrs
         .get("_fileobj")
         .cloned()
@@ -131,7 +157,7 @@ pub(crate) fn call_csv_dictwriter_method(
                 } else {
                     PyObject::none()
                 };
-                let s = val.py_to_string();
+                let s = csv_field_to_string(&val);
                 if s.contains(',') || s.contains('"') || s.contains('\n') {
                     fields.push(format!("\"{}\"", s.replace('"', "\"\"")));
                 } else {

@@ -645,9 +645,6 @@ pub(super) fn instance_builtin_method(
 
     // CSV DictWriter
     if attrs.contains_key("__csv_dictwriter__") {
-        if matches!(name, "writeheader" | "writerow" | "writerows") {
-            return Some(make_bound(name));
-        }
         return attrs.get(name).cloned();
     }
 

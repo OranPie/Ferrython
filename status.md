@@ -1,8 +1,26 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T17:53:56+08:00
+Last updated: 2026-05-29T18:50:55+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `csv` / `tempfile` / `decimal` 小兼容修复：
+  - `csv` module 补齐 `__doc__`、`__version__`、`__all__` 和可捕获的 `csv.Error`，并为 reader/writer 暴露只读 `dialect` 属性。
+  - `csv.reader`/`writer` 改进 `None` 字段、空行、bytes 输入报错、`skipinitialspace`、严格 quote 错误、`QUOTE_NONE` 无 escape 报错和 `lineterminator` 处理。
+  - `csv.DictReader` 补齐 `fieldnames`、`restkey`、`restval`、显式 dialect kwargs、短行 `None` 默认值和多余字段收集。
+  - `csv.DictWriter` 支持 `extrasaction`、多余字段 `ValueError`、`writeheader()` 返回底层写入长度，并兼容 `csv.DictWriter.writerow(writer, row)` 类式调用。
+  - `TemporaryFile("w+")` 保留文本模式，新增 `readline()` 和剩余行迭代；`test.support.import_fresh_module()` 与 VM import cache 修复让 `decimal` fresh import 不再因 `sys.modules` 缺项加载失败。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_csv.Test_Csv.test_writerows_with_none test_csv.MiscTestCase.test__all__ test_csv.Test_Csv.test_reader_attrs test_csv.Test_Csv.test_writer_attrs test_csv.Test_Csv.test_read_oddinputs test_csv.Test_Csv.test_read_eol test_csv.Test_Csv.test_write_iterable test_csv.TestUnicode.test_unicode_write`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_csv.TestDictFields.test_read_dict_fields test_csv.TestDictFields.test_read_dict_no_fieldnames test_csv.KeyOrderingTest.test_ordering_for_the_dict_reader_and_writer test_csv.TestDictFields.test_read_semi_sep test_csv.TestDictFields.test_read_long test_csv.TestDictFields.test_read_long_with_rest test_csv.TestDictFields.test_read_short`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_csv.TestDictFields.test_typo_in_extrasaction_raises_error test_csv.TestDictFields.test_write_field_not_in_field_names_raise test_csv.TestDictFields.test_write_field_not_in_field_names_ignore test_csv.TestDictFields.test_write_fields_not_in_fieldnames test_csv.TestDictFields.test_writeheader_return_value test_csv.KeyOrderingTest.test_ordered_dict_reader`
+  - `target/debug/ferrython -c "import sys; from test.support import import_fresh_module; C=import_fresh_module('decimal', fresh=['_decimal']); P=import_fresh_module('decimal', blocked=['_decimal']); print(C, P, 'decimal' in sys.modules)"`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_csv` 当前为 `run=104 pass=62 fail=38 err=3 skip=1`；剩余集中在 dialect registry/validation、escape/newline parser、Sniffer 和 reader streaming 行为。
+  - `test_decimal` 已可加载并执行约 500 个用例，但 Decimal/Context 实现仍有大量功能级失败，未作为本批展开。
 
 - 已推进 `itertools.tee` 逻辑兼容：
   - `_tee` iterator 增加共享 reentry guard，递归拉取时抛出 `RuntimeError`。

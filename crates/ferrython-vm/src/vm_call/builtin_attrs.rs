@@ -156,6 +156,13 @@ impl VirtualMachine {
                     )?;
                     return Ok(PyObject::none());
                 }
+                if matches!(
+                    &sa.payload,
+                    PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_)
+                ) {
+                    self.call_object(sa, vec![args[0].clone(), args[1].clone(), value])?;
+                    return Ok(PyObject::none());
+                }
             }
         }
         builtins::dispatch("setattr", &args)
@@ -185,6 +192,25 @@ impl VirtualMachine {
                         "can't delete attribute '{}'",
                         attr_name
                     )));
+                }
+            }
+            if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
+                    let method = PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: args[0].clone(),
+                            method: delattr_method,
+                        },
+                    });
+                    self.call_object(method, vec![args[1].clone()])?;
+                    return Ok(PyObject::none());
+                }
+                if matches!(
+                    &delattr_method.payload,
+                    PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_)
+                ) {
+                    self.call_object(delattr_method, vec![args[0].clone(), args[1].clone()])?;
+                    return Ok(PyObject::none());
                 }
             }
         }

@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args_min, make_builtin, make_module, IteratorData, NativeClosureData, PyCell, PyObject,
     PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -24,13 +24,49 @@ use reader::csv_reader;
 use writer::csv_writer;
 
 pub fn create_csv_module() -> PyObjectRef {
+    let all_names = vec![
+        "reader",
+        "writer",
+        "DictReader",
+        "DictWriter",
+        "register_dialect",
+        "unregister_dialect",
+        "get_dialect",
+        "list_dialects",
+        "Sniffer",
+        "field_size_limit",
+        "Error",
+        "QUOTE_ALL",
+        "QUOTE_MINIMAL",
+        "QUOTE_NONNUMERIC",
+        "QUOTE_NONE",
+        "Dialect",
+        "excel",
+        "excel_tab",
+        "unix_dialect",
+        "__doc__",
+        "__version__",
+    ]
+    .into_iter()
+    .map(|name| PyObject::str_val(CompactString::from(name)))
+    .collect();
+
     make_module(
         "csv",
         vec![
+            (
+                "__doc__",
+                PyObject::str_val(CompactString::from("CSV parsing and writing")),
+            ),
+            ("__version__", PyObject::str_val(CompactString::from("1.0"))),
+            ("__all__", PyObject::list(all_names)),
             ("reader", make_builtin(csv_reader)),
             ("writer", make_builtin(csv_writer)),
             ("DictReader", make_builtin(csv_dict_reader)),
-            ("DictWriter", make_builtin(csv_dict_writer)),
+            (
+                "DictWriter",
+                PyObject::native_function("csv.DictWriter", csv_dict_writer),
+            ),
             ("register_dialect", make_builtin(csv_register_dialect)),
             ("unregister_dialect", make_builtin(csv_unregister_dialect)),
             ("get_dialect", make_builtin(csv_get_dialect)),
@@ -49,10 +85,7 @@ pub fn create_csv_module() -> PyObjectRef {
                     Ok(PyObject::int(old))
                 }),
             ),
-            (
-                "Error",
-                PyObject::builtin_type(CompactString::from("Error")),
-            ),
+            ("Error", PyObject::exception_type(ExceptionKind::CsvError)),
             ("QUOTE_ALL", PyObject::int(1)),
             ("QUOTE_MINIMAL", PyObject::int(0)),
             ("QUOTE_NONNUMERIC", PyObject::int(2)),

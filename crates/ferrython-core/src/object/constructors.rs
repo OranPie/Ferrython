@@ -596,6 +596,7 @@ const ALL_EXCEPTION_KINDS: &[ExceptionKind] = &[
     ExceptionKind::IndentationError,
     ExceptionKind::TabError,
     ExceptionKind::JSONDecodeError,
+    ExceptionKind::CsvError,
     ExceptionKind::SubprocessError,
     ExceptionKind::CalledProcessError,
     ExceptionKind::TimeoutExpired,

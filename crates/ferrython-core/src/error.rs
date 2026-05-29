@@ -79,6 +79,7 @@ pub enum ExceptionKind {
     TabError,
     // Module-specific subclasses
     JSONDecodeError,
+    CsvError,
     ReError,
     // subprocess module
     SubprocessError,
@@ -156,6 +157,7 @@ impl ExceptionKind {
                     | ExceptionKind::UnicodeEncodeError
                     | ExceptionKind::UnicodeTranslateError
                     | ExceptionKind::JSONDecodeError
+                    | ExceptionKind::CsvError
             ),
             ExceptionKind::UnicodeError => matches!(
                 self,
@@ -286,6 +288,7 @@ impl ExceptionKind {
             "IndentationError" => Some(Self::IndentationError),
             "TabError" => Some(Self::TabError),
             "JSONDecodeError" | "json.JSONDecodeError" => Some(Self::JSONDecodeError),
+            "Error" | "csv.Error" => Some(Self::CsvError),
             "error" | "re.error" => Some(Self::ReError),
             "SubprocessError" => Some(Self::SubprocessError),
             "CalledProcessError" => Some(Self::CalledProcessError),

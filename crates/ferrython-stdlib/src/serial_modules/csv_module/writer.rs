@@ -1,4 +1,5 @@
-use super::dialect::DIALECT_REGISTRY;
+use super::dialect::make_dialect_obj;
+use super::reader::extract_csv_dialect;
 use super::*;
 
 /// Quote a CSV field according to quoting mode.
@@ -32,42 +33,60 @@ pub(super) fn csv_quote_field(s: &str, quoting: i64, quotechar: char, delimiter:
     }
 }
 
+pub(super) fn csv_field_needs_escape(s: &str, delimiter: &str, quotechar: char) -> bool {
+    s.contains(delimiter) || s.contains(quotechar) || s.contains('\n') || s.contains('\r')
+}
+
+pub(super) fn csv_quote_row(
+    items: &[PyObjectRef],
+    quoting: i64,
+    quotechar: char,
+    delimiter: &str,
+) -> PyResult<Vec<String>> {
+    let single_empty = items.len() == 1 && matches!(&items[0].payload, PyObjectPayload::None);
+    let mut fields = Vec::with_capacity(items.len());
+    for item in items {
+        fields.push({
+            if single_empty {
+                if quoting == 3 {
+                    return Err(PyException::new(
+                        ExceptionKind::CsvError,
+                        "single empty field record must be quoted",
+                    ));
+                }
+                format!("{quotechar}{quotechar}")
+            } else {
+                let s = csv_field_to_string(item);
+                if quoting == 3 && csv_field_needs_escape(&s, delimiter, quotechar) {
+                    return Err(PyException::new(
+                        ExceptionKind::CsvError,
+                        "need to escape, but no escapechar set",
+                    ));
+                }
+                csv_quote_field(&s, quoting, quotechar, delimiter)
+            }
+        });
+    }
+    Ok(fields)
+}
+
+pub(super) fn csv_field_to_string(item: &PyObjectRef) -> String {
+    match &item.payload {
+        PyObjectPayload::None => String::new(),
+        _ => item.py_to_string(),
+    }
+}
+
 pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.writer requires a file object"));
     }
     let fileobj = args[0].clone();
-    let mut delimiter = ",".to_string();
-    let mut quoting: i64 = 0; // QUOTE_MINIMAL
-    let mut quotechar = '"';
-    if args.len() > 1 {
-        if let PyObjectPayload::Dict(kw) = &args[args.len() - 1].payload {
-            let r = kw.read();
-            // Check for dialect name first
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("dialect"))) {
-                let name = v.py_to_string();
-                if let Ok(reg) = DIALECT_REGISTRY.lock() {
-                    if let Some(entry) = reg.get(&name) {
-                        delimiter = entry.delimiter.to_string();
-                        quotechar = entry.quotechar;
-                    }
-                }
-            }
-            // Individual overrides take precedence
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
-                delimiter = v.py_to_string();
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
-                if let PyObjectPayload::Int(n) = &v.payload {
-                    quoting = n.to_i64().unwrap_or(0);
-                }
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
-                let s = v.py_to_string();
-                quotechar = s.chars().next().unwrap_or('"');
-            }
-        }
-    }
+    let dialect = extract_csv_dialect(args, 1);
+    let delimiter = dialect.delimiter.to_string();
+    let quoting = dialect.quoting;
+    let quotechar = dialect.quotechar;
+    let lineterminator = dialect.lineterminator.clone();
 
     let cls = PyObject::class(CompactString::from("csv_writer"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
@@ -78,10 +97,15 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             PyObject::bool_val(true),
         );
         attrs.insert(CompactString::from("_fileobj"), fileobj.clone());
+        attrs.insert(
+            CompactString::from("dialect"),
+            make_dialect_obj(&dialect.to_entry()),
+        );
 
         // writerow(row) — format and write a single row
         let fo = fileobj.clone();
         let delim = delimiter.clone();
+        let line_term = lineterminator.clone();
         let qt = quoting;
         let qc = quotechar;
         attrs.insert(
@@ -91,14 +115,8 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     return Err(PyException::type_error("writerow requires a sequence"));
                 }
                 let items = a[0].to_list()?;
-                let fields: Vec<String> = items
-                    .iter()
-                    .map(|item| {
-                        let s = item.py_to_string();
-                        csv_quote_field(&s, qt, qc, &delim)
-                    })
-                    .collect();
-                let line = format!("{}\r\n", fields.join(&delim));
+                let fields = csv_quote_row(&items, qt, qc, &delim)?;
+                let line = format!("{}{}", fields.join(&delim), line_term);
                 // Write to fileobj via its write() method
                 if let Some(write_fn) = fo.get_attr("write") {
                     match &write_fn.payload {
@@ -118,6 +136,7 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // writerows(rows) — write multiple rows
         let fo2 = fileobj;
         let delim2 = delimiter;
+        let line_term2 = lineterminator;
         let qt2 = quoting;
         let qc2 = quotechar;
         attrs.insert(
@@ -129,14 +148,8 @@ pub(super) fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 let rows = a[0].to_list()?;
                 for row in &rows {
                     let items = row.to_list()?;
-                    let fields: Vec<String> = items
-                        .iter()
-                        .map(|item| {
-                            let s = item.py_to_string();
-                            csv_quote_field(&s, qt2, qc2, &delim2)
-                        })
-                        .collect();
-                    let line = format!("{}\r\n", fields.join(&delim2));
+                    let fields = csv_quote_row(&items, qt2, qc2, &delim2)?;
+                    let line = format!("{}{}", fields.join(&delim2), line_term2);
                     if let Some(write_fn) = fo2.get_attr("write") {
                         match &write_fn.payload {
                             PyObjectPayload::NativeFunction(nf) => {

@@ -67,7 +67,9 @@ pub(super) fn exception_type_attr(
                 | ExceptionKind::UnicodeDecodeError
                 | ExceptionKind::UnicodeEncodeError
                 | ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::ValueError),
-                ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
+                ExceptionKind::JSONDecodeError | ExceptionKind::CsvError => {
+                    Some(ExceptionKind::ValueError)
+                }
                 ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
                 ExceptionKind::NotImplementedError
                 | ExceptionKind::RecursionError
@@ -155,7 +157,9 @@ pub(super) fn exception_type_attr(
                     | ExceptionKind::UnicodeDecodeError
                     | ExceptionKind::UnicodeEncodeError
                     | ExceptionKind::UnicodeTranslateError => ExceptionKind::ValueError,
-                    ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
+                    ExceptionKind::JSONDecodeError | ExceptionKind::CsvError => {
+                        ExceptionKind::ValueError
+                    }
                     ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
                     ExceptionKind::NotImplementedError
                     | ExceptionKind::RecursionError
