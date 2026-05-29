@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectRef,
+    check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 
 pub(crate) fn create_secrets_module() -> PyObjectRef {
@@ -11,9 +11,11 @@ pub(crate) fn create_secrets_module() -> PyObjectRef {
             ("token_bytes", make_builtin(secrets_token_bytes)),
             ("token_hex", make_builtin(secrets_token_hex)),
             ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
+            ("randbits", make_builtin(secrets_randbits)),
             ("randbelow", make_builtin(secrets_randbelow)),
             ("choice", make_builtin(secrets_choice)),
             ("compare_digest", make_builtin(secrets_compare_digest)),
+            ("DEFAULT_ENTROPY", PyObject::int(32)),
         ],
     )
 }
@@ -51,31 +53,19 @@ fn secrets_random_f64() -> f64 {
 }
 
 fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() {
-        32
-    } else {
-        args[0].to_int()? as usize
-    };
+    let nbytes = secrets_nbytes_arg(args)?;
     Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
 }
 
 fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() {
-        32
-    } else {
-        args[0].to_int()? as usize
-    };
+    let nbytes = secrets_nbytes_arg(args)?;
     let bytes = secrets_random_bytes(nbytes);
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     Ok(PyObject::str_val(CompactString::from(hex)))
 }
 
 fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let nbytes = if args.is_empty() {
-        32
-    } else {
-        args[0].to_int()? as usize
-    };
+    let nbytes = secrets_nbytes_arg(args)?;
     let bytes = secrets_random_bytes(nbytes);
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
@@ -106,6 +96,47 @@ fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
+fn secrets_nbytes_arg(args: &[PyObjectRef]) -> PyResult<usize> {
+    if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+        return Ok(32);
+    }
+    let n = args[0].to_int()?;
+    if n < 0 {
+        return Err(PyException::value_error(
+            "number of bytes must be non-negative",
+        ));
+    }
+    Ok(n as usize)
+}
+
+fn secrets_randbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.randbits", args, 1)?;
+    let k = args[0].to_int()?;
+    if k < 0 {
+        return Err(PyException::value_error(
+            "number of bits must be greater than zero",
+        ));
+    }
+    if k == 0 {
+        return Ok(PyObject::int(0));
+    }
+
+    let nbytes = ((k + 7) / 8) as usize;
+    let mut value = num_bigint::BigInt::from(0u8);
+    for byte in secrets_random_bytes(nbytes) {
+        value = (value << 8) | num_bigint::BigInt::from(byte);
+    }
+    let excess_bits = nbytes * 8 - k as usize;
+    if excess_bits > 0 {
+        value >>= excess_bits;
+    }
+    if let Some(value) = num_traits::ToPrimitive::to_i64(&value) {
+        Ok(PyObject::int(value))
+    } else {
+        Ok(PyObject::big_int(value))
+    }
+}
+
 fn secrets_randbelow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("secrets.randbelow", args, 1)?;
     let n = args[0].to_int()?;
@@ -130,10 +161,23 @@ fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("secrets.compare_digest", args, 2)?;
-    let a = args[0].py_to_string();
-    let b = args[1].py_to_string();
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
+    let (a_bytes, b_bytes) = match (&args[0].payload, &args[1].payload) {
+        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => (
+            a.as_str().as_bytes().to_vec(),
+            b.as_str().as_bytes().to_vec(),
+        ),
+        (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b))
+        | (PyObjectPayload::ByteArray(a), PyObjectPayload::ByteArray(b))
+        | (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b))
+        | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) => {
+            ((**a).clone(), (**b).clone())
+        }
+        _ => {
+            return Err(PyException::type_error(
+                "unsupported operand types for compare_digest",
+            ))
+        }
+    };
     let mut result: u8 = if a_bytes.len() != b_bytes.len() { 1 } else { 0 };
     let len = std::cmp::min(a_bytes.len(), b_bytes.len());
     for i in 0..len {
