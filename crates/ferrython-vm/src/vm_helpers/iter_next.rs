@@ -606,10 +606,12 @@ impl VirtualMachine {
             IteratorData::Tee {
                 source,
                 buffer,
+                active,
                 index,
             } => {
                 let src_cell = Rc::clone(source);
                 let buf_cell = Rc::clone(buffer);
+                let active_cell = Rc::clone(active);
                 let idx = *index;
                 drop(data);
 
@@ -628,8 +630,14 @@ impl VirtualMachine {
                 }
 
                 // Need to pull from source; we own the right to pull item `idx`
+                if active_cell.get() {
+                    return Err(PyException::runtime_error("cannot re-enter tee iterator"));
+                }
+                active_cell.set(true);
                 let src = src_cell.read().clone();
-                match self.vm_iter_next(&src)? {
+                let next = self.vm_iter_next(&src);
+                active_cell.set(false);
+                match next? {
                     Some(val) => {
                         buf_cell.write().push(val.clone());
                         let mut d = iter_data_arc.write();

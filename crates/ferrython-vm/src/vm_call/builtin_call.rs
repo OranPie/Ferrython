@@ -1,6 +1,11 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{DequeIterData, PyObject, PyObjectPayload, PyObjectRef, SyncUsize};
+use ferrython_core::object::{
+    DequeIterData, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    SyncUsize,
+};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use crate::builtins;
 use crate::builtins::deque_storage_len;
@@ -15,6 +20,42 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         if name.as_str() == "__build_class__" {
             return self.build_class(args);
+        }
+        if name.as_str() == "itertools._tee" {
+            if args.len() != 1 {
+                return Err(PyException::type_error("_tee() takes exactly one argument"));
+            }
+            if let PyObjectPayload::Iterator(iter_data) = &args[0].payload {
+                let data = iter_data.read();
+                if let IteratorData::Tee {
+                    source,
+                    buffer,
+                    active,
+                    index,
+                } = &*data
+                {
+                    return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                        PyCell::new(IteratorData::Tee {
+                            source: Rc::clone(source),
+                            buffer: Rc::clone(buffer),
+                            active: Rc::clone(active),
+                            index: *index,
+                        }),
+                    ))));
+                }
+            }
+            let source = args[0].get_iter()?;
+            let source_cell = Rc::new(PyCell::new(source));
+            let buffer = Rc::new(PyCell::new(Vec::new()));
+            let active = Rc::new(Cell::new(false));
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::Tee {
+                    source: source_cell,
+                    buffer,
+                    active,
+                    index: 0,
+                }),
+            ))));
         }
         if matches!(name.as_str(), "_deque_iterator" | "_deque_reverse_iterator") {
             if args.len() != 1 {

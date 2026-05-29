@@ -1,6 +1,23 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T11:26:47+08:00
+Last updated: 2026-05-29T17:53:56+08:00
+
+## CPython 兼容修复进度
+
+- 已推进 `itertools.tee` 逻辑兼容：
+  - `_tee` iterator 增加共享 reentry guard，递归拉取时抛出 `RuntimeError`。
+  - `tee()` 对现有 `_tee` leg 做 pass-through/clone，保留共享 source/buffer/index 语义。
+  - `type(_tee_obj)` 和 `__class__` 返回 `itertools._tee`，并支持 `_tee(iterable)` 类型调用。
+  - `weakref.proxy(_tee_obj).__class__` 在目标存活时转发到 referent 类型，目标死亡后传播 `ReferenceError`。
+  - `_tee` 支持 `copy.copy`、`copy.deepcopy`、`__reduce__`/`__reduce_ex__` 和 pickle protocol 0/1/2 的剩余状态保存。
+  - 可 reduce 的 itertools iterator class dunder 调用委派到实例 bound method，避免 `copy.py` 走类级 `__copy__` 时绕过 iterator state。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_tee test_itertools.TestBasicOps.test_tee_reenter`
+  - `target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_zip_longest_pickling test_itertools.TestBasicOps.test_takewhile test_itertools.TestBasicOps.test_dropwhile test_itertools.TestExamples.test_takewhile test_itertools.TestExamples.test_dropwhile`
 
 ## 代码质量重构进度
 

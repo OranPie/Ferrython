@@ -1371,6 +1371,8 @@ pub enum IteratorData {
         source: Rc<PyCell<PyObjectRef>>,
         /// Shared buffer of items already pulled from the source.
         buffer: Rc<PyCell<Vec<PyObjectRef>>>,
+        /// Shared guard that detects recursive pulls from the underlying source.
+        active: Rc<Cell<bool>>,
         /// This leg's current position in the buffer.
         index: usize,
     },

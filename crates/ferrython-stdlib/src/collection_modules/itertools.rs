@@ -6,6 +6,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
 const MAX_EAGER_ITERTOOLS_RESULTS: usize = 1_000_000;
@@ -841,6 +842,9 @@ fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("tee requires iterable"));
     }
+    if args.len() > 2 {
+        return Err(PyException::type_error("tee expected at most 2 arguments"));
+    }
     let n = if args.len() > 1 {
         match args[1].as_int() {
             Some(n) if n >= 0 => n as usize,
@@ -853,13 +857,52 @@ fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // Obtain a proper iterator over the input
     let source = args[0].get_iter()?;
+    if clone_tee_leg(&source).is_some() {
+        let legs: Vec<PyObjectRef> = (0..n)
+            .map(|idx| {
+                if idx == 0 {
+                    source.clone()
+                } else {
+                    clone_tee_leg(&source).unwrap_or_else(|| source.clone())
+                }
+            })
+            .collect();
+        return Ok(PyObject::tuple(legs));
+    }
+
     make_tee_legs(source, n)
+}
+
+fn clone_tee_leg(source: &PyObjectRef) -> Option<PyObjectRef> {
+    let PyObjectPayload::Iterator(iter_data) = &source.payload else {
+        return None;
+    };
+    let data = iter_data.read();
+    if let IteratorData::Tee {
+        source,
+        buffer,
+        active,
+        index,
+    } = &*data
+    {
+        Some(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::Tee {
+                source: Rc::clone(source),
+                buffer: Rc::clone(buffer),
+                active: Rc::clone(active),
+                index: *index,
+            }),
+        ))))
+    } else {
+        None
+    }
 }
 
 fn make_tee_legs(source: PyObjectRef, n: usize) -> PyResult<PyObjectRef> {
     // Shared source cell and shared buffer
     let source_cell = Rc::new(PyCell::new(source));
     let buffer_cell: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(Vec::new()));
+    let active = Rc::new(Cell::new(false));
 
     let legs: Vec<PyObjectRef> = (0..n)
         .map(|_| {
@@ -867,6 +910,7 @@ fn make_tee_legs(source: PyObjectRef, n: usize) -> PyResult<PyObjectRef> {
                 IteratorData::Tee {
                     source: Rc::clone(&source_cell),
                     buffer: Rc::clone(&buffer_cell),
+                    active: Rc::clone(&active),
                     index: 0,
                 },
             ))))

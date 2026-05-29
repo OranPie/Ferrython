@@ -382,7 +382,7 @@ fn iterator_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
             Some(bound_builtin(obj, name))
         }
         "__setstate__" if iterator_supports_setstate(obj) => Some(bound_builtin(obj, name)),
-        "__class__" => Some(PyObject::builtin_type(CompactString::from("iterator"))),
+        "__class__" => Some(PyObject::builtin_type(CompactString::from(obj.type_name()))),
         _ => None,
     }
 }

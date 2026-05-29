@@ -576,6 +576,12 @@ pub(crate) fn try_fast_callfunction_builtin(
                 return None;
             };
             let obj = stack_tail_arg(stack, 2, 0)?;
+            if matches!(&obj.payload, PyObjectPayload::Instance(inst)
+                if inst.attrs.read().contains_key("__weakref_target__")
+                    && !inst.attrs.read().contains_key("__weakref_ref__"))
+            {
+                return None;
+            }
             obj.get_attr(name.as_str())
         }
         (Some("sum"), 1) | (Some("sum"), 2) => {
@@ -694,6 +700,7 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
                 IteratorData::DictEntries { .. } => "dict_itemiterator",
                 IteratorData::DictKeys { .. } => "dict_keyiterator",
                 IteratorData::Sentinel { .. } => "callable_iterator",
+                IteratorData::Tee { .. } => "itertools._tee",
                 _ => "iterator",
             };
             Some(PyObject::builtin_type_by_name(name))

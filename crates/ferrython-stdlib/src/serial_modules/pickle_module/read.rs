@@ -9,6 +9,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::collection_modules::{
@@ -583,6 +584,33 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         func,
                         source,
                         dropping,
+                    }),
+                ))))
+            }
+            ("__builtin__" | "builtins", "__ferrython_tee__") => {
+                use ferrython_core::object::IteratorData;
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let buffer = arg_list
+                    .get(1)
+                    .and_then(|obj| {
+                        if let PyObjectPayload::List(items) = &obj.payload {
+                            Some(items.read().clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let index = arg_list
+                    .get(2)
+                    .and_then(|value| value.as_int())
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::Tee {
+                        source: Rc::new(PyCell::new(source)),
+                        buffer: Rc::new(PyCell::new(buffer)),
+                        active: Rc::new(Cell::new(false)),
+                        index,
                     }),
                 ))))
             }

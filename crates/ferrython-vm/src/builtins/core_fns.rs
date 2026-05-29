@@ -7,8 +7,8 @@ mod numeric;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args, check_args_min, guard_eager_allocation, PropertyData, PyCell, PyObject,
-    PyObjectMethods, PyObjectPayload, PyObjectRef,
+    call_callable, check_args, check_args_min, guard_eager_allocation, PropertyData, PyCell,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use std::cell::Cell;
 
@@ -120,7 +120,21 @@ pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let name = args[1]
         .as_str()
         .ok_or_else(|| PyException::type_error("getattr(): attribute name must be string"))?;
-    match args[0].get_attr(name) {
+    let target = match &args[0].payload {
+        PyObjectPayload::Instance(inst)
+            if !inst.attrs.read().contains_key("__weakref_ref__")
+                && inst.attrs.read().contains_key("__weakref_target__") =>
+        {
+            let target_fn = inst.attrs.read().get("__weakref_target__").cloned();
+            match target_fn {
+                Some(target_fn) => Some(call_callable(&target_fn, &[])?),
+                None => None,
+            }
+        }
+        _ => None,
+    };
+    let obj = target.as_ref().unwrap_or(&args[0]);
+    match obj.get_attr(name) {
         Some(v) => Ok(v),
         None => {
             if args.len() > 2 {

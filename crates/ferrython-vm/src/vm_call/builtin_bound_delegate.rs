@@ -1,5 +1,7 @@
 use ferrython_core::error::PyResult;
-use ferrython_core::object::{BuiltinBoundMethodData, PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 use ferrython_core::types::HashableKey;
 
 use crate::builtins;
@@ -87,6 +89,27 @@ impl VirtualMachine {
                     extracted
                 };
                 return self.instantiate_class(&cls, rest, kw).map(Some);
+            }
+        }
+
+        if matches!(
+            bbm.method_name.as_str(),
+            "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__"
+        ) && !args.is_empty()
+            && matches!(&args[0].payload, PyObjectPayload::Iterator(iter_data)
+                if matches!(&*iter_data.read(),
+                    IteratorData::Islice { .. }
+                        | IteratorData::TakeWhile { .. }
+                        | IteratorData::DropWhile { .. }
+                        | IteratorData::Tee { .. }))
+        {
+            let rest_args = if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                vec![]
+            };
+            if let Some(method) = args[0].get_attr(bbm.method_name.as_str()) {
+                return self.call_object(method, rest_args).map(Some);
             }
         }
 

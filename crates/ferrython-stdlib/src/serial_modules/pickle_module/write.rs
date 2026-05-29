@@ -478,6 +478,19 @@ pub(super) fn pickle_serialize_p0(
                     buf.extend_from_slice(b"tR");
                     return Ok(());
                 }
+                IteratorData::Tee {
+                    source,
+                    buffer,
+                    index,
+                    ..
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_tee__\n(");
+                    pickle_serialize_p0(&source.read().clone(), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::list(buffer.read().clone()), buf, memo)?;
+                    pickle_serialize_p0(&PyObject::int(*index as i64), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
                 _ => {
                     return Err(PyException::runtime_error(format!(
                         "PicklingError: can't pickle object of type {}",
@@ -1146,6 +1159,25 @@ pub(super) fn pickle_serialize_p2(
                             func.clone(),
                             source.clone(),
                             PyObject::bool_val(*dropping),
+                        ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::Tee {
+                    source,
+                    buffer,
+                    index,
+                    ..
+                } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_tee__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![
+                            source.read().clone(),
+                            PyObject::list(buffer.read().clone()),
+                            PyObject::int(*index as i64),
                         ]),
                         buf,
                         memo,

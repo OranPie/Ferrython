@@ -380,6 +380,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             // ── STANDARD PATH ── (dunders, descriptors, __getattribute__, dict subclasses)
             // Special instance attributes
             if name == "__class__" {
+                if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                    if !inst.attrs.read().contains_key("__weakref_ref__") {
+                        if let Ok(referent) = call_callable(&target_fn, &[]) {
+                            return py_get_attr(&referent, name);
+                        }
+                    }
+                }
                 if let Some(cls_override) = inst.attrs.read().get("__class__") {
                     return Some(cls_override.clone());
                 }

@@ -91,6 +91,22 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     }),
                 ))));
             }
+            if let IteratorData::Tee {
+                source,
+                buffer,
+                active,
+                index,
+            } = &*data
+            {
+                return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::Tee {
+                        source: Rc::clone(source),
+                        buffer: Rc::clone(buffer),
+                        active: Rc::clone(active),
+                        index: *index,
+                    }),
+                ))));
+            }
             Ok(obj.clone())
         }
         PyObjectPayload::Instance(inst) => {
@@ -215,6 +231,24 @@ fn deep_copy_with_memo(
                         next_yield: *next_yield,
                         stop: *stop,
                         step: *step,
+                    },
+                ))));
+                memo.insert(ptr, result.clone());
+                return Ok(result);
+            }
+            if let IteratorData::Tee {
+                source,
+                buffer,
+                active,
+                index,
+            } = &*data
+            {
+                let result = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::Tee {
+                        source: Rc::clone(source),
+                        buffer: Rc::clone(buffer),
+                        active: Rc::clone(active),
+                        index: *index,
                     },
                 ))));
                 memo.insert(ptr, result.clone());

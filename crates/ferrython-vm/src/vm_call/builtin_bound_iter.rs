@@ -136,6 +136,17 @@ fn copy_reducible_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObjectRe
             source: source.clone(),
             dropping: *dropping,
         }),
+        IteratorData::Tee {
+            source,
+            buffer,
+            active,
+            index,
+        } => Some(IteratorData::Tee {
+            source: std::rc::Rc::clone(source),
+            buffer: std::rc::Rc::clone(buffer),
+            active: std::rc::Rc::clone(active),
+            index: *index,
+        }),
         _ => None,
     };
     Ok(copy.map(|data| {
@@ -241,6 +252,45 @@ fn reduce_reducible_iterator(receiver: &PyObjectRef) -> PyResult<Option<PyObject
                     func.clone(),
                     source.clone(),
                     PyObject::bool_val(*dropping),
+                ]),
+            ])))
+        }
+        IteratorData::Tee {
+            source,
+            buffer,
+            index,
+            ..
+        } => {
+            let constructor = PyObject::native_closure("itertools._tee.__rebuild__", move |args| {
+                if args.len() != 3 {
+                    return Err(PyException::type_error("invalid tee reduce state"));
+                }
+                let buffer = if let PyObjectPayload::List(items) = &args[1].payload {
+                    items.read().clone()
+                } else {
+                    Vec::new()
+                };
+                let index = args[2]
+                    .as_int()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0);
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(std::rc::Rc::new(
+                    ferrython_core::object::PyCell::new(IteratorData::Tee {
+                        source: std::rc::Rc::new(ferrython_core::object::PyCell::new(
+                            args[0].clone(),
+                        )),
+                        buffer: std::rc::Rc::new(ferrython_core::object::PyCell::new(buffer)),
+                        active: std::rc::Rc::new(std::cell::Cell::new(false)),
+                        index,
+                    }),
+                ))))
+            });
+            Ok(Some(PyObject::tuple(vec![
+                constructor,
+                PyObject::tuple(vec![
+                    source.read().clone(),
+                    PyObject::list(buffer.read().clone()),
+                    PyObject::int(*index as i64),
                 ]),
             ])))
         }

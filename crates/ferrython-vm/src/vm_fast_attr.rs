@@ -386,6 +386,12 @@ fn fast_instance_attr_value(
     }
     let name = &frame.code.names[name_idx];
     if let PyObjectPayload::Class(cd) = &inst.class.payload {
+        if name.as_str() == "__class__"
+            && inst.attrs.read().contains_key("__weakref_target__")
+            && !inst.attrs.read().contains_key("__weakref_ref__")
+        {
+            return None;
+        }
         if use_cache {
             let ip = frame.ip as u32;
             if let Some(cached) = attr_cache_lookup(frame, ip, cd.class_version) {

@@ -219,6 +219,7 @@ pub fn iterator_supports_reduce(obj: &PyObjectRef) -> bool {
                 IteratorData::Islice { .. }
                     | IteratorData::TakeWhile { .. }
                     | IteratorData::DropWhile { .. }
+                    | IteratorData::Tee { .. }
             )
     )
 }

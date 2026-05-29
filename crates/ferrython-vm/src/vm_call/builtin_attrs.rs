@@ -30,14 +30,27 @@ impl VirtualMachine {
         let attr_name = args[1]
             .as_str()
             .ok_or_else(|| PyException::type_error("getattr(): attribute name must be string"))?;
-        if attr_name == "__isabstractmethod__" && ferrython_core::object::is_property_like(&args[0])
-        {
-            return self.property_isabstractmethod(&args[0]);
+        let target = match &args[0].payload {
+            PyObjectPayload::Instance(inst)
+                if !inst.attrs.read().contains_key("__weakref_ref__")
+                    && inst.attrs.read().contains_key("__weakref_target__") =>
+            {
+                inst.attrs.read().get("__weakref_target__").cloned()
+            }
+            _ => None,
+        };
+        let obj = if let Some(target) = target {
+            self.call_object(target, vec![])?
+        } else {
+            args[0].clone()
+        };
+        if attr_name == "__isabstractmethod__" && ferrython_core::object::is_property_like(&obj) {
+            return self.property_isabstractmethod(&obj);
         }
-        match args[0].get_attr(attr_name) {
+        match obj.get_attr(attr_name) {
             Some(v) => {
                 if ferrython_core::object::is_property_like(&v) {
-                    if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                    if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                         return Ok(v);
                     }
                     if let Some(getter) = ferrython_core::object::property_field(&v, "fget") {
@@ -48,7 +61,7 @@ impl VirtualMachine {
                             )));
                         }
                         let getter = crate::builtins::unwrap_abstract_fget(&getter);
-                        return self.call_object(getter, vec![args[0].clone()]);
+                        return self.call_object(getter, vec![obj.clone()]);
                     }
                     return Err(PyException::attribute_error(format!(
                         "unreadable attribute '{}'",
@@ -57,12 +70,10 @@ impl VirtualMachine {
                 }
                 if has_descriptor_get(&v) {
                     if let Some(get_method) = v.get_attr("__get__") {
-                        let (inst_arg, owner_arg) = match &args[0].payload {
-                            PyObjectPayload::Instance(inst) => {
-                                (args[0].clone(), inst.class.clone())
-                            }
-                            PyObjectPayload::Class(_) => (PyObject::none(), args[0].clone()),
-                            _ => (args[0].clone(), PyObject::none()),
+                        let (inst_arg, owner_arg) = match &obj.payload {
+                            PyObjectPayload::Instance(inst) => (obj.clone(), inst.class.clone()),
+                            PyObjectPayload::Class(_) => (PyObject::none(), obj.clone()),
+                            _ => (obj.clone(), PyObject::none()),
                         };
                         return self.call_object(get_method, vec![inst_arg, owner_arg]);
                     }
@@ -70,8 +81,8 @@ impl VirtualMachine {
                 Ok(v)
             }
             None => {
-                if let PyObjectPayload::Instance(_) = &args[0].payload {
-                    if let Some(ga) = args[0].get_attr("__getattr__") {
+                if let PyObjectPayload::Instance(_) = &obj.payload {
+                    if let Some(ga) = obj.get_attr("__getattr__") {
                         let name_arg = PyObject::str_val(CompactString::from(attr_name));
                         return self.call_object(ga, vec![name_arg]);
                     }
