@@ -310,6 +310,17 @@ fn extract_mock_kwargs(args: &[PyObjectRef]) -> FxHashKeyMap {
     new_fx_hashkey_map()
 }
 
+fn strip_trailing_kwargs(args: &[PyObjectRef]) -> &[PyObjectRef] {
+    if args
+        .last()
+        .is_some_and(|last| matches!(&last.payload, PyObjectPayload::Dict(_)))
+    {
+        &args[..args.len() - 1]
+    } else {
+        args
+    }
+}
+
 fn set_mock_target_attr(target: &PyObjectRef, attr: &str, value: PyObjectRef) {
     match &target.payload {
         PyObjectPayload::Module(md) => {
@@ -346,6 +357,86 @@ fn delete_mock_target_attr(target: &PyObjectRef, attr: &str) {
     }
 }
 
+type SavedPatch = (PyObjectRef, String, Option<PyObjectRef>);
+
+fn build_patch_context(
+    name: &str,
+    replacements: Vec<(PyObjectRef, String, PyObjectRef)>,
+    enter_value: PyObjectRef,
+) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let saved: Rc<PyCell<Vec<SavedPatch>>> = Rc::new(PyCell::new(Vec::new()));
+        let saved_enter = saved.clone();
+        let saved_exit = saved;
+        let replacements_enter = replacements.clone();
+        let replacements_exit = replacements;
+        let enter_return = enter_value.clone();
+        let mut w = d.attrs.write();
+        w.insert(
+            CompactString::from("__enter__"),
+            PyObject::native_closure("patch.__enter__", move |_: &[PyObjectRef]| {
+                let mut saved_values = Vec::new();
+                for (target, attr, replacement) in &replacements_enter {
+                    let old = target.get_attr(attr);
+                    set_mock_target_attr(target, attr, replacement.clone());
+                    saved_values.push((target.clone(), attr.clone(), old));
+                }
+                *saved_enter.write() = saved_values;
+                Ok(enter_return.clone())
+            }),
+        );
+        w.insert(
+            CompactString::from("__exit__"),
+            PyObject::native_closure("patch.__exit__", move |_: &[PyObjectRef]| {
+                let mut saved_values = saved_exit.write();
+                if saved_values.is_empty() {
+                    for (target, attr, _) in &replacements_exit {
+                        delete_mock_target_attr(target, attr);
+                    }
+                } else {
+                    for (target, attr, old) in saved_values.drain(..).rev() {
+                        if let Some(old_val) = old {
+                            set_mock_target_attr(&target, &attr, old_val);
+                        } else {
+                            delete_mock_target_attr(&target, &attr);
+                        }
+                    }
+                }
+                Ok(PyObject::bool_val(false))
+            }),
+        );
+    }
+    inst
+}
+
+fn sys_modules_lookup(name: &str) -> Option<PyObjectRef> {
+    let sys = crate::get_current_sys_module()?;
+    let modules = sys.get_attr("modules")?;
+    let PyObjectPayload::Dict(map) = &modules.payload else {
+        return None;
+    };
+    map.read()
+        .get(&HashableKey::str_key(CompactString::from(name)))
+        .cloned()
+        .filter(|obj| !matches!(&obj.payload, PyObjectPayload::None))
+}
+
+fn sys_modules_insert(name: &str, module: PyObjectRef) {
+    let Some(sys) = crate::get_current_sys_module() else {
+        return;
+    };
+    let Some(modules) = sys.get_attr("modules") else {
+        return;
+    };
+    let PyObjectPayload::Dict(map) = &modules.payload else {
+        return;
+    };
+    map.write()
+        .insert(HashableKey::str_key(CompactString::from(name)), module);
+}
+
 fn resolve_patch_target(path: &str) -> Option<(PyObjectRef, String)> {
     let (module_name, attr) = path.rsplit_once('.')?;
     if let Some(globals) = crate::get_current_globals() {
@@ -367,7 +458,13 @@ fn resolve_patch_target(path: &str) -> Option<(PyObjectRef, String)> {
             }
         }
     }
-    crate::load_module(module_name).map(|module| (module, attr.to_string()))
+    if let Some(module) = sys_modules_lookup(module_name) {
+        return Some((module, attr.to_string()));
+    }
+    crate::load_module(module_name).map(|module| {
+        sys_modules_insert(module_name, module.clone());
+        (module, attr.to_string())
+    })
 }
 
 pub fn create_unittest_mock_module() -> PyObjectRef {
@@ -386,6 +483,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
             String::new()
         };
         let kwargs = extract_mock_kwargs(args);
+        let pos_args = strip_trailing_kwargs(args);
         let cls = PyObject::class(CompactString::from("_patch"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -395,8 +493,8 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
                 PyObject::str_val(CompactString::from(target.as_str())),
             );
             let mock_for_enter = build_mock_instance("MagicMock", &kwargs);
-            let replacement = if args.len() >= 2 {
-                args[1].clone()
+            let replacement = if pos_args.len() >= 2 {
+                pos_args[1].clone()
             } else {
                 mock_for_enter.clone()
             };
@@ -533,12 +631,13 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         let target = args[0].clone();
         let attr_name = args[1].py_to_string();
         let kwargs = extract_mock_kwargs(&args[2..]);
+        let pos_args = strip_trailing_kwargs(args);
         let rv_key = HashableKey::str_key(CompactString::from("return_value"));
         // Build replacement value
         let replacement = if let Some(_rv) = kwargs.get(&rv_key) {
             build_mock_instance("MagicMock", &kwargs)
-        } else if args.len() >= 3 {
-            args[2].clone()
+        } else if pos_args.len() >= 3 {
+            pos_args[2].clone()
         } else {
             build_mock_instance("MagicMock", &kwargs)
         };
@@ -587,6 +686,41 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         Ok(inst)
     });
 
+    let patch_multiple_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "patch.multiple requires target".to_string(),
+            ));
+        }
+        let kwargs = extract_mock_kwargs(&args[1..]);
+        let target = args[0].clone();
+        let target_obj = if let PyObjectPayload::Str(path) = &target.payload {
+            crate::load_module(path.as_str()).ok_or_else(|| {
+                PyException::attribute_error(format!("module '{}' not found", path))
+            })?
+        } else {
+            target
+        };
+        let mut replacements = Vec::new();
+        let mut returned = IndexMap::new();
+        for (key, value) in kwargs.iter() {
+            let HashableKey::Str(attr_key) = key else {
+                continue;
+            };
+            let attr = attr_key.to_string();
+            replacements.push((target_obj.clone(), attr.clone(), value.clone()));
+            returned.insert(
+                HashableKey::str_key(CompactString::from(attr)),
+                value.clone(),
+            );
+        }
+        Ok(build_patch_context(
+            "_patch_multiple",
+            replacements,
+            PyObject::dict(returned),
+        ))
+    });
+
     // patch.dict — context manager for dict patching
     let patch_dict_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {
@@ -623,6 +757,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__call__"), patch_fn);
         w.insert(CompactString::from("object"), patch_object_fn);
+        w.insert(CompactString::from("multiple"), patch_multiple_fn);
         w.insert(CompactString::from("dict"), patch_dict_fn);
     }
 

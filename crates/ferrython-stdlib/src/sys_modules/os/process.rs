@@ -39,6 +39,33 @@ pub(super) fn os_getppid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
+pub(super) fn os_fork(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    {
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(PyException::os_error("fork failed".to_string()));
+        }
+        Ok(PyObject::int(pid as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(PyException::not_implemented_error("os.fork not available"))
+    }
+}
+
+pub(super) fn os_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let code = args.first().and_then(|obj| obj.as_int()).unwrap_or(0) as i32;
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(code);
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::exit(code);
+    }
+}
+
 pub(super) fn os_getuid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     #[cfg(unix)]
     {

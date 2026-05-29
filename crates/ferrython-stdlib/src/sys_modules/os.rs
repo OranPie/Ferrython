@@ -28,9 +28,9 @@ use misc::{
 use pathlike::{create_pathlike_class, os_fspath};
 use permissions::{os_chmod, os_chown, os_isatty, os_readlink, os_symlink};
 use process::{
-    os_cpu_count, os_getegid, os_getenv, os_geteuid, os_getgid, os_getpid, os_getppid, os_getuid,
-    os_kill, os_popen, os_system, os_waitpid, os_wexitstatus, os_wifexited, os_wifsignaled,
-    os_wifstopped, os_wstopsig, os_wtermsig,
+    os_cpu_count, os_exit, os_fork, os_getegid, os_getenv, os_geteuid, os_getgid, os_getpid,
+    os_getppid, os_getuid, os_kill, os_popen, os_system, os_waitpid, os_wexitstatus, os_wifexited,
+    os_wifsignaled, os_wifstopped, os_wstopsig, os_wtermsig,
 };
 use stat::{make_stat_result_class, os_lstat, os_scandir, os_stat};
 use system_info::{os_get_terminal_size, os_times, os_uname};
@@ -99,6 +99,8 @@ pub fn create_os_module() -> PyObjectRef {
             ("system", make_builtin(os_system)),
             ("popen", make_builtin(os_popen)),
             ("getppid", make_builtin(os_getppid)),
+            ("fork", make_builtin(os_fork)),
+            ("_exit", make_builtin(os_exit)),
             ("urandom", make_builtin(os_urandom)),
             ("access", make_builtin(os_access)),
             ("umask", make_builtin(os_umask)),
