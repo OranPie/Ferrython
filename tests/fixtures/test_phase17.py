@@ -37,6 +37,11 @@ for a, b in zip([1, 2], [10, 20]):
     result.append(a + b)
 test("zip_for", result, [11, 22])
 
+result = []
+for pair in zip([1, 2, 3, 4], "abcd"):
+    result.append(pair)
+test("zip_for_mixed_list_str", result, [(1, "a"), (2, "b"), (3, "c"), (4, "d")])
+
 # zip with list()
 test("zip_list", list(zip([1, 2], [3, 4])), [(1, 3), (2, 4)])
 

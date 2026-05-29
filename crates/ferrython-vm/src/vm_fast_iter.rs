@@ -2,6 +2,7 @@
 
 use crate::builtins::advance_deque_iter;
 use crate::frame::Frame;
+use compact_str::CompactString;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::PyException;
 use ferrython_core::object::helpers::{
@@ -495,6 +496,10 @@ fn try_for_iterator_data(
                     }
                 }
             } else {
+                if !sources.iter().all(can_advance_source_inline) {
+                    drop(data);
+                    return FastForIterResult::Fallback;
+                }
                 items_buf.clear();
                 let mut all_ok = true;
                 let mut exhausted_count = 0usize;
@@ -776,6 +781,10 @@ fn advance_enumerate_source(source: &PyObjectRef) -> Option<Option<PyObjectRef>>
 fn advance_zip_pair(
     sources: &[PyObjectRef],
 ) -> (Option<Option<PyObjectRef>>, Option<Option<PyObjectRef>>) {
+    if !can_advance_source_inline(&sources[0]) || !can_advance_source_inline(&sources[1]) {
+        return (None, None);
+    }
+
     if let (
         PyObjectPayload::RefIter {
             source: src0,
@@ -874,6 +883,16 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
                         Some(Some(value))
                     }
                 }
+                IteratorData::Str { chars, index } => {
+                    if *index < chars.len() {
+                        let value =
+                            PyObject::str_val(CompactString::from(chars[*index].to_string()));
+                        *index += 1;
+                        Some(Some(value))
+                    } else {
+                        Some(None)
+                    }
+                }
                 _ => None,
             }
         }
@@ -932,6 +951,38 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
             None
         }
         _ => None,
+    }
+}
+
+#[inline(always)]
+fn can_advance_source_inline(source: &PyObjectRef) -> bool {
+    match &source.payload {
+        PyObjectPayload::Iterator(data) => {
+            let data = data.read();
+            matches!(
+                &*data,
+                IteratorData::List { .. }
+                    | IteratorData::Tuple { .. }
+                    | IteratorData::Range { .. }
+                    | IteratorData::BigRange(_)
+                    | IteratorData::Str { .. }
+            )
+        }
+        PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) => true,
+        PyObjectPayload::RefIter { source, .. } => matches!(
+            &source.payload,
+            PyObjectPayload::List(_)
+                | PyObjectPayload::Tuple(_)
+                | PyObjectPayload::Dict(_)
+                | PyObjectPayload::MappingProxy(_)
+                | PyObjectPayload::DictKeys { .. }
+                | PyObjectPayload::DictValues { .. }
+                | PyObjectPayload::DictItems { .. }
+        ),
+        PyObjectPayload::RevRefIter { source, .. } => {
+            matches!(&source.payload, PyObjectPayload::List(_))
+        }
+        _ => false,
     }
 }
 
