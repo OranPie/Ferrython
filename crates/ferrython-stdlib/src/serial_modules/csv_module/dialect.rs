@@ -8,7 +8,7 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
             "excel".into(),
             CsvDialectEntry {
                 delimiter: ',',
-                quotechar: '"',
+                quotechar: Some('"'),
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\r\n".into(),
@@ -21,7 +21,7 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
             "excel-tab".into(),
             CsvDialectEntry {
                 delimiter: '\t',
-                quotechar: '"',
+                quotechar: Some('"'),
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\r\n".into(),
@@ -34,7 +34,7 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
             "unix".into(),
             CsvDialectEntry {
                 delimiter: ',',
-                quotechar: '"',
+                quotechar: Some('"'),
                 escapechar: None,
                 doublequote: true,
                 lineterminator: "\n".into(),
@@ -49,7 +49,7 @@ pub(super) static DIALECT_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Cs
 #[derive(Clone)]
 pub(super) struct CsvDialectEntry {
     pub(super) delimiter: char,
-    pub(super) quotechar: char,
+    pub(super) quotechar: Option<char>,
     pub(super) escapechar: Option<char>,
     pub(super) doublequote: bool,
     pub(super) lineterminator: String,
@@ -58,15 +58,133 @@ pub(super) struct CsvDialectEntry {
     pub(super) strict: bool,
 }
 
+pub(super) fn csv_error(message: impl Into<String>) -> PyException {
+    PyException::new(ExceptionKind::CsvError, message.into())
+}
+
+pub(super) fn validate_dialect_entry(entry: &CsvDialectEntry) -> Result<(), String> {
+    if !matches!(entry.quoting, 0..=3) {
+        return Err("bad \"quoting\" value".to_string());
+    }
+    if entry.quotechar.is_none() && entry.quoting != 3 {
+        return Err("quotechar must be set if quoting enabled".to_string());
+    }
+    if entry.delimiter == '\0' {
+        return Err("line contains NUL".to_string());
+    }
+    if entry.quotechar == Some('\0') {
+        return Err("line contains NUL".to_string());
+    }
+    if entry.escapechar == Some('\0') {
+        return Err("line contains NUL".to_string());
+    }
+    Ok(())
+}
+
+fn dialect_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    obj.get_attr(name).or_else(|| match &obj.payload {
+        PyObjectPayload::Instance(inst) => inst.attrs.read().get(name).cloned(),
+        PyObjectPayload::Class(cls) => cls.namespace.read().get(name).cloned(),
+        _ => None,
+    })
+}
+
+fn one_char_value(value: &PyObjectRef, name: &str, allow_none: bool) -> PyResult<Option<char>> {
+    match &value.payload {
+        PyObjectPayload::None if allow_none => Ok(None),
+        PyObjectPayload::None => Err(PyException::type_error(format!(
+            "\"{}\" must be a 1-character string",
+            name
+        ))),
+        PyObjectPayload::Str(s) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Ok(Some(ch)),
+                _ => Err(csv_error(format!(
+                    "\"{}\" must be a 1-character string",
+                    name
+                ))),
+            }
+        }
+        _ => Err(csv_error(format!(
+            "\"{}\" must be string, not {}",
+            name,
+            value.type_name()
+        ))),
+    }
+}
+
+fn apply_dialect_obj(entry: &mut CsvDialectEntry, obj: &PyObjectRef) -> PyResult<()> {
+    if let Some(v) = dialect_attr(obj, "delimiter") {
+        entry.delimiter = one_char_value(&v, "delimiter", false)?.unwrap();
+    }
+    if let Some(v) = dialect_attr(obj, "quoting") {
+        entry.quoting = v
+            .as_int()
+            .ok_or_else(|| csv_error("\"quoting\" must be an integer"))?;
+    }
+    if let Some(v) = dialect_attr(obj, "quotechar") {
+        entry.quotechar = one_char_value(&v, "quotechar", true)?;
+        if entry.quotechar.is_none() && dialect_attr(obj, "quoting").is_none() {
+            entry.quoting = 3;
+        }
+    }
+    if let Some(v) = dialect_attr(obj, "escapechar") {
+        entry.escapechar = one_char_value(&v, "escapechar", true)?;
+    }
+    if let Some(v) = dialect_attr(obj, "doublequote") {
+        entry.doublequote = v.is_truthy();
+    }
+    if let Some(v) = dialect_attr(obj, "lineterminator") {
+        if !matches!(v.payload, PyObjectPayload::Str(_)) {
+            return Err(csv_error("\"lineterminator\" must be a string"));
+        }
+        entry.lineterminator = v.py_to_string();
+    }
+    if let Some(v) = dialect_attr(obj, "skipinitialspace") {
+        entry.skipinitialspace = v.is_truthy();
+    }
+    if let Some(v) = dialect_attr(obj, "strict") {
+        entry.strict = v.is_truthy();
+    }
+    validate_dialect_entry(entry).map_err(csv_error)
+}
+
+pub(super) fn csv_dialect_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let Some(obj) = args.first() else {
+        return Err(PyException::type_error("Dialect() missing self"));
+    };
+    let mut entry = CsvDialectEntry {
+        delimiter: ',',
+        quotechar: Some('"'),
+        escapechar: None,
+        doublequote: true,
+        lineterminator: "\r\n".into(),
+        quoting: 0,
+        skipinitialspace: false,
+        strict: false,
+    };
+    apply_dialect_obj(&mut entry, obj)?;
+    Ok(PyObject::none())
+}
+
 /// csv.register_dialect(name, [dialect], **kwargs)
 pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("register_dialect requires a name"));
     }
+    if !matches!(args[0].payload, PyObjectPayload::Str(_)) {
+        return Err(PyException::type_error("dialect name must be a string"));
+    }
+    if args.len() > 3 {
+        return Err(PyException::type_error(
+            "register_dialect expected at most 2 arguments",
+        ));
+    }
     let name = args[0].py_to_string();
     let mut entry = CsvDialectEntry {
         delimiter: ',',
-        quotechar: '"',
+        quotechar: Some('"'),
         escapechar: None,
         doublequote: true,
         lineterminator: "\r\n".into(),
@@ -78,29 +196,54 @@ pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef
     for arg in args.iter().skip(1) {
         if let PyObjectPayload::Dict(kw) = &arg.payload {
             let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
-                if let Some(c) = v.py_to_string().chars().next() {
-                    entry.delimiter = c;
+            for key in r.keys() {
+                if let HashableKey::Str(s) = key {
+                    if !matches!(
+                        s.as_str(),
+                        "delimiter"
+                            | "quotechar"
+                            | "escapechar"
+                            | "doublequote"
+                            | "lineterminator"
+                            | "quoting"
+                            | "skipinitialspace"
+                            | "strict"
+                    ) {
+                        return Err(PyException::type_error(format!(
+                            "'{}' is an invalid keyword argument for this function",
+                            s
+                        )));
+                    }
                 }
             }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
+                entry.delimiter = one_char_value(v, "delimiter", false)?.unwrap();
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
+                entry.quoting = v
+                    .as_int()
+                    .ok_or_else(|| PyException::type_error("\"quoting\" must be an integer"))?;
+            }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
-                if let Some(c) = v.py_to_string().chars().next() {
-                    entry.quotechar = c;
+                entry.quotechar = one_char_value(v, "quotechar", true)?;
+                if entry.quotechar.is_none()
+                    && r.get(&HashableKey::str_key(CompactString::from("quoting")))
+                        .is_none()
+                {
+                    entry.quoting = 3;
                 }
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("escapechar"))) {
-                entry.escapechar = v.py_to_string().chars().next();
+                entry.escapechar = one_char_value(v, "escapechar", true)?;
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("doublequote"))) {
                 entry.doublequote = v.is_truthy();
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("lineterminator"))) {
-                entry.lineterminator = v.py_to_string();
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
-                if let Some(n) = v.as_int() {
-                    entry.quoting = n;
+                if !matches!(v.payload, PyObjectPayload::Str(_)) {
+                    return Err(csv_error("\"lineterminator\" must be a string"));
                 }
+                entry.lineterminator = v.py_to_string();
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from(
                 "skipinitialspace",
@@ -110,41 +253,18 @@ pub(super) fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("strict"))) {
                 entry.strict = v.is_truthy();
             }
-        } else if let PyObjectPayload::Instance(inst) = &arg.payload {
-            let r = inst.attrs.read();
-            if let Some(v) = r.get("delimiter") {
-                if let Some(c) = v.py_to_string().chars().next() {
-                    entry.delimiter = c;
-                }
-            }
-            if let Some(v) = r.get("quotechar") {
-                if let Some(c) = v.py_to_string().chars().next() {
-                    entry.quotechar = c;
-                }
-            }
-            if let Some(v) = r.get("escapechar") {
-                entry.escapechar = match &v.payload {
-                    PyObjectPayload::None => None,
-                    _ => v.py_to_string().chars().next(),
-                };
-            }
-            if let Some(v) = r.get("doublequote") {
-                entry.doublequote = v.is_truthy();
-            }
-            if let Some(v) = r.get("lineterminator") {
-                entry.lineterminator = v.py_to_string();
-            }
-            if let Some(v) = r.get("quoting").and_then(|v| v.as_int()) {
-                entry.quoting = v;
-            }
-            if let Some(v) = r.get("skipinitialspace") {
-                entry.skipinitialspace = v.is_truthy();
-            }
-            if let Some(v) = r.get("strict") {
-                entry.strict = v.is_truthy();
-            }
+        } else if matches!(
+            arg.payload,
+            PyObjectPayload::Instance(_) | PyObjectPayload::Class(_)
+        ) {
+            apply_dialect_obj(&mut entry, arg)?;
+        } else {
+            return Err(PyException::type_error(
+                "dialect must be a Dialect subclass",
+            ));
         }
     }
+    validate_dialect_entry(&entry).map_err(csv_error)?;
     DIALECT_REGISTRY.lock().unwrap().insert(name, entry);
     Ok(PyObject::none())
 }
@@ -155,13 +275,13 @@ pub(super) fn csv_unregister_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectR
             "unregister_dialect requires a name",
         ));
     }
+    if !matches!(args[0].payload, PyObjectPayload::Str(_)) {
+        return Err(csv_error("unknown dialect"));
+    }
     let name = args[0].py_to_string();
     let mut reg = DIALECT_REGISTRY.lock().unwrap();
     if reg.remove(&name).is_none() {
-        return Err(PyException::runtime_error(format!(
-            "unknown dialect: '{}'",
-            name
-        )));
+        return Err(csv_error(format!("unknown dialect: '{}'", name)));
     }
     Ok(PyObject::none())
 }
@@ -170,19 +290,22 @@ pub(super) fn csv_get_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("get_dialect requires a name"));
     }
+    if !matches!(args[0].payload, PyObjectPayload::Str(_)) {
+        return Err(csv_error("unknown dialect"));
+    }
     let name = args[0].py_to_string();
     let reg = DIALECT_REGISTRY.lock().unwrap();
     if let Some(entry) = reg.get(&name) {
         Ok(make_dialect_obj(entry))
     } else {
-        Err(PyException::runtime_error(format!(
-            "unknown dialect: '{}'",
-            name
-        )))
+        Err(csv_error(format!("unknown dialect: '{}'", name)))
     }
 }
 
-pub(super) fn csv_list_dialects(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn csv_list_dialects(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if !args.is_empty() {
+        return Err(PyException::type_error("list_dialects takes no arguments"));
+    }
     let reg = DIALECT_REGISTRY.lock().unwrap();
     let names: Vec<_> = reg
         .keys()
@@ -215,7 +338,11 @@ pub(super) fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
         );
         w.insert(
             CompactString::from("quotechar"),
-            PyObject::str_val(CompactString::from(entry.quotechar.to_string().as_str())),
+            if let Some(quotechar) = entry.quotechar {
+                PyObject::str_val(CompactString::from(quotechar.to_string().as_str()))
+            } else {
+                PyObject::none()
+            },
         );
         w.insert(
             CompactString::from("doublequote"),
@@ -313,7 +440,7 @@ pub(super) fn sniff_dialect(sample: &str, delimiters: Option<&str>) -> PyResult<
     };
     let entry = CsvDialectEntry {
         delimiter: best_delim,
-        quotechar,
+        quotechar: Some(quotechar),
         escapechar: None,
         doublequote: true,
         lineterminator: "\r\n".into(),

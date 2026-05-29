@@ -1,6 +1,7 @@
-use super::dialect::DIALECT_REGISTRY;
-use super::reader::{csv_parse_line, extract_csv_dialect};
-use super::writer::{csv_field_to_string, csv_quote_field};
+use super::reader::{csv_parse_line, extract_csv_dialect, logical_records, text_to_physical_lines};
+use super::writer::{
+    csv_format_field_for_dict, csv_format_string_field_for_dict, write_text_to_file,
+};
 use super::*;
 
 fn hashable_key_repr(key: &HashableKey) -> String {
@@ -67,11 +68,20 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
             };
             drop(attrs);
-            text.py_to_string()
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| PyObject::str_val(CompactString::from(l)))
-                .collect()
+            text_to_physical_lines(&text.py_to_string())
+        } else if let Some(read_fn) = attrs.get("read") {
+            let text = match &read_fn.payload {
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[])?,
+                _ => {
+                    drop(attrs);
+                    return Err(PyException::type_error(
+                        "csv.DictReader requires an iterable",
+                    ));
+                }
+            };
+            drop(attrs);
+            text_to_physical_lines(&text.py_to_string())
         } else {
             drop(attrs);
             args[0].to_list()?
@@ -79,7 +89,9 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
-    if lines.is_empty() {
+    let dialect = extract_csv_dialect(args, dict_reader_skip(args))?;
+    let records = logical_records(lines, &dialect)?;
+    if records.is_empty() {
         return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
             PyCell::new(IteratorData::List {
                 items: vec![],
@@ -130,12 +142,10 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     } else {
         // First row is header
-        let dialect = extract_csv_dialect(args, dict_reader_skip(args));
-        let header = lines[0].py_to_string();
-        let header = header.trim_end_matches(&['\r', '\n'][..]);
+        let header = &records[0];
         csv_parse_line(header, &dialect)?
             .into_iter()
-            .map(|f| f.trim().to_string())
+            .map(|f| f.to_string())
             .collect()
     };
     let data_start = if fieldnames.is_empty() {
@@ -164,10 +174,7 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         1
     };
     let mut rows = Vec::new();
-    let dialect = extract_csv_dialect(args, dict_reader_skip(args));
-    for line in &lines[data_start..] {
-        let s = line.py_to_string();
-        let s = s.trim_end_matches(&['\r', '\n'][..]);
+    for s in &records[data_start..] {
         if s.is_empty() {
             continue;
         }
@@ -176,7 +183,7 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         for (i, name) in fieldnames.iter().enumerate() {
             let val = values
                 .get(i)
-                .map(|v| PyObject::str_val(CompactString::from(v.trim())))
+                .map(|v| PyObject::str_val(CompactString::from(v.as_str())))
                 .unwrap_or_else(|| restval.clone());
             map.insert(
                 HashableKey::str_key(CompactString::from(name.as_str())),
@@ -186,7 +193,7 @@ pub(super) fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if values.len() > fieldnames.len() {
             let extras: Vec<PyObjectRef> = values[fieldnames.len()..]
                 .iter()
-                .map(|v| PyObject::str_val(CompactString::from(v.trim())))
+                .map(|v| PyObject::str_val(CompactString::from(v.as_str())))
                 .collect();
             let key = restkey
                 .as_ref()
@@ -297,36 +304,8 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "extrasaction must be 'raise' or 'ignore'",
         ));
     }
-    // Extract dialect params from trailing kwargs dict
-    let mut delimiter = ",".to_string();
-    let mut quoting: i64 = 0;
-    let mut quotechar = '"';
-    if let Some(last) = args.last() {
-        if let PyObjectPayload::Dict(kw) = &last.payload {
-            let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("dialect"))) {
-                let name = v.py_to_string();
-                if let Ok(reg) = DIALECT_REGISTRY.lock() {
-                    if let Some(entry) = reg.get(&name) {
-                        delimiter = entry.delimiter.to_string();
-                        quotechar = entry.quotechar;
-                    }
-                }
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
-                delimiter = v.py_to_string();
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
-                if let Some(n) = v.as_int() {
-                    quoting = n;
-                }
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
-                let s = v.py_to_string();
-                quotechar = s.chars().next().unwrap_or('"');
-            }
-        }
-    }
+    let dialect = extract_csv_dialect(args, 2)?;
+    let delimiter = dialect.delimiter.to_string();
     let cls = PyObject::class(
         CompactString::from("csv_DictWriter"),
         vec![],
@@ -363,8 +342,7 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let fnames_for_row = fnames_owned.clone();
         let extra_row_action = extrasaction.clone();
         let delim_row = delimiter.clone();
-        let qt_row = quoting;
-        let qc_row = quotechar;
+        let dialect_row = dialect.clone();
         attrs.insert(
             CompactString::from("writerow"),
             PyObject::native_closure("DictWriter.writerow", {
@@ -402,12 +380,7 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         } else {
                             PyObject::none()
                         };
-                        fields.push(csv_quote_field(
-                            &csv_field_to_string(&val),
-                            qt_row,
-                            qc_row,
-                            &delim_row,
-                        ));
+                        fields.push(csv_format_field_for_dict(&val, &dialect_row)?);
                     }
                     let line = format!("{}\r\n", fields.join(&delim_row));
                     write_to_fileobj(&self_ref, &line)
@@ -419,8 +392,7 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let fnames_for_rows = fnames_owned.clone();
         let extra_rows_action = extrasaction.clone();
         let delim_rows = delimiter.clone();
-        let qt_rows = quoting;
-        let qc_rows = quotechar;
+        let dialect_rows = dialect.clone();
         attrs.insert(
             CompactString::from("writerows"),
             PyObject::native_closure("DictWriter.writerows", {
@@ -457,12 +429,7 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                             } else {
                                 PyObject::none()
                             };
-                            fields.push(csv_quote_field(
-                                &csv_field_to_string(&val),
-                                qt_rows,
-                                qc_rows,
-                                &delim_rows,
-                            ));
+                            fields.push(csv_format_field_for_dict(&val, &dialect_rows)?);
                         }
                         let line = format!("{}\r\n", fields.join(&delim_rows));
                         write_to_fileobj(&self_ref, &line)?;
@@ -474,8 +441,7 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         // writeheader() — writes fieldnames as CSV header line
         let delim_hdr = delimiter.clone();
-        let qt_hdr = quoting;
-        let qc_hdr = quotechar;
+        let dialect_hdr = dialect.clone();
         attrs.insert(
             CompactString::from("writeheader"),
             PyObject::native_closure("DictWriter.writeheader", {
@@ -484,8 +450,8 @@ pub(super) fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 move |_args: &[PyObjectRef]| {
                     let escaped: Vec<String> = fnames
                         .iter()
-                        .map(|f| csv_quote_field(f, qt_hdr, qc_hdr, &delim_hdr))
-                        .collect();
+                        .map(|f| csv_format_string_field_for_dict(f, &dialect_hdr))
+                        .collect::<PyResult<Vec<_>>>()?;
                     let line = format!("{}\r\n", escaped.join(&delim_hdr));
                     write_to_fileobj(&self_ref, &line)
                 }
@@ -507,6 +473,14 @@ fn csv_escape_field(s: &str) -> String {
 
 /// Write a string to a DictWriter's fileobj via its write() method.
 pub(super) fn write_to_fileobj(writer_inst: &PyObjectRef, text: &str) -> PyResult<PyObjectRef> {
+    if let Some(fileobj) = writer_inst.get_attr("_fileobj") {
+        return write_text_to_file(&fileobj, text);
+    }
+    Ok(PyObject::none())
+}
+
+#[allow(dead_code)]
+fn write_to_fileobj_direct(writer_inst: &PyObjectRef, text: &str) -> PyResult<PyObjectRef> {
     if let Some(fileobj) = writer_inst.get_attr("_fileobj") {
         if let Some(write_fn) = fileobj.get_attr("write") {
             if let PyObjectPayload::NativeClosure(nc) = &write_fn.payload {

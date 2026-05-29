@@ -60,6 +60,7 @@ macro_rules! fixture_test {
 // Core test suites
 fixture_test!(test_basics, "test_basics.py");
 fixture_test!(test_advanced, "test_advanced.py");
+fixture_test!(test_csv_compat, "test_csv_compat.py");
 
 // Phase tests
 fixture_test!(test_phase2, "test_phase2.py");

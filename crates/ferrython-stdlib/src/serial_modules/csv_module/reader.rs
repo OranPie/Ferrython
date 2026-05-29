@@ -1,11 +1,14 @@
-use super::dialect::{make_dialect_obj, CsvDialectEntry, DIALECT_REGISTRY};
+use super::current_field_size_limit;
+use super::dialect::{
+    csv_error, make_dialect_obj, validate_dialect_entry, CsvDialectEntry, DIALECT_REGISTRY,
+};
 use super::*;
 
 /// CSV dialect settings extracted from kwargs.
 #[derive(Clone)]
 pub(super) struct CsvDialect {
     pub(super) delimiter: char,
-    pub(super) quotechar: char,
+    pub(super) quotechar: Option<char>,
     pub(super) escapechar: Option<char>,
     pub(super) doublequote: bool,
     pub(super) lineterminator: String,
@@ -18,7 +21,7 @@ impl Default for CsvDialect {
     fn default() -> Self {
         Self {
             delimiter: ',',
-            quotechar: '"',
+            quotechar: Some('"'),
             escapechar: None,
             doublequote: true,
             lineterminator: "\r\n".into(),
@@ -55,7 +58,10 @@ impl CsvDialect {
     }
 }
 
-fn dialect_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+pub(super) fn dialect_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    if let Some(value) = obj.get_attr(name) {
+        return Some(value);
+    }
     match &obj.payload {
         PyObjectPayload::Instance(inst) => inst.attrs.read().get(name).cloned(),
         PyObjectPayload::Class(cls) => cls.namespace.read().get(name).cloned(),
@@ -63,31 +69,66 @@ fn dialect_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     }
 }
 
-fn apply_dialect_attrs(dialect: &mut CsvDialect, obj: &PyObjectRef) {
-    if let Some(v) = dialect_attr(obj, "delimiter") {
-        if let Some(c) = v.py_to_string().chars().next() {
-            dialect.delimiter = c;
+fn one_char_value(value: &PyObjectRef, name: &str, allow_none: bool) -> PyResult<Option<char>> {
+    match &value.payload {
+        PyObjectPayload::None if allow_none => Ok(None),
+        PyObjectPayload::None => Err(PyException::type_error(format!(
+            "\"{}\" must be a 1-character string",
+            name
+        ))),
+        PyObjectPayload::Str(s) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Ok(Some(ch)),
+                _ => Err(PyException::type_error(format!(
+                    "\"{}\" must be a 1-character string",
+                    name
+                ))),
+            }
         }
+        _ => Err(PyException::type_error(format!(
+            "\"{}\" must be string, not {}",
+            name,
+            value.type_name()
+        ))),
+    }
+}
+
+fn apply_dialect_attrs(dialect: &mut CsvDialect, obj: &PyObjectRef) -> PyResult<()> {
+    if let Some(v) = dialect_attr(obj, "delimiter") {
+        dialect.delimiter = one_char_value(&v, "delimiter", false)?.unwrap();
+    }
+    let has_quoting = dialect_attr(obj, "quoting").is_some();
+    if let Some(v) = dialect_attr(obj, "quoting") {
+        dialect.quoting = v
+            .as_int()
+            .ok_or_else(|| PyException::type_error("\"quoting\" must be an integer"))?;
     }
     if let Some(v) = dialect_attr(obj, "quotechar") {
-        if let Some(c) = v.py_to_string().chars().next() {
-            dialect.quotechar = c;
+        dialect.quotechar = one_char_value(&v, "quotechar", true)?;
+        if dialect.quotechar.is_none() {
+            if !has_quoting {
+                dialect.quoting = 3;
+            } else if dialect.quoting != 3 {
+                return Err(PyException::type_error(
+                    "quotechar must be set if quoting enabled",
+                ));
+            }
         }
     }
     if let Some(v) = dialect_attr(obj, "escapechar") {
-        dialect.escapechar = match &v.payload {
-            PyObjectPayload::None => None,
-            _ => v.py_to_string().chars().next(),
-        };
+        dialect.escapechar = one_char_value(&v, "escapechar", true)?;
     }
     if let Some(v) = dialect_attr(obj, "doublequote") {
         dialect.doublequote = v.is_truthy();
     }
     if let Some(v) = dialect_attr(obj, "lineterminator") {
+        if !matches!(v.payload, PyObjectPayload::Str(_)) {
+            return Err(PyException::type_error(
+                "\"lineterminator\" must be a string",
+            ));
+        }
         dialect.lineterminator = v.py_to_string();
-    }
-    if let Some(v) = dialect_attr(obj, "quoting").and_then(|v| v.as_int()) {
-        dialect.quoting = v;
     }
     if let Some(v) = dialect_attr(obj, "skipinitialspace") {
         dialect.skipinitialspace = v.is_truthy();
@@ -95,10 +136,41 @@ fn apply_dialect_attrs(dialect: &mut CsvDialect, obj: &PyObjectRef) {
     if let Some(v) = dialect_attr(obj, "strict") {
         dialect.strict = v.is_truthy();
     }
+    validate_dialect_entry(&dialect.to_entry()).map_err(PyException::type_error)?;
+    Ok(())
+}
+
+fn validate_keyword_names(map: &ferrython_core::object::FxHashKeyMap) -> PyResult<()> {
+    for key in map.keys() {
+        if let HashableKey::Str(s) = key {
+            if !matches!(
+                s.as_str(),
+                "dialect"
+                    | "delimiter"
+                    | "quotechar"
+                    | "escapechar"
+                    | "doublequote"
+                    | "lineterminator"
+                    | "quoting"
+                    | "skipinitialspace"
+                    | "strict"
+                    | "fieldnames"
+                    | "restkey"
+                    | "restval"
+                    | "extrasaction"
+            ) {
+                return Err(PyException::type_error(format!(
+                    "'{}' is an invalid keyword argument for this function",
+                    s
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Extract CSV dialect parameters from kwargs dict (trailing dict arg).
-pub(super) fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDialect {
+pub(super) fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> PyResult<CsvDialect> {
     let mut d = CsvDialect::default();
     for arg in args.iter().skip(skip) {
         // Check for dialect name string → look up registry
@@ -109,17 +181,19 @@ pub(super) fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDiale
                     continue;
                 }
             }
+            return Err(csv_error("unknown dialect"));
         }
         if matches!(
             &arg.payload,
             PyObjectPayload::Class(_) | PyObjectPayload::Instance(_)
         ) {
-            apply_dialect_attrs(&mut d, arg);
+            apply_dialect_attrs(&mut d, arg)?;
             continue;
         }
         // Check for kwargs dict
         if let PyObjectPayload::Dict(kw) = &arg.payload {
             let r = kw.read();
+            validate_keyword_names(&r)?;
             if let Some(dialect_name) = r.get(&HashableKey::str_key(CompactString::from("dialect")))
             {
                 if let PyObjectPayload::Str(name) = &dialect_name.payload {
@@ -129,37 +203,45 @@ pub(super) fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDiale
                         }
                     }
                 } else {
-                    apply_dialect_attrs(&mut d, dialect_name);
+                    apply_dialect_attrs(&mut d, dialect_name)?;
                 }
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
-                let s = v.py_to_string();
-                if let Some(c) = s.chars().next() {
-                    d.delimiter = c;
-                }
+                d.delimiter = one_char_value(v, "delimiter", false)?.unwrap();
+            }
+            let has_quoting = r
+                .get(&HashableKey::str_key(CompactString::from("quoting")))
+                .is_some();
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
+                d.quoting = v
+                    .as_int()
+                    .ok_or_else(|| PyException::type_error("\"quoting\" must be an integer"))?;
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
-                let s = v.py_to_string();
-                if let Some(c) = s.chars().next() {
-                    d.quotechar = c;
+                d.quotechar = one_char_value(v, "quotechar", true)?;
+                if d.quotechar.is_none() {
+                    if !has_quoting {
+                        d.quoting = 3;
+                    } else if d.quoting != 3 {
+                        return Err(PyException::type_error(
+                            "quotechar must be set if quoting enabled",
+                        ));
+                    }
                 }
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("escapechar"))) {
-                d.escapechar = match &v.payload {
-                    PyObjectPayload::None => None,
-                    _ => v.py_to_string().chars().next(),
-                };
+                d.escapechar = one_char_value(v, "escapechar", true)?;
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("doublequote"))) {
                 d.doublequote = v.is_truthy();
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("lineterminator"))) {
-                d.lineterminator = v.py_to_string();
-            }
-            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
-                if let Some(n) = v.as_int() {
-                    d.quoting = n;
+                if !matches!(v.payload, PyObjectPayload::Str(_)) {
+                    return Err(PyException::type_error(
+                        "\"lineterminator\" must be a string",
+                    ));
                 }
+                d.lineterminator = v.py_to_string();
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from(
                 "skipinitialspace",
@@ -172,10 +254,11 @@ pub(super) fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDiale
             break;
         }
     }
-    d
+    validate_dialect_entry(&d.to_entry()).map_err(PyException::type_error)?;
+    Ok(d)
 }
 
-pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<String>> {
+fn csv_parse_line_parts(s: &str, dialect: &CsvDialect) -> PyResult<Vec<(String, bool)>> {
     if dialect.strict && s.contains('\0') {
         return Err(PyException::new(
             ExceptionKind::CsvError,
@@ -187,12 +270,21 @@ pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<Stri
     let mut in_quotes = false;
     let mut at_field_start = true;
     let mut quote_just_closed = false;
+    let mut field_quoted = false;
     let mut chars = s.chars().peekable();
+    let field_limit = current_field_size_limit();
+    let check_field_limit = |field: &str| -> PyResult<()> {
+        if field_limit >= 0 && field.chars().count() as i64 > field_limit {
+            Err(csv_error("field larger than field limit"))
+        } else {
+            Ok(())
+        }
+    };
     while let Some(ch) = chars.next() {
         if in_quotes {
-            if ch == dialect.quotechar {
-                if dialect.doublequote && chars.peek() == Some(&dialect.quotechar) {
-                    current.push(dialect.quotechar);
+            if Some(ch) == dialect.quotechar {
+                if dialect.doublequote && Some(chars.peek().copied()) == Some(dialect.quotechar) {
+                    current.push(ch);
                     chars.next();
                 } else {
                     in_quotes = false;
@@ -202,6 +294,13 @@ pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<Stri
                 // Escape char inside quotes: next char is literal
                 if let Some(next) = chars.next() {
                     current.push(next);
+                } else if dialect.strict {
+                    return Err(PyException::new(
+                        ExceptionKind::CsvError,
+                        "unexpected end of data",
+                    ));
+                } else {
+                    current.push('\n');
                 }
             } else {
                 current.push(ch);
@@ -209,21 +308,31 @@ pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<Stri
             at_field_start = false;
         } else if dialect.skipinitialspace && at_field_start && ch == ' ' {
             continue;
-        } else if dialect.quoting != 3 && ch == dialect.quotechar {
+        } else if dialect.quoting != 3 && at_field_start && Some(ch) == dialect.quotechar {
             in_quotes = true;
             at_field_start = false;
+            field_quoted = true;
         } else if dialect.escapechar == Some(ch) && !in_quotes {
             // Escape char outside quotes: next char is literal
             if let Some(next) = chars.next() {
                 current.push(next);
+            } else if dialect.strict {
+                return Err(PyException::new(
+                    ExceptionKind::CsvError,
+                    "unexpected end of data",
+                ));
+            } else {
+                current.push('\n');
             }
             quote_just_closed = false;
             at_field_start = false;
         } else if ch == dialect.delimiter {
-            fields.push(current.clone());
+            check_field_limit(&current)?;
+            fields.push((current.clone(), field_quoted));
             current.clear();
             quote_just_closed = false;
             at_field_start = true;
+            field_quoted = false;
         } else if ch == '\n' || ch == '\r' {
             return Err(PyException::new(
                 ExceptionKind::CsvError,
@@ -246,15 +355,132 @@ pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<Stri
             "unexpected end of data",
         ));
     }
-    fields.push(current);
+    check_field_limit(&current)?;
+    fields.push((current, field_quoted));
     Ok(fields)
+}
+
+pub(super) fn csv_parse_line(s: &str, dialect: &CsvDialect) -> PyResult<Vec<String>> {
+    Ok(csv_parse_line_parts(s, dialect)?
+        .into_iter()
+        .map(|(field, _)| field)
+        .collect())
+}
+
+fn trim_record_ending(mut text: String) -> String {
+    if text.ends_with("\r\n") {
+        text.truncate(text.len() - 2);
+    } else if text.ends_with('\n') || text.ends_with('\r') {
+        text.pop();
+    }
+    text
+}
+
+fn record_needs_more(text: &str, dialect: &CsvDialect) -> bool {
+    let mut in_quotes = false;
+    let mut at_field_start = true;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if dialect.escapechar == Some(ch) {
+                let _ = chars.next();
+            } else if Some(ch) == dialect.quotechar {
+                if dialect.doublequote && Some(chars.peek().copied()) == Some(dialect.quotechar) {
+                    let _ = chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            }
+        } else if dialect.skipinitialspace && at_field_start && ch == ' ' {
+            continue;
+        } else if dialect.quoting != 3 && at_field_start && Some(ch) == dialect.quotechar {
+            in_quotes = true;
+            at_field_start = false;
+        } else if ch == dialect.delimiter || ch == '\n' || ch == '\r' {
+            at_field_start = true;
+        } else {
+            at_field_start = false;
+        }
+    }
+    in_quotes
+}
+
+pub(super) fn logical_records(
+    lines: Vec<PyObjectRef>,
+    dialect: &CsvDialect,
+) -> PyResult<Vec<String>> {
+    let mut records = Vec::new();
+    let mut pending = String::new();
+    for line in &lines {
+        if matches!(
+            &line.payload,
+            PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_)
+        ) {
+            return Err(PyException::new(
+                ExceptionKind::CsvError,
+                "iterator should return strings, not bytes",
+            ));
+        }
+        pending.push_str(&line.py_to_string());
+        if record_needs_more(&pending, dialect) {
+            if !pending.ends_with('\n') && !pending.ends_with('\r') {
+                pending.push('\n');
+            }
+            continue;
+        }
+        records.push(trim_record_ending(std::mem::take(&mut pending)));
+    }
+    if !pending.is_empty() {
+        records.push(trim_record_ending(pending));
+    }
+    Ok(records)
+}
+
+pub(super) fn text_to_physical_lines(text: &str) -> Vec<PyObjectRef> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            lines.push(PyObject::str_val(CompactString::from(&text[start..=i])));
+            i += 1;
+            start = i;
+        } else if bytes[i] == b'\r' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                lines.push(PyObject::str_val(CompactString::from(&text[start..=i + 1])));
+                i += 2;
+            } else {
+                lines.push(PyObject::str_val(CompactString::from(&text[start..=i])));
+                i += 1;
+            }
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < text.len() {
+        lines.push(PyObject::str_val(CompactString::from(&text[start..])));
+    }
+    lines
+}
+
+fn field_to_object(field: String, quoted: bool, dialect: &CsvDialect) -> PyResult<PyObjectRef> {
+    if dialect.quoting == 2 && !quoted && !field.is_empty() {
+        let value = field.trim().parse::<f64>().map_err(|_| {
+            PyException::value_error(format!("could not convert string to float: '{}'", field))
+        })?;
+        Ok(PyObject::float(value))
+    } else {
+        Ok(PyObject::str_val(CompactString::from(field)))
+    }
 }
 
 pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.reader requires an iterable"));
     }
-    let dialect = extract_csv_dialect(args, 1);
+    let dialect = extract_csv_dialect(args, 1)?;
     // Try to get lines from the iterable
     let lines = match args[0].to_list() {
         Ok(items) => items,
@@ -271,11 +497,7 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         }
                     };
                     drop(attrs);
-                    text.py_to_string()
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| PyObject::str_val(CompactString::from(l)))
-                        .collect()
+                    text_to_physical_lines(&text.py_to_string())
                 } else if let Some(read_fn) = attrs.get("read") {
                     let text = match &read_fn.payload {
                         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
@@ -285,11 +507,7 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         }
                     };
                     drop(attrs);
-                    text.py_to_string()
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| PyObject::str_val(CompactString::from(l)))
-                        .collect()
+                    text_to_physical_lines(&text.py_to_string())
                 } else {
                     drop(attrs);
                     return Err(PyException::type_error("csv.reader requires an iterable"));
@@ -300,26 +518,15 @@ pub(super) fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     };
     let mut rows = Vec::new();
-    for line in &lines {
-        if matches!(
-            &line.payload,
-            PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_)
-        ) {
-            return Err(PyException::new(
-                ExceptionKind::CsvError,
-                "iterator should return strings, not bytes",
-            ));
-        }
-        let s = line.py_to_string();
-        let s = s.trim_end_matches(&['\r', '\n'][..]);
+    for s in logical_records(lines, &dialect)? {
         if s.is_empty() {
             rows.push(PyObject::list(vec![]));
             continue;
         }
-        let fields: Vec<PyObjectRef> = csv_parse_line(s, &dialect)?
+        let fields: Vec<PyObjectRef> = csv_parse_line_parts(&s, &dialect)?
             .into_iter()
-            .map(|f| PyObject::str_val(CompactString::from(f)))
-            .collect();
+            .map(|(f, quoted)| field_to_object(f, quoted, &dialect))
+            .collect::<PyResult<Vec<_>>>()?;
         rows.push(PyObject::list(fields));
     }
     // Build a csv_reader instance that supports both iteration (next()) and
