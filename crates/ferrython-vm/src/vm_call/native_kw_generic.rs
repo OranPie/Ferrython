@@ -22,6 +22,12 @@ impl VirtualMachine {
         for (k, v) in kwargs {
             kw_map.insert(HashableKey::str_key(k), v);
         }
+        if nf_data.name.as_str() == "UserDict.__init__" {
+            kw_map.insert(
+                HashableKey::str_key(CompactString::from("__userdict_kwargs__")),
+                PyObject::bool_val(true),
+            );
+        }
         if matches!(
             nf_data.name.as_str(),
             "weakref.__new__" | "weakref.__init__"

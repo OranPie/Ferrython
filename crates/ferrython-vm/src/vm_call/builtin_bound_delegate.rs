@@ -54,6 +54,22 @@ impl VirtualMachine {
         args: &[PyObjectRef],
     ) -> PyResult<Option<PyObjectRef>> {
         let PyObjectPayload::BuiltinType(tn) = &bbm.receiver.payload else {
+            if bbm.method_name.as_str() == "fromkeys"
+                && matches!(
+                    bbm.receiver.payload,
+                    PyObjectPayload::Dict(_)
+                        | PyObjectPayload::InstanceDict(_)
+                        | PyObjectPayload::MappingProxy(_)
+                )
+            {
+                let Some(class_method) = builtins::resolve_type_class_method("dict", "fromkeys")
+                else {
+                    return Ok(None);
+                };
+                if let PyObjectPayload::NativeFunction(nf) = &class_method.payload {
+                    return (nf.func)(args).map(Some);
+                }
+            }
             return Ok(None);
         };
 

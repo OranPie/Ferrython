@@ -17,6 +17,7 @@ impl VirtualMachine {
         let mut defaultdict_kw_marker = false;
         let mut weakdict_kw_marker = false;
         let mut finalize_kw_marker = false;
+        let mut userdict_kw_marker = false;
         let mut adjusted_kwargs = kwargs;
         if !adjusted_kwargs.is_empty() && nc.name.as_str().starts_with("Counter.") {
             counter_kw_marker = true;
@@ -57,6 +58,13 @@ impl VirtualMachine {
                 PyObject::bool_val(true),
             ));
         }
+        if !adjusted_kwargs.is_empty() && nc.name.as_str() == "UserDict.update" {
+            userdict_kw_marker = true;
+            adjusted_kwargs.push((
+                CompactString::from("__userdict_kwargs__"),
+                PyObject::bool_val(true),
+            ));
+        }
 
         let result = if !adjusted_kwargs.is_empty() {
             let mut all_args = pos_args;
@@ -85,6 +93,12 @@ impl VirtualMachine {
             if finalize_kw_marker {
                 kw_map.insert(
                     HashableKey::str_key(CompactString::from("__finalize_kwargs__")),
+                    PyObject::bool_val(true),
+                );
+            }
+            if userdict_kw_marker {
+                kw_map.insert(
+                    HashableKey::str_key(CompactString::from("__userdict_kwargs__")),
                     PyObject::bool_val(true),
                 );
             }

@@ -305,7 +305,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 Ok(data.expected_len - idx)
             }
         }
-        PyObjectPayload::RefIter { source, index } => {
+        PyObjectPayload::RefIter { source, index, .. } => {
             if index.get() == usize::MAX {
                 return Ok(0);
             }
@@ -317,7 +317,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             };
             Ok(if idx < total { total - idx } else { 0 })
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX {
                 return Ok(0);
@@ -394,7 +394,17 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
             let map_r = map.read();
             if let Some(val) = map_r.get(&hk) {
+                if let Some(err) = take_pending_eq_error() {
+                    if matches!(hk, HashableKey::Custom { .. }) {
+                        return Err(err);
+                    }
+                }
                 return Ok(val.clone());
+            }
+            if let Some(err) = take_pending_eq_error() {
+                if matches!(hk, HashableKey::Custom { .. }) {
+                    return Err(err);
+                }
             }
             // Check for __defaultdict_factory__ (Counter / defaultdict)
             let factory_key = HashableKey::str_key(intern_or_new("__defaultdict_factory__"));
@@ -426,7 +436,17 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
         PyObjectPayload::MappingProxy(map) => {
             let hk = key.to_hashable_key()?;
             if let Some(val) = map.read().get(&hk) {
+                if let Some(err) = take_pending_eq_error() {
+                    if matches!(hk, HashableKey::Custom { .. }) {
+                        return Err(err);
+                    }
+                }
                 return Ok(val.clone());
+            }
+            if let Some(err) = take_pending_eq_error() {
+                if matches!(hk, HashableKey::Custom { .. }) {
+                    return Err(err);
+                }
             }
             Err(PyException::key_error(key.repr()))
         }
@@ -596,7 +616,13 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             if is_hidden_dict_key(&hk) {
                 return Ok(false);
             }
-            Ok(m.read().contains_key(&hk))
+            let contains = m.read().contains_key(&hk);
+            if let Some(err) = take_pending_eq_error() {
+                if matches!(hk, HashableKey::Custom { .. }) {
+                    return Err(err);
+                }
+            }
+            Ok(contains)
         }
         PyObjectPayload::Instance(inst) => {
             if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
@@ -752,7 +778,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
             Ok(false)
         }
-        PyObjectPayload::RefIter { source, index } => {
+        PyObjectPayload::RefIter { source, index, .. } => {
             if index.get() == usize::MAX {
                 return Ok(false);
             }
@@ -784,7 +810,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                 _ => Ok(false),
             }
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX || idx == 0 {
                 return Ok(false);
@@ -850,12 +876,13 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 index: 0,
             }),
         )))),
-        PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
-            Ok(PyObject::wrap(PyObjectPayload::RefIter {
-                source: obj.clone(),
-                index: SyncUsize::new(0),
-            }))
-        }
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Ok(PyObject::wrap(
+            PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::DictKeyRefs {
+                source: map.clone(),
+                index: 0,
+                expected_len: map.read().len(),
+            }))),
+        )),
         PyObjectPayload::Set(m) => {
             let vals: Vec<PyObjectRef> = m.read().values().cloned().collect();
             Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
@@ -938,14 +965,13 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 }
             }
             if let Some(ds) = inst.dict_storage.as_ref() {
-                let source = PyObject::wrap(PyObjectPayload::DictKeys {
-                    map: ds.clone(),
-                    owner: None,
-                });
-                let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                    source,
-                    index: SyncUsize::new(0),
-                });
+                let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::DictKeyRefs {
+                        source: ds.clone(),
+                        index: 0,
+                        expected_len: ds.read().len(),
+                    },
+                ))));
                 return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                     PyCell::new(IteratorData::HeldIter {
                         iter,
@@ -979,14 +1005,13 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             )))
         }
         PyObjectPayload::DictKeys { map, owner } => {
-            let source = PyObject::wrap(PyObjectPayload::DictKeys {
-                map: map.clone(),
-                owner: None,
-            });
-            let iter = PyObject::wrap(PyObjectPayload::RefIter {
-                source,
-                index: SyncUsize::new(0),
-            });
+            let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                IteratorData::DictKeyRefs {
+                    source: map.clone(),
+                    index: 0,
+                    expected_len: map.read().len(),
+                },
+            ))));
             if let Some(owner) = owner.clone() {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                     PyCell::new(IteratorData::HeldIter {

@@ -18,7 +18,7 @@ use std::rc::Rc;
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
 /// The VM sets this before any dict/set operation that may compare Custom keys.
 type EqDispatchFn = Box<dyn FnMut(&PyObjectRef, &PyObjectRef) -> PyResult<Option<bool>>>;
-type HashDispatchFn = Box<dyn FnMut(&PyObjectRef) -> Option<i64>>;
+type HashDispatchFn = Box<dyn FnMut(&PyObjectRef) -> PyResult<Option<i64>>>;
 
 thread_local! {
     static EQ_DISPATCH: RefCell<Option<EqDispatchFn>> = RefCell::new(None);
@@ -41,7 +41,7 @@ pub fn set_eq_dispatch<F: FnMut(&PyObjectRef, &PyObjectRef) -> PyResult<Option<b
 }
 
 /// Install a __hash__ dispatch callback (called from HashableKey::from_object for Instance).
-pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> Option<i64> + 'static>(f: F) {
+pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> PyResult<Option<i64>> + 'static>(f: F) {
     HASH_DISPATCH.with(|cell| {
         *cell.borrow_mut() = Some(Box::new(f));
     });
@@ -75,7 +75,7 @@ pub fn take_pending_eq_error() -> Option<PyException> {
 }
 
 /// Call the installed __hash__ dispatch, if any.
-fn call_hash_dispatch(obj: &PyObjectRef) -> Option<i64> {
+fn call_hash_dispatch(obj: &PyObjectRef) -> PyResult<Option<i64>> {
     HASH_DISPATCH.with(|cell| {
         // Take the closure out to avoid re-entrant borrow panic
         let func = cell.borrow_mut().take();
@@ -84,7 +84,7 @@ fn call_hash_dispatch(obj: &PyObjectRef) -> Option<i64> {
             *cell.borrow_mut() = Some(f);
             result
         } else {
-            None
+            Ok(None)
         }
     })
 }
@@ -634,7 +634,7 @@ impl HashableKey {
             PyObjectPayload::Ellipsis => Ok(HashableKey::str_key(CompactString::from("Ellipsis"))),
             // Instance objects: use __hash__ if available via dispatch, else identity.
             PyObjectPayload::Instance(_) => {
-                if let Some(hash_val) = call_hash_dispatch(obj) {
+                if let Some(hash_val) = call_hash_dispatch(obj)? {
                     Ok(HashableKey::Custom {
                         hash_value: hash_val,
                         object: obj.clone(),
@@ -671,7 +671,7 @@ impl HashableKey {
             // Module objects: hashable if they have __hash__ (e.g. re.Pattern objects),
             // otherwise use identity (CPython modules are hashable by identity)
             PyObjectPayload::Module(_) => {
-                if let Some(hash_val) = call_hash_dispatch(obj) {
+                if let Some(hash_val) = call_hash_dispatch(obj)? {
                     Ok(HashableKey::Custom {
                         hash_value: hash_val,
                         object: obj.clone(),

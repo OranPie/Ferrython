@@ -46,19 +46,38 @@ pub(crate) fn try_fast_get_iter(frame: &mut Frame) -> FastGetIterResult {
         | PyObjectPayload::RefIter { .. }
         | PyObjectPayload::RevRefIter { .. }
         | PyObjectPayload::Generator(_) => FastGetIterResult::Handled,
-        PyObjectPayload::List(_)
-        | PyObjectPayload::Tuple(_)
-        | PyObjectPayload::Dict(_)
-        | PyObjectPayload::MappingProxy(_)
-        | PyObjectPayload::DictKeys { .. }
-        | PyObjectPayload::DictValues { .. }
-        | PyObjectPayload::DictItems { .. } => {
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                 source: obj.clone(),
                 index: SyncUsize::new(0),
             });
             replace_stack_top(frame, iter);
             FastGetIterResult::Handled
+        }
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+            let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                IteratorData::DictKeyRefs {
+                    source: map.clone(),
+                    index: 0,
+                    expected_len: map.read().len(),
+                },
+            ))));
+            replace_stack_top(frame, iter);
+            FastGetIterResult::Handled
+        }
+        PyObjectPayload::DictKeys { map, .. } => {
+            let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                IteratorData::DictKeyRefs {
+                    source: map.clone(),
+                    index: 0,
+                    expected_len: map.read().len(),
+                },
+            ))));
+            replace_stack_top(frame, iter);
+            FastGetIterResult::Handled
+        }
+        PyObjectPayload::DictValues { .. } | PyObjectPayload::DictItems { .. } => {
+            FastGetIterResult::Fallback
         }
         _ => FastGetIterResult::Fallback,
     }
@@ -113,7 +132,7 @@ pub(crate) fn try_fast_for_iter(
         PyObjectPayload::RefIter { source, index } => {
             try_for_ref_iter(frame, jump_target, source, index, instr_base, instr_count)
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX || idx == 0 {
                 index.set(usize::MAX);
@@ -195,8 +214,7 @@ pub(crate) fn try_fast_for_iter_store(
                 return FastForIterStoreResult::HandledChain;
             }
             let idx = index.get();
-            let item = ref_iter_item(source, idx);
-            if let Some(value) = item {
+            if let Some(value) = ref_iter_item(source, idx) {
                 index.set(idx + 1);
                 set_local(frame, store_idx, value);
             } else {
@@ -206,7 +224,7 @@ pub(crate) fn try_fast_for_iter_store(
             }
             FastForIterStoreResult::HandledChain
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX || idx == 0 {
                 index.set(usize::MAX);
@@ -307,6 +325,31 @@ fn try_store_from_iterator_data(
         IteratorData::DictKeys { keys, index } => {
             if *index < keys.len() {
                 let value = keys[*index].clone();
+                *index += 1;
+                drop(data);
+                set_local(frame, store_idx, value);
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterStoreResult::HandledChain
+        }
+        IteratorData::DictKeyRefs {
+            source,
+            index,
+            expected_len,
+        } => {
+            let map_len = source.read().len();
+            if map_len != *expected_len {
+                drop(data);
+                return FastForIterStoreResult::Fallback;
+            }
+            let value = {
+                let map = source.read();
+                map.get_index(*index).map(|(key, _)| key.to_object())
+            };
+            if let Some(value) = value {
                 *index += 1;
                 drop(data);
                 set_local(frame, store_idx, value);
@@ -542,6 +585,33 @@ fn try_for_iterator_data(
             }
             FastForIterResult::Handled
         }
+        IteratorData::DictKeyRefs {
+            source,
+            index,
+            expected_len,
+        } => {
+            let map_len = source.read().len();
+            if map_len != *expected_len {
+                drop(data);
+                return FastForIterResult::Error(PyException::runtime_error(
+                    "dictionary changed size during iteration",
+                ));
+            }
+            let value = {
+                let map = source.read();
+                map.get_index(*index).map(|(key, _)| key.to_object())
+            };
+            if let Some(value) = value {
+                *index += 1;
+                drop(data);
+                push(frame, value);
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterResult::Handled
+        }
         _ => {
             drop(data);
             FastForIterResult::Fallback
@@ -668,6 +738,7 @@ fn advance_enumerate_source(source: &PyObjectRef) -> Option<Option<PyObjectRef>>
     if let PyObjectPayload::RefIter {
         source: src,
         index: src_idx,
+        ..
     } = &source.payload
     {
         let idx = src_idx.get();
@@ -709,10 +780,12 @@ fn advance_zip_pair(
         PyObjectPayload::RefIter {
             source: src0,
             index: idx0,
+            ..
         },
         PyObjectPayload::RefIter {
             source: src1,
             index: idx1,
+            ..
         },
     ) = (&sources[0].payload, &sources[1].payload)
     {
@@ -840,7 +913,7 @@ fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
                 Some(None)
             }
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX || idx == 0 {
                 index.set(usize::MAX);

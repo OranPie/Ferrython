@@ -674,6 +674,7 @@ const DICT_METHODS: &[&str] = &[
     "setdefault",
     "clear",
     "popitem",
+    "fromkeys",
     "most_common",
     "elements",
     "move_to_end",

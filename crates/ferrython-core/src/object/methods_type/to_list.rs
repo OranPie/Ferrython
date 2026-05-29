@@ -273,6 +273,29 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     *index = keys.len();
                     Ok(result)
                 }
+                IteratorData::DictKeyRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "dictionary changed size during iteration",
+                        ));
+                    }
+                    guard_eager_allocation(
+                        map.len().saturating_sub(*index),
+                        "dict keys iterator -> list",
+                    )?;
+                    let result = map
+                        .iter()
+                        .skip(*index)
+                        .map(|(key, _)| key.to_object())
+                        .collect();
+                    *index = map.len();
+                    Ok(result)
+                }
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
                 | IteratorData::ZipLongest { .. }
@@ -367,7 +390,7 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 _ => Ok(vec![]),
             }
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let mut idx = index.get();
             if idx == usize::MAX || idx == 0 {
                 return Ok(vec![]);

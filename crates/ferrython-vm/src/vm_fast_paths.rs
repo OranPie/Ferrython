@@ -698,7 +698,9 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
                 IteratorData::Tuple { .. } => "tuple_iterator",
                 IteratorData::Str { .. } => "str_ascii_iterator",
                 IteratorData::DictEntries { .. } => "dict_itemiterator",
-                IteratorData::DictKeys { .. } => "dict_keyiterator",
+                IteratorData::DictKeys { .. } | IteratorData::DictKeyRefs { .. } => {
+                    "dict_keyiterator"
+                }
                 IteratorData::Sentinel { .. } => "callable_iterator",
                 IteratorData::Tee { .. } => "itertools._tee",
                 _ => "iterator",

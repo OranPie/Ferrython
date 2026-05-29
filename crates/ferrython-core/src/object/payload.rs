@@ -1390,6 +1390,11 @@ pub enum IteratorData {
         keys: Vec<PyObjectRef>,
         index: usize,
     },
+    DictKeyRefs {
+        source: Rc<PyCell<FxHashKeyMap>>,
+        index: usize,
+        expected_len: usize,
+    },
     /// Wraps an iterator while keeping the original iterable alive until exhaustion.
     HeldIter {
         iter: PyObjectRef,

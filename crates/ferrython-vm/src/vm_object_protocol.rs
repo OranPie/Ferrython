@@ -36,17 +36,16 @@ impl VirtualMachine {
                             use std::hash::{Hash, Hasher};
                             let mut hasher = DefaultHasher::new();
                             key.hash(&mut hasher);
-                            return Some(hasher.finish() as i64);
+                            return Ok(Some(hasher.finish() as i64));
                         }
                     }
                 }
             }
             if let Some(hash_method) = obj.get_attr("__hash__") {
-                if let Ok(result) = vm.call_object(hash_method, vec![]) {
-                    return Some(result.as_int().unwrap_or(0));
-                }
+                let result = vm.call_object(hash_method, vec![])?;
+                return Ok(Some(result.as_int().unwrap_or(0)));
             }
-            None
+            Ok(None)
         });
 
         let vm_ptr3 = self as *mut VirtualMachine;

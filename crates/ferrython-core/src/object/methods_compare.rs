@@ -1,6 +1,7 @@
 //! Comparison methods.
 
 use crate::error::{PyException, PyResult};
+use crate::types::take_pending_eq_error;
 
 use super::helpers::{call_callable, partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::{CompareOp, PyObjectMethods};
@@ -249,8 +250,14 @@ fn compare_dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> PyResult<bool>
     }
     for (key, left) in &a_effective {
         let Some(right) = b.get(*key) else {
+            if let Some(err) = take_pending_eq_error() {
+                return Err(err);
+            }
             return Ok(false);
         };
+        if let Some(err) = take_pending_eq_error() {
+            return Err(err);
+        }
         if !compare_dict_value_equal(left, right)? {
             return Ok(false);
         }

@@ -1,12 +1,14 @@
+use crate::introspection_modules::emit_deprecation_warning;
 use compact_str::CompactString;
+use ferrython_core::error::ExceptionKind;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    make_builtin, BuiltinFn, CompareOp, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef, SharedFxAttrMap,
+    call_callable, is_hidden_dict_key, lookup_in_class_mro, make_builtin, new_fx_hashkey_map,
+    repr_enter, repr_leave, BuiltinFn, CompareOp, FxHashKeyMap, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef, SharedFxAttrMap,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::rc::Rc;
 
 mod user_dict;
 mod user_list;

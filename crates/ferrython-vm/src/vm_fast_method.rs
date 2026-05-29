@@ -585,7 +585,11 @@ fn call_direct_method(
                 crate::builtins::call_list_method(receiver, items, name, args)
             }
             PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
-                crate::builtins::call_dict_method(map, name, args, Some(receiver.clone()))
+                if name == "fromkeys" {
+                    crate::builtins::core_fns::builtin_dict_fromkeys(args)
+                } else {
+                    crate::builtins::call_dict_method(map, name, args, Some(receiver.clone()))
+                }
             }
             PyObjectPayload::Set(map) => crate::builtins::call_set_method(map, name, args),
             PyObjectPayload::Tuple(items) => {

@@ -387,6 +387,7 @@ fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
             refs
         }
         IteratorData::DictKeys { keys, .. } => keys.clone(),
+        IteratorData::DictKeyRefs { source, .. } => dict_storage_refs(source),
         IteratorData::HeldIter { iter, owner } => {
             let mut refs = vec![iter.clone()];
             if let Some(owner) = owner {

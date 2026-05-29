@@ -386,6 +386,10 @@ impl VirtualMachine {
                             // Module method binding → two-item: method + module
                             frame.push(method);
                             frame.push(obj);
+                        } else if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_))
+                        {
+                            frame.push(method);
+                            frame.push(obj);
                         } else {
                             // Already-resolved callable → slow path
                             frame.push(PyObject::none());

@@ -198,7 +198,7 @@ impl VirtualMachine {
                     _ => Ok(None),
                 }
             }
-            PyObjectPayload::RevRefIter { source, index } => {
+            PyObjectPayload::RevRefIter { source, index, .. } => {
                 let idx = index.get();
                 if idx == usize::MAX {
                     return Ok(None);

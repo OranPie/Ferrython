@@ -12,10 +12,11 @@ use ferrython_core::object::{
 };
 use std::cell::Cell;
 
+pub(crate) use collections::builtin_dict_fromkeys;
 pub(super) use collections::{
-    builtin_all, builtin_any, builtin_dict, builtin_dict_fromkeys, builtin_enumerate,
-    builtin_frozenset, builtin_iter, builtin_list, builtin_next, builtin_range, builtin_reversed,
-    builtin_set, builtin_tuple, builtin_zip, get_iter_from_obj,
+    builtin_all, builtin_any, builtin_dict, builtin_enumerate, builtin_frozenset, builtin_iter,
+    builtin_list, builtin_next, builtin_range, builtin_reversed, builtin_set, builtin_tuple,
+    builtin_zip, get_iter_from_obj,
 };
 pub(super) use fundamental::{builtin_bool, builtin_float, builtin_int, builtin_str, builtin_type};
 pub(crate) use numeric::builtin_abs;

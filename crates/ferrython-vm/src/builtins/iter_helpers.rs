@@ -122,6 +122,25 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(None)
                     }
                 }
+                IteratorData::DictKeyRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "dictionary changed size during iteration",
+                        ));
+                    }
+                    if *index < map.len() {
+                        let obj = map.get_index(*index).unwrap().0.to_object();
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), obj)))
+                    } else {
+                        Ok(None)
+                    }
+                }
                 IteratorData::Count { current, step } => {
                     let v = PyObject::int(*current);
                     *current += *step;
@@ -237,7 +256,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 _ => Ok(None),
             }
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX {
                 return Ok(None);
@@ -402,6 +421,25 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         Ok(None)
                     }
                 }
+                IteratorData::DictKeyRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "dictionary changed size during iteration",
+                        ));
+                    }
+                    if *index < map.len() {
+                        let obj = map.get_index(*index).unwrap().0.to_object();
+                        *index += 1;
+                        Ok(Some(obj))
+                    } else {
+                        Ok(None)
+                    }
+                }
                 _ => Err(PyException::type_error(
                     "lazy iterator requires VM-level iteration",
                 )),
@@ -512,7 +550,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 _ => Ok(None),
             }
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             let idx = index.get();
             if idx == usize::MAX {
                 return Ok(None);

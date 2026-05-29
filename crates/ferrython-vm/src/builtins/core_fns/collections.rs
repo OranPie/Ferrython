@@ -181,12 +181,13 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 },
             ))))
         }
-        PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
-            Ok(PyObject::wrap(PyObjectPayload::RefIter {
-                source: obj.clone(),
-                index: SyncUsize::new(0),
-            }))
-        }
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Ok(PyObject::wrap(
+            PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::DictKeyRefs {
+                source: map.clone(),
+                index: 0,
+                expected_len: map.read().len(),
+            }))),
+        )),
         PyObjectPayload::Instance(_) => match obj.get_iter() {
             Ok(iter) => Ok(iter),
             Err(_) if obj.get_attr("__next__").is_some() => Ok(obj.clone()),

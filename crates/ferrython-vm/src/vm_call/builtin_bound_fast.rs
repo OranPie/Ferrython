@@ -72,6 +72,11 @@ impl VirtualMachine {
                     &[PyObject::list(items)],
                 )?))
             }
+            PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_)
+                if bbm.method_name.as_str() == "fromkeys" =>
+            {
+                Ok(Some(builtins::core_fns::builtin_dict_fromkeys(args)?))
+            }
             PyObjectPayload::Str(_)
             | PyObjectPayload::List(_)
             | PyObjectPayload::Dict(_)

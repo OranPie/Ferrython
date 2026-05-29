@@ -298,7 +298,7 @@ impl VirtualMachine {
                     _ => Ok(vec![]),
                 }
             }
-            PyObjectPayload::RevRefIter { source, index } => {
+            PyObjectPayload::RevRefIter { source, index, .. } => {
                 let mut idx = index.get();
                 if idx == usize::MAX || idx == 0 {
                     return Ok(vec![]);
@@ -453,6 +453,29 @@ impl VirtualMachine {
                             result.push(self.call_object_one_arg_fast_or_fallback(
                                 func.clone(),
                                 item.clone(),
+                            )?);
+                        }
+                        *index = end;
+                        Ok(result)
+                    }
+                    IteratorData::DictKeyRefs {
+                        source,
+                        index,
+                        expected_len,
+                    } => {
+                        let map = source.read();
+                        if map.len() != *expected_len {
+                            return Err(PyException::runtime_error(
+                                "dictionary changed size during iteration",
+                            ));
+                        }
+                        let start = *index;
+                        let end = map.len();
+                        let mut result = Vec::with_capacity(end.saturating_sub(start));
+                        for (key, _) in map.iter().skip(start) {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                key.to_object(),
                             )?);
                         }
                         *index = end;

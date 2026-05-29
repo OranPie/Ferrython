@@ -1534,10 +1534,16 @@ Last updated: 2026-05-29T19:06:23+08:00
   - pickle protocol 0/2 为 `takewhile`/`dropwhile` iterator 保存 predicate、source 和状态位，并通过内部 reducer 恢复为 lazy iterator。
   - 模块级 Python 函数支持按 pickle global 规则序列化/反序列化；unpickler 的 tuple/list/dict 收集路径可把 `GLOBAL` stack item 解析为普通 value，供 iterator reducer 参数使用。
   - 验证：`cargo fmt --all`、`cargo build -p ferrython-cli --bin ferrython`、`cargo check -p ferrython-vm`、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestBasicOps.test_dropwhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestExamples.test_dropwhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_takewhile`（pass=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_itertools.TestGC.test_dropwhile`（pass=1）、manual smoke 覆盖 function protocol 0/2、copy/deepcopy 和部分消费后的 dropwhile pickle、`git diff --check`。
+- `UserDict` / mapping 兼容性批次（2026-05-29）：
+  - `collections.UserDict` 构造、legacy `dict=` keyword、`fromkeys()`、`update()`、`copy()`、`popitem()`、`keys()` / `values()` / `items()` 参数校验、`__missing__`、`KeyError.args`、repr 递归保护和自定义 key hash/equality 传播对齐 CPython 期望。
+  - dict / dict_keys 迭代改用 boxed `IteratorData::DictKeyRefs` 记录创建时长度，避免扩大 `PyObjectPayload`，并在 dict size mutation 时抛 `RuntimeError: dictionary changed size during iteration`。
+  - dict lookup/contains 消费 pending custom `__eq__` 错误，避免失败 lookup 后把异常泄漏到后续无关 mapping 比较；保留非自定义 key 碰撞 lookup 的 `KeyError` 语义。
+  - 验证：`cargo fmt --all`、`cargo check -p ferrython-vm`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v -f test_userdict`（run=25 pass=25 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -vv test_userdict.UserDictTest.test_getitem test_userdict.UserDictTest.test_read`（pass=2）。
+  - 新候选：`test_dict.DictTest.test_bad_key` 仍未按 CPython 对自定义 key `__eq__` 异常全部传播；`test_dict.DictTest.test_getitem` 仍有 error，适合作为下一批 focused mapping 修复。
 
 ## 后续修复队列
 
-1. `test_range` 当前模块级已过；继续按 case 扫描 `test_itertools` 的 `zip_longest`/`islice` 周边 copy、pickle、GC 小批队列，找出后续失败或 stack overflow 的真实触发用例。
+1. 优先评估 `test_dict.DictTest.test_bad_key` / `test_dict.DictTest.test_getitem`，补齐普通 dict 自定义 key equality 异常传播，同时避免回退 `UserDict` 已通过的 collision KeyError 语义。
 2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：

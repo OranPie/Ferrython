@@ -75,7 +75,7 @@ pub(super) fn set_iterator_state(
                 ))),
             }
         }
-        PyObjectPayload::RefIter { source, index } => {
+        PyObjectPayload::RefIter { source, index, .. } => {
             if index.get() == usize::MAX {
                 return Ok(PyObject::none());
             }
@@ -94,7 +94,7 @@ pub(super) fn set_iterator_state(
             }
             Ok(PyObject::none())
         }
-        PyObjectPayload::RevRefIter { source, index } => {
+        PyObjectPayload::RevRefIter { source, index, .. } => {
             if index.get() == usize::MAX {
                 return Ok(PyObject::none());
             }
