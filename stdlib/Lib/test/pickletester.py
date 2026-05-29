@@ -33,6 +33,7 @@ from pickle import bytes_types
 
 # bpo-41003: Save/restore warnings filters to leave them unchanged.
 # Ignore filters installed by numpy.
+np = None
 try:
     with save_restore_warnings_filters():
         import numpy as np

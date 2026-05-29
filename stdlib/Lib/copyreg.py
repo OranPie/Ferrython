@@ -56,16 +56,20 @@ _HEAPTYPE = 1 << 9
 
 def _slotnames(cls):
     """Return a list of slot names for a given class."""
-    names = cls.__dict__.get("__slotnames__")
+    try:
+        names = cls.__dict__["__slotnames__"]
+    except KeyError:
+        names = None
     if names is not None:
         return names
 
     result = []
     if hasattr(cls, "__slots__"):
         for c in cls.__mro__:
-            if "__slots__" not in c.__dict__:
+            try:
+                slots = c.__dict__["__slots__"]
+            except KeyError:
                 continue
-            slots = c.__dict__["__slots__"]
             if isinstance(slots, str):
                 slots = (slots,)
             for name in slots:

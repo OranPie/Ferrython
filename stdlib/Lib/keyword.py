@@ -8,8 +8,16 @@ kwlist = [
     'try', 'while', 'with', 'yield'
 ]
 
-iskeyword = frozenset(kwlist).__contains__
+_kwset = frozenset(kwlist)
+
+
+def iskeyword(name):
+    return name in _kwset
 
 softkwlist = ['_', 'case', 'match', 'type']
 
-issoftkeyword = frozenset(softkwlist).__contains__
+_softkwset = frozenset(softkwlist)
+
+
+def issoftkeyword(name):
+    return name in _softkwset
