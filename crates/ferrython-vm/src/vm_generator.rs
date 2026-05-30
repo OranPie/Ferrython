@@ -56,6 +56,18 @@ pub(crate) fn drop_generator_frame(ptr: *mut u8) {
 }
 
 impl VirtualMachine {
+    fn wrap_generator_stop_iteration(mut exc: PyException) -> PyException {
+        if exc.kind != ExceptionKind::StopIteration {
+            return exc;
+        }
+        exc.ensure_original();
+
+        let mut runtime = PyException::runtime_error("generator raised StopIteration");
+        runtime.cause = Some(Box::new(exc.clone()));
+        runtime.context = Some(Box::new(exc));
+        runtime
+    }
+
     /// Resume a generator, pushing the given `send_value` onto its stack and running
     /// until the next `YieldValue` or `ReturnValue`.
     /// Returns `Ok(value)` for yielded values, or `Err(StopIteration)` when done.
@@ -120,7 +132,7 @@ impl VirtualMachine {
                     exc.value = Some(return_val);
                     Err(exc)
                 }
-                Err(e) => Err(e),
+                Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
             }
         }
     }
@@ -178,7 +190,9 @@ impl VirtualMachine {
             frame.recycle(&mut self.frame_pool);
             match result {
                 Ok(_) => Ok(None), // Generator finished — no StopIteration needed
-                Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                Err(e) if e.kind == ExceptionKind::StopIteration => {
+                    Err(Self::wrap_generator_stop_iteration(e))
+                }
                 Err(e) => Err(e),
             }
         }
@@ -281,7 +295,7 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 frame.recycle(&mut self.frame_pool);
                 if let Err(e) = result {
-                    return Err(e);
+                    return Err(Self::wrap_generator_stop_iteration(e));
                 }
                 let return_val = result.ok();
                 let msg = return_val
@@ -299,7 +313,10 @@ impl VirtualMachine {
             let mut gen = gen_arc.write();
             gen.finished = true;
             gen.clear_frame();
-            exc_result
+            match exc_result {
+                Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
+                Ok(value) => Ok(value),
+            }
         }
     }
 

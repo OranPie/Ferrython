@@ -1640,6 +1640,18 @@ Last updated: 2026-05-30T16:03:35+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice test_tuple test_deque test_dynamicclassattribute test_codeop`（run=140 pass=115 fail=10 err=7 skip=8，剩余特征已写入 `test.md`）
 
+- 2026-05-30 generator_stop focused 兼容批次：
+  - 生成器内部逃逸的 `StopIteration` 现在按 PEP 479 包装为 `RuntimeError("generator raised StopIteration")`，并保留原 `StopIteration` 作为 `__cause__` 和 `__context__`，同时设置 `__suppress_context__ = True`。
+  - 覆盖路径包括普通 `next()`/`send()` resume、fast `for` resume 以及 `generator.throw()` 后生成器完成时的异常传播；正常 generator `return` 仍保留 `StopIteration.value` 行为。
+  - `test_generator_stop` 从 `run=2 pass=0 fail=0 err=2 skip=0` 提升到 `run=2 pass=2 fail=0 err=0 skip=0`，错误特征已写入 `test.md`。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-cli`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `target/debug/ferrython -c '<generator_stop smoke>'`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_generator_stop`
+    - `git diff --check`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

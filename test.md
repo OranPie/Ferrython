@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T16:03:35+08:00
+Last updated: 2026-05-30T16:26:26+08:00
 
 ## Current batch
 
@@ -33,6 +33,11 @@ Last updated: 2026-05-30T16:03:35+08:00
   - Fixed trait: `compile_command("", "single")` and `compile_command("\n", "single")` return the same code object as compiling `pass` with `PyCF_DONT_IMPLY_DEDENT`.
   - Remaining traits: Ferrython `compile()` does not yet emit CPython `SyntaxWarning`/`DeprecationWarning`, and incomplete interactive-source classification still needs a parser-aware solution. Avoid broad string-only test hacks here.
 
+- `test_generator_stop`
+  - Before fix: `run=2 pass=0 fail=0 err=2 skip=0`; a generator body raising `StopIteration` escaped as raw `StopIteration` and could trip the parent frame stack assertion in a direct `try/except` script.
+  - After fix: `run=2 pass=2 fail=0 err=0 skip=0`.
+  - Fixed traits: PEP 479 wrapping now converts generator-body `StopIteration` into `RuntimeError("generator raised StopIteration")`, preserves `StopIteration` as both `__cause__` and `__context__`, sets `__suppress_context__ = True`, and applies consistently to direct resume, fast `for` resume, and generator `throw()` completion paths.
+
 ## Commands used in this batch
 
 - `cargo check -p ferrython-cli`
@@ -46,3 +51,5 @@ Last updated: 2026-05-30T16:03:35+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice test_tuple test_deque test_dynamicclassattribute test_codeop`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dynamicclassattribute`
+- `target/debug/ferrython -c '<generator_stop smoke>'`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_generator_stop`
