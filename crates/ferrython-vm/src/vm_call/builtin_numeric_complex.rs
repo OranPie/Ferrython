@@ -1,3 +1,4 @@
+use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
@@ -30,6 +31,7 @@ impl VirtualMachine {
                             PyObjectPayload::Instance(i2) => {
                                 if let Some(v) = i2.attrs.read().get("__builtin_value__").cloned() {
                                     if matches!(&v.payload, PyObjectPayload::Complex { .. }) {
+                                        self.warn_complex_subclass_returned_from_complex()?;
                                         return Ok(Some(v));
                                     }
                                 }
@@ -166,5 +168,25 @@ impl VirtualMachine {
             which,
             obj.type_name()
         )))
+    }
+
+    fn warn_complex_subclass_returned_from_complex(&mut self) -> PyResult<()> {
+        let warnings = self.import_module_simple("warnings", 0)?;
+        let warn = warnings.get_attr("warn").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'warn'")
+        })?;
+        let category = warnings.get_attr("DeprecationWarning").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'DeprecationWarning'")
+        })?;
+        self.call_object(
+            warn,
+            vec![
+                PyObject::str_val(CompactString::from(
+                    "__complex__ returned non-complex (type complex subclass)",
+                )),
+                category,
+            ],
+        )?;
+        Ok(())
     }
 }
