@@ -265,13 +265,20 @@ class deque:
                 del self._data[self._maxlen:]
 
     def append(self, x):
+        if self._maxlen == 0:
+            self._bump()
+            return
         self._data.append(x)
         self._trim_left()
         self._bump()
 
     def appendleft(self, x):
+        if self._maxlen == 0:
+            self._bump()
+            return
+        if self._maxlen is not None and len(self._data) >= self._maxlen:
+            self._data.pop()
         self._data.insert(0, x)
-        self._trim_right()
         self._bump()
 
     def pop(self):
@@ -288,14 +295,30 @@ class deque:
 
     def extend(self, iterable):
         items = list(iterable)
+        if self._maxlen == 0:
+            if items:
+                self._bump()
+            return
+        if self._maxlen is not None and len(items) >= self._maxlen:
+            self._data[:] = items[-self._maxlen:]
+            self._bump()
+            return
         self._data.extend(items)
         self._trim_left()
         self._bump()
 
     def extendleft(self, iterable):
         items = list(iterable)
+        if self._maxlen == 0:
+            if items:
+                self._bump()
+            return
+        if self._maxlen is not None and len(items) >= self._maxlen:
+            self._data[:] = list(reversed(items))[:self._maxlen]
+            self._bump()
+            return
         if items:
-            self._data = list(reversed(items)) + self._data
+            self._data[:0] = reversed(items)
         self._trim_right()
         self._bump()
 

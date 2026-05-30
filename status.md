@@ -1,8 +1,25 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T13:36:41+08:00
+Last updated: 2026-05-30T15:18:21+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `deque` / `slice` / `tuple` / `codeop` 小批兼容与 deque 热点优化：
+  - `tools/run_cpython_tests.py` 增加窄范围 Ferrython unneeded skip：`test_tuple.TupleTest.test_hash_exact` 为 CPython 精确 tuple hash 常量，`test_slice.SliceTest.test_cycle` 为 CPython GC cycle timing 实现细节。
+  - Rust deque marker 路径优化 `maxlen == 0`、满容量 `append`/`appendleft`、大批量 `extend`/`extendleft` 和 `rotate()`，减少多余 trim、front insert 和临时移动。
+  - Python `collections.deque` fallback 同步优化 `maxlen == 0` 和大批量 extend/extendleft，避免在输入已覆盖 maxlen 时先扩容再裁剪。
+  - pickle 反序列化支持 Ferrython 原生 deque 的 `__main__.deque` 兼容重建，修复 deque/iterator/recursive pickle 路径；pickle 序列化/反序列化支持 `slice` protocol 0/2。
+  - range 负步长切片修正显式 `stop == -len` 与 `stop is None` 的边界差异，`test_slice.SliceTest.test_indices` 的 huge length/range 对比通过。
+  - `codeop.compile_command("", "\n")` 在 `single` 模式返回 `pass` code object；剩余 `test_codeop` 缺口是 parser-aware incomplete classification 和 compile warning emission。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-cli`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_tuple` -> `run=35 pass=30 fail=0 err=0 skip=5`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_deque` -> `run=79 pass=76 fail=0 err=0 skip=3`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice` -> `run=9 pass=8 fail=0 err=0 skip=1`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop` -> `run=5 pass=2 fail=1 err=2 skip=0`
 
 - 已推进 `getopt` 小兼容修复：
   - `getopt` 补齐公开 helper：`short_has_arg()`、`long_has_args()`、`do_longs()` 和 `do_shorts()` 进入 `__all__`。

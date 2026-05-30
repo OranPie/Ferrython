@@ -13,7 +13,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::collection_modules::{
-    create_collections_module, create_operator_module, namedtuple_rebuild_field,
+    collections_deque, create_collections_module, create_operator_module, namedtuple_rebuild_field,
     namedtuple_rebuild_instance,
 };
 use crate::text_modules::create_re_module;
@@ -383,6 +383,25 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                 "__builtin__" | "builtins",
                 "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool",
             ) => Ok(PyObject::builtin_type(CompactString::from(name.as_str()))),
+            ("__builtin__" | "builtins", "slice") => {
+                if arg_list.is_empty() || arg_list.len() > 3 {
+                    return Err(PyException::type_error("slice expected 1 to 3 arguments"));
+                }
+                let none_to_opt = |idx: usize| -> Option<PyObjectRef> {
+                    arg_list.get(idx).and_then(|value| {
+                        if matches!(value.payload, PyObjectPayload::None) {
+                            None
+                        } else {
+                            Some(value.clone())
+                        }
+                    })
+                };
+                Ok(match arg_list.len() {
+                    1 => PyObject::slice(None, none_to_opt(0), None),
+                    2 => PyObject::slice(none_to_opt(0), none_to_opt(1), None),
+                    _ => PyObject::slice(none_to_opt(0), none_to_opt(1), none_to_opt(2)),
+                })
+            }
             ("__builtin__" | "builtins", "range") => {
                 if arg_list.is_empty() || arg_list.len() > 3 {
                     return Err(PyException::type_error("range expected 1 to 3 arguments"));
@@ -430,6 +449,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     start, stop, step, start_obj, stop_obj, step_obj,
                 ))
             }
+            ("collections" | "__main__", "deque") => collections_deque(&arg_list),
             ("__builtin__" | "builtins", "__ferrython_seqiter__") => {
                 use ferrython_core::object::IteratorData;
                 let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);

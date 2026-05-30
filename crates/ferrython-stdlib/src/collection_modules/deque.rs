@@ -6,7 +6,7 @@ use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjec
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
-pub(super) fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(crate) fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let has_trailing_kwargs =
         !args.is_empty() && matches!(&args[args.len() - 1].payload, PyObjectPayload::Dict(_));
     let positional_count = if has_trailing_kwargs {

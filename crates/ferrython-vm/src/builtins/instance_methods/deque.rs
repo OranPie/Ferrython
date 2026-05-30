@@ -199,10 +199,18 @@ pub(crate) fn call_deque_method(
                     "append() takes exactly one argument",
                 ));
             }
+            if get_maxlen() == Some(0) {
+                return Ok(PyObject::none());
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                list.write().push(args[0].clone());
-                enforce_maxlen_right(list);
+                let mut v = list.write();
+                if let Some(ml) = get_maxlen() {
+                    if v.len() == ml && ml > 0 {
+                        v.remove(0);
+                    }
+                }
+                v.push(args[0].clone());
             }
             Ok(PyObject::none())
         }
@@ -212,10 +220,18 @@ pub(crate) fn call_deque_method(
                     "appendleft() takes exactly one argument",
                 ));
             }
+            if get_maxlen() == Some(0) {
+                return Ok(PyObject::none());
+            }
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
-                list.write().insert(0, args[0].clone());
-                enforce_maxlen_left(list);
+                let mut v = list.write();
+                if let Some(ml) = get_maxlen() {
+                    if v.len() == ml && ml > 0 {
+                        v.pop();
+                    }
+                }
+                v.insert(0, args[0].clone());
             }
             Ok(PyObject::none())
         }
@@ -254,9 +270,19 @@ pub(crate) fn call_deque_method(
                 ));
             }
             // args[0] should be pre-collected items as a List (VM collects iterable before calling)
-            let items = args[0].to_list()?;
+            let mut items = args[0].to_list()?;
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
+                if get_maxlen() == Some(0) {
+                    return Ok(PyObject::none());
+                }
+                if let Some(ml) = get_maxlen() {
+                    if items.len() >= ml {
+                        let start = items.len() - ml;
+                        *list.write() = items.split_off(start);
+                        return Ok(PyObject::none());
+                    }
+                }
                 list.write().extend(items);
                 enforce_maxlen_right(list);
             }
@@ -271,6 +297,15 @@ pub(crate) fn call_deque_method(
             let items = args[0].to_list()?;
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
+                if get_maxlen() == Some(0) {
+                    return Ok(PyObject::none());
+                }
+                if let Some(ml) = get_maxlen() {
+                    if items.len() >= ml {
+                        *list.write() = items.into_iter().rev().take(ml).collect();
+                        return Ok(PyObject::none());
+                    }
+                }
                 let mut v = list.write();
                 if !items.is_empty() {
                     let mut new_items: Vec<PyObjectRef> = items.into_iter().rev().collect();
@@ -301,10 +336,8 @@ pub(crate) fn call_deque_method(
                 let len = v.len() as i64;
                 if len > 0 {
                     let n = ((n % len) + len) % len;
-                    let split = v.len() - n as usize;
-                    let tail: Vec<_> = v.drain(split..).collect();
-                    for (i, item) in tail.into_iter().enumerate() {
-                        v.insert(i, item);
+                    if n != 0 {
+                        v.rotate_right(n as usize);
                     }
                 }
             }

@@ -303,6 +303,13 @@ pub(super) fn pickle_serialize_p0(
             }
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::Slice(sd) => {
+            buf.extend_from_slice(b"cbuiltins\nslice\n(");
+            pickle_serialize_p0(&sd.start.clone().unwrap_or_else(PyObject::none), buf, memo)?;
+            pickle_serialize_p0(&sd.stop.clone().unwrap_or_else(PyObject::none), buf, memo)?;
+            pickle_serialize_p0(&sd.step.clone().unwrap_or_else(PyObject::none), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::Instance(inst) => {
             if inst.attrs.read().contains_key("__csv_dialect__") {
                 return Err(PyException::type_error("cannot pickle 'Dialect' instances"));
@@ -934,6 +941,19 @@ pub(super) fn pickle_serialize_p2(
         PyObjectPayload::Range(rd) => {
             buf.extend_from_slice(b"cbuiltins\nrange\n");
             pickle_serialize_p2(&PyObject::tuple(range_pickle_args(rd)), buf, memo)?;
+            buf.push(b'R');
+        }
+        PyObjectPayload::Slice(sd) => {
+            buf.extend_from_slice(b"cbuiltins\nslice\n");
+            pickle_serialize_p2(
+                &PyObject::tuple(vec![
+                    sd.start.clone().unwrap_or_else(PyObject::none),
+                    sd.stop.clone().unwrap_or_else(PyObject::none),
+                    sd.step.clone().unwrap_or_else(PyObject::none),
+                ]),
+                buf,
+                memo,
+            )?;
             buf.push(b'R');
         }
         PyObjectPayload::Instance(inst) => {

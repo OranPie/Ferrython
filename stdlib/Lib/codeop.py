@@ -69,6 +69,8 @@ def compile_command(source, filename="<input>", symbol="single"):
       syntax error (OverflowError and ValueError can be produced by
       malformed literals).
     """
+    if symbol == "single" and source in ("", "\n"):
+        return compile("pass", filename, symbol, PyCF_DONT_IMPLY_DEDENT)
     return _maybe_compile(compile, source, filename, symbol)
 
 

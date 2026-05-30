@@ -975,7 +975,9 @@ pub(in crate::object) fn get_slice_impl(
                     } else {
                         BigInt::zero()
                     };
-                    if value <= -&len {
+                    if step_negative && value == -&len {
+                        BigInt::zero()
+                    } else if value <= -&len {
                         lower
                     } else {
                         (len.clone() + value).max(lower)
@@ -1009,7 +1011,7 @@ pub(in crate::object) fn get_slice_impl(
                 BigInt::zero()
             };
             let default_stop = if step_negative {
-                -&len - BigInt::one()
+                -BigInt::one()
             } else {
                 len.clone()
             };
