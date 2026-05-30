@@ -42,7 +42,13 @@ impl VirtualMachine {
                 }
             }
             if let Some(hash_method) = obj.get_attr("__hash__") {
-                let result = vm.call_object(hash_method, vec![])?;
+                let call_args =
+                    if matches!(&hash_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        vec![]
+                    } else {
+                        vec![obj.clone()]
+                    };
+                let result = vm.call_object(hash_method, call_args)?;
                 return Ok(Some(result.as_int().unwrap_or(0)));
             }
             Ok(None)

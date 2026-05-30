@@ -1664,6 +1664,19 @@ Last updated: 2026-05-30T16:03:35+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pow`
     - `git diff --check`
 
+- 2026-05-30 hash dispatch / weakset crash 修复批次：
+  - `HashableKey` 的 VM `__hash__` dispatch 现在区分已绑定方法和未绑定 native/class 方法；未绑定 `__hash__` 会传入 `self`，避免 set/dict 内部转换 hashable key 时空参调用。
+  - 修复 `collections.UserString` 放入 set/dict 或被 `WeakSet` 初始化时触发的 Rust index out of bounds panic。
+  - `test_weakset` 从 Rust panic 转为可统计结果 `run=44 pass=4 fail=7 err=33 skip=0`；剩余为 WeakSet API/比较/迭代功能缺失，已写入 `test.md`。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-cli`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `target/debug/ferrython -c '<UserString hash smoke>'`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakset`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash`
+    - `git diff --check`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

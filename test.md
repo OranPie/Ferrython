@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T16:34:25+08:00
+Last updated: 2026-05-30T16:39:03+08:00
 
 ## Current batch
 
@@ -48,6 +48,12 @@ Last updated: 2026-05-30T16:34:25+08:00
   - Not small current targets: `test_decimal` (`run=500 pass=34 fail=61 err=390 skip=15`, broad Decimal/Context API gaps), `test_functools` (`run=232 pass=144 fail=45 err=42 skip=1`, broad cached_property/partial/lru/singledispatch gaps), `test_set` (`run=561 pass=521 fail=30 err=7 skip=3`, broad subclass/pickle/iterator/repr gaps), `test_hash` (`run=30 pass=4 fail=23 err=3 skip=0`, broad hash model/subprocess parser/hashability gaps), `test_super` (`run=21 pass=11 fail=7 err=3 skip=0`, compiler/runtime `__classcell__` semantics).
   - Crash/timeout traits to revisit separately: `test_dict` exits 139, `test_list` exits 137, `test_weakref` times out at 30s, `test_enumerate` times out at 30s.
 
+- `test_weakset`
+  - Before hash dispatch fix: module crashed in `UserString.__hash__` with Rust index out of bounds because `HashableKey` VM hash dispatch called class-native `__hash__` with no `self`.
+  - After hash dispatch fix: `run=44 pass=4 fail=7 err=33 skip=0`; the crash is gone and failures are now ordinary WeakSet API gaps.
+  - Fixed trait: set/dict/hashable-key conversion now passes `self` to unbound native `__hash__` methods while keeping already-bound methods zero-arg.
+  - Remaining traits: broad `WeakSet` methods/comparisons/operators/iteration are missing or incomplete; keep as separate feature target.
+
 ## Commands used in this batch
 
 - `cargo check -p ferrython-cli`
@@ -65,3 +71,6 @@ Last updated: 2026-05-30T16:34:25+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_generator_stop`
 - `target/debug/ferrython -c '<pow smoke>'`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pow`
+- `target/debug/ferrython -c '<UserString hash smoke>'`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakset`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash`
