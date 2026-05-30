@@ -67,7 +67,11 @@ pub(super) fn resolve_format_field(field_name: &str, args: &[PyObjectRef]) -> Op
 
 /// Resolve nested `{N}` references in a format spec.
 /// E.g., `{1}>{2}` with args=['hi', '*', 10] becomes `*>10`.
-pub(super) fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
+pub(super) fn resolve_nested_spec(
+    spec: &str,
+    args: &[PyObjectRef],
+    auto_idx: &mut usize,
+) -> String {
     let mut result = String::new();
     let mut chars = spec.chars().peekable();
     while let Some(c) = chars.next() {
@@ -79,13 +83,34 @@ pub(super) fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
                 }
                 ref_name.push(c);
             }
-            if let Ok(idx) = ref_name.parse::<usize>() {
-                if let Some(val) = args.get(idx) {
-                    result.push_str(&val.py_to_string());
-                }
+            let value = if ref_name.is_empty() {
+                let value = args.get(*auto_idx).cloned();
+                *auto_idx += 1;
+                value
+            } else if let Ok(idx) = ref_name.parse::<usize>() {
+                args.get(idx).cloned()
+            } else {
+                resolve_format_field(&ref_name, args)
+            };
+            if let Some(value) = value {
+                result.push_str(&value.py_to_string());
+            }
+        } else if c == '}' {
+            if chars.peek() == Some(&'}') {
+                chars.next();
+                result.push('}');
+            } else {
+                result.push(c);
             }
         } else {
-            result.push(c);
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                }
+            } else {
+                result.push(c);
+            }
         }
     }
     result

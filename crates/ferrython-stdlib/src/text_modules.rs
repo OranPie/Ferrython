@@ -33,8 +33,6 @@ pub use html_parser::create_html_parser_module;
 pub use unicodedata::create_unicodedata_module;
 use unicodedata::unicode_lookup_name;
 mod shlex;
-mod string;
-pub use string::create_string_module;
 mod textwrap;
 pub use encodings::{
     create_encodings_aliases_module, create_encodings_codec_module, create_encodings_idna_module,

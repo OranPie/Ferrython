@@ -3,7 +3,6 @@ use ferrython_core::object::PyObjectRef;
 
 pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
     match name {
-        "string" => Some(text_modules::create_string_module()),
         "re" => Some(text_modules::create_re_module()),
         "_sre" => Some(text_modules::create_sre_module()),
         "fnmatch" => Some(text_modules::create_fnmatch_module()),

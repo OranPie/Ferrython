@@ -813,14 +813,6 @@ pub(crate) fn call_str_method(
                             } else {
                                 (field_spec.as_str(), None)
                             };
-                        // Resolve nested {N} references in format spec (e.g., {0:{1}>{2}})
-                        let resolved_spec = format_spec.map(|spec| {
-                            if spec.contains('{') {
-                                resolve_nested_spec(spec, args)
-                            } else {
-                                spec.to_string()
-                            }
-                        });
                         // Split field_part on '!' for conversion
                         let (field_name, conversion) = if let Some(bang_pos) = field_part.find('!')
                         {
@@ -837,6 +829,15 @@ pub(crate) fn call_str_method(
                             resolve_format_field(field_name, args)
                         };
                         if let Some(val) = value {
+                            // Resolve nested {N} references after consuming the outer
+                            // automatic field index, matching CPython's numbering.
+                            let resolved_spec = format_spec.map(|spec| {
+                                if spec.contains('{') {
+                                    resolve_nested_spec(spec, args, &mut auto_idx)
+                                } else {
+                                    spec.to_string()
+                                }
+                            });
                             if let Some(conv) = conversion {
                                 // Apply conversion first, then format spec on the string
                                 let converted = match conv {
