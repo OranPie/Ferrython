@@ -365,24 +365,25 @@ pub(crate) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         if exp_i < 0 {
             // Modular inverse: pow(a, -1, m) = modular inverse of a mod m (Python 3.8+)
-            // Use extended Euclidean algorithm
-            let a = ((base_i % mod_i) + mod_i) % mod_i;
-            let (g, x, _) = extended_gcd(a, mod_i);
+            // Compute over abs(m), then convert the final residue to the sign of m.
+            let m = modulus_abs_i128(mod_i);
+            let a = (base_i as i128).rem_euclid(m);
+            let (g, x) = extended_gcd(a, m);
             if g != 1 {
-                return Err(PyException::value_error(format!(
-                    "base is not invertible for the given modulus"
-                )));
+                return Err(PyException::value_error(
+                    "base is not invertible for the given modulus",
+                ));
             }
-            let inv = ((x % mod_i) + mod_i) % mod_i;
+            let inv = x.rem_euclid(m);
             // For exponents < -1, compute pow(inv, -exp, mod)
-            let pos_exp = (-exp_i) as u64;
+            let pos_exp = exp_i.unsigned_abs();
             if pos_exp == 1 {
-                return Ok(PyObject::int(inv));
+                return Ok(PyObject::int(mod_residue_to_i64(inv, mod_i)));
             }
-            let result = mod_pow(inv, pos_exp, mod_i);
+            let result = mod_pow_i128(inv, pos_exp, mod_i);
             return Ok(PyObject::int(result));
         }
-        let result = mod_pow(base_i, exp_i as u64, mod_i);
+        let result = mod_pow_i128(base_i as i128, exp_i as u64, mod_i);
         Ok(PyObject::int(result))
     } else {
         Ok(args[0].power(&args[1])?)
@@ -390,10 +391,11 @@ pub(crate) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 /// Modular exponentiation: (base^exp) % modulus using repeated squaring
-fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
-    let m = modulus.unsigned_abs() as u128;
-    let mut result: u128 = 1;
-    let mut b = ((base as i128 % modulus as i128 + modulus as i128) % modulus as i128) as u128;
+fn mod_pow_i128(base: i128, mut exp: u64, modulus: i64) -> i64 {
+    let m_i = modulus_abs_i128(modulus);
+    let m = m_i as u128;
+    let mut result: u128 = 1 % m;
+    let mut b = base.rem_euclid(m_i) as u128;
     while exp > 0 {
         if exp & 1 == 1 {
             result = result * b % m;
@@ -401,21 +403,36 @@ fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
         b = b * b % m;
         exp >>= 1;
     }
-    let r = result as i64;
-    if modulus < 0 && r > 0 {
-        r + modulus
+    mod_residue_to_i64(result as i128, modulus)
+}
+
+fn modulus_abs_i128(modulus: i64) -> i128 {
+    if modulus < 0 {
+        -(modulus as i128)
     } else {
-        r
+        modulus as i128
     }
 }
 
-/// Extended Euclidean algorithm: returns (gcd, x, y) such that a*x + b*y = gcd
-fn extended_gcd(a: i64, b: i64) -> (i64, i64, i64) {
-    if a == 0 {
-        return (b, 0, 1);
+fn mod_residue_to_i64(residue: i128, modulus: i64) -> i64 {
+    let signed = if modulus < 0 && residue > 0 {
+        residue - modulus_abs_i128(modulus)
+    } else {
+        residue
+    };
+    signed as i64
+}
+
+/// Extended Euclidean algorithm: returns (gcd, x) such that a*x = gcd (mod b).
+fn extended_gcd(a: i128, b: i128) -> (i128, i128) {
+    let (mut old_r, mut r) = (a, b);
+    let (mut old_s, mut s) = (1i128, 0i128);
+    while r != 0 {
+        let q = old_r / r;
+        (old_r, r) = (r, old_r - q * r);
+        (old_s, s) = (s, old_s - q * s);
     }
-    let (g, x1, y1) = extended_gcd(b % a, a);
-    (g, y1 - (b / a) * x1, x1)
+    (old_r.abs(), old_s)
 }
 
 pub(crate) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

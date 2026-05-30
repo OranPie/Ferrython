@@ -1652,6 +1652,18 @@ Last updated: 2026-05-30T16:03:35+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_generator_stop`
     - `git diff --check`
 
+- 2026-05-30 pow focused 兼容批次：
+  - 三参 `pow()` 的 modular exponentiation 改为 `i128` 中间值和迭代 extended gcd，修复负 exponent/负 modulus 路径的 Rust overflow panic，并保持 Python 的负 modulus 余数符号。
+  - `pow(x, 0, 1)` 现在正确返回 `0`；`0 ** negative` 对 int/float/bool 现在抛 `ZeroDivisionError`，不再返回 `inf`。
+  - `test_pow` 从崩溃/`run=6 pass=3 fail=3 err=0 skip=0` 提升到 `run=6 pass=6 fail=0 err=0 skip=0`，候选扫描和错误特征已写入 `test.md`。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-cli`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `target/debug/ferrython -c '<pow smoke>'`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pow`
+    - `git diff --check`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

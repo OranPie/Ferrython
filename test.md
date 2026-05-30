@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T16:26:26+08:00
+Last updated: 2026-05-30T16:34:25+08:00
 
 ## Current batch
 
@@ -38,6 +38,16 @@ Last updated: 2026-05-30T16:26:26+08:00
   - After fix: `run=2 pass=2 fail=0 err=0 skip=0`.
   - Fixed traits: PEP 479 wrapping now converts generator-body `StopIteration` into `RuntimeError("generator raised StopIteration")`, preserves `StopIteration` as both `__cause__` and `__context__`, sets `__suppress_context__ = True`, and applies consistently to direct resume, fast `for` resume, and generator `throw()` completion paths.
 
+- `test_pow`
+  - Before fix: module crashed with Rust overflow in modular exponentiation; after the overflow guard, remaining result was `run=6 pass=3 fail=3 err=0 skip=0`.
+  - After fix: `run=6 pass=6 fail=0 err=0 skip=0`.
+  - Fixed traits: three-argument `pow()` handles negative exponents and negative moduli without `i64` overflow, `pow(x, 0, 1)` returns `0`, modular inverse results keep the modulus sign convention, and `0 ** negative` for int/float/bool raises `ZeroDivisionError` instead of returning `inf`.
+
+- Candidate scan notes after `test_generator_stop`
+  - Passing/currently green: `test_copy`, `test_property`, `test_contains`, `test_range`, `test_bool`, `test_dictcomps`.
+  - Not small current targets: `test_decimal` (`run=500 pass=34 fail=61 err=390 skip=15`, broad Decimal/Context API gaps), `test_functools` (`run=232 pass=144 fail=45 err=42 skip=1`, broad cached_property/partial/lru/singledispatch gaps), `test_set` (`run=561 pass=521 fail=30 err=7 skip=3`, broad subclass/pickle/iterator/repr gaps), `test_hash` (`run=30 pass=4 fail=23 err=3 skip=0`, broad hash model/subprocess parser/hashability gaps), `test_super` (`run=21 pass=11 fail=7 err=3 skip=0`, compiler/runtime `__classcell__` semantics).
+  - Crash/timeout traits to revisit separately: `test_dict` exits 139, `test_list` exits 137, `test_weakref` times out at 30s, `test_enumerate` times out at 30s.
+
 ## Commands used in this batch
 
 - `cargo check -p ferrython-cli`
@@ -53,3 +63,5 @@ Last updated: 2026-05-30T16:26:26+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dynamicclassattribute`
 - `target/debug/ferrython -c '<generator_stop smoke>'`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_generator_stop`
+- `target/debug/ferrython -c '<pow smoke>'`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pow`

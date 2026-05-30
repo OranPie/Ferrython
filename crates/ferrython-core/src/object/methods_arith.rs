@@ -842,16 +842,37 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
                 if exp >= 0 {
                     let e = exp as u32;
                     return Ok(PyInt::pow_op(a, e).to_object());
+                } else if a.is_zero() {
+                    return Err(PyException::zero_division_error(
+                        "0.0 cannot be raised to a negative power",
+                    ));
                 }
             }
             // Negative exponent → float result
             Ok(PyObject::float(a.to_f64().powf(b.to_f64())))
         }
-        (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.powf(*b))),
+        (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => {
+            if *a == 0.0 && *b < 0.0 {
+                return Err(PyException::zero_division_error(
+                    "0.0 cannot be raised to a negative power",
+                ));
+            }
+            Ok(PyObject::float(a.powf(*b)))
+        }
         (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+            if a.is_zero() && *b < 0.0 {
+                return Err(PyException::zero_division_error(
+                    "0.0 cannot be raised to a negative power",
+                ));
+            }
             Ok(PyObject::float(a.to_f64().powf(*b)))
         }
         (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+            if *a == 0.0 && b.to_f64() < 0.0 {
+                return Err(PyException::zero_division_error(
+                    "0.0 cannot be raised to a negative power",
+                ));
+            }
             Ok(PyObject::float(a.powf(b.to_f64())))
         }
         // Complex exponentiation — delegate to call_complex_method via dunder dispatch path
