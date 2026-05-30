@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T17:38:16+08:00
+Last updated: 2026-05-30T18:13:14+08:00
 
 ## Current batch
 
@@ -23,6 +23,20 @@ Last updated: 2026-05-30T17:38:16+08:00
   - Fixed object surface: HMAC instances expose correct `digest_size`, `block_size`, `name`, `digest_cons`, `inner`, `outer`, `_digest_bytes`, and `_hex_str`; `update()` and `copy()` recompute from saved key/msg/digestmod; module-level `hmac.digest()` returns raw digest bytes.
   - Fixed compare path: `hmac.compare_digest()` handles str, bytes, bytearray, memoryview, and str/bytes subclasses without using user `__eq__`; it rejects mixed text/bytes and non-ASCII str with `TypeError`.
   - Adjacent validation: `test_hashlib` remains green at `run=72 pass=40 fail=0 err=0 skip=32`; warning spam comes from optional CPython C extension modules that are absent in this runtime.
+
+- Candidate scan notes after `test_hmac`
+  - Passing/currently green: `test_secrets` (`run=11 pass=11 fail=0 err=0 skip=0`).
+  - Slow candidate to revisit with performance in mind: `test_sched` (`run=10 pass=5 fail=3 err=2 skip=0`, about 10.5s). The long runtime is from concurrent scheduler tests waiting on `queue.get(timeout=10)` after events are not triggered; fixing it should also remove the timeout-driven delay.
+  - Broad current targets: `test_urlparse` (`run=67 pass=2 fail=36 err=29 skip=0`, URL parser/result API surface), `test_pprint` (`run=30 pass=5 fail=24 err=1 skip=0`, formatting/layout and user collection reprs), `test_statistics` (`run=344 pass=129 fail=71 err=144 skip=0`, broad Decimal/Fraction/statistics API gaps).
+
+- `test_uuid`
+  - Before this batch: `run=58 pass=25 fail=1 err=4 skip=28`.
+  - After UUID module-local globals and pickle compatibility work: `run=58 pass=30 fail=0 err=0 skip=28`.
+  - Fixed traits: `uuid1()` reads `getnode` from the fresh module object that owns the function, so `mock.patch.object(py_uuid, "getnode", ...)` affects the right module under `support.import_fresh_module()`.
+  - Fixed copy/current pickle traits: `UUID.__getnewargs__()` returns the hex constructor argument, so copy/deepcopy and Ferrython pickle roundtrips no longer feed a large integer into positional `UUID(...)`.
+  - Fixed old pickle traits: unpickler resolves `copy_reg._reconstructor`, historical `__builtin__` type globals, protocol 2 `NEWOBJ`, protocol 4 `FRAME`/`MEMOIZE`, headerless protocol 1 binary opcodes, BigInt `LONG1`, UUID state dicts with str/bytes keys, and `SafeUUID` enum reductions.
+  - Performance note: module runtime stays fast after the fix (`test_uuid` completes around 0.03-0.12s locally); no timeout-driven behavior remains in this target.
+  - Adjacent validation: `test_copy` remains green at `run=75 pass=75 fail=0 err=0 skip=0`; `test_pickle` is not present in the current vendored test set.
 
 - `test_deque`
   - Before this batch: `run=79 pass=69 fail=3 err=4 skip=3`, around 14-16s.
@@ -116,3 +130,10 @@ Last updated: 2026-05-30T17:38:16+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_secrets`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sched`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_urlparse`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_statistics`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copy`

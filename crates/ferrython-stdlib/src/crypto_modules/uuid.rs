@@ -28,13 +28,9 @@ pub(crate) fn create_uuid_module() -> PyObjectRef {
     let uuid3_class = uuid_class.clone();
     let uuid4_class = uuid_class.clone();
     let uuid5_class = uuid_class.clone();
-    make_module(
+    let module = make_module(
         "uuid",
         vec![
-            (
-                "uuid1",
-                PyObject::native_closure("uuid.uuid1", move |args| uuid_uuid1(args, &uuid1_class)),
-            ),
             (
                 "uuid3",
                 PyObject::native_closure("uuid.uuid3", move |args| uuid_uuid3(args, &uuid3_class)),
@@ -94,7 +90,19 @@ pub(crate) fn create_uuid_module() -> PyObjectRef {
             ("_unix_getnode", make_builtin(uuid_none_getnode)),
             ("_windll_getnode", make_builtin(uuid_none_getnode)),
         ],
-    )
+    );
+
+    if let PyObjectPayload::Module(module_data) = &module.payload {
+        let module_for_uuid1 = module.clone();
+        module_data.attrs.write().insert(
+            CompactString::from("uuid1"),
+            PyObject::native_closure("uuid.uuid1", move |args| {
+                uuid_uuid1(args, &uuid1_class, &module_for_uuid1)
+            }),
+        );
+    }
+
+    module
 }
 
 fn build_uuid_class() -> PyObjectRef {
@@ -625,7 +633,11 @@ fn uuid_uuid4(_args: &[PyObjectRef], cls: &PyObjectRef) -> PyResult<PyObjectRef>
     Ok(build_uuid_object(bytes, cls.clone(), PyObject::none()))
 }
 
-fn uuid_uuid1(args: &[PyObjectRef], cls: &PyObjectRef) -> PyResult<PyObjectRef> {
+fn uuid_uuid1(
+    args: &[PyObjectRef],
+    cls: &PyObjectRef,
+    module: &PyObjectRef,
+) -> PyResult<PyObjectRef> {
     let (pos, kwargs) = split_kwargs(args);
     let node_arg = pos.first().cloned().or_else(|| kwargs_get(kwargs, "node"));
     let clock_seq_arg = pos
@@ -666,7 +678,8 @@ fn uuid_uuid1(args: &[PyObjectRef], cls: &PyObjectRef) -> PyResult<PyObjectRef> 
         let value =
             int_bigint(&arg).ok_or_else(|| PyException::value_error("node is out of range"))?;
         bigint_to_ranged_u64(&value, 48, "node")?
-    } else if let Some(node_obj) = call_module_attr("uuid", "getnode", &[]) {
+    } else if let Some(getnode) = module.get_attr("getnode") {
+        let node_obj = call_callable(&getnode, &[])?;
         let value = int_bigint(&node_obj)
             .ok_or_else(|| PyException::value_error("node is out of range"))?;
         bigint_to_ranged_u64(&value, 48, "node")?
@@ -859,8 +872,13 @@ fn uuid_obj_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn uuid_obj_getnewargs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let int_value = uuid_obj_int(args)?;
-    Ok(PyObject::tuple(vec![int_value]))
+    let Some(this) = args.first() else {
+        return Err(PyException::type_error("UUID.__getnewargs__ requires self"));
+    };
+    let hex = this
+        .get_attr("hex")
+        .ok_or_else(|| PyException::type_error("UUID.__getnewargs__ requires UUID instance"))?;
+    Ok(PyObject::tuple(vec![hex]))
 }
 
 fn uuid_obj_setattr(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

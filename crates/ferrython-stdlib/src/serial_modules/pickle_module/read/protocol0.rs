@@ -48,6 +48,27 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                     .trim_end_matches('L');
                 stack.push(PklStackItem::Value(pkl_parse_text_int(s)?));
             }
+            b'J' => {
+                if pos + 4 > data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated BININT",
+                    ));
+                }
+                let val =
+                    i32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                        as i64;
+                stack.push(PklStackItem::Value(PyObject::int(val)));
+                pos += 4;
+            }
+            b'K' => {
+                if pos >= data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated BININT1",
+                    ));
+                }
+                stack.push(PklStackItem::Value(PyObject::int(data[pos] as i64)));
+                pos += 1;
+            }
             b'F' => {
                 let line = p0_read_line(data, &mut pos);
                 let s = std::str::from_utf8(line)
@@ -82,6 +103,49 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                 let bytes = p0_unescape_bytes(line);
                 stack.push(PklStackItem::Value(PyObject::bytes(bytes)));
             }
+            b'U' => {
+                // SHORT_BINSTRING — protocol 1 may not carry a protocol header.
+                if pos >= data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated SHORT_BINSTRING",
+                    ));
+                }
+                let len = data[pos] as usize;
+                pos += 1;
+                if pos + len > data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated SHORT_BINSTRING data",
+                    ));
+                }
+                stack.push(PklStackItem::Value(PyObject::bytes(
+                    data[pos..pos + len].to_vec(),
+                )));
+                pos += len;
+            }
+            b'X' => {
+                if pos + 4 > data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated BINUNICODE length",
+                    ));
+                }
+                let len =
+                    u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                        as usize;
+                pos += 4;
+                if pos + len > data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated BINUNICODE data",
+                    ));
+                }
+                let s = std::str::from_utf8(&data[pos..pos + len]).map_err(|_| {
+                    PyException::runtime_error("UnpicklingError: invalid utf-8 in BINUNICODE")
+                })?;
+                stack.push(PklStackItem::Value(PyObject::str_val(CompactString::from(
+                    s,
+                ))));
+                pos += len;
+            }
+            b'}' => stack.push(PklStackItem::Value(PyObject::dict_from_pairs(vec![]))),
             b'(' => stack.push(PklStackItem::Mark),
             b'l' => {
                 // LIST — pop to mark, build list
@@ -141,6 +205,20 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                     if let PyObjectPayload::Dict(ref dict_map) = dict_obj.payload {
                         if let Ok(hk) = HashableKey::from_object(&key) {
                             dict_map.write().insert(hk, val);
+                        }
+                    }
+                }
+            }
+            b'u' => {
+                // SETITEMS — protocol 1 may appear without a protocol header.
+                let items = pkl_pop_to_mark(&mut stack)?;
+                if let Some(PklStackItem::Value(dict_obj)) = stack.last() {
+                    if let PyObjectPayload::Dict(ref dict_map) = dict_obj.payload {
+                        let mut map = dict_map.write();
+                        for chunk in items.chunks_exact(2) {
+                            if let Ok(hk) = HashableKey::from_object(&chunk[0]) {
+                                map.insert(hk, chunk[1].clone());
+                            }
                         }
                     }
                 }
@@ -219,6 +297,9 @@ pub(super) fn pickle_loads_p0(data: &[u8]) -> PyResult<PyObjectRef> {
                         ))
                     }
                 };
+                if pkl_rebuild_uuid_from_state(&obj, &state)?.is_some() {
+                    continue;
+                }
                 pkl_apply_state(&obj, &state)?;
             }
             b'\n' | b'\r' | b' ' => {} // skip whitespace

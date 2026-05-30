@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::{
-    py_int_bigint, range_data_from_bigints, range_iterator_from_data,
+    py_int_bigint, py_int_from_bigint, range_data_from_bigints, range_iterator_from_data,
 };
 use ferrython_core::object::{
     DequeIterData, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -289,6 +289,21 @@ fn pkl_resolve_global_class(module: &str, name: &str) -> Option<PyObjectRef> {
 }
 
 fn pkl_resolve_global_value(module: &str, name: &str) -> Option<PyObjectRef> {
+    if matches!(module, "copy_reg" | "copyreg") && name == "_reconstructor" {
+        return Some(PyObject::native_function(
+            "copyreg._reconstructor",
+            pickle_copyreg_reconstructor,
+        ));
+    }
+    if matches!(module, "__builtin__" | "builtins") {
+        match name {
+            "object" | "type" | "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool"
+            | "bytes" | "bytearray" | "set" | "frozenset" | "slice" | "range" => {
+                return Some(PyObject::builtin_type(CompactString::from(name)))
+            }
+            _ => {}
+        }
+    }
     if let Some(module_obj) = pkl_resolve_sys_module(module) {
         if let Some(value) = pkl_resolve_dotted_attr(module_obj, name) {
             return Some(value);
@@ -313,6 +328,98 @@ fn pkl_resolve_global_value(module: &str, name: &str) -> Option<PyObjectRef> {
     None
 }
 
+fn pickle_copyreg_reconstructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let cls = args
+        .first()
+        .cloned()
+        .ok_or_else(|| PyException::runtime_error("UnpicklingError: missing class"))?;
+    if !matches!(
+        &cls.payload,
+        PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_)
+    ) {
+        return Err(PyException::runtime_error(
+            "UnpicklingError: _reconstructor expects class",
+        ));
+    }
+    Ok(PyObject::instance(cls))
+}
+
+fn pkl_newobj(cls: PyObjectRef, args: PyObjectRef) -> PyResult<PyObjectRef> {
+    let arg_list = match &args.payload {
+        PyObjectPayload::Tuple(items) => (**items).clone(),
+        _ => vec![args],
+    };
+    if let Some(new) = cls.get_attr("__new__") {
+        let mut call_args = Vec::with_capacity(arg_list.len() + 1);
+        call_args.push(cls.clone());
+        call_args.extend(arg_list);
+        if let Ok(obj) = ferrython_core::object::call_callable(&new, &call_args) {
+            return Ok(obj);
+        }
+    }
+    Ok(PyObject::instance(cls))
+}
+
+fn pkl_rebuild_uuid_from_state(
+    obj: &PyObjectRef,
+    state: &PyObjectRef,
+) -> PyResult<Option<PyObjectRef>> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return Ok(None);
+    };
+    let is_uuid = matches!(
+        &inst.class.payload,
+        PyObjectPayload::Class(cd) if cd.name.as_str() == "UUID"
+    );
+    if !is_uuid {
+        return Ok(None);
+    }
+    let PyObjectPayload::Dict(map) = &state.payload else {
+        return Ok(None);
+    };
+    let state_r = map.read();
+    let state_value = |name: &str| -> Option<PyObjectRef> {
+        state_r
+            .get(&HashableKey::str_key(CompactString::from(name)))
+            .or_else(|| state_r.get(&HashableKey::Bytes(Box::new(name.as_bytes().to_vec()))))
+            .cloned()
+    };
+    let Some(int_obj) = state_value("int") else {
+        return Ok(None);
+    };
+    let is_safe = state_value("is_safe").unwrap_or_else(PyObject::none);
+    let uuid_cls = inst.class.clone();
+    drop(state_r);
+
+    let Some(value) = py_int_bigint(&int_obj) else {
+        return Err(PyException::runtime_error(
+            "UnpicklingError: invalid UUID int state",
+        ));
+    };
+    let uuid_mod = pkl_resolve_sys_module("uuid")
+        .ok_or_else(|| PyException::runtime_error("UnpicklingError: missing uuid module"))?;
+    let uuid_ctor = uuid_mod
+        .get_attr("UUID")
+        .ok_or_else(|| PyException::runtime_error("UnpicklingError: missing uuid.UUID"))?;
+    let args = PyObject::dict_from_pairs(vec![
+        (
+            PyObject::str_val(CompactString::from("int")),
+            py_int_from_bigint(value),
+        ),
+        (PyObject::str_val(CompactString::from("is_safe")), is_safe),
+    ]);
+    let rebuilt = ferrython_core::object::call_callable(&uuid_ctor, &[args])?;
+    if let (PyObjectPayload::Instance(src), PyObjectPayload::Instance(dst)) =
+        (&rebuilt.payload, &obj.payload)
+    {
+        *dst.attrs.write() = src.attrs.read().clone();
+        if let PyObjectPayload::Class(_) = &uuid_cls.payload {
+            return Ok(Some(obj.clone()));
+        }
+    }
+    Ok(Some(rebuilt))
+}
+
 fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectRef> {
     if let PklStackItem::Global(module, name) = callable {
         let arg_list = match &args.payload {
@@ -325,6 +432,13 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
             }
         }
         match (module.as_str(), name.as_str()) {
+            ("copy_reg" | "copyreg", "_reconstructor") => pickle_copyreg_reconstructor(&arg_list),
+            ("uuid", "SafeUUID") => {
+                let safe_uuid = pkl_resolve_global_value(module, name).ok_or_else(|| {
+                    PyException::runtime_error("UnpicklingError: missing uuid.SafeUUID")
+                })?;
+                ferrython_core::object::call_callable(&safe_uuid, &arg_list)
+            }
             ("__builtin__" | "builtins", "set") => {
                 if let Some(first) = arg_list.first() {
                     if let PyObjectPayload::List(items) = &first.payload {

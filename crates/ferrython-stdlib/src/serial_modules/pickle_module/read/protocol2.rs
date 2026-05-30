@@ -1,4 +1,5 @@
 use super::*;
+use num_traits::ToPrimitive;
 
 // ── Protocol 2 (binary) deserialization ──
 
@@ -18,6 +19,15 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
         match opcode {
             b'.' => break, // STOP
             b'N' => stack.push(PklStackItem::Value(PyObject::none())),
+            0x95 => {
+                // FRAME — protocol 4 framing metadata; payload follows inline here.
+                if pos + 8 > data.len() {
+                    return Err(PyException::runtime_error(
+                        "UnpicklingError: truncated FRAME",
+                    ));
+                }
+                pos += 8;
+            }
             0x88 => stack.push(PklStackItem::Value(PyObject::bool_val(true))),
             0x89 => stack.push(PklStackItem::Value(PyObject::bool_val(false))),
             b'K' => {
@@ -401,6 +411,12 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                 })?;
                 stack.push(PklStackItem::Value(val));
             }
+            0x94 => {
+                // MEMOIZE — store top of stack at the next memo index.
+                let id = memo.len() as u32;
+                let val = pkl_stack_top_value(&stack)?;
+                memo.insert(id, val);
+            }
             b'p' => {
                 // PUT (text) — read id to newline
                 let line = p0_read_line(data, &mut pos);
@@ -456,6 +472,26 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                 };
                 stack.push(PklStackItem::Global(mod_item, name_item));
             }
+            0x81 => {
+                // NEWOBJ — create cls.__new__(cls, *args), falling back to a blank instance.
+                let args_item = match stack.pop() {
+                    Some(PklStackItem::Value(v)) => v,
+                    _ => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: NEWOBJ expects args",
+                        ))
+                    }
+                };
+                let cls = match stack.pop() {
+                    Some(item) => pkl_stack_item_value(item)?,
+                    None => {
+                        return Err(PyException::runtime_error(
+                            "UnpicklingError: NEWOBJ expects class",
+                        ))
+                    }
+                };
+                stack.push(PklStackItem::Value(pkl_newobj(cls, args_item)?));
+            }
             b'R' => {
                 // REDUCE
                 let args_item = match stack.pop() {
@@ -495,6 +531,9 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                         ))
                     }
                 };
+                if pkl_rebuild_uuid_from_state(&obj, &state)?.is_some() {
+                    continue;
+                }
                 pkl_apply_state(&obj, &state)?;
             }
             0x8a => {
@@ -516,18 +555,30 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
                 if count == 0 {
                     stack.push(PklStackItem::Value(PyObject::int(0)));
                 } else {
-                    // Little-endian 2's complement
-                    let mut val: i64 = 0;
-                    for (i, &b) in bytes.iter().enumerate() {
-                        val |= (b as i64) << (i * 8);
-                    }
-                    // Sign extend if high bit set
-                    if bytes[count - 1] & 0x80 != 0 {
-                        for i in count..8 {
-                            val |= 0xffi64 << (i * 8);
+                    let negative = bytes[count - 1] & 0x80 != 0;
+                    let value = if negative {
+                        let mut twos = bytes.to_vec();
+                        for byte in &mut twos {
+                            *byte = !*byte;
                         }
+                        let mut carry = 1u16;
+                        for byte in &mut twos {
+                            let sum = *byte as u16 + carry;
+                            *byte = sum as u8;
+                            carry = sum >> 8;
+                            if carry == 0 {
+                                break;
+                            }
+                        }
+                        -num_bigint::BigInt::from_bytes_le(num_bigint::Sign::Plus, &twos)
+                    } else {
+                        num_bigint::BigInt::from_bytes_le(num_bigint::Sign::Plus, bytes)
+                    };
+                    if let Some(small) = value.to_i64() {
+                        stack.push(PklStackItem::Value(PyObject::int(small)));
+                    } else {
+                        stack.push(PklStackItem::Value(PyObject::big_int(value)));
                     }
-                    stack.push(PklStackItem::Value(PyObject::int(val)));
                 }
             }
             b'V' => {

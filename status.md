@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T17:38:16+08:00
+Last updated: 2026-05-30T18:13:14+08:00
 
 ## CPython 兼容修复进度
 
@@ -33,6 +33,20 @@ Last updated: 2026-05-30T17:38:16+08:00
   - `git diff --check`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac` -> `run=20 pass=20 fail=0 err=0 skip=0`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hashlib` -> `run=72 pass=40 fail=0 err=0 skip=32`；仍有缺少 CPython C 扩展模块的 warning spam，但无失败。
+
+- 已推进 `uuid` / pickle 旧协议兼容修复：
+  - `uuid.uuid1()` native closure 改为捕获并读取创建它的模块对象，修复 `support.import_fresh_module()` 产生多个 `uuid` 模块时 `mock.patch.object(py_uuid, "getnode", ...)` 不生效的问题。
+  - `UUID.__getnewargs__()` 改为返回 hex 字符串参数，修复 `copy.copy()`、`copy.deepcopy()` 和当前 Ferrython pickle roundtrip 把 UUID int 当 positional hex 解析的问题。
+  - pickle unloader 补齐旧 pickle 所需的 `copy_reg._reconstructor`、历史 `__builtin__` 类型全局解析、protocol 2 `NEWOBJ`、protocol 4 `FRAME`/`MEMOIZE`，以及 headerless protocol 1 的 `EMPTY_DICT`、`SHORT_BINSTRING`、`BINUNICODE`、`BININT`、`BININT1`、`SETITEMS`。
+  - protocol 2 `LONG1` 改用 BigInt 解析 little-endian two's-complement，避免 128-bit UUID int 触发 Rust 左移溢出。
+  - UUID 旧 state dict 现在支持 str/bytes key，并从 `int`/`is_safe` 重建完整 UUID 派生属性；`uuid.SafeUUID` 旧 pickle reduce 还原为 `None`/`0`/`-1` 枚举值。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid` -> `run=58 pass=30 fail=0 err=0 skip=28`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copy` -> `run=75 pass=75 fail=0 err=0 skip=0`
 
 - 已推进 `deque` / `slice` / `tuple` / `codeop` 小批兼容与 deque 热点优化：
   - `tools/run_cpython_tests.py` 增加窄范围 Ferrython unneeded skip：`test_tuple.TupleTest.test_hash_exact` 为 CPython 精确 tuple hash 常量，`test_slice.SliceTest.test_cycle` 为 CPython GC cycle timing 实现细节。
