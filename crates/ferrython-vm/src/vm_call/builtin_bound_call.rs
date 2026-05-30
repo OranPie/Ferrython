@@ -28,7 +28,7 @@ impl VirtualMachine {
             return Ok(result);
         }
         if let Some(result) = self.call_namedtuple_deque_or_hashlib_bound_method(bbm, &args)? {
-            return Ok(result);
+            return self.finish_native_callable_result(result, false);
         }
         if let Some(result) = self.call_builtin_type_bound_method(bbm, &args)? {
             return Ok(result);

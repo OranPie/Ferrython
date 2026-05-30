@@ -821,9 +821,28 @@ impl VirtualMachine {
                     match &handler.payload {
                         PyObjectPayload::ExceptionType(_) => Ok(()),
                         PyObjectPayload::Class(_) if Self::is_exception_class(handler) => Ok(()),
-                        _ => Err(PyException::type_error(
-                            "catching classes that do not inherit from BaseException is not allowed",
-                        )),
+                        PyObjectPayload::Instance(inst)
+                            if Self::is_exception_class(&inst.class) =>
+                        {
+                            let mut exc = PyException::type_error(
+                                "catching classes that do not inherit from BaseException is not allowed",
+                            );
+                            exc.original = Some(PyObject::exception_instance(
+                                ExceptionKind::TypeError,
+                                exc.message.clone(),
+                            ));
+                            Err(exc)
+                        }
+                        _ => {
+                            let mut exc = PyException::type_error(
+                                "catching classes that do not inherit from BaseException is not allowed",
+                            );
+                            exc.original = Some(PyObject::exception_instance(
+                                ExceptionKind::TypeError,
+                                exc.message.clone(),
+                            ));
+                            Err(exc)
+                        }
                     }
                 };
                 let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {

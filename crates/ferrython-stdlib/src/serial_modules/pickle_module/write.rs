@@ -28,6 +28,24 @@ fn range_pickle_args(rd: &ferrython_core::object::RangeData) -> Vec<PyObjectRef>
     ]
 }
 
+fn remaining_dict_key_refs(
+    source: &std::rc::Rc<ferrython_core::object::PyCell<ferrython_core::object::FxHashKeyMap>>,
+    index: usize,
+    expected_len: usize,
+) -> PyResult<Vec<PyObjectRef>> {
+    let map = source.read();
+    if map.len() != expected_len {
+        return Err(PyException::runtime_error(
+            "dictionary changed size during iteration",
+        ));
+    }
+    Ok(map
+        .iter()
+        .skip(index)
+        .map(|(key, _)| key.to_object())
+        .collect())
+}
+
 fn pickle_global_function_parts(
     obj: &PyObjectRef,
     func: &ferrython_core::types::PyFunction,
@@ -409,6 +427,11 @@ pub(super) fn pickle_serialize_p0(
                 IteratorData::DictKeys { keys, index } => {
                     keys.iter().skip(*index).cloned().collect()
                 }
+                IteratorData::DictKeyRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => remaining_dict_key_refs(source, *index, *expected_len)?,
                 IteratorData::DictEntries { source, index, .. } => {
                     let map = source.read();
                     map.iter()
@@ -1070,6 +1093,11 @@ pub(super) fn pickle_serialize_p2(
                 IteratorData::DictKeys { keys, index } => {
                     keys.iter().skip(*index).cloned().collect()
                 }
+                IteratorData::DictKeyRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => remaining_dict_key_refs(source, *index, *expected_len)?,
                 IteratorData::DictEntries { source, index, .. } => {
                     let map = source.read();
                     map.iter()

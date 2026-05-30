@@ -100,12 +100,35 @@ impl VirtualMachine {
             if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__bool__") {
                 let method = self.resolve_descriptor(&raw_method, obj)?;
                 let result = self.call_object(method, vec![])?;
-                return Ok(result.is_truthy());
+                if let PyObjectPayload::Bool(value) = &result.payload {
+                    return Ok(*value);
+                }
+                return Err(PyException::type_error(format!(
+                    "__bool__ should return bool, returned {}",
+                    result.type_name()
+                )));
             }
             if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__len__") {
                 let method = self.resolve_descriptor(&raw_method, obj)?;
                 let result = self.call_object(method, vec![])?;
-                return Ok(result.is_truthy());
+                match &result.payload {
+                    PyObjectPayload::Int(n) => {
+                        let value = n
+                            .to_i64()
+                            .ok_or_else(|| PyException::overflow_error("int too large"))?;
+                        if value < 0 {
+                            return Err(PyException::value_error("__len__() should return >= 0"));
+                        }
+                        return Ok(value != 0);
+                    }
+                    PyObjectPayload::Bool(value) => return Ok(*value),
+                    _ => {
+                        return Err(PyException::type_error(format!(
+                            "__len__() should return >= 0, returned {}",
+                            result.type_name()
+                        )));
+                    }
+                }
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = Self::get_builtin_value(obj) {

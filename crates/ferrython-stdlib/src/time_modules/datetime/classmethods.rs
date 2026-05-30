@@ -66,14 +66,27 @@ pub(super) fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn datetime_fromtimestamp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("fromtimestamp", args, 1)?;
     let ts = args[0].to_float()?;
-    let secs = ts as u64;
-    let micros = ((ts - secs as f64) * 1_000_000.0) as i64;
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hour = (time_of_day / 3600) as i64;
-    let minute = ((time_of_day % 3600) / 60) as i64;
-    let second = (time_of_day % 60) as i64;
-    let (year, month, day) = days_to_ymd(days as i64 + 719468);
+    datetime_from_posix_timestamp(ts)
+}
+
+pub(super) fn datetime_utcfromtimestamp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("utcfromtimestamp", args, 1)?;
+    let ts = args[0].to_float()?;
+    datetime_from_posix_timestamp(ts)
+}
+
+fn datetime_from_posix_timestamp(ts: f64) -> PyResult<PyObjectRef> {
+    if !ts.is_finite() {
+        return Err(PyException::overflow_error("timestamp out of range"));
+    }
+    let secs = ts.floor() as i64;
+    let micros = ((ts - secs as f64) * 1_000_000.0).round() as i64;
+    let days = secs.div_euclid(86400);
+    let time_of_day = secs.rem_euclid(86400);
+    let hour = time_of_day / 3600;
+    let minute = (time_of_day % 3600) / 60;
+    let second = time_of_day % 60;
+    let (year, month, day) = days_to_ymd(days + 719468);
     Ok(make_datetime_instance(
         year, month, day, hour, minute, second, micros,
     ))

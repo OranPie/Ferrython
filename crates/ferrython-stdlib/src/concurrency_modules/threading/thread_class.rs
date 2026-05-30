@@ -1,9 +1,7 @@
 use crate::concurrency_modules::push_deferred_call;
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
-use ferrython_core::object::{
-    make_builtin, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
@@ -14,7 +12,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // __init__(self, *, target=None, args=(), daemon=False, name="Thread")
     thread_ns.insert(
         CompactString::from("__init__"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.__init__", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::none());
             }
@@ -60,7 +58,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // start(self)
     thread_ns.insert(
         CompactString::from("start"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.start", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::none());
             }
@@ -158,43 +156,8 @@ pub(super) fn create_thread_class() -> PyObjectRef {
                             return Ok(PyObject::none());
                         }
                         _ => {
-                            // Python-defined functions: spawn a real OS thread with its own VM
-                            let alive_attrs = inst.attrs.clone();
-                            if let Some(handle) = ferrython_core::error::spawn_python_thread(
-                                target.clone(),
-                                call_args.clone(),
-                            ) {
-                                let join_handle =
-                                    std::sync::Arc::new(std::sync::Mutex::new(Some(handle)));
-                                let jh = join_handle.clone();
-                                let alive_flag = alive_attrs.clone();
-                                // Monitor thread completion in a background helper
-                                let closure: Box<dyn FnOnce()> = Box::new(move || {
-                                    if let Some(h) = jh.lock().unwrap().take() {
-                                        let _ = h.join();
-                                    }
-                                    alive_flag.write().insert(
-                                        CompactString::from("_alive"),
-                                        PyObject::bool_val(false),
-                                    );
-                                });
-                                let send_closure: Box<dyn FnOnce() + Send> =
-                                    unsafe { std::mem::transmute(closure) };
-                                std::thread::spawn(move || {
-                                    send_closure();
-                                });
-                                inst.attrs.write().insert(
-                                    CompactString::from("_join_handle"),
-                                    PyObject::native_closure("_join_handle", move |_| {
-                                        if let Some(h) = join_handle.lock().unwrap().take() {
-                                            let _ = h.join();
-                                        }
-                                        Ok(PyObject::none())
-                                    }),
-                                );
-                                return Ok(PyObject::none());
-                            }
-                            // Fallback: deferred sequential execution
+                            // Python targets must run in the current VM so closures and shared
+                            // interpreter objects observe the same state.
                             let is_daemon = inst
                                 .attrs
                                 .read()
@@ -220,7 +183,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // join(self, timeout=None) — wait for thread to complete
     thread_ns.insert(
         CompactString::from("join"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.join", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::none());
             }
@@ -281,7 +244,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // is_alive(self)
     thread_ns.insert(
         CompactString::from("is_alive"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.is_alive", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::bool_val(false));
             }
@@ -297,7 +260,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // getName(self)
     thread_ns.insert(
         CompactString::from("getName"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.getName", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::str_val(CompactString::from("Thread")));
             }
@@ -313,7 +276,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // setDaemon(self, val)
     thread_ns.insert(
         CompactString::from("setDaemon"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.setDaemon", |args: &[PyObjectRef]| {
             if args.len() >= 2 {
                 if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                     inst.attrs
@@ -328,7 +291,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
     // run(self) — default implementation calls target
     thread_ns.insert(
         CompactString::from("run"),
-        make_builtin(|args: &[PyObjectRef]| {
+        PyObject::native_function("Thread.run", |args: &[PyObjectRef]| {
             if args.is_empty() {
                 return Ok(PyObject::none());
             }

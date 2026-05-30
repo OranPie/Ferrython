@@ -158,6 +158,10 @@ impl VirtualMachine {
         if let Some(req) = ferrython_stdlib::take_reload_request() {
             result = self.reload_module(req.module)?;
         }
+        let deferred = ferrython_stdlib::drain_deferred_calls();
+        for (func, args) in deferred {
+            self.call_object(func, args)?;
+        }
         self.drain_pending_finalizers();
         Ok(result)
     }

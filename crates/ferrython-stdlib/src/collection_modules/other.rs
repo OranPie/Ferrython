@@ -296,6 +296,100 @@ pub fn create_array_module() -> PyObjectRef {
     )
 }
 
+fn array_itemsize(typecode: &str) -> usize {
+    match typecode {
+        "b" | "B" => 1,
+        "u" | "h" | "H" => 2,
+        "i" | "I" | "l" | "L" | "f" => 4,
+        "q" | "Q" | "d" => 8,
+        _ => 1,
+    }
+}
+
+fn array_value_from_ne_bytes(typecode: &str, chunk: &[u8]) -> PyObjectRef {
+    match typecode {
+        "b" => PyObject::int(i8::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "B" => PyObject::int(chunk[0] as i64),
+        "h" => PyObject::int(i16::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "H" => PyObject::int(u16::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "i" | "l" => PyObject::int(i32::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "I" | "L" => PyObject::int(u32::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "q" => PyObject::int(i64::from_ne_bytes(chunk.try_into().unwrap())),
+        "Q" => PyObject::int(u64::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+        "f" => PyObject::float(f32::from_ne_bytes(chunk.try_into().unwrap()) as f64),
+        "d" => PyObject::float(f64::from_ne_bytes(chunk.try_into().unwrap())),
+        _ => PyObject::int(chunk[0] as i64),
+    }
+}
+
+fn array_value_to_ne_bytes(typecode: &str, value: &PyObjectRef) -> Vec<u8> {
+    let v = value.to_int().unwrap_or(0);
+    match typecode {
+        "b" => vec![v as i8 as u8],
+        "B" => vec![v as u8],
+        "h" => (v as i16).to_ne_bytes().to_vec(),
+        "H" => (v as u16).to_ne_bytes().to_vec(),
+        "i" | "l" => (v as i32).to_ne_bytes().to_vec(),
+        "I" | "L" => (v as u32).to_ne_bytes().to_vec(),
+        "q" => v.to_ne_bytes().to_vec(),
+        "Q" => (v as u64).to_ne_bytes().to_vec(),
+        "f" => {
+            let fv = value.to_float().unwrap_or(0.0) as f32;
+            fv.to_ne_bytes().to_vec()
+        }
+        "d" => {
+            let fv = value.to_float().unwrap_or(0.0);
+            fv.to_ne_bytes().to_vec()
+        }
+        _ => vec![v as u8],
+    }
+}
+
+fn array_extend_from_bytes(
+    array: &PyObjectRef,
+    typecode: &str,
+    input_bytes: &[u8],
+) -> PyResult<()> {
+    let itemsize = array_itemsize(typecode);
+    if input_bytes.len() % itemsize != 0 {
+        return Err(PyException::value_error(
+            "bytes length not a multiple of item size",
+        ));
+    }
+    if let Some(data) = array.get_attr("_data") {
+        if let PyObjectPayload::List(items) = &data.payload {
+            let mut w = items.write();
+            for chunk in input_bytes.chunks(itemsize) {
+                w.push(array_value_from_ne_bytes(typecode, chunk));
+            }
+            return Ok(());
+        }
+    }
+    Err(PyException::type_error("corrupted array"))
+}
+
+fn bytes_from_file_method_result(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok((**b).clone()),
+        PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
+        _ => Err(PyException::type_error("read() did not return bytes")),
+    }
+}
+
+fn call_array_file_read(
+    file: &PyObjectRef,
+    read: &PyObjectRef,
+    byte_count: usize,
+) -> PyResult<PyObjectRef> {
+    let size_arg = PyObject::int(byte_count as i64);
+    match &read.payload {
+        PyObjectPayload::NativeFunction(_) => {
+            ferrython_core::object::call_callable(read, &[file.clone(), size_arg])
+        }
+        _ => ferrython_core::object::call_callable(read, &[size_arg]),
+    }
+}
+
 fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error(
@@ -328,11 +422,7 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(
             CompactString::from("itemsize"),
             PyObject::int(match typecode.as_str() {
-                "b" | "B" => 1,
-                "u" | "h" | "H" => 2,
-                "i" | "I" | "l" | "L" | "f" => 4,
-                "q" | "Q" | "d" => 8,
-                _ => 1,
+                tc => array_itemsize(tc) as i64,
             }),
         );
 
@@ -542,26 +632,7 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                             let r = items.read();
                             let mut bytes = Vec::new();
                             for x in r.iter() {
-                                let v = x.to_int().unwrap_or(0);
-                                match typecode.as_str() {
-                                    "b" => bytes.push(v as i8 as u8),
-                                    "B" => bytes.push(v as u8),
-                                    "h" => bytes.extend_from_slice(&(v as i16).to_ne_bytes()),
-                                    "H" => bytes.extend_from_slice(&(v as u16).to_ne_bytes()),
-                                    "i" | "l" => bytes.extend_from_slice(&(v as i32).to_ne_bytes()),
-                                    "I" | "L" => bytes.extend_from_slice(&(v as u32).to_ne_bytes()),
-                                    "q" => bytes.extend_from_slice(&v.to_ne_bytes()),
-                                    "Q" => bytes.extend_from_slice(&(v as u64).to_ne_bytes()),
-                                    "f" => {
-                                        let fv = x.to_float().unwrap_or(0.0) as f32;
-                                        bytes.extend_from_slice(&fv.to_ne_bytes());
-                                    }
-                                    "d" => {
-                                        let fv = x.to_float().unwrap_or(0.0);
-                                        bytes.extend_from_slice(&fv.to_ne_bytes());
-                                    }
-                                    _ => bytes.push(v as u8),
-                                }
+                                bytes.extend_from_slice(&array_value_to_ne_bytes(&typecode, x));
                             }
                             return Ok(PyObject::bytes(bytes));
                         }
@@ -588,65 +659,72 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         .get_attr("typecode")
                         .map(|v| v.py_to_string())
                         .unwrap_or_default();
-                    let itemsize: usize = match typecode.as_str() {
-                        "b" | "B" => 1,
-                        "h" | "H" => 2,
-                        "i" | "I" | "l" | "L" | "f" => 4,
-                        "q" | "Q" | "d" => 8,
-                        _ => 1,
-                    };
-                    if input_bytes.len() % itemsize != 0 {
-                        return Err(PyException::value_error(
-                            "bytes length not a multiple of item size",
+                    array_extend_from_bytes(&s, &typecode, &input_bytes)?;
+                    Ok(PyObject::none())
+                }
+            }),
+        );
+
+        attrs.insert(
+            CompactString::from("fromfile"),
+            PyObject::native_closure("array.fromfile", {
+                let s = self_ref.clone();
+                move |args: &[PyObjectRef]| {
+                    check_args_min("array.fromfile", args, 2)?;
+                    let count = args[1].to_int()?;
+                    if count < 0 {
+                        return Err(PyException::value_error("negative count"));
+                    }
+                    let typecode = s
+                        .get_attr("typecode")
+                        .map(|v| v.py_to_string())
+                        .unwrap_or_default();
+                    let byte_count = count as usize * array_itemsize(&typecode);
+                    let read = args[0]
+                        .get_attr("read")
+                        .ok_or_else(|| PyException::type_error("file object has no read()"))?;
+                    let result = call_array_file_read(&args[0], &read, byte_count)?;
+                    let input_bytes = bytes_from_file_method_result(&result)?;
+                    if input_bytes.len() < byte_count {
+                        return Err(PyException::new(
+                            ExceptionKind::EOFError,
+                            "not enough items in file",
                         ));
+                    }
+                    array_extend_from_bytes(&s, &typecode, &input_bytes[..byte_count])?;
+                    Ok(PyObject::none())
+                }
+            }),
+        );
+
+        attrs.insert(
+            CompactString::from("byteswap"),
+            PyObject::native_closure("array.byteswap", {
+                let s = self_ref.clone();
+                move |_args: &[PyObjectRef]| {
+                    let typecode = s
+                        .get_attr("typecode")
+                        .map(|v| v.py_to_string())
+                        .unwrap_or_default();
+                    let itemsize = array_itemsize(&typecode);
+                    if itemsize == 1 {
+                        return Ok(PyObject::none());
+                    }
+                    if itemsize != 2 && itemsize != 4 && itemsize != 8 {
+                        return Err(PyException::runtime_error("byteswap not supported"));
                     }
                     if let Some(data) = s.get_attr("_data") {
                         if let PyObjectPayload::List(items) = &data.payload {
                             let mut w = items.write();
-                            for chunk in input_bytes.chunks(itemsize) {
-                                let val: PyObjectRef = match typecode.as_str() {
-                                    "b" => PyObject::int(i8::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "B" => PyObject::int(chunk[0] as i64),
-                                    "h" => PyObject::int(i16::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "H" => PyObject::int(u16::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "i" | "l" => PyObject::int(i32::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "I" | "L" => PyObject::int(u32::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "q" => {
-                                        PyObject::int(i64::from_ne_bytes(chunk.try_into().unwrap()))
-                                    }
-                                    "Q" => PyObject::int(u64::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as i64),
-                                    "f" => PyObject::float(f32::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )
-                                        as f64),
-                                    "d" => PyObject::float(f64::from_ne_bytes(
-                                        chunk.try_into().unwrap(),
-                                    )),
-                                    _ => PyObject::int(chunk[0] as i64),
-                                };
-                                w.push(val);
+                            for item in w.iter_mut() {
+                                let mut bytes = array_value_to_ne_bytes(&typecode, item);
+                                bytes.reverse();
+                                *item = array_value_from_ne_bytes(&typecode, &bytes);
                             }
+                            return Ok(PyObject::none());
                         }
                     }
-                    Ok(PyObject::none())
+                    Err(PyException::type_error("corrupted array"))
                 }
             }),
         );

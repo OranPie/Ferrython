@@ -24,6 +24,7 @@ mod timezone;
 use classmethods::{
     date_fromisoformat, date_fromordinal, date_today, datetime_combine, datetime_fromisoformat,
     datetime_fromordinal, datetime_fromtimestamp, datetime_now, datetime_strptime,
+    datetime_utcfromtimestamp,
 };
 use date::{
     date_add, date_eq, date_ge, date_gt, date_le, date_lt, date_sub, install_date_instance_attrs,
@@ -54,6 +55,10 @@ pub fn create_datetime_module() -> PyObjectRef {
     dt_ns.insert(
         CompactString::from("fromtimestamp"),
         make_builtin(datetime_fromtimestamp),
+    );
+    dt_ns.insert(
+        CompactString::from("utcfromtimestamp"),
+        make_builtin(datetime_utcfromtimestamp),
     );
     dt_ns.insert(
         CompactString::from("combine"),

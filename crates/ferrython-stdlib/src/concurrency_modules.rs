@@ -10,6 +10,7 @@ thread_local! {
 }
 
 pub fn push_deferred_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
+    ferrython_core::object::set_intercept_pending();
     DEFERRED_CALLS.with(|dc| dc.borrow_mut().push((func, args)));
 }
 

@@ -298,8 +298,9 @@ impl Compiler {
         self.emit_arg(Opcode::LoadConst, qname_idx);
         self.store_name("__qualname__");
 
-        // Setup annotations dict for the class body
-        self.emit_op(Opcode::SetupAnnotations);
+        if Self::has_annotations(body) {
+            self.emit_op(Opcode::SetupAnnotations);
+        }
 
         // Extract docstring from first statement if it's a string literal
         if let Some(first) = body.first() {

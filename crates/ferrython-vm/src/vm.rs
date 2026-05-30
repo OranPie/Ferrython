@@ -1521,8 +1521,10 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            self.fallback_compare_jump(cmp_op, jump_target)?;
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            match self.fallback_compare_jump(cmp_op, jump_target) {
+                                Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                                Err(e) => Err(e),
+                            }
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
                             Self::err_unbound_local(&frame.code.varnames, idx)
@@ -1540,8 +1542,10 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            self.fallback_compare_jump(cmp_op, jump_target)?;
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            match self.fallback_compare_jump(cmp_op, jump_target) {
+                                Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                                Err(e) => Err(e),
+                            }
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
                             Self::err_unbound_local(&frame.code.varnames, idx)
@@ -1559,8 +1563,10 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::Fallback => {
-                            self.fallback_compare_jump(cmp_op, jump_target)?;
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            match self.fallback_compare_jump(cmp_op, jump_target) {
+                                Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                                Err(e) => Err(e),
+                            }
                         }
                         crate::vm_fast_compare::FastCompareJumpResult::UnboundLocal(idx) => {
                             Self::err_unbound_local(&frame.code.varnames, idx)
@@ -1578,11 +1584,15 @@ impl VirtualMachine {
                             store_idx,
                         } => {
                             let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
-                            self.execute_one(load_instr)?;
-                            let frame = self.call_stack.last_mut().unwrap();
-                            let value = spop!(frame);
-                            sset_local!(frame, store_idx, value);
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            match self.execute_one(load_instr) {
+                                Ok(_) => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let value = spop!(frame);
+                                    sset_local!(frame, store_idx, value);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                Err(e) => Err(e),
+                            }
                         }
                     }
                 }
@@ -1593,14 +1603,12 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
                             idx,
-                        ) => {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                        _ => {}
+                        ) => Self::err_unbound_local(&frame.code.varnames, idx),
+                        _ => match self.fallback_fused_collection(instr) {
+                            Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                            Err(e) => Err(e),
+                        },
                     }
-                    self.fallback_fused_collection(instr)?;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadFastLoadConstSubscrStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
@@ -1609,14 +1617,12 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
                             idx,
-                        ) => {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                        _ => {}
+                        ) => Self::err_unbound_local(&frame.code.varnames, idx),
+                        _ => match self.fallback_fused_collection(instr) {
+                            Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                            Err(e) => Err(e),
+                        },
                     }
-                    self.fallback_fused_collection(instr)?;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadFastLoadFastSubscrStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
@@ -1632,14 +1638,12 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
                             idx,
-                        ) => {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                        _ => {}
+                        ) => Self::err_unbound_local(&frame.code.varnames, idx),
+                        _ => match self.fallback_fused_collection(instr) {
+                            Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                            Err(e) => Err(e),
+                        },
                     }
-                    self.fallback_fused_collection(instr)?;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadFastLoadFastLoadFastStoreSubscr => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
@@ -1648,14 +1652,12 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
                             idx,
-                        ) => {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                        _ => {}
+                        ) => Self::err_unbound_local(&frame.code.varnames, idx),
+                        _ => match self.fallback_fused_collection(instr) {
+                            Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                            Err(e) => Err(e),
+                        },
                     }
-                    self.fallback_fused_collection(instr)?;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadFastLoadFastContainsStoreFast => {
                     match crate::vm_fast_collections::try_fast_fused_collection(frame, instr) {
@@ -1671,14 +1673,12 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_collections::FastFusedCollectionResult::UnboundLocal(
                             idx,
-                        ) => {
-                            Self::err_unbound_local(&frame.code.varnames, idx)?;
-                            unreachable!();
-                        }
-                        _ => {}
+                        ) => Self::err_unbound_local(&frame.code.varnames, idx),
+                        _ => match self.fallback_fused_collection(instr) {
+                            Ok(()) => hot_ok!(profiling, self.profiler, instr.op),
+                            Err(e) => Err(e),
+                        },
                     }
-                    self.fallback_fused_collection(instr)?;
-                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 _ => self.execute_one(instr),
             };

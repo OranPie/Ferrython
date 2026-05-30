@@ -252,11 +252,14 @@ impl VirtualMachine {
                 }
             }
             Opcode::WithCleanupFinish => {
+                let (exit_result, exc_or_none) = {
+                    let frame = self.vm_frame();
+                    (frame.pop(), frame.pop())
+                };
+                let should_suppress = !matches!(exc_or_none.payload, PyObjectPayload::None)
+                    && self.vm_is_truthy(&exit_result)?;
                 let frame = self.vm_frame();
-                let exit_result = frame.pop();
-                let exc_or_none = frame.pop();
-                if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy()
-                {
+                if should_suppress {
                     // Exception was suppressed: clean up exception info (value, tb)
                     frame.pop(); // value
                     frame.pop(); // tb
@@ -573,6 +576,9 @@ impl VirtualMachine {
             frame.push_block(BlockKind::With, arg as usize);
             frame.push(enter_result);
         } else {
+            let enter_raw = ctx_mgr
+                .get_attr("__enter__")
+                .ok_or_else(|| PyException::attribute_error("__enter__"))?;
             let exit_raw = ctx_mgr
                 .get_attr("__exit__")
                 .ok_or_else(|| PyException::attribute_error("__exit__"))?;
@@ -588,9 +594,6 @@ impl VirtualMachine {
                 })
             };
             self.vm_push(exit_method);
-            let enter_raw = ctx_mgr
-                .get_attr("__enter__")
-                .ok_or_else(|| PyException::attribute_error("__enter__"))?;
             let (enter_method, enter_args) =
                 if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                     (enter_raw, vec![])
