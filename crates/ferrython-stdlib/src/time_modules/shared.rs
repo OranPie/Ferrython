@@ -51,42 +51,6 @@ pub(super) fn days_in_month(y: i64) -> [i64; 12] {
     ]
 }
 
-/// Decompose Unix timestamp into (year, month 1-12, day 1-31, hour, min, sec, wday 0=Mon, yday 1-366)
-pub(super) fn decompose_timestamp(epoch_secs: u64) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
-    let sec = (epoch_secs % 60) as i64;
-    let min = ((epoch_secs / 60) % 60) as i64;
-    let hour = ((epoch_secs / 3600) % 24) as i64;
-    let total_days = (epoch_secs / 86400) as i64;
-    let mut y: i64 = 1970;
-    let mut remaining = total_days;
-    loop {
-        let dy = if is_leap_year(y) { 366 } else { 365 };
-        if remaining < dy {
-            break;
-        }
-        remaining -= dy;
-        y += 1;
-    }
-    let md = days_in_month(y);
-    let mut mon = 1i64;
-    for &d in &md {
-        if remaining < d {
-            break;
-        }
-        remaining -= d;
-        mon += 1;
-    }
-    let day = remaining + 1;
-    let wday = ((total_days + 3) % 7) as i64; // epoch was Thursday, 0=Monday
-    let yday = {
-        let mut yd = day;
-        for i in 0..(mon - 1) as usize {
-            yd += md[i];
-        }
-        yd
-    };
-    (y, mon, day, hour, min, sec, wday, yday)
-}
 /// Format struct_time components using strftime format codes
 pub(super) fn format_time(
     fmt: &str,
@@ -113,6 +77,36 @@ pub(super) fn format_time_us(
     us: i64,
     wday: i64,
     yday: i64,
+) -> String {
+    format_time_us_with_zone(
+        fmt,
+        y,
+        mon,
+        day,
+        h,
+        m,
+        s,
+        us,
+        wday,
+        yday,
+        Some("UTC"),
+        Some(0),
+    )
+}
+
+pub(super) fn format_time_us_with_zone(
+    fmt: &str,
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    us: i64,
+    wday: i64,
+    yday: i64,
+    zone_name: Option<&str>,
+    gmtoff: Option<i64>,
 ) -> String {
     let hour12 = if h == 0 {
         12
@@ -170,8 +164,12 @@ pub(super) fn format_time_us(
                 }
                 Some('x') => result.push_str(&format!("{:02}/{:02}/{:02}", mon, day, y % 100)),
                 Some('X') => result.push_str(&format!("{:02}:{:02}:{:02}", h, m, s)),
-                Some('Z') => result.push_str("UTC"),
-                Some('z') => result.push_str("+0000"),
+                Some('Z') => result.push_str(zone_name.unwrap_or("")),
+                Some('z') => {
+                    if let Some(offset) = gmtoff {
+                        result.push_str(&format_gmtoff(offset));
+                    }
+                }
                 Some('n') => result.push('\n'),
                 Some('t') => result.push('\t'),
                 Some('%') => result.push('%'),
@@ -188,22 +186,37 @@ pub(super) fn format_time_us(
     result
 }
 
+pub(super) fn format_time_with_zone(
+    fmt: &str,
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+    zone_name: Option<&str>,
+    gmtoff: Option<i64>,
+) -> String {
+    format_time_us_with_zone(fmt, y, mon, day, h, m, s, 0, wday, yday, zone_name, gmtoff)
+}
+
+fn format_gmtoff(offset: i64) -> String {
+    let sign = if offset < 0 { '-' } else { '+' };
+    let abs = offset.abs();
+    let hours = abs / 3600;
+    let minutes = (abs % 3600) / 60;
+    format!("{}{:02}{:02}", sign, hours, minutes)
+}
+
 fn week_number_sunday(yday: i64, wday: i64) -> i64 {
-    let jan1_sunday = (wday - ((yday - 1) % 7)).rem_euclid(7);
-    if yday <= (7 - jan1_sunday) % 7 {
-        0
-    } else {
-        (yday - ((7 - jan1_sunday) % 7) + 6) / 7
-    }
+    let sunday_based_wday = (wday + 1) % 7;
+    (yday + 6 - sunday_based_wday) / 7
 }
 
 fn week_number_monday(yday: i64, wday: i64) -> i64 {
-    let jan1_monday = (wday - ((yday - 1) % 7)).rem_euclid(7);
-    if yday <= (7 - jan1_monday) % 7 {
-        0
-    } else {
-        (yday - ((7 - jan1_monday) % 7) + 6) / 7
-    }
+    (yday + 6 - wday) / 7
 }
 
 /// ISO 8601 week date: returns (iso_year, iso_week, iso_weekday)
@@ -215,10 +228,10 @@ fn iso_week_date(y: i64, m: i64, d: i64) -> (i64, i64, i64) {
     let thu_ord = ord + (3 - wday);
     // ISO year is the year that contains that Thursday
     let (thu_y, _, _) = ordinal_to_ymd(thu_ord);
-    let jan1_ord = ymd_to_ordinal(thu_y, 1, 1);
-    let jan1_wd = ((jan1_ord + 6) % 7) as i64;
     // Week 1 starts on the Monday <= Jan 4
-    let week1_mon = jan1_ord - jan1_wd;
+    let jan4_ord = ymd_to_ordinal(thu_y, 1, 4);
+    let jan4_wd = ((jan4_ord + 6) % 7) as i64;
+    let week1_mon = jan4_ord - jan4_wd;
     let iso_week = (ord - week1_mon) / 7 + 1;
     (thu_y, iso_week, iso_wday)
 }

@@ -98,6 +98,7 @@ fn window_slice(text: &str, pos: usize, endpos: usize) -> &str {
 
 fn offset_match_result(
     result: &PyObjectRef,
+    pattern: &PyObjectRef,
     text: &str,
     subject_is_bytes: bool,
     pos: usize,
@@ -152,6 +153,7 @@ fn offset_match_result(
     );
     attrs.insert(CompactString::from("pos"), PyObject::int(pos as i64));
     attrs.insert(CompactString::from("endpos"), PyObject::int(endpos as i64));
+    attrs.insert(CompactString::from("re"), pattern.clone());
     if let Some(spans) = adjusted_spans {
         attrs.insert(
             CompactString::from("_group_spans"),
@@ -355,6 +357,7 @@ pub(super) fn compiled_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ])?;
     offset_match_result(
         &result,
+        &window.pattern,
         &window.text,
         window.subject_is_bytes,
         window.pos,
@@ -375,6 +378,7 @@ pub(super) fn compiled_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ])?;
     offset_match_result(
         &result,
+        &window.pattern,
         &window.text,
         window.subject_is_bytes,
         window.pos,
@@ -450,6 +454,7 @@ pub(super) fn compiled_fullmatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     ])?;
     offset_match_result(
         &result,
+        &window.pattern,
         &window.text,
         window.subject_is_bytes,
         window.pos,

@@ -95,8 +95,6 @@ impl VirtualMachine {
             self.init_namedtuple_instance(cls, &instance, &pos_args, &kwargs)?;
         } else if cls.get_attr("__init__").is_some() {
             self.call_user_init_for_instance(cls, &instance, &pos_args, &kwargs)?;
-            // Dict subclass: populate dict_storage from pos_args/kwargs
-            self.populate_dict_subclass_storage(&instance, &pos_args, &kwargs)?;
         }
 
         if default_dict_init {

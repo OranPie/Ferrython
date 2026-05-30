@@ -3,49 +3,84 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    check_args, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use indexmap::IndexMap;
+#[cfg(not(unix))]
+use shared::is_leap_year;
 use shared::{
-    days_in_month, decompose_timestamp, format_time, is_leap_year, DAY_NAMES_ABBR, DAY_NAMES_FULL,
-    MONTH_NAMES_ABBR, MONTH_NAMES_FULL,
+    days_in_month, format_time_with_zone, DAY_NAMES_ABBR, DAY_NAMES_FULL, MONTH_NAMES_ABBR,
+    MONTH_NAMES_FULL,
 };
+#[cfg(unix)]
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::mem::MaybeUninit;
 
 const TIME_MAXYEAR: i64 = i32::MAX as i64;
 const TIME_MINYEAR: i64 = i32::MIN as i64 + 1900;
 
+#[derive(Clone, Debug)]
+struct BrokenDownTime {
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+    isdst: i64,
+    gmtoff: Option<i64>,
+    zone: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TimezoneInfo {
+    std_name: String,
+    dst_name: String,
+    timezone: i64,
+    altzone: i64,
+    daylight: bool,
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn tzset();
+}
+
 pub fn create_time_module() -> PyObjectRef {
     // struct_time class — callable constructor + type object
+    let mut struct_time_ns = struct_time_namespace();
+    struct_time_ns.insert(
+        CompactString::from("__new__"),
+        make_builtin(|args: &[PyObjectRef]| {
+            // struct_time((y, m, d, h, mi, s, wday, yday, isdst))
+            if args.is_empty() {
+                return Err(PyException::type_error("struct_time() takes a 9-sequence"));
+            }
+            let seq = &args[args.len().min(2) - 1]; // skip cls if 2 args
+            let items = seq.to_list()?;
+            if items.len() < 9 {
+                return Err(PyException::type_error("struct_time() takes a 9-sequence"));
+            }
+            let get = |i: usize| items[i].as_int().unwrap_or(0);
+            Ok(make_struct_time_with_isdst(
+                get(0),
+                get(1),
+                get(2),
+                get(3),
+                get(4),
+                get(5),
+                get(6),
+                get(7),
+                get(8),
+            ))
+        }),
+    );
     let struct_time_cls =
-        PyObject::class(CompactString::from("struct_time"), vec![], IndexMap::new());
-    if let PyObjectPayload::Class(ref cd) = struct_time_cls.payload {
-        let mut ns = cd.namespace.write();
-        ns.insert(
-            CompactString::from("__new__"),
-            make_builtin(|args: &[PyObjectRef]| {
-                // struct_time((y, m, d, h, mi, s, wday, yday, isdst))
-                if args.is_empty() {
-                    return Err(PyException::type_error("struct_time() takes a 9-sequence"));
-                }
-                let seq = &args[args.len().min(2) - 1]; // skip cls if 2 args
-                let items = seq.to_list()?;
-                if items.len() < 9 {
-                    return Err(PyException::type_error("struct_time() takes a 9-sequence"));
-                }
-                let get = |i: usize| items[i].as_int().unwrap_or(0);
-                Ok(make_struct_time(
-                    get(0),
-                    get(1),
-                    get(2),
-                    get(3),
-                    get(4),
-                    get(5),
-                    get(6),
-                    get(7),
-                ))
-            }),
-        );
-    }
+        PyObject::class(CompactString::from("struct_time"), vec![], struct_time_ns);
 
     make_module(
         "time",
@@ -74,6 +109,7 @@ pub fn create_time_module() -> PyObjectRef {
             ("clock_gettime", make_builtin(time_clock_gettime)),
             ("clock_gettime_ns", make_builtin(time_clock_gettime_ns)),
             ("clock_getres", make_builtin(time_clock_getres)),
+            ("tzset", make_builtin(time_tzset)),
             ("CLOCK_REALTIME", PyObject::int(libc::CLOCK_REALTIME as i64)),
             (
                 "CLOCK_MONOTONIC",
@@ -96,109 +132,38 @@ pub fn create_time_module() -> PyObjectRef {
             ("asctime", make_builtin(time_asctime)),
             ("struct_time", struct_time_cls),
             ("_STRUCT_TM_ITEMS", PyObject::int(9)),
-            ("timezone", {
-                // Compute actual timezone offset (seconds west of UTC)
-                #[cfg(unix)]
-                {
-                    use std::mem::MaybeUninit;
-                    let offset = unsafe {
-                        let mut t: libc::time_t = 0;
-                        libc::time(&mut t);
-                        let mut tm = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&t, tm.as_mut_ptr());
-                        -((*tm.as_ptr()).tm_gmtoff as i64)
-                    };
-                    PyObject::int(offset)
-                }
-                #[cfg(not(unix))]
-                PyObject::int(0)
-            }),
-            ("altzone", {
-                #[cfg(unix)]
-                {
-                    use std::mem::MaybeUninit;
-                    let offset = unsafe {
-                        let mut t: libc::time_t = 0;
-                        libc::time(&mut t);
-                        let mut tm = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&t, tm.as_mut_ptr());
-                        let base = -((*tm.as_ptr()).tm_gmtoff as i64);
-                        if (*tm.as_ptr()).tm_isdst > 0 {
-                            base
-                        } else {
-                            base - 3600
-                        }
-                    };
-                    PyObject::int(offset)
-                }
-                #[cfg(not(unix))]
-                PyObject::int(0)
-            }),
-            ("daylight", {
-                #[cfg(unix)]
-                {
-                    let has_dst = unsafe {
-                        use std::mem::MaybeUninit;
-                        let winter: libc::time_t = 0;
-                        let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&winter, tm_w.as_mut_ptr());
-                        let w_off = (*tm_w.as_ptr()).tm_gmtoff;
-                        let summer: libc::time_t = 15778800;
-                        let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&summer, tm_s.as_mut_ptr());
-                        let s_off = (*tm_s.as_ptr()).tm_gmtoff;
-                        w_off != s_off
-                    };
-                    PyObject::int(if has_dst { 1 } else { 0 })
-                }
-                #[cfg(not(unix))]
-                PyObject::int(0)
-            }),
-            ("tzname", {
-                #[cfg(unix)]
-                {
-                    let (std_name, dst_name) = unsafe {
-                        use std::ffi::CStr;
-                        use std::mem::MaybeUninit;
-                        // Get standard time zone name (winter)
-                        let winter: libc::time_t = 0;
-                        let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&winter, tm_w.as_mut_ptr());
-                        let std_n = if (*tm_w.as_ptr()).tm_zone.is_null() {
-                            "UTC".to_string()
-                        } else {
-                            CStr::from_ptr((*tm_w.as_ptr()).tm_zone)
-                                .to_str()
-                                .unwrap_or("UTC")
-                                .to_string()
-                        };
-                        // Get DST zone name (summer)
-                        let summer: libc::time_t = 15778800;
-                        let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
-                        libc::localtime_r(&summer, tm_s.as_mut_ptr());
-                        let dst_n = if (*tm_s.as_ptr()).tm_zone.is_null() {
-                            "UTC".to_string()
-                        } else {
-                            CStr::from_ptr((*tm_s.as_ptr()).tm_zone)
-                                .to_str()
-                                .unwrap_or("UTC")
-                                .to_string()
-                        };
-                        (std_n, dst_n)
-                    };
-                    PyObject::tuple(vec![
-                        PyObject::str_val(CompactString::from(std_name)),
-                        PyObject::str_val(CompactString::from(dst_name)),
-                    ])
-                }
-                #[cfg(not(unix))]
-                PyObject::tuple(vec![
-                    PyObject::str_val(CompactString::from("UTC")),
-                    PyObject::str_val(CompactString::from("UTC")),
-                ])
-            }),
+            ("__getattr__", make_builtin(time_getattr)),
         ],
     )
+}
+
+fn time_tzset(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    #[cfg(unix)]
+    unsafe {
+        tzset();
+    }
+    Ok(PyObject::none())
+}
+
+fn time_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("__getattr__ requires a name"));
+    }
+    let name = args.last().unwrap().py_to_string();
+    let info = timezone_info();
+    match name.as_str() {
+        "timezone" => Ok(PyObject::int(info.timezone)),
+        "altzone" => Ok(PyObject::int(info.altzone)),
+        "daylight" => Ok(PyObject::int(if info.daylight { 1 } else { 0 })),
+        "tzname" => Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(info.std_name)),
+            PyObject::str_val(CompactString::from(info.dst_name)),
+        ])),
+        _ => Err(PyException::attribute_error(format!(
+            "module 'time' has no attribute '{}'",
+            name
+        ))),
+    }
 }
 
 fn time_time(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -435,6 +400,104 @@ fn check_struct_bounds(
     Ok(())
 }
 
+fn struct_time_items(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Instance(data) = &obj.payload {
+        data.attrs.read().get("__tuple__").cloned()
+    } else {
+        None
+    }
+}
+
+fn struct_time_compare_rhs(obj: &PyObjectRef) -> PyObjectRef {
+    struct_time_items(obj).unwrap_or_else(|| obj.clone())
+}
+
+fn struct_time_namespace() -> IndexMap<CompactString, PyObjectRef> {
+    let mut ns = IndexMap::new();
+    let compare_struct_time = |op: CompareOp| {
+        PyObject::native_closure("struct_time.compare", move |args| {
+            if args.len() < 2 {
+                return Ok(PyObject::not_implemented());
+            }
+            let Some(items_ref) = struct_time_items(&args[0]) else {
+                return Ok(PyObject::not_implemented());
+            };
+            let rhs = struct_time_compare_rhs(&args[1]);
+            items_ref.compare(&rhs, op)
+        })
+    };
+    ns.insert(
+        CompactString::from("__len__"),
+        PyObject::native_function("struct_time.__len__", |_| Ok(PyObject::int(9))),
+    );
+    ns.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_function("struct_time.__getitem__", |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("__getitem__ requires an index"));
+            }
+            let items_ref = struct_time_items(&args[0])
+                .ok_or_else(|| PyException::type_error("struct_time missing tuple data"))?;
+            items_ref.get_item(&args[1])
+        }),
+    );
+    ns.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_function("struct_time.__repr__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("__repr__ requires self"));
+            }
+            if let Some(items_ref) = struct_time_items(&args[0]) {
+                if let PyObjectPayload::Tuple(items) = &items_ref.payload {
+                    if items.len() >= 9 {
+                        let get = |i: usize| items[i].as_int().unwrap_or(0);
+                        return Ok(PyObject::str_val(CompactString::from(format!(
+                            "time.struct_time(tm_year={}, tm_mon={}, tm_mday={}, tm_hour={}, tm_min={}, tm_sec={}, tm_wday={}, tm_yday={}, tm_isdst={})",
+                            get(0),
+                            get(1),
+                            get(2),
+                            get(3),
+                            get(4),
+                            get(5),
+                            get(6),
+                            get(7),
+                            get(8)
+                        ))));
+                    }
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(
+                "time.struct_time()",
+            )))
+        }),
+    );
+    ns.insert(
+        CompactString::from("__eq__"),
+        compare_struct_time(CompareOp::Eq),
+    );
+    ns.insert(
+        CompactString::from("__ne__"),
+        compare_struct_time(CompareOp::Ne),
+    );
+    ns.insert(
+        CompactString::from("__lt__"),
+        compare_struct_time(CompareOp::Lt),
+    );
+    ns.insert(
+        CompactString::from("__le__"),
+        compare_struct_time(CompareOp::Le),
+    );
+    ns.insert(
+        CompactString::from("__gt__"),
+        compare_struct_time(CompareOp::Gt),
+    );
+    ns.insert(
+        CompactString::from("__ge__"),
+        compare_struct_time(CompareOp::Ge),
+    );
+    ns
+}
+
 fn make_struct_time(
     y: i64,
     mon: i64,
@@ -445,7 +508,58 @@ fn make_struct_time(
     wday: i64,
     yday: i64,
 ) -> PyObjectRef {
-    let cls = PyObject::class(CompactString::from("struct_time"), vec![], IndexMap::new());
+    make_struct_time_with_isdst(y, mon, day, h, m, s, wday, yday, -1)
+}
+
+fn make_struct_time_with_isdst(
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+    isdst: i64,
+) -> PyObjectRef {
+    make_struct_time_full(y, mon, day, h, m, s, wday, yday, isdst, None, None)
+}
+
+fn make_struct_time_from_broken_time(broken: BrokenDownTime) -> PyObjectRef {
+    make_struct_time_full(
+        broken.y,
+        broken.mon,
+        broken.day,
+        broken.h,
+        broken.m,
+        broken.s,
+        broken.wday,
+        broken.yday,
+        broken.isdst,
+        broken.gmtoff,
+        broken.zone.as_deref(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_struct_time_full(
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+    isdst: i64,
+    gmtoff: Option<i64>,
+    zone: Option<&str>,
+) -> PyObjectRef {
+    let cls = PyObject::class(
+        CompactString::from("struct_time"),
+        vec![],
+        struct_time_namespace(),
+    );
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref data) = inst.payload {
         let mut attrs = data.attrs.write();
@@ -457,7 +571,16 @@ fn make_struct_time(
         attrs.insert(CompactString::from("tm_sec"), PyObject::int(s));
         attrs.insert(CompactString::from("tm_wday"), PyObject::int(wday));
         attrs.insert(CompactString::from("tm_yday"), PyObject::int(yday));
-        attrs.insert(CompactString::from("tm_isdst"), PyObject::int(-1));
+        attrs.insert(CompactString::from("tm_isdst"), PyObject::int(isdst));
+        attrs.insert(
+            CompactString::from("tm_gmtoff"),
+            gmtoff.map(PyObject::int).unwrap_or_else(PyObject::none),
+        );
+        attrs.insert(
+            CompactString::from("tm_zone"),
+            zone.map(|name| PyObject::str_val(CompactString::from(name)))
+                .unwrap_or_else(PyObject::none),
+        );
         // Also support indexing as tuple
         let items = vec![
             PyObject::int(y),
@@ -468,131 +591,14 @@ fn make_struct_time(
             PyObject::int(s),
             PyObject::int(wday),
             PyObject::int(yday),
-            PyObject::int(-1),
+            PyObject::int(isdst),
         ];
         attrs.insert(
             CompactString::from("__tuple__"),
             PyObject::tuple(items.clone()),
         );
-        // __repr__
-        let repr = format!(
-            "time.struct_time(tm_year={}, tm_mon={}, tm_mday={}, tm_hour={}, tm_min={}, tm_sec={}, tm_wday={}, tm_yday={}, tm_isdst=-1)",
-            y, mon, day, h, m, s, wday, yday
-        );
-        attrs.insert(
-            CompactString::from("__repr__"),
-            PyObject::str_val(CompactString::from(repr)),
-        );
-        // __len__ and __getitem__ for tuple-like access
-        attrs.insert(
-            CompactString::from("__len__"),
-            make_builtin(|_| Ok(PyObject::int(9))),
-        );
-        let items_ref = PyObject::tuple(items);
-        attrs.insert(
-            CompactString::from("__getitem__"),
-            PyObject::native_closure("__getitem__", move |args: &[PyObjectRef]| {
-                let key = if args.len() > 1 { &args[1] } else { &args[0] };
-                if let PyObjectPayload::Tuple(t) = &items_ref.payload {
-                    if let PyObjectPayload::Slice(sd) = &key.payload {
-                        let len = t.len() as i64;
-                        let is_none = |value: &Option<PyObjectRef>| {
-                            value
-                                .as_ref()
-                                .map(|v| matches!(&v.payload, PyObjectPayload::None))
-                                .unwrap_or(true)
-                        };
-                        let to_i64 = |value: &Option<PyObjectRef>, default: i64| {
-                            value
-                                .as_ref()
-                                .and_then(|v| v.to_int().ok())
-                                .unwrap_or(default)
-                        };
-                        let step = to_i64(&sd.step, 1);
-                        if step == 0 {
-                            return Err(PyException::value_error("slice step cannot be zero"));
-                        }
-                        let mut start = if is_none(&sd.start) {
-                            if step > 0 {
-                                0
-                            } else {
-                                len - 1
-                            }
-                        } else {
-                            to_i64(&sd.start, 0)
-                        };
-                        let mut stop = if is_none(&sd.stop) {
-                            if step > 0 {
-                                len
-                            } else {
-                                -1
-                            }
-                        } else {
-                            to_i64(&sd.stop, len)
-                        };
-                        if start < 0 {
-                            start += len;
-                        }
-                        if stop < 0 && !is_none(&sd.stop) {
-                            stop += len;
-                        }
-                        if step > 0 {
-                            start = start.max(0).min(len);
-                            stop = stop.max(0).min(len);
-                        } else {
-                            start = start.max(-1).min(len - 1);
-                            stop = stop.max(-1).min(len - 1);
-                        }
-                        let mut result = Vec::new();
-                        let mut i = start;
-                        if step > 0 {
-                            while i < stop {
-                                result.push(t[i as usize].clone());
-                                i += step;
-                            }
-                        } else {
-                            while i > stop {
-                                result.push(t[i as usize].clone());
-                                i += step;
-                            }
-                        }
-                        return Ok(PyObject::tuple(result));
-                    }
-                    if let Some(idx) = key.as_int() {
-                        let i = if idx < 0 {
-                            (t.len() as i64 + idx) as usize
-                        } else {
-                            idx as usize
-                        };
-                        return Ok(t.get(i).cloned().unwrap_or_else(PyObject::none));
-                    }
-                }
-                Ok(PyObject::none())
-            }),
-        );
     }
     inst
-}
-
-fn get_epoch_secs(args: &[PyObjectRef]) -> u64 {
-    if let Some(secs_arg) = args.first() {
-        if matches!(&secs_arg.payload, PyObjectPayload::None) {
-            return current_epoch_secs();
-        }
-        if let Ok(f) = secs_arg.to_float() {
-            if !f.is_finite() || f < 0.0 || f > u64::MAX as f64 {
-                return 0;
-            }
-            return f as u64;
-        }
-        if let Some(i) = secs_arg.as_int() {
-            if i < 0 {
-                return 0;
-            }
-            return i as u64;
-        }
-    }
-    current_epoch_secs()
 }
 
 fn checked_epoch_secs(args: &[PyObjectRef]) -> PyResult<Option<i64>> {
@@ -614,6 +620,140 @@ fn current_epoch_secs() -> u64 {
         .as_secs()
 }
 
+#[cfg(unix)]
+fn tm_zone_name(tm: &libc::tm) -> Option<String> {
+    if tm.tm_zone.is_null() {
+        None
+    } else {
+        Some(
+            unsafe { CStr::from_ptr(tm.tm_zone) }
+                .to_str()
+                .unwrap_or("")
+                .to_string(),
+        )
+        .filter(|name| !name.is_empty())
+    }
+}
+
+#[cfg(unix)]
+fn broken_down_from_tm(tm: &libc::tm) -> BrokenDownTime {
+    BrokenDownTime {
+        y: tm.tm_year as i64 + 1900,
+        mon: tm.tm_mon as i64 + 1,
+        day: tm.tm_mday as i64,
+        h: tm.tm_hour as i64,
+        m: tm.tm_min as i64,
+        s: tm.tm_sec as i64,
+        wday: (tm.tm_wday as i64 + 6).rem_euclid(7),
+        yday: tm.tm_yday as i64 + 1,
+        isdst: tm.tm_isdst as i64,
+        gmtoff: Some(tm.tm_gmtoff as i64),
+        zone: tm_zone_name(tm),
+    }
+}
+
+#[cfg(unix)]
+fn local_broken_down(epoch_secs: i64) -> BrokenDownTime {
+    unsafe {
+        let t = epoch_secs as libc::time_t;
+        let mut tm = MaybeUninit::<libc::tm>::zeroed();
+        libc::localtime_r(&t, tm.as_mut_ptr());
+        broken_down_from_tm(&tm.assume_init())
+    }
+}
+
+#[cfg(unix)]
+fn utc_broken_down(epoch_secs: i64) -> BrokenDownTime {
+    unsafe {
+        let t = epoch_secs as libc::time_t;
+        let mut tm = MaybeUninit::<libc::tm>::zeroed();
+        libc::gmtime_r(&t, tm.as_mut_ptr());
+        let mut broken = broken_down_from_tm(&tm.assume_init());
+        broken.isdst = 0;
+        broken.gmtoff = Some(0);
+        broken.zone = Some("GMT".to_string());
+        broken
+    }
+}
+
+#[cfg(not(unix))]
+fn local_broken_down(epoch_secs: i64) -> BrokenDownTime {
+    let (y, mon, day, h, m, s, wday, yday) = decompose_signed_timestamp(epoch_secs);
+    BrokenDownTime {
+        y,
+        mon,
+        day,
+        h,
+        m,
+        s,
+        wday,
+        yday,
+        isdst: 0,
+        gmtoff: Some(0),
+        zone: Some("UTC".to_string()),
+    }
+}
+
+#[cfg(not(unix))]
+fn utc_broken_down(epoch_secs: i64) -> BrokenDownTime {
+    local_broken_down(epoch_secs)
+}
+
+fn current_epoch_secs_i64() -> i64 {
+    current_epoch_secs().min(i64::MAX as u64) as i64
+}
+
+fn timestamp_arg_or_now(args: &[PyObjectRef]) -> PyResult<i64> {
+    Ok(checked_epoch_secs(args)?.unwrap_or_else(current_epoch_secs_i64))
+}
+
+#[cfg(unix)]
+fn sample_local(offset: i64) -> libc::tm {
+    unsafe {
+        let t = offset as libc::time_t;
+        let mut tm = MaybeUninit::<libc::tm>::zeroed();
+        libc::localtime_r(&t, tm.as_mut_ptr());
+        tm.assume_init()
+    }
+}
+
+fn timezone_info() -> TimezoneInfo {
+    #[cfg(unix)]
+    unsafe {
+        tzset();
+        let winter = sample_local(0);
+        let summer = sample_local(15_778_800);
+        let std_tm = if winter.tm_isdst <= 0 { winter } else { summer };
+        let dst_tm = if summer.tm_isdst > 0 { summer } else { winter };
+        let std_name = tm_zone_name(&std_tm).unwrap_or_else(|| "UTC".to_string());
+        let dst_name = tm_zone_name(&dst_tm).unwrap_or_else(|| std_name.clone());
+        let timezone = -(std_tm.tm_gmtoff as i64);
+        let altzone = if summer.tm_isdst > 0 || winter.tm_isdst > 0 {
+            -(dst_tm.tm_gmtoff as i64)
+        } else {
+            timezone
+        };
+        TimezoneInfo {
+            std_name,
+            dst_name,
+            timezone,
+            altzone,
+            daylight: summer.tm_isdst > 0 || winter.tm_isdst > 0,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        TimezoneInfo {
+            std_name: "UTC".to_string(),
+            dst_name: "UTC".to_string(),
+            timezone: 0,
+            altzone: 0,
+            daylight: false,
+        }
+    }
+}
+
+#[cfg(not(unix))]
 fn decompose_signed_timestamp(epoch_secs: i64) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
     let days = epoch_secs.div_euclid(86400);
     let rem = epoch_secs.rem_euclid(86400);
@@ -645,16 +785,62 @@ fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if fmt.contains('\0') {
         return Err(PyException::value_error("embedded null character"));
     }
-    // Use struct_time arg if provided, otherwise current time
-    let (y, mon, day, h, m, s, wday, yday) = if args.len() >= 2 {
+    let (y, mon, day, h, m, s, wday, yday, isdst, attr_gmtoff, attr_zone) = if args.len() >= 2 {
         let raw = extract_struct_time(&args[1])?;
         check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
-        normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)
+        let normalized =
+            normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7);
+        (
+            normalized.0,
+            normalized.1,
+            normalized.2,
+            normalized.3,
+            normalized.4,
+            normalized.5,
+            normalized.6,
+            normalized.7,
+            extract_struct_time_isdst(&args[1]).unwrap_or(-1),
+            args[1]
+                .get_attr("tm_gmtoff")
+                .and_then(|value| value.as_int()),
+            args[1].get_attr("tm_zone").and_then(|value| {
+                if matches!(&value.payload, PyObjectPayload::None) {
+                    None
+                } else {
+                    Some(value.py_to_string())
+                }
+            }),
+        )
     } else {
-        let secs = get_epoch_secs(&[]);
-        decompose_timestamp(secs)
+        let broken = local_broken_down(current_epoch_secs_i64());
+        (
+            broken.y,
+            broken.mon,
+            broken.day,
+            broken.h,
+            broken.m,
+            broken.s,
+            broken.wday,
+            broken.yday,
+            broken.isdst,
+            broken.gmtoff,
+            broken.zone,
+        )
     };
-    let result = format_time(&fmt, y, mon, day, h, m, s, wday, yday);
+    let info = timezone_info();
+    let fallback_zone = if isdst > 0 {
+        info.dst_name.as_str()
+    } else {
+        info.std_name.as_str()
+    };
+    let fallback_offset = if isdst > 0 {
+        -info.altzone
+    } else {
+        -info.timezone
+    };
+    let zone_name = attr_zone.as_deref().or(Some(fallback_zone));
+    let gmtoff = attr_gmtoff.or(Some(fallback_offset));
+    let result = format_time_with_zone(&fmt, y, mon, day, h, m, s, wday, yday, zone_name, gmtoff);
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
@@ -708,6 +894,24 @@ fn extract_struct_time(obj: &PyObjectRef) -> PyResult<(i64, i64, i64, i64, i64, 
             Ok((y, mon, day, h, m, s, wday, yday))
         }
         _ => Err(PyException::type_error("expected struct_time or 9-tuple")),
+    }
+}
+
+fn extract_struct_time_isdst(obj: &PyObjectRef) -> Option<i64> {
+    match &obj.payload {
+        PyObjectPayload::Tuple(t) if t.len() >= 9 => t[8].as_int(),
+        PyObjectPayload::Instance(data) => {
+            let attrs = data.attrs.read();
+            if let Some(tup) = attrs.get("__tuple__") {
+                if let PyObjectPayload::Tuple(t) = &tup.payload {
+                    if t.len() >= 9 {
+                        return t[8].as_int();
+                    }
+                }
+            }
+            attrs.get("tm_isdst").and_then(|value| value.as_int())
+        }
+        _ => None,
     }
 }
 
@@ -965,19 +1169,15 @@ fn strptime_value_error() -> PyException {
 }
 
 fn time_localtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let (y, mon, day, h, m, s, wday, yday) = match checked_epoch_secs(args)? {
-        Some(secs) => decompose_signed_timestamp(secs),
-        None => decompose_timestamp(current_epoch_secs()),
-    };
-    Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
+    Ok(make_struct_time_from_broken_time(local_broken_down(
+        timestamp_arg_or_now(args)?,
+    )))
 }
 
 fn time_gmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let (y, mon, day, h, m, s, wday, yday) = match checked_epoch_secs(args)? {
-        Some(secs) => decompose_signed_timestamp(secs),
-        None => decompose_timestamp(current_epoch_secs()),
-    };
-    Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
+    Ok(make_struct_time_from_broken_time(utc_broken_down(
+        timestamp_arg_or_now(args)?,
+    )))
 }
 
 fn time_mktime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -990,41 +1190,53 @@ fn time_mktime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
     let (y, mon, day, h, m, s, _wday, _yday) =
         normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7);
-    // Convert to epoch seconds
-    let mut total_days: i64 = 0;
-    for yr in 1970..y {
-        total_days += if is_leap_year(yr) { 366 } else { 365 };
+    #[cfg(unix)]
+    {
+        let mut tm = unsafe { MaybeUninit::<libc::tm>::zeroed().assume_init() };
+        tm.tm_year = (y - 1900) as libc::c_int;
+        tm.tm_mon = (mon - 1) as libc::c_int;
+        tm.tm_mday = day as libc::c_int;
+        tm.tm_hour = h as libc::c_int;
+        tm.tm_min = m as libc::c_int;
+        tm.tm_sec = s as libc::c_int;
+        tm.tm_isdst = extract_struct_time_isdst(&args[0]).unwrap_or(-1) as libc::c_int;
+        let epoch = unsafe { libc::mktime(&mut tm) };
+        Ok(PyObject::float(epoch as f64))
     }
-    if y < 1970 {
-        for yr in y..1970 {
-            total_days -= if is_leap_year(yr) { 366 } else { 365 };
+    #[cfg(not(unix))]
+    {
+        let mut total_days: i64 = 0;
+        for yr in 1970..y {
+            total_days += if is_leap_year(yr) { 366 } else { 365 };
         }
-    }
-    let md = days_in_month(y);
-    for i in 0..(mon - 1) as usize {
-        if i < 12 {
-            total_days += md[i];
+        if y < 1970 {
+            for yr in y..1970 {
+                total_days -= if is_leap_year(yr) { 366 } else { 365 };
+            }
         }
+        let md = days_in_month(y);
+        for i in 0..(mon - 1) as usize {
+            if i < 12 {
+                total_days += md[i];
+            }
+        }
+        total_days += day - 1;
+        let epoch = total_days * 86400 + h * 3600 + m * 60 + s;
+        Ok(PyObject::float(epoch as f64))
     }
-    total_days += day - 1;
-    let epoch = total_days * 86400 + h * 3600 + m * 60 + s;
-    Ok(PyObject::float(epoch as f64))
 }
 
 fn time_ctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let (y, mon, day, h, m, s, wday, _yday) = match checked_epoch_secs(args)? {
-        Some(secs) => decompose_signed_timestamp(secs),
-        None => decompose_timestamp(current_epoch_secs()),
-    };
+    let broken = local_broken_down(timestamp_arg_or_now(args)?);
     let result = format!(
         "{} {} {:2} {:02}:{:02}:{:02} {}",
-        DAY_NAMES_ABBR[wday as usize % 7],
-        MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
-        day,
-        h,
-        m,
-        s,
-        y
+        DAY_NAMES_ABBR[broken.wday as usize % 7],
+        MONTH_NAMES_ABBR[(broken.mon - 1) as usize % 12],
+        broken.day,
+        broken.h,
+        broken.m,
+        broken.s,
+        broken.y
     );
     Ok(PyObject::str_val(CompactString::from(result)))
 }
@@ -1035,13 +1247,31 @@ fn time_asctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "asctime() takes at most 1 argument",
         ));
     }
-    let (y, mon, day, h, m, s, wday, _yday) = if args.is_empty() {
-        let secs = get_epoch_secs(&[]);
-        decompose_timestamp(secs)
+    let (y, mon, day, h, m, s, wday) = if args.is_empty() {
+        let broken = local_broken_down(current_epoch_secs_i64());
+        (
+            broken.y,
+            broken.mon,
+            broken.day,
+            broken.h,
+            broken.m,
+            broken.s,
+            broken.wday,
+        )
     } else {
         let raw = extract_struct_time(&args[0])?;
         check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
-        normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)
+        let normalized =
+            normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7);
+        (
+            normalized.0,
+            normalized.1,
+            normalized.2,
+            normalized.3,
+            normalized.4,
+            normalized.5,
+            normalized.6,
+        )
     };
     let result = format!(
         "{} {} {:2} {:02}:{:02}:{:02} {}",
@@ -1058,9 +1288,7 @@ fn time_asctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 mod datetime;
 mod shared;
-mod strptime;
 mod zoneinfo;
 
 pub use datetime::create_datetime_module;
-pub use strptime::create_strptime_module;
 pub use zoneinfo::create_zoneinfo_module;
