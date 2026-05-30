@@ -230,9 +230,21 @@ fn native_function_binds_to_class(class: &PyObjectRef, attr_name: &str, native_n
         if matches_class_name(&cd.name, attr_name, native_name) {
             return true;
         }
+        if cd.name.as_str() == "DynamicClassAttribute"
+            && native_name.starts_with("property.")
+            && matches!(attr_name, "setter" | "getter" | "deleter" | "__get__")
+        {
+            return true;
+        }
         for base in cd.mro.iter().chain(cd.bases.iter()) {
             if let PyObjectPayload::Class(bcd) = &base.payload {
                 if matches_class_name(&bcd.name, attr_name, native_name) {
+                    return true;
+                }
+                if bcd.name.as_str() == "DynamicClassAttribute"
+                    && native_name.starts_with("property.")
+                    && matches!(attr_name, "setter" | "getter" | "deleter" | "__get__")
+                {
                     return true;
                 }
             }

@@ -5,7 +5,7 @@ use ferrython_core::types::HashableKey;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
-    pub(super) fn check_abstract_class_instantiation(&self, cls: &PyObjectRef) -> PyResult<()> {
+    pub(super) fn check_abstract_class_instantiation(&mut self, cls: &PyObjectRef) -> PyResult<()> {
         // ── ABC check (only for non-simple classes) ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             let is_abstract_marker = |val: &PyObjectRef| -> bool {
@@ -83,7 +83,13 @@ impl VirtualMachine {
                     }
                 }
                 for (name, val) in ns.iter() {
-                    if is_abstract_marker(val) {
+                    let is_property_abstract = if ferrython_core::object::is_property_like(val) {
+                        self.property_isabstractmethod(val)
+                            .map(|flag| flag.is_truthy())?
+                    } else {
+                        false
+                    };
+                    if is_abstract_marker(val) || is_property_abstract {
                         if !class_abstract_names
                             .iter()
                             .any(|existing| existing == name.as_str())

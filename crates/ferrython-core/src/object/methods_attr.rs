@@ -22,6 +22,9 @@ mod super_attrs;
 pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
     match &obj.payload {
         PyObjectPayload::Instance(inst) => {
+            if is_property_subclass_class(&inst.class) {
+                return py_get_attr(obj, name).is_some();
+            }
             let is_dunder =
                 name.as_bytes().first() == Some(&b'_') && name.as_bytes().get(1) == Some(&b'_');
             if !is_dunder
@@ -172,6 +175,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         );
                     }
                     "__isabstractmethod__" => {
+                        if let Some(flag) = inst.attrs.read().get("__isabstractmethod__").cloned() {
+                            return Some(flag);
+                        }
                         for field in ["fget", "fset", "fdel"] {
                             if let Some(func) = inst.attrs.read().get(field).cloned() {
                                 if !matches!(&func.payload, PyObjectPayload::None) {

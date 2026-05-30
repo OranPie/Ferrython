@@ -345,7 +345,7 @@ pub fn unwrap_builtin_subclass(obj: &PyObjectRef) -> PyObjectRef {
 
 pub fn is_property_subclass_class(class: &PyObjectRef) -> bool {
     if let PyObjectPayload::Class(cd) = &class.payload {
-        if cd.name.as_str() == "property" {
+        if cd.name.as_str() == "property" || is_dynamic_class_attribute_class(class) {
             return true;
         }
         for base in &cd.bases {
@@ -363,11 +363,55 @@ pub fn is_property_subclass_class(class: &PyObjectRef) -> bool {
     false
 }
 
+pub fn is_dynamic_class_attribute_class(class: &PyObjectRef) -> bool {
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        if cd.name.as_str() == "DynamicClassAttribute"
+            || cd
+                .namespace
+                .read()
+                .get("__dynamic_class_attribute_class__")
+                .map(|v| v.is_truthy())
+                .unwrap_or(false)
+        {
+            return true;
+        }
+        for base in cd.bases.iter().chain(cd.mro.iter()) {
+            match &base.payload {
+                PyObjectPayload::BuiltinType(name) | PyObjectPayload::BuiltinFunction(name)
+                    if name.as_str() == "DynamicClassAttribute" =>
+                {
+                    return true;
+                }
+                PyObjectPayload::Class(_) if is_dynamic_class_attribute_class(base) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 #[inline]
 pub fn is_property_like(obj: &PyObjectRef) -> bool {
     match &obj.payload {
         PyObjectPayload::Property(_) => true,
         PyObjectPayload::Instance(inst) => is_property_subclass_class(&inst.class),
+        _ => false,
+    }
+}
+
+#[inline]
+pub fn is_dynamic_class_attribute(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Instance(inst) => {
+            inst.attrs
+                .read()
+                .get("__dynamic_class_attribute__")
+                .map(|v| v.is_truthy())
+                .unwrap_or(false)
+                || is_dynamic_class_attribute_class(&inst.class)
+        }
         _ => false,
     }
 }

@@ -189,6 +189,11 @@ impl VirtualMachine {
                 }
             }
         }
+        if let PyObjectPayload::Instance(inst) = &prop.payload {
+            if let Some(flag) = inst.attrs.read().get("__isabstractmethod__").cloned() {
+                return Ok(PyObject::bool_val(self.vm_is_truthy(&flag)?));
+            }
+        }
         Ok(PyObject::bool_val(false))
     }
 }

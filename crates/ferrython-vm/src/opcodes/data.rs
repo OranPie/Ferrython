@@ -684,6 +684,14 @@ impl VirtualMachine {
                     // On class-level access (e.g. MyClass.prop), return the property
                     // object itself — don't invoke pd.fget.
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
+                        if ferrython_core::object::is_dynamic_class_attribute(&v) {
+                            let is_abstract = self.property_isabstractmethod(&v)?;
+                            if is_abstract.is_truthy() {
+                                self.vm_push(v);
+                                return Ok(None);
+                            }
+                            return Err(PyException::attribute_error(""));
+                        }
                         self.vm_push(v);
                     } else if let Some(getter) = ferrython_core::object::property_field(&v, "fget")
                     {

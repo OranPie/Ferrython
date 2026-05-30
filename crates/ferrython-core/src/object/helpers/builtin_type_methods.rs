@@ -2,7 +2,10 @@
 
 use super::super::methods::{CompareOp, PyObjectMethods};
 use super::super::payload::*;
-use super::{property_field, property_init_doc, property_set_doc, unwrap_builtin_subclass};
+use super::{
+    is_dynamic_class_attribute, property_field, property_init_doc, property_set_doc,
+    unwrap_builtin_subclass,
+};
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::object::ClassData;
@@ -23,6 +26,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             let obj = args.get(1);
             let obj = match obj {
                 Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
+                _ if is_dynamic_class_attribute(prop) => {
+                    return Err(PyException::attribute_error(""));
+                }
                 _ => return Ok(prop.clone()),
             };
             if let Some(getter) = property_field(prop, "fget") {

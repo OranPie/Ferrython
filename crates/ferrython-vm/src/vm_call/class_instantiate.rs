@@ -20,7 +20,43 @@ impl VirtualMachine {
 
         if ferrython_core::object::is_property_subclass_class(cls) {
             let instance = PyObject::instance(cls.clone());
-            Self::init_property_instance_attrs(&instance, &pos_args, &kwargs)?;
+            let fget_raw = Self::property_arg(&pos_args, &kwargs, 0, "fget");
+            let abstract_marker_func = Self::abstract_marker_func(fget_raw.as_ref());
+            let fget = abstract_marker_func.clone().or(fget_raw);
+            let fget_for_abstract = fget.clone();
+            Self::init_property_instance_attrs_resolved(
+                &instance,
+                fget,
+                Self::property_arg(&pos_args, &kwargs, 1, "fset"),
+                Self::property_arg(&pos_args, &kwargs, 2, "fdel"),
+                &pos_args,
+                &kwargs,
+            )?;
+            if ferrython_core::object::is_dynamic_class_attribute_class(cls) {
+                let abstract_flag = if abstract_marker_func.is_some() {
+                    Some(true)
+                } else if let Some(fget) = fget_for_abstract.as_ref() {
+                    match fget.get_attr("__isabstractmethod__") {
+                        Some(flag) => Some(self.vm_is_truthy(&flag)?),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                if let PyObjectPayload::Instance(inst) = &instance.payload {
+                    let mut attrs = inst.attrs.write();
+                    attrs.insert(
+                        CompactString::from("__dynamic_class_attribute__"),
+                        PyObject::bool_val(true),
+                    );
+                    if let Some(is_abstract) = abstract_flag {
+                        attrs.insert(
+                            CompactString::from("__isabstractmethod__"),
+                            PyObject::bool_val(is_abstract),
+                        );
+                    }
+                }
+            }
             return Ok(instance);
         }
 
@@ -108,5 +144,15 @@ impl VirtualMachine {
         self.populate_exception_args(cls, &instance, pos_args);
 
         Ok(instance)
+    }
+
+    pub(super) fn abstract_marker_func(func: Option<&PyObjectRef>) -> Option<PyObjectRef> {
+        let func = func?;
+        if let PyObjectPayload::Tuple(items) = &func.payload {
+            if items.len() == 2 && items[0].as_str() == Some("__abstract__") {
+                return Some(items[1].clone());
+            }
+        }
+        None
     }
 }

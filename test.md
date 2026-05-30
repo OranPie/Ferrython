@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T15:18:21+08:00
+Last updated: 2026-05-30T16:03:35+08:00
 
 ## Current batch
 
@@ -23,10 +23,10 @@ Last updated: 2026-05-30T15:18:21+08:00
   - Marked unneeded: `SliceTest.test_cycle`, because it asserts CPython GC cycle-collection timing for an object referenced only through a slice.
 
 - `test_dynamicclassattribute`
-  - Before this batch: load error.
-  - After `DynamicClassAttribute` property-backed constructor: `run=12 pass=5 fail=4 err=2 skip=1`.
-  - Fixed trait: module loads and plain DynamicClassAttribute works as a descriptor-like property payload.
-  - Remaining traits: full subclass-of-DynamicClassAttribute behavior is not implemented; doc propagation, abstract flag behavior, class access `AttributeError`, and `getter`/`setter` on subclasses remain open.
+  - Before current focused fix: `run=12 pass=5 fail=4 err=2 skip=1`.
+  - After DynamicClassAttribute class/descriptor fix: `run=12 pass=11 fail=0 err=0 skip=1`.
+  - Fixed traits: `types.DynamicClassAttribute` is subclassable, subclass descriptors preserve getter docs, `getter`/`setter`/`deleter` work on subclasses, class-level access raises `AttributeError` except for abstract descriptors, `getattr(cls, name, default)` respects the class-level `AttributeError`, and `__isabstractmethod__` truthiness is computed with VM exception propagation.
+  - Skip trait: existing skipped slot/docstring copy case remains skipped under the test's own condition.
 
 - `test_codeop`
   - Current result after empty-input fix: `run=5 pass=2 fail=1 err=2 skip=0`.
@@ -45,3 +45,4 @@ Last updated: 2026-05-30T15:18:21+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice test_tuple test_deque test_dynamicclassattribute test_codeop`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dynamicclassattribute`

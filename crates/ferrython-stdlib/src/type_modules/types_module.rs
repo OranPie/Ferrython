@@ -1,5 +1,4 @@
 use super::*;
-use std::cell::Cell;
 
 fn compare_namespaces(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
     match (&a.payload, &b.payload) {
@@ -337,35 +336,7 @@ pub fn create_types_module() -> PyObjectRef {
                     ]))
                 }),
             ),
-            (
-                "DynamicClassAttribute",
-                make_builtin(|args| {
-                    let prop_arg = |idx: usize| {
-                        args.get(idx).and_then(|arg| {
-                            if matches!(&arg.payload, PyObjectPayload::None) {
-                                None
-                            } else {
-                                Some(arg.clone())
-                            }
-                        })
-                    };
-                    let fget = prop_arg(0);
-                    let fset = prop_arg(1);
-                    let fdel = prop_arg(2);
-                    let doc = prop_arg(3).or_else(|| {
-                        ferrython_core::object::property_doc_from_getter(fget.as_ref())
-                    });
-                    Ok(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::Property(Box::new(PropertyData {
-                            fget,
-                            fset,
-                            fdel,
-                            doc: PyCell::new(doc),
-                            doc_from_getter: Cell::new(args.len() < 4),
-                        })),
-                    }))
-                }),
-            ),
+            ("DynamicClassAttribute", dynamic_class_attribute_class()),
             (
                 "coroutine",
                 make_builtin(|args| {
@@ -376,5 +347,22 @@ pub fn create_types_module() -> PyObjectRef {
                 }),
             ),
         ],
+    )
+}
+
+fn dynamic_class_attribute_class() -> PyObjectRef {
+    let mut namespace = IndexMap::new();
+    namespace.insert(
+        CompactString::from("__module__"),
+        PyObject::str_val(CompactString::from("types")),
+    );
+    namespace.insert(
+        CompactString::from("__dynamic_class_attribute_class__"),
+        PyObject::bool_val(true),
+    );
+    PyObject::class(
+        CompactString::from("DynamicClassAttribute"),
+        vec![PyObject::builtin_type(CompactString::from("property"))],
+        namespace,
     )
 }

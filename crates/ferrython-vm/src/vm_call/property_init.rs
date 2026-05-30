@@ -40,6 +40,17 @@ impl VirtualMachine {
         let fget = Self::property_arg(args, kwargs, 0, "fget");
         let fset = Self::property_arg(args, kwargs, 1, "fset");
         let fdel = Self::property_arg(args, kwargs, 2, "fdel");
+        Self::init_property_instance_attrs_resolved(instance, fget, fset, fdel, args, kwargs)
+    }
+
+    pub(super) fn init_property_instance_attrs_resolved(
+        instance: &PyObjectRef,
+        fget: Option<PyObjectRef>,
+        fset: Option<PyObjectRef>,
+        fdel: Option<PyObjectRef>,
+        args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
         let doc_arg = Self::raw_property_arg(args, kwargs, 3, "doc");
         let (doc, doc_from_getter) =
             ferrython_core::object::property_init_doc(fget.as_ref(), doc_arg);

@@ -119,6 +119,9 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                     // If obj is None or not provided, return the property itself
                     let obj = match obj {
                         Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
+                        _ if ferrython_core::object::is_dynamic_class_attribute(prop) => {
+                            return Err(PyException::attribute_error(""));
+                        }
                         _ => return Ok(prop.clone()),
                     };
                     // Get the fget from the property

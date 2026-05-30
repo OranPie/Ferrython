@@ -1,6 +1,7 @@
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{
     BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CLASS_FLAG_HAS_DESCRIPTORS,
 };
 use ferrython_core::types::HashableKey;
 
@@ -126,6 +127,26 @@ impl VirtualMachine {
                     extracted
                 };
                 return self.instantiate_class(&cls, rest, kw).map(Some);
+            }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0 {
+                    if let Some(call_attr) =
+                        ferrython_core::object::lookup_in_class_mro(&inst.class, "__call__")
+                    {
+                        if ferrython_core::object::is_property_like(&call_attr) {
+                            if let Some(getter) =
+                                ferrython_core::object::property_field(&call_attr, "fget")
+                            {
+                                if !matches!(&getter.payload, PyObjectPayload::None) {
+                                    let getter = builtins::unwrap_abstract_fget(&getter);
+                                    return self
+                                        .call_object(getter, vec![args[0].clone()])
+                                        .map(Some);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

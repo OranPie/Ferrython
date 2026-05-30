@@ -1,5 +1,7 @@
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{NativeFunctionData, PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    NativeFunctionData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 
 use crate::VirtualMachine;
 
@@ -71,6 +73,13 @@ impl VirtualMachine {
             None => true,
         };
         if is_none_obj {
+            if ferrython_core::object::is_dynamic_class_attribute(prop) {
+                let is_abstract = self.property_isabstractmethod(prop)?;
+                if is_abstract.is_truthy() {
+                    return Ok(prop.clone());
+                }
+                return Err(PyException::attribute_error(""));
+            }
             return Ok(prop.clone());
         }
         let obj = obj.unwrap();

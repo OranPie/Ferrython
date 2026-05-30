@@ -582,7 +582,13 @@ pub(crate) fn try_fast_callfunction_builtin(
             {
                 return None;
             }
-            obj.get_attr(name.as_str())
+            let attr = obj.get_attr(name.as_str())?;
+            if matches!(&obj.payload, PyObjectPayload::Class(_))
+                && ferrython_core::object::is_dynamic_class_attribute(&attr)
+            {
+                return None;
+            }
+            Some(attr)
         }
         (Some("sum"), 1) | (Some("sum"), 2) => {
             let start = if arg_count == 2 {

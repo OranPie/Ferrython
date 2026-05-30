@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T15:18:21+08:00
+Last updated: 2026-05-30T16:03:35+08:00
 
 ## CPython 兼容修复进度
 
@@ -20,6 +20,18 @@ Last updated: 2026-05-30T15:18:21+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_deque` -> `run=79 pass=76 fail=0 err=0 skip=3`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice` -> `run=9 pass=8 fail=0 err=0 skip=1`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop` -> `run=5 pass=2 fail=1 err=2 skip=0`
+
+- 已推进 `types.DynamicClassAttribute` 兼容修复：
+  - `types.DynamicClassAttribute` 现在暴露为可继承 class，而不是不可继承的 native function/property payload；子类装饰器路径复用 property 初始化，保留 `fget`/`fset`/`fdel`、getter doc copy 和 `getter`/`setter`/`deleter` 方法。
+  - DynamicClassAttribute 实例带 `__dynamic_class_attribute__` 标记，`getter`/`setter`/`deleter` 生成的新 descriptor 会保留该标记；类级访问在非 abstract 情况抛 `AttributeError`，让 class virtual attribute 语义和 `getattr(default)` 对齐。
+  - `__isabstractmethod__` 现在在 DynamicClassAttribute 构造时按 VM truthiness 固化为 bool，能传播异常 truth testing，并让 ABC 抽象实例化检查识别 property-like descriptor abstract 状态。
+  - `abc.abstractmethod` 作用于 property-like descriptor 时直接设置 descriptor 的 `__isabstractmethod__`，避免把已构造 descriptor 包成普通 marker tuple。
+  - 保留 `getattr()` fast path：仅在 class-level DynamicClassAttribute 命中时回退慢路径以保留 AttributeError 语义。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-cli`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dynamicclassattribute` -> `run=12 pass=11 fail=0 err=0 skip=1`
 
 - 已推进 `getopt` 小兼容修复：
   - `getopt` 补齐公开 helper：`short_has_arg()`、`long_has_args()`、`do_longs()` 和 `do_shorts()` 进入 `__all__`。

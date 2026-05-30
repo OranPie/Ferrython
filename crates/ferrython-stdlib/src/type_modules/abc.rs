@@ -60,6 +60,17 @@ pub fn create_abc_module() -> PyObjectRef {
             ));
         }
         let func = args[0].clone();
+        if matches!(&func.payload, PyObjectPayload::Instance(inst)
+            if ferrython_core::object::is_property_subclass_class(&inst.class))
+        {
+            if let PyObjectPayload::Instance(inst) = &func.payload {
+                inst.attrs.write().insert(
+                    CompactString::from("__isabstractmethod__"),
+                    PyObject::bool_val(true),
+                );
+            }
+            return Ok(func);
+        }
         // Return a marker tuple: ("__abstract__", func)
         let marker = PyObject::tuple(vec![
             PyObject::str_val(CompactString::from("__abstract__")),

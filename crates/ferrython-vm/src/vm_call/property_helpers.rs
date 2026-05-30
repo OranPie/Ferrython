@@ -69,6 +69,12 @@ impl VirtualMachine {
                         CompactString::from("__property_doc_from_getter__"),
                         PyObject::bool_val(doc_from_getter),
                     );
+                    if ferrython_core::object::is_dynamic_class_attribute(template) {
+                        attrs.insert(
+                            CompactString::from("__dynamic_class_attribute__"),
+                            PyObject::bool_val(true),
+                        );
+                    }
                 }
                 if let Some(doc) = doc {
                     ferrython_core::object::property_set_doc(&obj, doc)?;

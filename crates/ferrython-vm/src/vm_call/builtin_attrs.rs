@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     has_descriptor_get, is_data_descriptor, lookup_in_class_mro, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR,
@@ -51,6 +51,16 @@ impl VirtualMachine {
             Some(v) => {
                 if ferrython_core::object::is_property_like(&v) {
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
+                        if ferrython_core::object::is_dynamic_class_attribute(&v) {
+                            let is_abstract = self.property_isabstractmethod(&v)?;
+                            if is_abstract.is_truthy() {
+                                return Ok(v);
+                            }
+                            if args.len() > 2 {
+                                return Ok(args[2].clone());
+                            }
+                            return Err(PyException::attribute_error(""));
+                        }
                         return Ok(v);
                     }
                     if let Some(getter) = ferrython_core::object::property_field(&v, "fget") {
@@ -75,7 +85,13 @@ impl VirtualMachine {
                             PyObjectPayload::Class(_) => (PyObject::none(), obj.clone()),
                             _ => (obj.clone(), PyObject::none()),
                         };
-                        return self.call_object(get_method, vec![inst_arg, owner_arg]);
+                        match self.call_object(get_method, vec![inst_arg, owner_arg]) {
+                            Ok(result) => return Ok(result),
+                            Err(e) if e.kind == ExceptionKind::AttributeError && args.len() > 2 => {
+                                return Ok(args[2].clone());
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
                 Ok(v)
