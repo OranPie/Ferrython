@@ -1,5 +1,6 @@
 use super::*;
 mod nodes;
+pub(crate) use nodes::ast_empty_fields_node_names;
 use nodes::*;
 mod to_py;
 pub use to_py::module_ast_to_pyobject;
@@ -420,6 +421,10 @@ pub fn create_ast_module() -> PyObjectRef {
                 .map(|f| PyObject::str_val(CompactString::from(*f)))
                 .collect();
             let mut ns = cd.namespace.write();
+            ns.insert(
+                CompactString::from("__module__"),
+                PyObject::str_val(CompactString::from("ast")),
+            );
             ns.insert(CompactString::from("_fields"), PyObject::tuple(field_strs));
             ns.insert(
                 CompactString::from("__ferrython_ast_node__"),

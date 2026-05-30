@@ -13,6 +13,7 @@ use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod ast;
+pub(crate) use ast::ast_empty_fields_node_names;
 pub use ast::{ast_unparse_module, create_ast_module, module_ast_to_pyobject};
 mod ast_convert;
 pub use ast_convert::pyobj_ast_to_module;

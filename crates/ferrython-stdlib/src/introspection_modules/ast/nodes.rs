@@ -117,6 +117,47 @@ pub(super) fn set_node_fields(obj: &PyObjectRef, fields: &[&str]) {
     set_node_attr(obj, "_fields", PyObject::tuple(flds));
 }
 
+pub(crate) fn ast_empty_fields_node_names(name: &str) -> bool {
+    matches!(
+        name,
+        "Load"
+            | "Store"
+            | "Del"
+            | "And"
+            | "Or"
+            | "Add"
+            | "Sub"
+            | "Mult"
+            | "MatMult"
+            | "Div"
+            | "Mod"
+            | "Pow"
+            | "LShift"
+            | "RShift"
+            | "BitOr"
+            | "BitXor"
+            | "BitAnd"
+            | "FloorDiv"
+            | "Invert"
+            | "Not"
+            | "UAdd"
+            | "USub"
+            | "Eq"
+            | "NotEq"
+            | "Lt"
+            | "LtE"
+            | "Gt"
+            | "GtE"
+            | "Is"
+            | "IsNot"
+            | "In"
+            | "NotIn"
+            | "Pass"
+            | "Break"
+            | "Continue"
+    )
+}
+
 pub(super) fn set_location(obj: &PyObjectRef, loc: &ferrython_ast::SourceLocation) {
     set_node_attr(obj, "lineno", PyObject::int(loc.line as i64));
     set_node_attr(obj, "col_offset", PyObject::int(loc.column as i64));
@@ -140,7 +181,11 @@ pub(super) fn set_location(obj: &PyObjectRef, loc: &ferrython_ast::SourceLocatio
 
 pub(super) fn make_ast_node(type_name: &str) -> PyObjectRef {
     let cls = get_or_create_ast_class(type_name);
-    PyObject::instance(cls)
+    let obj = PyObject::instance(cls);
+    if ast_empty_fields_node_names(type_name) {
+        set_node_fields(&obj, &[]);
+    }
+    obj
 }
 
 /// Get or create a shared AST class, so isinstance(ast.parse(...), ast.Module) works
