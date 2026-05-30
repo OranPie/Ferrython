@@ -490,10 +490,19 @@ impl VirtualMachine {
                         ))
                     }
                 };
-                let qualname_str = qualname
+                let mut qualname_str = qualname
                     .as_str()
                     .map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
+                if code.name.as_str() == "<lambda>"
+                    && !qualname_str.contains("<locals>")
+                    && qualname_str.contains('.')
+                {
+                    if let Some(pos) = qualname_str.rfind(".<lambda>") {
+                        let fixed = format!("{}.<locals>.<lambda>", &qualname_str[..pos]);
+                        qualname_str = CompactString::from(fixed);
+                    }
+                }
                 let constant_cache = PyFunction::get_or_build_constant_cache(&code);
                 let is_simple = PyFunction::compute_is_simple_static(&code, &closure_cells);
                 let func = PyFunction {

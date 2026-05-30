@@ -289,6 +289,24 @@ fn create_importlib_util_module() -> PyObjectRef {
         }
     });
 
+    let cache_from_source = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("importlib.util.cache_from_source", args, 1)?;
+        let path = args[0].py_to_string();
+        let separator = std::path::MAIN_SEPARATOR;
+        let (dir, filename) = match path.rfind(separator) {
+            Some(pos) => (&path[..pos], &path[pos + 1..]),
+            None => ("", path.as_str()),
+        };
+        let stem = filename.strip_suffix(".py").unwrap_or(filename);
+        let cached = format!("{}.cpython-38.pyc", stem);
+        let result = if dir.is_empty() {
+            format!("__pycache__{}{}", separator, cached)
+        } else {
+            format!("{}{}__pycache__{}{}", dir, separator, separator, cached)
+        };
+        Ok(PyObject::str_val(CompactString::from(result)))
+    });
+
     // ModuleSpec class constructor
     let module_spec_cls = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         check_args_min("ModuleSpec", args, 2)?;
@@ -349,6 +367,7 @@ fn create_importlib_util_module() -> PyObjectRef {
             ("find_spec", find_spec),
             ("module_from_spec", module_from_spec),
             ("resolve_name", resolve_name),
+            ("cache_from_source", cache_from_source),
             ("ModuleSpec", module_spec_cls),
             (
                 "MAGIC_NUMBER",

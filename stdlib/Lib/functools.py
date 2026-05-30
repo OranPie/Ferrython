@@ -6,7 +6,7 @@ The Rust-implemented lru_cache is available from the built-in functools module.
 
 
 WRAPPER_ASSIGNMENTS = ('__module__', '__name__', '__qualname__', '__doc__',
-                       '__dict__', '__wrapped__')
+                       '__annotations__')
 WRAPPER_UPDATES = ('__dict__',)
 
 

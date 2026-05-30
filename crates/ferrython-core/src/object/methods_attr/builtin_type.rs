@@ -570,14 +570,20 @@ pub(super) fn builtin_type_attr(
                     _ => false,
                 };
                 if has_method {
-                    Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(
-                            crate::object::constructors::alloc_bbm_box(
-                                obj.clone(),
-                                CompactString::from(name),
+                    if n.as_str() == "dict" && name == "items" {
+                        Some(PyObject::native_closure("dict.items", |_args| {
+                            Ok(PyObject::none())
+                        }))
+                    } else {
+                        Some(PyObjectRef::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod(
+                                crate::object::constructors::alloc_bbm_box(
+                                    obj.clone(),
+                                    CompactString::from(name),
+                                ),
                             ),
-                        ),
-                    }))
+                        }))
+                    }
                 } else {
                     None
                 }

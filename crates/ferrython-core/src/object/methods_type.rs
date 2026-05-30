@@ -450,11 +450,22 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         }
         PyObjectPayload::Ellipsis => "Ellipsis".into(),
         PyObjectPayload::NotImplemented => "NotImplemented".into(),
-        PyObjectPayload::Function(f) => format!("<function {}>", f.name),
+        PyObjectPayload::Function(f) => format!("<function {}>", f.qualname),
         PyObjectPayload::BuiltinFunction(n) => format!("<built-in function {}>", n),
         PyObjectPayload::BuiltinType(n) => format!("<class '{}'>", n),
         PyObjectPayload::Code(c) => format!("<code object {}>", c.name),
-        PyObjectPayload::Class(cd) => format!("<class '{}'>", cd.name),
+        PyObjectPayload::Class(cd) => {
+            let ns = cd.namespace.read();
+            let module = ns
+                .get("__module__")
+                .map(|v| v.py_to_string())
+                .unwrap_or_else(|| "__main__".to_string());
+            let qualname = ns
+                .get("__qualname__")
+                .map(|v| v.py_to_string())
+                .unwrap_or_else(|| cd.name.to_string());
+            format!("<class '{}.{}'>", module, qualname)
+        }
         PyObjectPayload::Instance(inst) => {
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -652,7 +663,13 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                     }
                 }
             }
-            format!("<module '{}'>", m.name)
+            if let Some(file) = attrs.get("__file__") {
+                format!("<module '{}' from '{}'>", m.name, file.py_to_string())
+            } else if m.name.as_str() == "sys" || m.name.as_str() == "builtins" {
+                format!("<module '{}' (built-in)>", m.name)
+            } else {
+                format!("<module '{}'>", m.name)
+            }
         }
         PyObjectPayload::Iterator(_) => "<iterator>".into(),
         PyObjectPayload::VecIter(_)
@@ -829,6 +846,57 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
             }
         }
         PyObjectPayload::BoundMethod { receiver, method } => bound_method_repr(receiver, method),
+        PyObjectPayload::NativeClosure(nc) => {
+            if let Some((type_name, method_name)) = nc.name.rsplit_once('.') {
+                format!("<method '{}' of '{}' objects>", method_name, type_name)
+            } else {
+                format!("<built-in function {}>", nc.name)
+            }
+        }
+        PyObjectPayload::NativeFunction(nf) => {
+            if let Some((type_name, method_name)) = nf.name.rsplit_once('.') {
+                format!("<method '{}' of '{}' objects>", method_name, type_name)
+            } else {
+                format!("<built-in function {}>", nf.name)
+            }
+        }
+        PyObjectPayload::BuiltinFunction(name) => {
+            format!("<built-in function {}>", name)
+        }
+        PyObjectPayload::BuiltinBoundMethod(bbm) => {
+            format!(
+                "<built-in method {} of {} object at 0x{:x}>",
+                bbm.method_name,
+                bbm.receiver.type_name(),
+                PyObjectRef::as_ptr(&bbm.receiver) as usize
+            )
+        }
+        PyObjectPayload::StaticMethod(_) => {
+            format!(
+                "<staticmethod object at 0x{:x}>",
+                PyObjectRef::as_ptr(obj) as usize
+            )
+        }
+        PyObjectPayload::ClassMethod(_) => {
+            format!(
+                "<classmethod object at 0x{:x}>",
+                PyObjectRef::as_ptr(obj) as usize
+            )
+        }
+        PyObjectPayload::Cell(cell) => {
+            let cell_addr = PyObjectRef::as_ptr(obj) as usize;
+            if let Some(value) = cell.read().as_ref() {
+                let value_addr = PyObjectRef::as_ptr(value) as usize;
+                format!(
+                    "<cell at 0x{:x}: {} object at 0x{:x}>",
+                    cell_addr,
+                    value.type_name(),
+                    value_addr
+                )
+            } else {
+                format!("<cell at 0x{:x}: empty>", cell_addr)
+            }
+        }
         PyObjectPayload::Instance(inst) => {
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -907,7 +975,25 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                     }
                 }
             }
-            obj.py_to_string()
+            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                let ns = cd.namespace.read();
+                let module = ns
+                    .get("__module__")
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_else(|| "__main__".to_string());
+                let qualname = ns
+                    .get("__qualname__")
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_else(|| cd.name.to_string());
+                format!("{}.{}", module, qualname)
+            } else {
+                inst.class.type_name().to_string()
+            };
+            format!(
+                "<{} object at 0x{:x}>",
+                class_name,
+                PyObjectRef::as_ptr(obj) as usize
+            )
         }
         _ => obj.py_to_string(),
     }

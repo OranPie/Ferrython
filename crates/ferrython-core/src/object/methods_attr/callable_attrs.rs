@@ -12,8 +12,20 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
         return Some(v);
     }
     match name {
-        "__name__" => Some(PyObject::str_val(f.name.clone())),
-        "__qualname__" => Some(PyObject::str_val(f.qualname.clone())),
+        "__name__" => {
+            let value = PyObject::str_val(f.name.clone());
+            f.attrs
+                .write()
+                .insert(CompactString::from("__name__"), value.clone());
+            Some(value)
+        }
+        "__qualname__" => {
+            let value = PyObject::str_val(f.qualname.clone());
+            f.attrs
+                .write()
+                .insert(CompactString::from("__qualname__"), value.clone());
+            Some(value)
+        }
         "__class__" => Some(PyObject::builtin_type(CompactString::from("function"))),
         "__defaults__" => {
             if f.defaults.is_empty() {
@@ -22,17 +34,27 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
                 Some(PyObject::tuple(f.defaults.clone()))
             }
         }
-        "__module__" => Some(PyObject::str_val(intern_or_new("__main__"))),
+        "__module__" => {
+            let value = PyObject::str_val(intern_or_new("__main__"));
+            f.attrs
+                .write()
+                .insert(CompactString::from("__module__"), value.clone());
+            Some(value)
+        }
         "__doc__" => {
             // Check attrs first (set by functools.wraps etc.)
             if let Some(doc) = f.attrs.read().get("__doc__").cloned() {
                 return Some(doc);
             }
-            if let Some(s) = &f.code.docstring {
-                Some(PyObject::str_val(s.clone()))
+            let value = if let Some(s) = &f.code.docstring {
+                PyObject::str_val(s.clone())
             } else {
-                Some(PyObject::none())
-            }
+                PyObject::none()
+            };
+            f.attrs
+                .write()
+                .insert(CompactString::from("__doc__"), value.clone());
+            Some(value)
         }
         "__dict__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(
             f.attrs.clone(),
@@ -44,7 +66,11 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
                     map.insert(hk, v.clone());
                 }
             }
-            Some(PyObject::dict(map))
+            let value = PyObject::dict(map);
+            f.attrs
+                .write()
+                .insert(CompactString::from("__annotations__"), value.clone());
+            Some(value)
         }
         "__closure__" => {
             if f.closure.is_empty() {

@@ -1,6 +1,7 @@
 """importlib.util — Utility code for importers."""
 
 import sys
+import os
 
 
 class _LazyModule:
@@ -178,6 +179,20 @@ def resolve_name(name, package):
     if rest:
         return base + '.' + rest
     return base
+
+
+def cache_from_source(path, debug_override=None, *, optimization=None):
+    """Return the PEP 3147 bytecode cache path for a Python source path."""
+    head, tail = os.path.split(path)
+    if tail.endswith('.py'):
+        tail = tail[:-3]
+    cached = tail + '.cpython-38'
+    if optimization:
+        cached += '.opt-' + str(optimization)
+    cached += '.pyc'
+    if head:
+        return os.path.join(head, '__pycache__', cached)
+    return os.path.join('__pycache__', cached)
 
 
 def source_hash(source_bytes):

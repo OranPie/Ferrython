@@ -59,8 +59,12 @@ pub fn create_shutil_module() -> PyObjectRef {
                         return Err(PyException::type_error("rmtree requires path"));
                     }
                     let path = args[0].py_to_string();
-                    std::fs::remove_dir_all(&path)
-                        .map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+                    let ignore_errors = args.get(1).map(|value| value.is_truthy()).unwrap_or(false);
+                    if let Err(e) = std::fs::remove_dir_all(&path) {
+                        if !ignore_errors {
+                            return Err(PyException::runtime_error(format!("{}", e)));
+                        }
+                    }
                     Ok(PyObject::none())
                 }),
             ),

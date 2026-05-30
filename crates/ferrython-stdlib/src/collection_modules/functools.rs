@@ -1,8 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    make_builtin, make_module, new_fx_hashkey_map, new_shared_fx, FxHashKeyMap, InstanceData,
-    PartialData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    call_callable, make_builtin, make_module, new_fx_hashkey_map, new_shared_fx, FxHashKeyMap,
+    InstanceData, PartialData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -88,48 +88,22 @@ pub fn create_functools_module() -> PyObjectRef {
             (
                 "wraps",
                 PyObject::native_function("functools.wraps", |args| {
-                    // wraps(wrapped) returns a decorator that copies __name__, __doc__, etc.
                     if args.is_empty() {
                         return Ok(PyObject::none());
                     }
                     let wrapped = args[0].clone();
+                    let assigned = args
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(default_wrapper_assignments);
+                    let updated = args.get(2).cloned().unwrap_or_else(default_wrapper_updates);
                     let decorator = PyObject::native_closure(
                         "functools.wraps.decorator",
                         move |wrapper_args| {
                             if wrapper_args.is_empty() {
                                 return Ok(PyObject::none());
                             }
-                            let wrapper = &wrapper_args[0];
-                            // Copy __name__, __doc__, __wrapped__ from wrapped to wrapper
-                            let copy_attr = |attr_name: &str| {
-                                if let Some(val) = wrapped.get_attr(attr_name) {
-                                    if let PyObjectPayload::Instance(ref d) = wrapper.payload {
-                                        d.attrs.write().insert(CompactString::from(attr_name), val);
-                                    } else if let PyObjectPayload::Function(ref fd) =
-                                        wrapper.payload
-                                    {
-                                        fd.attrs
-                                            .write()
-                                            .insert(CompactString::from(attr_name), val);
-                                    }
-                                }
-                            };
-                            copy_attr("__name__");
-                            copy_attr("__doc__");
-                            copy_attr("__module__");
-                            copy_attr("__qualname__");
-                            copy_attr("__dict__");
-                            // Store __wrapped__ reference
-                            if let PyObjectPayload::Instance(ref d) = wrapper.payload {
-                                d.attrs
-                                    .write()
-                                    .insert(CompactString::from("__wrapped__"), wrapped.clone());
-                            } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
-                                fd.attrs
-                                    .write()
-                                    .insert(CompactString::from("__wrapped__"), wrapped.clone());
-                            }
-                            Ok(wrapper.clone())
+                            update_wrapper_impl(&wrapper_args[0], &wrapped, &assigned, &updated)
                         },
                     );
                     Ok(decorator)
@@ -178,52 +152,21 @@ pub fn create_functools_module() -> PyObjectRef {
             (
                 "update_wrapper",
                 PyObject::native_function("functools.update_wrapper", |args| {
-                    // update_wrapper(wrapper, wrapped) — copy attrs from wrapped to wrapper
                     if args.len() < 2 {
                         return Err(PyException::type_error(
                             "update_wrapper requires at least 2 arguments",
                         ));
                     }
-                    let wrapper = &args[0];
-                    let wrapped = &args[1];
-                    let copy_attr = |attr_name: &str| {
-                        if let Some(val) = wrapped.get_attr(attr_name) {
-                            if let PyObjectPayload::Instance(ref d) = wrapper.payload {
-                                d.attrs.write().insert(CompactString::from(attr_name), val);
-                            } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
-                                fd.attrs.write().insert(CompactString::from(attr_name), val);
-                            }
-                        }
-                    };
-                    copy_attr("__name__");
-                    copy_attr("__doc__");
-                    copy_attr("__module__");
-                    copy_attr("__qualname__");
-                    copy_attr("__dict__");
-                    // Store __wrapped__ reference
-                    if let PyObjectPayload::Instance(ref d) = wrapper.payload {
-                        d.attrs
-                            .write()
-                            .insert(CompactString::from("__wrapped__"), wrapped.clone());
-                    } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
-                        fd.attrs
-                            .write()
-                            .insert(CompactString::from("__wrapped__"), wrapped.clone());
-                    }
-                    Ok(wrapper.clone())
+                    let assigned = args
+                        .get(2)
+                        .cloned()
+                        .unwrap_or_else(default_wrapper_assignments);
+                    let updated = args.get(3).cloned().unwrap_or_else(default_wrapper_updates);
+                    update_wrapper_impl(&args[0], &args[1], &assigned, &updated)
                 }),
             ),
             // Constants used by wraps/update_wrapper
-            (
-                "WRAPPER_ASSIGNMENTS",
-                PyObject::tuple(vec![
-                    PyObject::str_val(CompactString::from("__module__")),
-                    PyObject::str_val(CompactString::from("__name__")),
-                    PyObject::str_val(CompactString::from("__qualname__")),
-                    PyObject::str_val(CompactString::from("__annotations__")),
-                    PyObject::str_val(CompactString::from("__doc__")),
-                ]),
-            ),
+            ("WRAPPER_ASSIGNMENTS", default_wrapper_assignments()),
             (
                 "WRAPPER_UPDATES",
                 PyObject::tuple(vec![PyObject::str_val(CompactString::from("__dict__"))]),
@@ -328,6 +271,78 @@ pub fn create_functools_module() -> PyObjectRef {
             }),
         ],
     )
+}
+
+fn default_wrapper_assignments() -> PyObjectRef {
+    PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from("__module__")),
+        PyObject::str_val(CompactString::from("__name__")),
+        PyObject::str_val(CompactString::from("__qualname__")),
+        PyObject::str_val(CompactString::from("__doc__")),
+        PyObject::str_val(CompactString::from("__annotations__")),
+    ])
+}
+
+fn default_wrapper_updates() -> PyObjectRef {
+    PyObject::tuple(vec![PyObject::str_val(CompactString::from("__dict__"))])
+}
+
+fn attr_names(obj: &PyObjectRef) -> PyResult<Vec<CompactString>> {
+    obj.to_list()?
+        .into_iter()
+        .map(|item| {
+            item.as_str()
+                .map(CompactString::from)
+                .ok_or_else(|| PyException::type_error("attribute name must be string"))
+        })
+        .collect()
+}
+
+fn set_object_attr(obj: &PyObjectRef, name: &str, value: PyObjectRef) {
+    match &obj.payload {
+        PyObjectPayload::Instance(d) => {
+            d.attrs.write().insert(CompactString::from(name), value);
+        }
+        PyObjectPayload::Function(fd) => {
+            fd.attrs.write().insert(CompactString::from(name), value);
+        }
+        PyObjectPayload::Class(cd) => {
+            cd.namespace
+                .write()
+                .insert(CompactString::from(name), value);
+            cd.invalidate_cache();
+        }
+        PyObjectPayload::Module(md) => {
+            md.attrs.write().insert(CompactString::from(name), value);
+        }
+        _ => {}
+    }
+}
+
+fn update_wrapper_impl(
+    wrapper: &PyObjectRef,
+    wrapped: &PyObjectRef,
+    assigned: &PyObjectRef,
+    updated: &PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    for attr_name in attr_names(assigned)? {
+        if let Some(value) = wrapped.get_attr(attr_name.as_str()) {
+            set_object_attr(wrapper, attr_name.as_str(), value);
+        }
+    }
+    for attr_name in attr_names(updated)? {
+        let wrapper_attr = wrapper.get_attr(attr_name.as_str());
+        if let Some(target) = wrapper_attr {
+            let source = wrapped
+                .get_attr(attr_name.as_str())
+                .unwrap_or_else(|| PyObject::dict(IndexMap::new()));
+            if let Some(update) = target.get_attr("update") {
+                let _ = call_callable(&update, &[source])?;
+            }
+        }
+    }
+    set_object_attr(wrapper, "__wrapped__", wrapped.clone());
+    Ok(wrapper.clone())
 }
 
 fn functools_total_ordering(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
