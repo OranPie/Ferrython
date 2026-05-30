@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-29T22:58:51+08:00
+Last updated: 2026-05-30T13:36:41+08:00
 
 ## CPython 兼容修复进度
 
@@ -1559,11 +1559,39 @@ Last updated: 2026-05-29T22:58:51+08:00
   - `shlex` 内置模块新增 `shlex.shlex` 对象、`get_token()`/`push_token()`/iterator/eof/token 属性、`punctuation_chars` 只读行为、POSIX/non-POSIX quote/escape/comment/标点分割，并收紧 `quote()` 的 ASCII safe set，使 unicode shell 参数按 CPython 引号规则输出。
   - 新候选探测：`test_bisect`、`test_heapq`、`test_base64`、`test_colorsys` 已全绿；`test_hmac`/`test_hashlib`/`test_uuid` 涉及 crypto 或平台接口，未纳入本小批。
   - 验证：`cargo fmt --all`、`cargo check -p ferrython-stdlib`、`cargo check -p ferrython-cli`、`cargo build -p ferrython-cli --bin ferrython`、`target/debug/ferrython tools/run_cpython_tests.py -v test_csv`（run=104 pass=103 fail=0 err=0 skip=1）、`target/debug/ferrython tools/run_cpython_tests.py -v test_shlex`（run=17 pass=17 fail=0 err=0 skip=0）、`target/debug/ferrython tools/run_cpython_tests.py -v test_csv test_shlex test_bisect test_heapq test_base64 test_colorsys`（run=243 pass=242 fail=0 err=0 skip=1）。
+  - commits：`0f872ea fix: expand csv compatibility`、`f6da6dd test: enable recent phase fixtures`、`1d7e4a7 stdlib: improve csv and shlex compatibility`。
+
+- 2026-05-30 补录：此前未写入 `status.md` 的兼容性修复：
+  - `a2429ec stdlib: expand random and configparser compatibility`：扩展 `random` 和 `configparser` 语义覆盖，包括随机数 helper、配置解析/section/options 行为。
+  - `fd0466f stdlib: fix keyword and copyreg fixtures`：`keyword.py`、`copyreg.py` 和 `pickletester` fixture 对齐近期 CPython 兼容测试。
+  - `2e74b53 stdlib: improve uuid and mock compatibility`：扩展 `uuid` 构造/格式/平台接口，补齐 `os` process helper，并增强 `unittest.mock` 行为。
+  - `56893fb stdlib: restore textwrap compatibility`：改用 Python 侧 `textwrap.py` 并从 Rust registry 中移除旧入口。
+  - `e1759a2 fix: align html unescape and zip iteration`：修正 `html.unescape` 细节并优化 `zip` 迭代 fast path，补充 phase17 fixture。
+  - `9339dbd vm: avoid rebinding builtin bound methods`：避免 VM `LOAD_METHOD` 对已绑定 builtin method 二次绑定。
+  - `8f4b8bb stdlib: complete secrets smoke coverage`：补齐 `secrets` token/choice/randbelow 等 smoke 覆盖行为。
+  - `882641f stdlib: expand time and pytime compatibility`：扩展 `time`、`_testcapi` time helpers、platform 信息、decimal/format 辅助路径和 `%` 格式化。
+  - `24df488 stdlib: add Python strptime compatibility`：接入 Python `_strptime.py`，调整内部 alias、regex compiled 支持和 time shared helper。
+  - `d4e9906 stdlib: fix AST pickle roundtrips`：AST node state/reducer 和 pickle read 路径支持 AST pickle roundtrip。
+  - `8b4a263 stdlib: improve copy fallback behavior`：改进 `copy.py` fallback、collection 构造与 reduce/reduce_ex 兼容。
+  - `7910864 stdlib: use Python string module`：切换到 Python `string.py`，移除旧 Rust `string` module，并调整 VM string formatting bridge。
+  - `6a1249e stdlib: improve reprlib compatibility`：扩展 `reprlib`、callable/type attrs、importlib util、shutil 和 functools 相关兼容。
+  - `2506e7b stdlib: use Python functools wrapper`：用 Python `functools.py` wrapper 替代部分 Rust stub，补齐 `types` helper、thread module 行为和 import cache 兼容。
+  - `5245214 vm: warn on complex subclass conversion`：`complex()` 对带 `__complex__` 的 strict subclass 返回值发出 CPython 风格 warning。
+  - `dcb93da vm: compare instance dunder attributes`：比较 opcode 支持实例属性上的 comparison dunder lookup。
+  - `093b005 vm: fill compatibility gaps in handlers and stdlib`：批量补齐 `array.fromfile`/`byteswap`/bytes conversion、`hashlib` strict bytes/SHAKE/repr/PBKDF2/scrypt、`datetime.utcfromtimestamp`、pickle `DictKeyRefs`、class annotation setup、context-manager lookup、truthiness validation、catchable exception-handler `TypeError`、central VM fallback unwind，以及 Python `threading.Thread` target 在当前 VM deferred 执行。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `target/debug/ferrython tests/fixtures/test_phase125.py`（All test_phase125 tests passed）
+    - `target/debug/ferrython tools/run_cpython_tests.py -q test_hashlib`（run=72 pass=40 fail=0 err=0 skip=32）
+    - `target/debug/ferrython tools/run_cpython_tests.py -q test_datetime test_hashlib test_opcodes test_baseexception test_with test_iter test_ast test_complex`（run=342 pass=306 fail=0 err=0 skip=36）
+    - `git diff --check`
+    - `timeout 30s cargo test --workspace` 在 30s 内超时于编译阶段，未产出 Rust test failure。
 
 ## 后续修复队列
 
-1. 优先评估 `test_dict.DictTest.test_bad_key` / `test_dict.DictTest.test_getitem`，补齐普通 dict 自定义 key equality 异常传播，同时避免回退 `UserDict` 已通过的 collision KeyError 语义。
-2. 保持 dotted 单例 runner 用法，避免长跑全量测试。
+1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
+2. 下一轮优先从低失败数测试组里继续挑选，例如 `test_functools`、`test_decimal` 或已探测过的 crypto/platform 相关组。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`
