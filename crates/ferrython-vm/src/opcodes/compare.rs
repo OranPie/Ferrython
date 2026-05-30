@@ -264,7 +264,9 @@ impl VirtualMachine {
                                     method_name: &str|
          -> Result<Option<PyObjectRef>, PyException> {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
-                if inst.attrs.read().contains_key("__deque__") {
+                if inst.attrs.read().contains_key(method_name)
+                    || inst.attrs.read().contains_key("__deque__")
+                {
                     if let Some(method) = obj.get_attr(method_name) {
                         let result = vm.call_object(method, vec![other.clone()])?;
                         if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
@@ -285,7 +287,9 @@ impl VirtualMachine {
         };
         let has_instance_dunder = |obj: &PyObjectRef, method_name: &str| -> bool {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
-                if inst.attrs.read().contains_key("__deque__") {
+                if inst.attrs.read().contains_key(method_name)
+                    || inst.attrs.read().contains_key("__deque__")
+                {
                     return obj.get_attr(method_name).is_some();
                 }
                 lookup_in_class_mro(&inst.class, method_name).is_some()
