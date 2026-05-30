@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T17:08:19+08:00
+Last updated: 2026-05-30T17:38:16+08:00
 
 ## CPython 兼容修复进度
 
@@ -18,6 +18,21 @@ Last updated: 2026-05-30T17:08:19+08:00
   - `git diff --check`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_cmath` -> `run=32 pass=31 fail=0 err=0 skip=1`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_pow` -> `run=30 pass=30 fail=0 err=0 skip=0`
+
+- 已推进 `hmac` 兼容修复并保持 `hashlib` 相邻行为稳定：
+  - `hashlib.md5`/`sha1`/`sha224`/`sha256`/`sha384`/`sha512` 构造器改为带稳定 native function name，供 `hmac` 识别 `hashlib.sha256` 这类 digest constructor。
+  - `hmac.new()`/`hmac.HMAC()` 现在要求 `digestmod`，并支持 positional/keyword digestmod、字符串 digest 名、`hashlib.*` 构造器、bytes-like key/msg、`None` msg 和正确的 str key `TypeError`。
+  - HMAC 计算改用对应 hash 算法的 digest/block size，修复 RFC 向量、长 key 预哈希、`digest_size`、`block_size`、`name`、`digest_cons`、`inner` 和 `outer` 属性。
+  - `HMAC.update()`/`copy()` 会从保存的 key/msg/digestmod 重算独立实例；module-level `hmac.digest()` 直接返回 bytes digest。
+  - `hmac.compare_digest()` 补齐 str/bytes-like/subclass 处理，拒绝 text/bytes 混用和非 ASCII str，并避免走用户自定义 `__eq__`。
+  - `_openssl_md_meths` 暴露为空 dict，满足测试中 `unittest.mock.patch` 的存在性路径。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac` -> `run=20 pass=20 fail=0 err=0 skip=0`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hashlib` -> `run=72 pass=40 fail=0 err=0 skip=32`；仍有缺少 CPython C 扩展模块的 warning spam，但无失败。
 
 - 已推进 `deque` / `slice` / `tuple` / `codeop` 小批兼容与 deque 热点优化：
   - `tools/run_cpython_tests.py` 增加窄范围 Ferrython unneeded skip：`test_tuple.TupleTest.test_hash_exact` 为 CPython 精确 tuple hash 常量，`test_slice.SliceTest.test_cycle` 为 CPython GC cycle timing 实现细节。

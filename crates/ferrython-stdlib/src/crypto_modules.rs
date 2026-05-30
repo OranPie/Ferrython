@@ -1,7 +1,7 @@
 //! Cryptography and hashing stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     make_builtin, make_module, new_fx_hashkey_map, to_shared_fx, InstanceData, PyCell, PyObject,
     PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -50,12 +50,27 @@ pub fn create_hashlib_module() -> PyObjectRef {
     make_module(
         "hashlib",
         vec![
-            ("md5", make_builtin(hashlib_md5)),
-            ("sha1", make_builtin(hashlib_sha1)),
-            ("sha256", make_builtin(hashlib_sha256)),
-            ("sha512", make_builtin(hashlib_sha512)),
-            ("sha224", make_builtin(hashlib_sha224)),
-            ("sha384", make_builtin(hashlib_sha384)),
+            ("md5", PyObject::native_function("hashlib.md5", hashlib_md5)),
+            (
+                "sha1",
+                PyObject::native_function("hashlib.sha1", hashlib_sha1),
+            ),
+            (
+                "sha256",
+                PyObject::native_function("hashlib.sha256", hashlib_sha256),
+            ),
+            (
+                "sha512",
+                PyObject::native_function("hashlib.sha512", hashlib_sha512),
+            ),
+            (
+                "sha224",
+                PyObject::native_function("hashlib.sha224", hashlib_sha224),
+            ),
+            (
+                "sha384",
+                PyObject::native_function("hashlib.sha384", hashlib_sha384),
+            ),
             (
                 "sha3_224",
                 make_builtin(|args| make_hash_obj("sha3_224", args)),
@@ -485,12 +500,12 @@ fn arg_or_kw(
 
 fn make_builtin_hash_constructor(name: &str) -> PyResult<PyObjectRef> {
     match name {
-        "md5" => Ok(make_builtin(hashlib_md5)),
-        "sha1" => Ok(make_builtin(hashlib_sha1)),
-        "sha224" => Ok(make_builtin(hashlib_sha224)),
-        "sha256" => Ok(make_builtin(hashlib_sha256)),
-        "sha384" => Ok(make_builtin(hashlib_sha384)),
-        "sha512" => Ok(make_builtin(hashlib_sha512)),
+        "md5" => Ok(PyObject::native_function("hashlib.md5", hashlib_md5)),
+        "sha1" => Ok(PyObject::native_function("hashlib.sha1", hashlib_sha1)),
+        "sha224" => Ok(PyObject::native_function("hashlib.sha224", hashlib_sha224)),
+        "sha256" => Ok(PyObject::native_function("hashlib.sha256", hashlib_sha256)),
+        "sha384" => Ok(PyObject::native_function("hashlib.sha384", hashlib_sha384)),
+        "sha512" => Ok(PyObject::native_function("hashlib.sha512", hashlib_sha512)),
         "sha3_224" => Ok(make_builtin(|args| make_hash_obj("sha3_224", args))),
         "sha3_256" => Ok(make_builtin(|args| make_hash_obj("sha3_256", args))),
         "sha3_384" => Ok(make_builtin(|args| make_hash_obj("sha3_384", args))),
@@ -907,32 +922,83 @@ fn hashlib_scrypt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── hmac module ──────────────────────────────────────────────────────
 pub fn create_hmac_module() -> PyObjectRef {
-    /// Compute HMAC from key, message, and digestmod strings
-    fn compute_hmac(key: &[u8], msg: &[u8], digestmod: &str) -> Vec<u8> {
-        let block_size = 64usize;
+    fn resolve_digest_name(digestmod: &PyObjectRef) -> PyResult<String> {
+        match &digestmod.payload {
+            PyObjectPayload::None => Err(PyException::type_error(
+                "Missing required parameter 'digestmod'.",
+            )),
+            PyObjectPayload::Str(name) => {
+                let normalized = normalized_hash_name(name.as_str());
+                if normalized.is_empty() {
+                    Err(PyException::type_error(
+                        "Missing required parameter 'digestmod'.",
+                    ))
+                } else {
+                    Ok(normalized)
+                }
+            }
+            PyObjectPayload::NativeFunction(nf) => {
+                let name = nf.name.as_str();
+                if let Some(algo) = name.strip_prefix("hashlib.") {
+                    Ok(normalized_hash_name(algo))
+                } else {
+                    Err(PyException::type_error("unsupported digestmod"))
+                }
+            }
+            PyObjectPayload::Class(cls) => {
+                let block_size = cls
+                    .namespace
+                    .read()
+                    .get("block_size")
+                    .and_then(|v| v.as_int());
+                if block_size.unwrap_or(0) < 16 {
+                    Err(PyException::new(
+                        ExceptionKind::RuntimeWarning,
+                        "block_size of hash object is too small",
+                    ))
+                } else {
+                    Err(PyException::type_error("unsupported digestmod"))
+                }
+            }
+            _ => Err(PyException::type_error("unsupported digestmod")),
+        }
+    }
+
+    fn normalized_hmac_key(key: &[u8], digestmod: &str) -> PyResult<Vec<u8>> {
+        let block_size = hash_block_size(digestmod) as usize;
         let mut k = key.to_vec();
         if k.len() > block_size {
-            k = simple_hash(&k, digestmod);
+            k = compute_digest(digestmod, &k)?.1;
         }
         while k.len() < block_size {
             k.push(0);
         }
+        Ok(k)
+    }
+
+    fn hmac_pads(key: &[u8], digestmod: &str) -> PyResult<(Vec<u8>, Vec<u8>)> {
+        let k = normalized_hmac_key(key, digestmod)?;
         let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
         let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+        Ok((ipad, opad))
+    }
+
+    fn compute_hmac(key: &[u8], msg: &[u8], digestmod: &str) -> PyResult<Vec<u8>> {
+        let (ipad, opad) = hmac_pads(key, digestmod)?;
         let mut inner = ipad;
         inner.extend_from_slice(msg);
-        let inner_hash = simple_hash(&inner, digestmod);
+        let inner_hash = compute_digest(digestmod, &inner)?.1;
         let mut outer = opad;
         outer.extend_from_slice(&inner_hash);
-        simple_hash(&outer, digestmod)
+        Ok(compute_digest(digestmod, &outer)?.1)
     }
 
     /// Recompute digest from stored key + accumulated message
-    fn recompute_digest(inst: &InstanceData) {
+    fn recompute_digest(inst: &InstanceData) -> PyResult<()> {
         let attrs = inst.attrs.read();
         let key = match attrs.get("_key").map(|k| &k.payload) {
             Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
-            _ => return,
+            _ => return Ok(()),
         };
         let msg = match attrs.get("_msg").map(|m| &m.payload) {
             Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
@@ -944,7 +1010,7 @@ pub fn create_hmac_module() -> PyObjectRef {
             .unwrap_or_else(|| "sha256".to_string());
         drop(attrs);
 
-        let result = compute_hmac(&key, &msg, &digestmod);
+        let result = compute_hmac(&key, &msg, &digestmod)?;
         let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
 
         let mut attrs = inst.attrs.write();
@@ -960,37 +1026,13 @@ pub fn create_hmac_module() -> PyObjectRef {
             CompactString::from("_hex_str"),
             PyObject::str_val(CompactString::from(&hex_str)),
         );
+        Ok(())
     }
 
-    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.is_empty() {
-            return Err(PyException::type_error("hmac.new() requires key argument"));
-        }
-        let key = match &args[0].payload {
-            PyObjectPayload::Bytes(b) => (**b).clone(),
-            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-            _ => return Err(PyException::type_error("key must be bytes")),
-        };
-        // msg is optional (default empty)
-        let msg = if args.len() > 1 {
-            match &args[1].payload {
-                PyObjectPayload::Bytes(b) => (**b).clone(),
-                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-                PyObjectPayload::None => vec![],
-                _ => vec![],
-            }
-        } else {
-            vec![]
-        };
-        // digestmod: 3rd positional OR keyword "digestmod"
-        let digestmod = if args.len() > 2 {
-            args[2].py_to_string()
-        } else {
-            "sha256".to_string()
-        };
-
-        let result = compute_hmac(&key, &msg, &digestmod);
+    fn make_hmac_instance(key: Vec<u8>, msg: Vec<u8>, digestmod: String) -> PyResult<PyObjectRef> {
+        let result = compute_hmac(&key, &msg, &digestmod)?;
         let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
+        let (inner, outer) = hmac_pads(&key, &digestmod)?;
 
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("_key"), PyObject::bytes(key));
@@ -1003,11 +1045,20 @@ pub fn create_hmac_module() -> PyObjectRef {
             CompactString::from("digest_size"),
             PyObject::int(result.len() as i64),
         );
-        attrs.insert(CompactString::from("block_size"), PyObject::int(64));
+        attrs.insert(
+            CompactString::from("block_size"),
+            PyObject::int(hash_block_size(&digestmod)),
+        );
         attrs.insert(
             CompactString::from("name"),
             PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))),
         );
+        attrs.insert(
+            CompactString::from("digest_cons"),
+            PyObject::str_val(CompactString::from(&digestmod)),
+        );
+        attrs.insert(CompactString::from("inner"), PyObject::bytes(inner));
+        attrs.insert(CompactString::from("outer"), PyObject::bytes(outer));
         attrs.insert(
             CompactString::from("_digest_bytes"),
             PyObject::bytes(result),
@@ -1044,7 +1095,7 @@ pub fn create_hmac_module() -> PyObjectRef {
                         combined.extend_from_slice(&new_data);
                         attrs.insert(CompactString::from("_msg"), PyObject::bytes(combined));
                     }
-                    recompute_digest(inst);
+                    recompute_digest(inst)?;
                 }
                 Ok(PyObject::none())
             }),
@@ -1084,18 +1135,21 @@ pub fn create_hmac_module() -> PyObjectRef {
                     return Err(PyException::type_error("copy() requires self"));
                 }
                 if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                    let attrs_copy = inst.attrs.read().clone();
-                    let new_inst = PyObject::wrap(PyObjectPayload::Instance(
-                        std::mem::ManuallyDrop::new(Box::new(InstanceData {
-                            class: inst.class.clone(),
-                            attrs: Rc::new(PyCell::new(attrs_copy)),
-                            is_special: true,
-                            dict_storage: None,
-                            class_flags: InstanceData::compute_flags(&inst.class),
-                            finalizer_state: std::cell::Cell::new(0),
-                        })),
-                    ));
-                    return Ok(new_inst);
+                    let attrs = inst.attrs.read();
+                    let key = match attrs.get("_key").map(|k| &k.payload) {
+                        Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
+                        _ => vec![],
+                    };
+                    let msg = match attrs.get("_msg").map(|m| &m.payload) {
+                        Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
+                        _ => vec![],
+                    };
+                    let digestmod = attrs
+                        .get("_digestmod")
+                        .map(|d| d.py_to_string())
+                        .unwrap_or_else(|| "sha256".to_string());
+                    drop(attrs);
+                    return make_hmac_instance(key, msg, digestmod);
                 }
                 Err(PyException::type_error("copy() requires HMAC instance"))
             }),
@@ -1116,14 +1170,66 @@ pub fn create_hmac_module() -> PyObjectRef {
         Ok(inst)
     }
 
-    fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
-        compute_digest(algo, data)
-            .map(|(_, bytes)| bytes)
-            .unwrap_or_else(|_| {
-                compute_digest("sha256", data)
-                    .map(|(_, b)| b)
-                    .unwrap_or_default()
-            })
+    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (pos, kwargs) = split_trailing_kwargs(args);
+        let key_obj = arg_or_kw(pos, kwargs.as_ref(), 0, "key")
+            .ok_or_else(|| PyException::type_error("hmac.new() requires key argument"))?;
+        let digestmod_obj = arg_or_kw(pos, kwargs.as_ref(), 2, "digestmod")
+            .ok_or_else(|| PyException::type_error("Missing required parameter 'digestmod'."))?;
+        let key = extract_hash_bytes(&key_obj)?;
+        let msg = match arg_or_kw(pos, kwargs.as_ref(), 1, "msg") {
+            Some(obj) if !matches!(obj.payload, PyObjectPayload::None) => extract_hash_bytes(&obj)?,
+            _ => vec![],
+        };
+        let digestmod = resolve_digest_name(&digestmod_obj)?;
+        make_hmac_instance(key, msg, digestmod)
+    }
+
+    fn hmac_digest_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (pos, kwargs) = split_trailing_kwargs(args);
+        let key_obj = arg_or_kw(pos, kwargs.as_ref(), 0, "key")
+            .ok_or_else(|| PyException::type_error("hmac.digest() requires key argument"))?;
+        let msg_obj = arg_or_kw(pos, kwargs.as_ref(), 1, "msg")
+            .ok_or_else(|| PyException::type_error("hmac.digest() requires msg argument"))?;
+        let digest_obj = arg_or_kw(pos, kwargs.as_ref(), 2, "digest")
+            .or_else(|| arg_or_kw(pos, kwargs.as_ref(), 2, "digestmod"))
+            .ok_or_else(|| PyException::type_error("Missing required parameter 'digest'."))?;
+        let key = extract_hash_bytes(&key_obj)?;
+        let msg = extract_hash_bytes(&msg_obj)?;
+        let digestmod = resolve_digest_name(&digest_obj)?;
+        Ok(PyObject::bytes(compute_hmac(&key, &msg, &digestmod)?))
+    }
+
+    enum CompareDigestInput {
+        Text(Vec<u8>),
+        Bytes(Vec<u8>),
+    }
+
+    fn compare_digest_input(obj: &PyObjectRef) -> PyResult<Option<CompareDigestInput>> {
+        match &obj.payload {
+            PyObjectPayload::Str(s) => {
+                if !s.is_ascii() {
+                    return Err(PyException::type_error(
+                        "comparing strings with non-ASCII characters is not supported",
+                    ));
+                }
+                Ok(Some(CompareDigestInput::Text(s.as_bytes().to_vec())))
+            }
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                Ok(Some(CompareDigestInput::Bytes((**b).clone())))
+            }
+            PyObjectPayload::Instance(inst) => {
+                if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return compare_digest_input(&value);
+                }
+                if obj.get_attr("__memoryview__").is_some() {
+                    return extract_hash_bytes(obj)
+                        .map(|bytes| Some(CompareDigestInput::Bytes(bytes)));
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
     }
 
     fn hmac_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1132,15 +1238,29 @@ pub fn create_hmac_module() -> PyObjectRef {
                 "compare_digest requires 2 arguments",
             ));
         }
-        let a = args[0].py_to_string();
-        let b = args[1].py_to_string();
-        let a_bytes = a.as_bytes();
-        let b_bytes = b.as_bytes();
-        if a_bytes.len() != b_bytes.len() {
-            return Ok(PyObject::bool_val(false));
-        }
-        let mut result = 0u8;
-        for i in 0..a_bytes.len() {
+        let left = compare_digest_input(&args[0])?;
+        let right = compare_digest_input(&args[1])?;
+        let (a_bytes, b_bytes) = match (left, right) {
+            (Some(CompareDigestInput::Text(a)), Some(CompareDigestInput::Text(b)))
+            | (Some(CompareDigestInput::Bytes(a)), Some(CompareDigestInput::Bytes(b))) => (a, b),
+            (Some(_), Some(_)) => {
+                return Err(PyException::type_error(
+                    "unsupported operand types for compare_digest",
+                ))
+            }
+            _ => {
+                return Err(PyException::type_error(
+                    "unsupported operand types for compare_digest",
+                ))
+            }
+        };
+        let mut result = if a_bytes.len() != b_bytes.len() {
+            1u8
+        } else {
+            0u8
+        };
+        let len = std::cmp::min(a_bytes.len(), b_bytes.len());
+        for i in 0..len {
             result |= a_bytes[i] ^ b_bytes[i];
         }
         Ok(PyObject::bool_val(result == 0))
@@ -1149,18 +1269,14 @@ pub fn create_hmac_module() -> PyObjectRef {
     make_module(
         "hmac",
         vec![
-            ("new", make_builtin(hmac_new)),
+            ("new", PyObject::native_function("hmac.new", hmac_new)),
             ("compare_digest", make_builtin(hmac_compare_digest)),
             (
                 "digest",
-                make_builtin(|args| {
-                    hmac_new(args).and_then(|h| {
-                        h.get_attr("_digest_bytes")
-                            .ok_or_else(|| PyException::runtime_error("no digest"))
-                    })
-                }),
+                PyObject::native_function("hmac.digest", hmac_digest_fn),
             ),
-            ("HMAC", make_builtin(hmac_new)),
+            ("HMAC", PyObject::native_function("hmac.HMAC", hmac_new)),
+            ("_openssl_md_meths", PyObject::dict(new_fx_hashkey_map())),
         ],
     )
 }

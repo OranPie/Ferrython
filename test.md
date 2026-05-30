@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T17:08:19+08:00
+Last updated: 2026-05-30T17:38:16+08:00
 
 ## Current batch
 
@@ -12,9 +12,17 @@ Last updated: 2026-05-30T17:08:19+08:00
   - Related core fix: `abs(complex)` now uses `hypot()` and raises `OverflowError` for finite complex values whose magnitude overflows, matching the `test_abs` / `test_abs_overflows` expectations.
 
 - Candidate scan notes after `test_cmath`
-  - Passing/currently green: `test_time`, `test_calendar`, `test_heapq`, `test_bisect`, `test_operator`, `test_reprlib`, `test_copyreg`, `test_complex`, plus previous `test_pow`.
+  - Passing/currently green: `test_time`, `test_calendar`, `test_heapq`, `test_bisect`, `test_operator`, `test_reprlib`, `test_copyreg`, `test_complex`, `test_defaultdict`, `test_userdict`, `test_hashlib`, `test_base64`, `test_shlex`, `test_colorsys`, plus previous `test_pow`.
   - Not present in current vendored set: `test_stat`, `test_weakrefset`, `test_structseq`, `test_math`.
-  - Not small current targets: `test_collections` (`run=81 pass=59 fail=16 err=4 skip=2`, ABC/mixin/iterator and recursion gaps), `test_contextlib` (`run=78 pass=53 fail=12 err=13 skip=0`, closure/contextmanager/ExitStack/threading gaps), `test_types` currently stack-overflows and needs a separate crash triage.
+  - Not small current targets: `test_collections` (`run=81 pass=59 fail=16 err=4 skip=2`, ABC/mixin/iterator and recursion gaps), `test_contextlib` (`run=78 pass=53 fail=12 err=13 skip=0`, closure/contextmanager/ExitStack/threading gaps), `test_ordered_dict` (`run=265 pass=62 fail=63 err=132 skip=8`, broad OrderedDict/mapping gaps), `test_userlist` (`run=51 pass=29 fail=18 err=4`, medium sequence gaps), `test_queue` (`run=54 pass=13 fail=7 err=34`, broad queue/thread/exception gaps), `test_types` currently stack-overflows and needs a separate crash triage.
+
+- `test_hmac`
+  - Before this batch: `run=20 pass=5 fail=13 err=2 skip=0`.
+  - After digestmod/HMAC/compare_digest compatibility work: `run=20 pass=20 fail=0 err=0 skip=0`.
+  - Fixed traits: `digestmod` is required and parsed from positional or keyword args; string digest names and named `hashlib.*` constructors resolve to the intended hash algorithm; RFC vectors for md5/sha1/sha256/sha384/sha512 match; long keys use the algorithm digest before padding; key/msg accept bytes-like objects and reject `str` key/msg as CPython does.
+  - Fixed object surface: HMAC instances expose correct `digest_size`, `block_size`, `name`, `digest_cons`, `inner`, `outer`, `_digest_bytes`, and `_hex_str`; `update()` and `copy()` recompute from saved key/msg/digestmod; module-level `hmac.digest()` returns raw digest bytes.
+  - Fixed compare path: `hmac.compare_digest()` handles str, bytes, bytearray, memoryview, and str/bytes subclasses without using user `__eq__`; it rejects mixed text/bytes and non-ASCII str with `TypeError`.
+  - Adjacent validation: `test_hashlib` remains green at `run=72 pass=40 fail=0 err=0 skip=32`; warning spam comes from optional CPython C extension modules that are absent in this runtime.
 
 - `test_deque`
   - Before this batch: `run=79 pass=69 fail=3 err=4 skip=3`, around 14-16s.
@@ -98,3 +106,13 @@ Last updated: 2026-05-30T17:08:19+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copyreg`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_pow`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_defaultdict`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userdict`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hashlib`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_base64`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_shlex`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_colorsys`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac`
