@@ -1,9 +1,10 @@
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::{
-    make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    make_builtin, make_module, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 // ── _thread module ──
@@ -83,6 +84,68 @@ pub fn create_thread_module() -> PyObjectRef {
             (
                 "LockType",
                 PyObject::class(CompactString::from("lock"), vec![], IndexMap::new()),
+            ),
+            (
+                "RLock",
+                make_builtin(|_| {
+                    let state = Rc::new(PyCell::new(0u32));
+                    let cls =
+                        PyObject::class(CompactString::from("RLock"), vec![], IndexMap::new());
+                    let inst = PyObject::instance(cls);
+                    if let PyObjectPayload::Instance(ref d) = inst.payload {
+                        let mut w = d.attrs.write();
+                        let s1 = state.clone();
+                        w.insert(
+                            CompactString::from("acquire"),
+                            PyObject::native_closure("RLock.acquire", move |_args| {
+                                *s1.write() += 1;
+                                Ok(PyObject::bool_val(true))
+                            }),
+                        );
+                        let s2 = state.clone();
+                        w.insert(
+                            CompactString::from("release"),
+                            PyObject::native_closure("RLock.release", move |_args| {
+                                let mut depth = s2.write();
+                                if *depth == 0 {
+                                    return Err(PyException::runtime_error(
+                                        "cannot release un-acquired lock",
+                                    ));
+                                }
+                                *depth -= 1;
+                                Ok(PyObject::none())
+                            }),
+                        );
+                        let s3 = state.clone();
+                        w.insert(
+                            CompactString::from("locked"),
+                            PyObject::native_closure("RLock.locked", move |_args| {
+                                Ok(PyObject::bool_val(*s3.read() > 0))
+                            }),
+                        );
+                        let s4 = state.clone();
+                        let inst_ref = inst.clone();
+                        w.insert(
+                            CompactString::from("__enter__"),
+                            PyObject::native_closure("RLock.__enter__", move |_args| {
+                                *s4.write() += 1;
+                                Ok(inst_ref.clone())
+                            }),
+                        );
+                        let s5 = state.clone();
+                        w.insert(
+                            CompactString::from("__exit__"),
+                            PyObject::native_closure("RLock.__exit__", move |_args| {
+                                let mut depth = s5.write();
+                                if *depth > 0 {
+                                    *depth -= 1;
+                                }
+                                Ok(PyObject::none())
+                            }),
+                        );
+                    }
+                    Ok(inst)
+                }),
             ),
             (
                 "start_new_thread",

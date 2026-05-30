@@ -9,8 +9,16 @@ use indexmap::IndexMap;
 use std::rc::Rc;
 
 pub fn create_functools_module() -> PyObjectRef {
+    // CPython's public functools module is a Python wrapper around the optional
+    // _functools accelerator.  Keep this internal module conservative: exposing
+    // incomplete native replacements here makes functools.py skip its more
+    // complete Python fallbacks.
+    if std::env::var_os("FERRYTHON_EXPERIMENTAL_NATIVE_FUNCTOOLS").is_none() {
+        return make_module("_functools", vec![]);
+    }
+
     make_module(
-        "functools",
+        "_functools",
         vec![
             (
                 "reduce",

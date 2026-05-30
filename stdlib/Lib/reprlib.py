@@ -2,7 +2,6 @@
 
 import builtins
 from itertools import islice
-from functools import wraps
 
 
 def _possibly_sorted(x):
@@ -132,7 +131,6 @@ def recursive_repr(fillvalue='...'):
     def decorator(user_function):
         running = set()
 
-        @wraps(user_function)
         def wrapper(self):
             key = id(self)
             if key in running:
@@ -143,5 +141,10 @@ def recursive_repr(fillvalue='...'):
             finally:
                 running.discard(key)
 
+        wrapper.__module__ = getattr(user_function, '__module__')
+        wrapper.__doc__ = getattr(user_function, '__doc__')
+        wrapper.__name__ = getattr(user_function, '__name__')
+        wrapper.__qualname__ = getattr(user_function, '__qualname__')
+        wrapper.__annotations__ = getattr(user_function, '__annotations__', {})
         return wrapper
     return decorator

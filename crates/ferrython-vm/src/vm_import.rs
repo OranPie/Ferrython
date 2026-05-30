@@ -270,7 +270,28 @@ impl VirtualMachine {
         level: usize,
         importer_file: &str,
     ) -> PyResult<PyObjectRef> {
-        // 1. Check VM cache
+        // 1. Check sys.modules first.  CPython treats sys.modules as the
+        // source of truth: a None value blocks import, and deleting an entry
+        // forces a fresh import even if the VM still has an internal cache.
+        if let Some(ref sys_mod_dict) = self.sys_modules_dict {
+            if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
+                let key = HashableKey::str_key(CompactString::from(name));
+                if let Some(module) = d.read().get(&key).cloned() {
+                    if matches!(&module.payload, PyObjectPayload::None) {
+                        return Err(PyException::module_not_found_error(format!(
+                            "import of '{}' halted; None in sys.modules",
+                            name
+                        )));
+                    }
+                    self.modules
+                        .insert(CompactString::from(name), module.clone());
+                    return Ok(module);
+                }
+                self.modules.swap_remove(name);
+            }
+        }
+
+        // 2. Check VM cache before sys.modules has been initialized.
         if let Some(module) = self.modules.get(name) {
             let module = module.clone();
             if let Some(ref sys_mod_dict) = self.sys_modules_dict {
@@ -284,24 +305,7 @@ impl VirtualMachine {
             return Ok(module);
         }
 
-        // 1b. Check sys.modules dict (catches dynamically-inserted modules).
-        // CPython allows *any* object in sys.modules — module proxies, lazy
-        // loaders, plain instances, etc.  We accept everything except None
-        // (which CPython treats as "module was deleted / import failed").
-        if let Some(ref sys_mod_dict) = self.sys_modules_dict {
-            if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
-                let key = HashableKey::str_key(CompactString::from(name));
-                if let Some(module) = d.read().get(&key).cloned() {
-                    if !matches!(&module.payload, PyObjectPayload::None) {
-                        self.modules
-                            .insert(CompactString::from(name), module.clone());
-                        return Ok(module);
-                    }
-                }
-            }
-        }
-
-        // 2. Try stdlib
+        // 3. Try stdlib
         let _base_name = name.split('.').last().unwrap_or(name);
         if let Some(module) = ferrython_stdlib::load_module(name) {
             self.cache_module(name, &module);

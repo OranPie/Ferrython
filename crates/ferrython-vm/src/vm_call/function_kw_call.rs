@@ -69,6 +69,10 @@ impl VirtualMachine {
             };
             if let Some(idx) = found_idx {
                 if idx < posonlyarg_count {
+                    if has_varkw {
+                        extra_kwargs.insert(HashableKey::str_key(name), val);
+                        continue;
+                    }
                     return Err(PyException::type_error(format!(
                         "{}() got some positional-only arguments passed as keyword arguments: '{}'",
                         code.name, name

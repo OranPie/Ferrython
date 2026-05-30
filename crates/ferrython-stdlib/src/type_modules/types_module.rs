@@ -132,6 +132,63 @@ pub fn create_types_module() -> PyObjectRef {
                 PyObject::builtin_type(CompactString::from("UnionType")),
             ),
             (
+                "GenericAlias",
+                make_builtin(|args| {
+                    check_args_min("GenericAlias", args, 2)?;
+                    let origin = args[0].clone();
+                    let type_args = args[1].clone();
+                    let args_tuple = match &type_args.payload {
+                        PyObjectPayload::Tuple(_) => type_args.clone(),
+                        _ => PyObject::tuple(vec![type_args]),
+                    };
+                    let origin_name = match &origin.payload {
+                        PyObjectPayload::Class(cd) => cd.name.to_string(),
+                        PyObjectPayload::BuiltinType(n) => n.to_string(),
+                        PyObjectPayload::Str(s) => s.to_string(),
+                        _ => origin.py_to_string(),
+                    };
+                    let args_str = match &args_tuple.payload {
+                        PyObjectPayload::Tuple(items) => items
+                            .iter()
+                            .map(|item| match &item.payload {
+                                PyObjectPayload::Class(cd) => cd.name.to_string(),
+                                PyObjectPayload::BuiltinType(n) => n.to_string(),
+                                _ => item.py_to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        _ => args_tuple.py_to_string(),
+                    };
+                    let repr_str = format!("{}[{}]", origin_name, args_str);
+                    let cls = PyObject::class(
+                        CompactString::from("types.GenericAlias"),
+                        vec![],
+                        IndexMap::new(),
+                    );
+                    let mut attrs = IndexMap::new();
+                    attrs.insert(CompactString::from("__origin__"), origin);
+                    attrs.insert(CompactString::from("__args__"), args_tuple);
+                    attrs.insert(
+                        CompactString::from("__typing_repr__"),
+                        PyObject::str_val(CompactString::from(repr_str.as_str())),
+                    );
+                    let repr_copy = repr_str.clone();
+                    attrs.insert(
+                        CompactString::from("__repr__"),
+                        PyObject::native_closure("GenericAlias.__repr__", move |_| {
+                            Ok(PyObject::str_val(CompactString::from(repr_copy.as_str())))
+                        }),
+                    );
+                    attrs.insert(
+                        CompactString::from("__str__"),
+                        PyObject::native_closure("GenericAlias.__str__", move |_| {
+                            Ok(PyObject::str_val(CompactString::from(repr_str.as_str())))
+                        }),
+                    );
+                    Ok(PyObject::instance_with_attrs(cls, attrs))
+                }),
+            ),
+            (
                 "EllipsisType",
                 PyObject::builtin_type(CompactString::from("ellipsis")),
             ),
