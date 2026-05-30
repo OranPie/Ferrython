@@ -46,6 +46,21 @@ fn format_percent_radix_arg(
     }
 }
 
+fn apply_percent_width(formatted: &str, width: usize, flags: &str) -> String {
+    if width == 0 || formatted.len() >= width {
+        return formatted.to_string();
+    }
+    let pad_len = width - formatted.len();
+    if flags.contains('-') {
+        format!("{}{}", formatted, " ".repeat(pad_len))
+    } else if flags.contains('0') && formatted.starts_with('-') {
+        format!("-{}{}", "0".repeat(pad_len), &formatted[1..])
+    } else {
+        let pad = if flags.contains('0') { '0' } else { ' ' };
+        format!("{}{}", pad.to_string().repeat(pad_len), formatted)
+    }
+}
+
 /// Python printf-style string formatting: "hello %s, %d items" % (name, count)
 impl VirtualMachine {
     /// VM-aware string % formatting. Uses vm_repr/vm_str to properly call user
@@ -226,22 +241,7 @@ impl VirtualMachine {
                         _ => format!("%{}", spec),
                     };
 
-                    if width > 0 && formatted.len() < width {
-                        if flags.contains('-') {
-                            result.push_str(&formatted);
-                            for _ in 0..(width - formatted.len()) {
-                                result.push(' ');
-                            }
-                        } else {
-                            let pad = if flags.contains('0') { '0' } else { ' ' };
-                            for _ in 0..(width - formatted.len()) {
-                                result.push(pad);
-                            }
-                            result.push_str(&formatted);
-                        }
-                    } else {
-                        result.push_str(&formatted);
-                    }
+                    result.push_str(&apply_percent_width(&formatted, width, &flags));
                 }
                 None => {
                     result.push('%');

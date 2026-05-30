@@ -143,6 +143,8 @@ pub(super) fn format_time_us(
                 Some('j') => result.push_str(&format!("{:03}", yday)),
                 Some('w') => result.push_str(&format!("{}", (wday + 1) % 7)), // 0=Sunday
                 Some('u') => result.push_str(&format!("{}", if wday == 6 { 7 } else { wday + 1 })), // 1=Monday
+                Some('U') => result.push_str(&format!("{:02}", week_number_sunday(yday, wday))),
+                Some('W') => result.push_str(&format!("{:02}", week_number_monday(yday, wday))),
                 Some('y') => result.push_str(&format!("{:02}", y % 100)),
                 Some('G') => {
                     // ISO year (may differ from calendar year at year boundaries)
@@ -184,6 +186,24 @@ pub(super) fn format_time_us(
         }
     }
     result
+}
+
+fn week_number_sunday(yday: i64, wday: i64) -> i64 {
+    let jan1_sunday = (wday - ((yday - 1) % 7)).rem_euclid(7);
+    if yday <= (7 - jan1_sunday) % 7 {
+        0
+    } else {
+        (yday - ((7 - jan1_sunday) % 7) + 6) / 7
+    }
+}
+
+fn week_number_monday(yday: i64, wday: i64) -> i64 {
+    let jan1_monday = (wday - ((yday - 1) % 7)).rem_euclid(7);
+    if yday <= (7 - jan1_monday) % 7 {
+        0
+    } else {
+        (yday - ((7 - jan1_monday) % 7) + 6) / 7
+    }
 }
 
 /// ISO 8601 week date: returns (iso_year, iso_week, iso_weekday)

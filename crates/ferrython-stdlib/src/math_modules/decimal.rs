@@ -26,10 +26,52 @@ pub fn create_decimal_module() -> PyObjectRef {
     use std::sync::OnceLock;
 
     static DECIMAL_PREC: AtomicU32 = AtomicU32::new(28);
+    static DECIMAL_ROUNDING: OnceLock<std::sync::RwLock<CompactString>> = OnceLock::new();
     static DECIMAL_CLASS: OnceLock<PyObjectRef> = OnceLock::new();
 
     fn get_prec() -> u32 {
         DECIMAL_PREC.load(Ordering::Relaxed)
+    }
+
+    fn rounding_cell() -> &'static std::sync::RwLock<CompactString> {
+        DECIMAL_ROUNDING
+            .get_or_init(|| std::sync::RwLock::new(CompactString::from("ROUND_HALF_EVEN")))
+    }
+
+    fn get_rounding() -> String {
+        rounding_cell().read().unwrap().to_string()
+    }
+
+    fn set_rounding(value: &str) {
+        *rounding_cell().write().unwrap() = CompactString::from(value);
+    }
+
+    fn context_set_attr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 3 {
+            return Ok(PyObject::none());
+        }
+        let attr_name = args[1].py_to_string();
+        if attr_name == "prec" {
+            let new_prec = args[2].to_int()? as u32;
+            DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                inst.attrs
+                    .write()
+                    .insert(CompactString::from("prec"), PyObject::int(new_prec as i64));
+            }
+        } else {
+            if attr_name == "rounding" {
+                if let Some(rounding) = args[2].as_str() {
+                    set_rounding(rounding);
+                }
+            }
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                inst.attrs
+                    .write()
+                    .insert(CompactString::from(attr_name), args[2].clone());
+            }
+        }
+        Ok(PyObject::none())
     }
 
     fn get_decimal_class() -> PyObjectRef {
@@ -351,7 +393,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 String::new()
             }
         } else {
-            String::new()
+            get_rounding()
         };
 
         let val = if neg {
@@ -377,6 +419,18 @@ pub fn create_decimal_module() -> PyObjectRef {
                         truncated
                     }
                 }
+                "ROUND_UP" => {
+                    if remainder > 0 {
+                        if val >= 0 {
+                            truncated + 1
+                        } else {
+                            truncated - 1
+                        }
+                    } else {
+                        truncated
+                    }
+                }
+                "ROUND_DOWN" => truncated,
                 "ROUND_CEILING" => {
                     if remainder > 0 && val > 0 {
                         truncated + 1
@@ -494,7 +548,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 );
                 ctx_ns.insert(
                     CompactString::from("rounding"),
-                    PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")),
+                    PyObject::str_val(CompactString::from(get_rounding())),
                 );
                 ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
                 ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
@@ -506,28 +560,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                     let mut ns = IndexMap::new();
                     ns.insert(
                         CompactString::from("__setattr__"),
-                        make_builtin(|args| {
-                            use std::sync::atomic::Ordering;
-                            if args.len() < 3 {
-                                return Ok(PyObject::none());
-                            }
-                            let attr_name = args[1].py_to_string();
-                            if attr_name == "prec" {
-                                let new_prec = args[2].to_int()? as u32;
-                                DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
-                                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                                    inst.attrs.write().insert(
-                                        CompactString::from("prec"),
-                                        PyObject::int(new_prec as i64),
-                                    );
-                                }
-                            } else if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                                inst.attrs
-                                    .write()
-                                    .insert(CompactString::from(attr_name), args[2].clone());
-                            }
-                            Ok(PyObject::none())
-                        }),
+                        make_builtin(context_set_attr),
                     );
                     ns
                 };
@@ -568,6 +601,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             make_builtin(|args| {
                 // localcontext(ctx=None) → context manager that saves/restores decimal context
                 let saved_prec = DECIMAL_PREC.load(Ordering::Relaxed);
+                let saved_rounding = get_rounding();
                 // If a context is provided, apply its prec
                 if let Some(ctx) = args.first() {
                     if let PyObjectPayload::Instance(ref inst) = ctx.payload {
@@ -575,6 +609,14 @@ pub fn create_decimal_module() -> PyObjectRef {
                             if let Some(n) = prec.as_int() {
                                 DECIMAL_PREC.store(n as u32, Ordering::Relaxed);
                             }
+                        }
+                        if let Some(rounding) = inst
+                            .attrs
+                            .read()
+                            .get("rounding")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        {
+                            set_rounding(&rounding);
                         }
                     }
                 }
@@ -586,7 +628,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 );
                 ctx_ns.insert(
                     CompactString::from("rounding"),
-                    PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")),
+                    PyObject::str_val(CompactString::from(get_rounding())),
                 );
                 ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
                 ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
@@ -596,27 +638,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                     let mut ns = IndexMap::new();
                     ns.insert(
                         CompactString::from("__setattr__"),
-                        make_builtin(|args| {
-                            if args.len() < 3 {
-                                return Ok(PyObject::none());
-                            }
-                            let attr_name = args[1].py_to_string();
-                            if attr_name == "prec" {
-                                let new_prec = args[2].to_int()? as u32;
-                                DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
-                                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                                    inst.attrs.write().insert(
-                                        CompactString::from("prec"),
-                                        PyObject::int(new_prec as i64),
-                                    );
-                                }
-                            } else if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                                inst.attrs
-                                    .write()
-                                    .insert(CompactString::from(attr_name), args[2].clone());
-                            }
-                            Ok(PyObject::none())
-                        }),
+                        make_builtin(context_set_attr),
                     );
                     ns
                 };
@@ -646,6 +668,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                         CompactString::from("__exit__"),
                         PyObject::native_closure("localcontext.__exit__", move |_| {
                             DECIMAL_PREC.store(saved_prec, Ordering::Relaxed);
+                            set_rounding(&saved_rounding);
                             Ok(PyObject::bool_val(false))
                         }),
                     );

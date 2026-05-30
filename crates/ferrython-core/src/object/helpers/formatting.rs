@@ -301,13 +301,14 @@ pub(in crate::object) fn python_fmod(a: f64, b: f64) -> f64 {
 }
 
 pub(in crate::object) fn format_int_spec(n: i64, spec: &str) -> String {
-    // Parse width from spec
+    let left_align = spec.contains('-');
+    let zero_pad = spec.contains('0') && !left_align;
     let width: usize = spec
-        .trim_start_matches(|c: char| "- +#0".contains(c))
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>()
         .parse()
         .unwrap_or(0);
-    let zero_pad = spec.starts_with('0');
-    let left_align = spec.starts_with('-');
     let s = n.to_string();
     if width == 0 {
         return s;

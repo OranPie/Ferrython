@@ -171,31 +171,17 @@ pub(crate) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                             }
                         }
                         'd' | 'i' => {
-                            let formatted = match &arg.payload {
-                                PyObjectPayload::Int(n) => {
-                                    if spec_chars.is_empty() {
-                                        n.to_string()
-                                    } else if let Some(value) = n.to_i64() {
-                                        format_int_spec(value, &spec_chars)
-                                    } else {
-                                        format_str_spec(&n.to_string(), &spec_chars)
-                                    }
-                                }
-                                PyObjectPayload::Bool(b) => {
-                                    let value = i64::from(*b);
-                                    if spec_chars.is_empty() {
-                                        value.to_string()
-                                    } else {
-                                        format_int_spec(value, &spec_chars)
-                                    }
-                                }
-                                _ => {
-                                    return Err(PyException::type_error(format!(
-                                        "%{} format: a number is required, not {}",
-                                        conv,
-                                        arg.type_name()
-                                    )));
-                                }
+                            let value = arg.to_int().map_err(|_| {
+                                PyException::type_error(format!(
+                                    "%{} format: a number is required, not {}",
+                                    conv,
+                                    arg.type_name()
+                                ))
+                            })?;
+                            let formatted = if spec_chars.is_empty() {
+                                value.to_string()
+                            } else {
+                                format_int_spec(value, &spec_chars)
                             };
                             result.push_str(&formatted);
                         }

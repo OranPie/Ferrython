@@ -514,17 +514,36 @@ pub fn create_sys_module() -> PyObjectRef {
                 PyObject::str_val(CompactString::from("inf")),
                 PyObject::str_val(CompactString::from("nan")),
                 PyObject::str_val(CompactString::from("imag")),
+                PyObject::str_val(CompactString::from("algorithm")),
+                PyObject::str_val(CompactString::from("hash_bits")),
+                PyObject::str_val(CompactString::from("seed_bits")),
+                PyObject::str_val(CompactString::from("cutoff")),
             ]));
             ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
             let cls = PyObject::class(CompactString::from("sys.hash_info"), vec![], ns);
             let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
             attrs.insert(CompactString::from("width"), PyObject::int(64));
-            attrs.insert(CompactString::from("modulus"), PyObject::int(0));
-            attrs.insert(CompactString::from("inf"), PyObject::int(0));
+            attrs.insert(CompactString::from("modulus"), PyObject::int(2_305_843_009_213_693_951));
+            attrs.insert(CompactString::from("inf"), PyObject::int(314159));
             attrs.insert(CompactString::from("nan"), PyObject::int(0));
-            attrs.insert(CompactString::from("imag"), PyObject::int(0));
+            attrs.insert(CompactString::from("imag"), PyObject::int(1_000_003));
+            attrs.insert(
+                CompactString::from("algorithm"),
+                PyObject::str_val(CompactString::from("siphash24")),
+            );
+            attrs.insert(CompactString::from("hash_bits"), PyObject::int(64));
+            attrs.insert(CompactString::from("seed_bits"), PyObject::int(128));
+            attrs.insert(CompactString::from("cutoff"), PyObject::int(0));
             attrs.insert(CompactString::from("__tuple_data__"), PyObject::tuple(vec![
-                PyObject::int(64), PyObject::int(0), PyObject::int(0), PyObject::int(0), PyObject::int(0),
+                PyObject::int(64),
+                PyObject::int(2_305_843_009_213_693_951),
+                PyObject::int(314159),
+                PyObject::int(0),
+                PyObject::int(1_000_003),
+                PyObject::str_val(CompactString::from("siphash24")),
+                PyObject::int(64),
+                PyObject::int(128),
+                PyObject::int(0),
             ]));
             PyObject::instance_with_attrs(cls, attrs)
         }),

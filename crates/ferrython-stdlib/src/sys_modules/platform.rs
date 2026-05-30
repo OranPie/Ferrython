@@ -193,6 +193,33 @@ pub fn create_platform_module() -> PyObjectRef {
                 }),
             ),
             (
+                "libc_ver",
+                make_builtin(|_| {
+                    #[cfg(all(unix, not(target_os = "macos")))]
+                    {
+                        let version = unsafe {
+                            let ptr = libc::gnu_get_libc_version();
+                            if ptr.is_null() {
+                                ""
+                            } else {
+                                std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("")
+                            }
+                        };
+                        Ok(PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from("glibc")),
+                            PyObject::str_val(CompactString::from(version)),
+                        ]))
+                    }
+                    #[cfg(any(not(unix), target_os = "macos"))]
+                    {
+                        Ok(PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from("")),
+                            PyObject::str_val(CompactString::from("")),
+                        ]))
+                    }
+                }),
+            ),
+            (
                 "linux_distribution",
                 make_builtin(|_| {
                     Ok(PyObject::tuple(vec![

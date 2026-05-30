@@ -1,15 +1,18 @@
 //! Time and datetime stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 use shared::{
-    days_in_month, decompose_timestamp, format_time, is_leap_year, DAY_NAMES_ABBR,
+    days_in_month, decompose_timestamp, format_time, is_leap_year, DAY_NAMES_ABBR, DAY_NAMES_FULL,
     MONTH_NAMES_ABBR, MONTH_NAMES_FULL,
 };
+
+const TIME_MAXYEAR: i64 = i32::MAX as i64;
+const TIME_MINYEAR: i64 = i32::MIN as i64 + 1900;
 
 pub fn create_time_module() -> PyObjectRef {
     // struct_time class — callable constructor + type object
@@ -51,16 +54,8 @@ pub fn create_time_module() -> PyObjectRef {
             ("sleep", make_builtin(time_sleep)),
             ("monotonic", make_builtin(time_monotonic)),
             ("perf_counter", make_builtin(time_monotonic)),
-            (
-                "perf_counter_ns",
-                make_builtin(|_args| {
-                    use std::time::Instant;
-                    static START: std::sync::OnceLock<std::time::Instant> =
-                        std::sync::OnceLock::new();
-                    let start = START.get_or_init(Instant::now);
-                    Ok(PyObject::int(start.elapsed().as_nanos() as i64))
-                }),
-            ),
+            ("monotonic_ns", make_builtin(time_monotonic_ns)),
+            ("perf_counter_ns", make_builtin(time_monotonic_ns)),
             (
                 "time_ns",
                 make_builtin(|_args| {
@@ -71,7 +66,27 @@ pub fn create_time_module() -> PyObjectRef {
                     Ok(PyObject::int(dur.as_nanos() as i64))
                 }),
             ),
-            ("process_time", make_builtin(time_monotonic)),
+            ("process_time", make_builtin(time_process_time)),
+            ("process_time_ns", make_builtin(time_process_time_ns)),
+            ("thread_time", make_builtin(time_thread_time)),
+            ("thread_time_ns", make_builtin(time_thread_time_ns)),
+            ("get_clock_info", make_builtin(time_get_clock_info)),
+            ("clock_gettime", make_builtin(time_clock_gettime)),
+            ("clock_gettime_ns", make_builtin(time_clock_gettime_ns)),
+            ("clock_getres", make_builtin(time_clock_getres)),
+            ("CLOCK_REALTIME", PyObject::int(libc::CLOCK_REALTIME as i64)),
+            (
+                "CLOCK_MONOTONIC",
+                PyObject::int(libc::CLOCK_MONOTONIC as i64),
+            ),
+            (
+                "CLOCK_PROCESS_CPUTIME_ID",
+                PyObject::int(libc::CLOCK_PROCESS_CPUTIME_ID as i64),
+            ),
+            (
+                "CLOCK_THREAD_CPUTIME_ID",
+                PyObject::int(libc::CLOCK_THREAD_CPUTIME_ID as i64),
+            ),
             ("strftime", make_builtin(time_strftime)),
             ("strptime", make_builtin(time_strptime)),
             ("localtime", make_builtin(time_localtime)),
@@ -80,6 +95,7 @@ pub fn create_time_module() -> PyObjectRef {
             ("ctime", make_builtin(time_ctime)),
             ("asctime", make_builtin(time_asctime)),
             ("struct_time", struct_time_cls),
+            ("_STRUCT_TM_ITEMS", PyObject::int(9)),
             ("timezone", {
                 // Compute actual timezone offset (seconds west of UTC)
                 #[cfg(unix)]
@@ -210,6 +226,213 @@ fn time_monotonic(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(Instant::now);
     Ok(PyObject::float(start.elapsed().as_secs_f64()))
+}
+
+fn time_monotonic_ns(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use std::time::Instant;
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    Ok(PyObject::int(start.elapsed().as_nanos() as i64))
+}
+
+fn clock_id_arg(name: &str, args: &[PyObjectRef]) -> PyResult<libc::clockid_t> {
+    check_args(name, args, 1)?;
+    Ok(args[0].to_int()? as libc::clockid_t)
+}
+
+fn clock_time(clock_id: libc::clockid_t) -> PyResult<libc::timespec> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::clock_gettime(clock_id, &mut ts) };
+    if rc == 0 {
+        Ok(ts)
+    } else {
+        Err(PyException::os_error("clock_gettime failed"))
+    }
+}
+
+fn timespec_seconds(ts: libc::timespec) -> f64 {
+    ts.tv_sec as f64 + (ts.tv_nsec as f64 / 1_000_000_000.0)
+}
+
+fn timespec_ns(ts: libc::timespec) -> i64 {
+    (ts.tv_sec as i64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts.tv_nsec as i64)
+}
+
+fn clock_seconds(clock_id: libc::clockid_t) -> PyResult<PyObjectRef> {
+    Ok(PyObject::float(timespec_seconds(clock_time(clock_id)?)))
+}
+
+fn clock_ns(clock_id: libc::clockid_t) -> PyResult<PyObjectRef> {
+    Ok(PyObject::int(timespec_ns(clock_time(clock_id)?)))
+}
+
+fn time_process_time(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    clock_seconds(libc::CLOCK_PROCESS_CPUTIME_ID)
+}
+
+fn time_process_time_ns(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    clock_ns(libc::CLOCK_PROCESS_CPUTIME_ID)
+}
+
+fn time_thread_time(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    clock_seconds(libc::CLOCK_THREAD_CPUTIME_ID)
+}
+
+fn time_thread_time_ns(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    clock_ns(libc::CLOCK_THREAD_CPUTIME_ID)
+}
+
+fn clock_info_obj(
+    implementation: &str,
+    monotonic: bool,
+    adjustable: bool,
+    resolution: f64,
+) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("namespace"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+    attrs.insert(
+        CompactString::from("implementation"),
+        PyObject::str_val(CompactString::from(implementation)),
+    );
+    attrs.insert(
+        CompactString::from("monotonic"),
+        PyObject::bool_val(monotonic),
+    );
+    attrs.insert(
+        CompactString::from("adjustable"),
+        PyObject::bool_val(adjustable),
+    );
+    attrs.insert(
+        CompactString::from("resolution"),
+        PyObject::float(resolution),
+    );
+    PyObject::instance_with_attrs(cls, attrs)
+}
+
+fn time_get_clock_info(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("get_clock_info", args, 1)?;
+    let name = args[0].py_to_string();
+    match name.as_str() {
+        "time" => Ok(clock_info_obj(
+            "clock_gettime(CLOCK_REALTIME)",
+            false,
+            true,
+            1e-9,
+        )),
+        "monotonic" => Ok(clock_info_obj(
+            "clock_gettime(CLOCK_MONOTONIC)",
+            true,
+            false,
+            1e-9,
+        )),
+        "perf_counter" => Ok(clock_info_obj(
+            "clock_gettime(CLOCK_MONOTONIC)",
+            true,
+            false,
+            1e-9,
+        )),
+        "process_time" => Ok(clock_info_obj(
+            "clock_gettime(CLOCK_PROCESS_CPUTIME_ID)",
+            true,
+            false,
+            1e-9,
+        )),
+        "thread_time" => Ok(clock_info_obj(
+            "clock_gettime(CLOCK_THREAD_CPUTIME_ID)",
+            true,
+            false,
+            1e-9,
+        )),
+        _ => Err(PyException::value_error("unknown clock")),
+    }
+}
+
+fn time_clock_gettime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let clock_id = clock_id_arg("clock_gettime", args)?;
+    clock_seconds(clock_id)
+}
+
+fn time_clock_gettime_ns(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let clock_id = clock_id_arg("clock_gettime_ns", args)?;
+    clock_ns(clock_id)
+}
+
+fn time_clock_getres(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let clock_id = clock_id_arg("clock_getres", args)?;
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::clock_getres(clock_id, &mut ts) };
+    if rc == 0 {
+        Ok(PyObject::float(timespec_seconds(ts)))
+    } else {
+        Err(PyException::os_error("clock_getres failed"))
+    }
+}
+
+fn normalize_struct_components(
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
+    (
+        y,
+        if mon == 0 { 1 } else { mon },
+        if day == 0 { 1 } else { day },
+        h,
+        m,
+        s,
+        ((wday + 1).rem_euclid(7) + 6).rem_euclid(7),
+        if yday == 0 { 1 } else { yday },
+    )
+}
+
+fn check_struct_bounds(
+    y: i64,
+    mon: i64,
+    day: i64,
+    h: i64,
+    m: i64,
+    s: i64,
+    wday: i64,
+    yday: i64,
+) -> PyResult<()> {
+    if !(TIME_MINYEAR..=TIME_MAXYEAR).contains(&y) {
+        return Err(PyException::overflow_error("year out of range"));
+    }
+    if !matches!(mon, 0..=12) {
+        return Err(PyException::value_error("month out of range"));
+    }
+    if !matches!(day, 0..=31) {
+        return Err(PyException::value_error("day of month out of range"));
+    }
+    if !matches!(h, 0..=23) {
+        return Err(PyException::value_error("hour out of range"));
+    }
+    if !matches!(m, 0..=59) {
+        return Err(PyException::value_error("minute out of range"));
+    }
+    if !matches!(s, 0..=61) {
+        return Err(PyException::value_error("seconds out of range"));
+    }
+    if wday < -1 {
+        return Err(PyException::value_error("day of week out of range"));
+    }
+    if !matches!(yday, 0..=366) {
+        return Err(PyException::value_error("day of year out of range"));
+    }
+    Ok(())
 }
 
 fn make_struct_time(
@@ -353,13 +576,37 @@ fn make_struct_time(
 
 fn get_epoch_secs(args: &[PyObjectRef]) -> u64 {
     if let Some(secs_arg) = args.first() {
+        if matches!(&secs_arg.payload, PyObjectPayload::None) {
+            return current_epoch_secs();
+        }
         if let Ok(f) = secs_arg.to_float() {
+            if !f.is_finite() || f < 0.0 || f > u64::MAX as f64 {
+                return 0;
+            }
             return f as u64;
         }
         if let Some(i) = secs_arg.as_int() {
+            if i < 0 {
+                return 0;
+            }
             return i as u64;
         }
     }
+    current_epoch_secs()
+}
+
+fn checked_epoch_secs(args: &[PyObjectRef]) -> PyResult<Option<i64>> {
+    if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
+        return Ok(None);
+    }
+    let value = args[0].to_float()?;
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err(PyException::overflow_error("timestamp out of range"));
+    }
+    Ok(Some(value as i64))
+}
+
+fn current_epoch_secs() -> u64 {
     use std::time::SystemTime;
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -367,14 +614,42 @@ fn get_epoch_secs(args: &[PyObjectRef]) -> u64 {
         .as_secs()
 }
 
+fn decompose_signed_timestamp(epoch_secs: i64) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
+    let days = epoch_secs.div_euclid(86400);
+    let rem = epoch_secs.rem_euclid(86400);
+    let (y, mon, day) = shared::days_to_ymd(days + 719_468);
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    let wday = (days + 3).rem_euclid(7);
+    let md = days_in_month(y);
+    let yday = (0..(mon - 1) as usize).map(|i| md[i]).sum::<i64>() + day;
+    (y, mon, day, h, m, s, wday, yday)
+}
+
+fn ensure_text_arg(func: &str, obj: &PyObjectRef) -> PyResult<String> {
+    match &obj.payload {
+        PyObjectPayload::Str(_) => Ok(obj.py_to_string()),
+        PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => Err(PyException::type_error(
+            format!("{}() argument must be str, not bytes", func),
+        )),
+        _ => Ok(obj.py_to_string()),
+    }
+}
+
 fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("strftime requires a format string"));
     }
-    let fmt = args[0].py_to_string();
+    let fmt = ensure_text_arg("strftime", &args[0])?;
+    if fmt.contains('\0') {
+        return Err(PyException::value_error("embedded null character"));
+    }
     // Use struct_time arg if provided, otherwise current time
     let (y, mon, day, h, m, s, wday, yday) = if args.len() >= 2 {
-        extract_struct_time(&args[1])?
+        let raw = extract_struct_time(&args[1])?;
+        check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
+        normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)
     } else {
         let secs = get_epoch_secs(&[]);
         decompose_timestamp(secs)
@@ -386,7 +661,7 @@ fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Extract (y, mon, day, h, m, s, wday, yday) from a struct_time or tuple
 fn extract_struct_time(obj: &PyObjectRef) -> PyResult<(i64, i64, i64, i64, i64, i64, i64, i64)> {
     match &obj.payload {
-        PyObjectPayload::Tuple(t) if t.len() >= 9 => Ok((
+        PyObjectPayload::Tuple(t) if t.len() == 9 => Ok((
             t[0].as_int().unwrap_or(1970),
             t[1].as_int().unwrap_or(1),
             t[2].as_int().unwrap_or(1),
@@ -396,6 +671,10 @@ fn extract_struct_time(obj: &PyObjectRef) -> PyResult<(i64, i64, i64, i64, i64, 
             t[6].as_int().unwrap_or(0),
             t[7].as_int().unwrap_or(1),
         )),
+        PyObjectPayload::Tuple(t) => Err(PyException::type_error(format!(
+            "time tuple must have exactly 9 elements, not {}",
+            t.len()
+        ))),
         PyObjectPayload::Instance(data) => {
             let attrs = data.attrs.read();
             if let Some(tup) = attrs.get("__tuple__") {
@@ -438,8 +717,11 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "strptime() takes exactly 2 arguments",
         ));
     }
-    let date_str = args[0].py_to_string();
-    let fmt = args[1].py_to_string();
+    let date_str = ensure_text_arg("strptime", &args[0])?;
+    let fmt = ensure_text_arg("strptime", &args[1])?;
+    if fmt.ends_with('%') && !fmt.ends_with("%%") {
+        return Err(strptime_value_error());
+    }
 
     let mut y: i64 = 1900;
     let mut mon: i64 = 1;
@@ -451,6 +733,7 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Parse format string and extract values from date_str
     let mut fi = fmt.chars().peekable();
     let mut di = date_str.chars().peekable();
+    let value_error = strptime_value_error;
 
     while let Some(fc) = fi.next() {
         if fc == '%' {
@@ -461,6 +744,34 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Some('y') => {
                     let v = parse_digits(&mut di, 2)?;
                     y = if v >= 69 { 1900 + v } else { 2000 + v };
+                }
+                Some('D') => {
+                    let mo = parse_digits(&mut di, 2)?;
+                    if di.peek() == Some(&'/') {
+                        di.next();
+                    }
+                    let da = parse_digits(&mut di, 2)?;
+                    if di.peek() == Some(&'/') {
+                        di.next();
+                    }
+                    let yy = parse_digits(&mut di, 2)?;
+                    mon = mo;
+                    day = da;
+                    y = if yy >= 69 { 1900 + yy } else { 2000 + yy };
+                }
+                Some('x') => {
+                    let mo = parse_digits(&mut di, 2)?;
+                    if di.peek() == Some(&'/') {
+                        di.next();
+                    }
+                    let da = parse_digits(&mut di, 2)?;
+                    if di.peek() == Some(&'/') {
+                        di.next();
+                    }
+                    let yy = parse_digits(&mut di, 2)?;
+                    mon = mo;
+                    day = da;
+                    y = if yy >= 69 { 1900 + yy } else { 2000 + yy };
                 }
                 Some('m') => {
                     mon = parse_digits(&mut di, 2)?;
@@ -473,6 +784,21 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
                 Some('I') => {
                     h = parse_digits(&mut di, 2)?;
+                }
+                Some('c') => {
+                    let _ = parse_name(&mut di, &DAY_NAMES_ABBR, &DAY_NAMES_FULL)?;
+                    consume_spaces(&mut di);
+                    mon = parse_name(&mut di, &MONTH_NAMES_ABBR, &MONTH_NAMES_FULL)?;
+                    consume_spaces(&mut di);
+                    day = parse_digits(&mut di, 2)?;
+                    consume_spaces(&mut di);
+                    h = parse_digits(&mut di, 2)?;
+                    expect_char(&mut di, ':')?;
+                    m = parse_digits(&mut di, 2)?;
+                    expect_char(&mut di, ':')?;
+                    s = parse_digits(&mut di, 2)?;
+                    consume_spaces(&mut di);
+                    y = parse_digits(&mut di, 4)?;
                 }
                 Some('M') => {
                     m = parse_digits(&mut di, 2)?;
@@ -492,32 +818,57 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Some('j') => {
                     let _ = parse_digits(&mut di, 3)?;
                 } // yday - skip
-                Some('b') | Some('B') => {
-                    // Month name - consume letters
-                    let name: String = (&mut di).take_while(|c| c.is_alphabetic()).collect();
-                    let lower = name.to_lowercase();
-                    for (i, &abbr) in MONTH_NAMES_ABBR.iter().enumerate() {
-                        if lower == abbr.to_lowercase()
-                            || lower == MONTH_NAMES_FULL[i].to_lowercase()
-                        {
-                            mon = i as i64 + 1;
-                            break;
-                        }
+                Some('U') | Some('W') | Some('w') => {
+                    let _ = parse_digits(&mut di, 2)?;
+                }
+                Some('X') => {
+                    h = parse_digits(&mut di, 2)?;
+                    expect_char(&mut di, ':')?;
+                    m = parse_digits(&mut di, 2)?;
+                    expect_char(&mut di, ':')?;
+                    s = parse_digits(&mut di, 2)?;
+                }
+                Some('Z') => {
+                    let name = parse_alpha_word(&mut di);
+                    if name.is_empty() {
+                        return Err(value_error());
                     }
                 }
+                Some('b') | Some('B') => {
+                    mon = parse_name(&mut di, &MONTH_NAMES_ABBR, &MONTH_NAMES_FULL)?;
+                }
                 Some('a') | Some('A') => {
-                    // Day name - consume and ignore
-                    let _: String = (&mut di).take_while(|c| c.is_alphabetic()).collect();
+                    let _ = parse_name(&mut di, &DAY_NAMES_ABBR, &DAY_NAMES_FULL)?;
                 }
                 Some('%') => {
-                    di.next();
+                    if di.next() != Some('%') {
+                        return Err(value_error());
+                    }
                 }
-                Some(_) => {}
-                None => {}
+                Some(other) => {
+                    return Err(PyException::value_error(format!(
+                        "bad directive in format: %{}",
+                        other
+                    )));
+                }
+                None => return Err(PyException::value_error("stray % in format")),
             }
         } else {
-            di.next(); // consume matching literal
+            if di.next() != Some(fc) {
+                return Err(value_error());
+            }
         }
+    }
+    if di.next().is_some() {
+        return Err(value_error());
+    }
+    if !matches!(mon, 1..=12)
+        || !matches!(day, 1..=31)
+        || !matches!(h, 0..=23)
+        || !matches!(m, 0..=59)
+        || !matches!(s, 0..=61)
+    {
+        return Err(value_error());
     }
 
     // Compute wday and yday
@@ -544,10 +895,7 @@ fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn parse_digits(chars: &mut std::iter::Peekable<std::str::Chars>, max: usize) -> PyResult<i64> {
     let mut s = String::new();
-    // skip leading whitespace
-    while chars.peek().map_or(false, |c| *c == ' ') {
-        chars.next();
-    }
+    consume_spaces(chars);
     for _ in 0..max {
         match chars.peek() {
             Some(c) if c.is_ascii_digit() => s.push(chars.next().unwrap()),
@@ -555,21 +903,80 @@ fn parse_digits(chars: &mut std::iter::Peekable<std::str::Chars>, max: usize) ->
         }
     }
     if s.is_empty() {
-        return Ok(0);
+        return Err(strptime_value_error());
     }
-    s.parse::<i64>()
-        .map_err(|_| PyException::value_error("time data does not match format"))
+    s.parse::<i64>().map_err(|_| strptime_value_error())
+}
+
+fn consume_spaces(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    while chars.peek().map_or(false, |c| *c == ' ') {
+        chars.next();
+    }
+}
+
+fn expect_char(chars: &mut std::iter::Peekable<std::str::Chars>, expected: char) -> PyResult<()> {
+    if chars.next() == Some(expected) {
+        Ok(())
+    } else {
+        Err(strptime_value_error())
+    }
+}
+
+fn parse_name(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    abbrs: &[&str],
+    full_names: &[&str],
+) -> PyResult<i64> {
+    let name = parse_alpha_word(chars);
+    if name.is_empty() {
+        return Err(strptime_value_error());
+    }
+    let lower = name.to_lowercase();
+    for (i, abbr) in abbrs.iter().enumerate() {
+        if lower == abbr.to_lowercase()
+            || full_names
+                .get(i)
+                .is_some_and(|full| lower == full.to_lowercase())
+        {
+            return Ok(i as i64 + 1);
+        }
+    }
+    Err(strptime_value_error())
+}
+
+fn parse_alpha_word(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut name = String::new();
+    while chars.peek().is_some_and(|c| c.is_alphabetic()) {
+        name.push(chars.next().unwrap());
+    }
+    name
+}
+
+fn strptime_value_error() -> PyException {
+    let message = CompactString::from("time data does not match format");
+    let original = PyObject::exception_instance(ExceptionKind::ValueError, message.clone());
+    if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
+        ei.ensure_attrs().write().insert(
+            CompactString::from("__suppress_context__"),
+            PyObject::bool_val(true),
+        );
+    }
+    PyException::with_original(ExceptionKind::ValueError, message, original)
 }
 
 fn time_localtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let secs = get_epoch_secs(args);
-    let (y, mon, day, h, m, s, wday, yday) = decompose_timestamp(secs);
+    let (y, mon, day, h, m, s, wday, yday) = match checked_epoch_secs(args)? {
+        Some(secs) => decompose_signed_timestamp(secs),
+        None => decompose_timestamp(current_epoch_secs()),
+    };
     Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
 }
 
 fn time_gmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let secs = get_epoch_secs(args);
-    let (y, mon, day, h, m, s, wday, yday) = decompose_timestamp(secs);
+    let (y, mon, day, h, m, s, wday, yday) = match checked_epoch_secs(args)? {
+        Some(secs) => decompose_signed_timestamp(secs),
+        None => decompose_timestamp(current_epoch_secs()),
+    };
     Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
 }
 
@@ -579,7 +986,10 @@ fn time_mktime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "mktime() requires a struct_time argument",
         ));
     }
-    let (y, mon, day, h, m, s, _wday, _yday) = extract_struct_time(&args[0])?;
+    let raw = extract_struct_time(&args[0])?;
+    check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
+    let (y, mon, day, h, m, s, _wday, _yday) =
+        normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7);
     // Convert to epoch seconds
     let mut total_days: i64 = 0;
     for yr in 1970..y {
@@ -602,10 +1012,12 @@ fn time_mktime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn time_ctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let secs = get_epoch_secs(args);
-    let (y, mon, day, h, m, s, wday, _yday) = decompose_timestamp(secs);
+    let (y, mon, day, h, m, s, wday, _yday) = match checked_epoch_secs(args)? {
+        Some(secs) => decompose_signed_timestamp(secs),
+        None => decompose_timestamp(current_epoch_secs()),
+    };
     let result = format!(
-        "{} {} {:2} {:02}:{:02}:{:02} {:04}",
+        "{} {} {:2} {:02}:{:02}:{:02} {}",
         DAY_NAMES_ABBR[wday as usize % 7],
         MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
         day,
@@ -618,14 +1030,21 @@ fn time_ctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn time_asctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() > 1 {
+        return Err(PyException::type_error(
+            "asctime() takes at most 1 argument",
+        ));
+    }
     let (y, mon, day, h, m, s, wday, _yday) = if args.is_empty() {
         let secs = get_epoch_secs(&[]);
         decompose_timestamp(secs)
     } else {
-        extract_struct_time(&args[0])?
+        let raw = extract_struct_time(&args[0])?;
+        check_struct_bounds(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)?;
+        normalize_struct_components(raw.0, raw.1, raw.2, raw.3, raw.4, raw.5, raw.6, raw.7)
     };
     let result = format!(
-        "{} {} {:2} {:02}:{:02}:{:02} {:04}",
+        "{} {} {:2} {:02}:{:02}:{:02} {}",
         DAY_NAMES_ABBR[wday as usize % 7],
         MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
         day,
