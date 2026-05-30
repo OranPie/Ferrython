@@ -386,6 +386,9 @@ def findfile(file, here=None, subdir=None):
             search_dirs.append(os.path.dirname(os.path.abspath(main_mod.__file__)))
     except Exception:
         pass
+    cpython_tests = os.path.join(os.getcwd(), "tests", "cpython")
+    if cpython_tests not in search_dirs:
+        search_dirs.append(cpython_tests)
     for base in search_dirs:
         if subdir is not None:
             candidate = os.path.join(base, subdir, file)

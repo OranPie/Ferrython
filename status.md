@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T18:13:14+08:00
+Last updated: 2026-05-30T20:23:47+08:00
 
 ## CPython 兼容修复进度
 
@@ -47,6 +47,26 @@ Last updated: 2026-05-30T18:13:14+08:00
   - `git diff --check`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid` -> `run=58 pass=30 fail=0 err=0 skip=28`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copy` -> `run=75 pass=75 fail=0 err=0 skip=0`
+
+- 当前未提交的 `test_difflib` 资源路径修复已记录为 in-progress：
+  - `test.support.findfile()` 新增从仓库根目录下 `tests/cpython` 查找资源文件，修复 `test_difflib_expect.html` 在当前运行方式下找不到的问题。
+  - 修复资源路径后 `test_difflib` 从缺文件 error 前进为 HTML 输出内容 mismatch；当前剩余失败是 `test_difflib.TestSFpatches.test_html_diff`，需要后续对齐 `difflib.HtmlDiff` 输出。
+- 当前验证：
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib` -> `run=29 pass=28 fail=1 err=0 skip=0`
+
+- 已推进 `UserString` 与共享 `str` 方法兼容修复：
+  - `collections.UserString` 改为继承/委派到内置 `str` 语义，并同步维护 `data` 与 `__builtin_value__`，避免旧实现把初始化时的字符串闭包捕获后产生 stale method 结果。
+  - `UserString` 补齐 `__str__`、`__repr__`、`__len__`、`__contains__`、`__hash__`、`__iadd__` 和 `__rmod__`，其中 `__contains__` 支持 UserString/string-like needle，`__hash__` 与内置字符串哈希一致。
+  - 共享 `str` 方法补齐/修正 arity 与 keyword 处理：`split`/`rsplit`、`splitlines(keepends=...)`、`expandtabs(tabsize=...)`、`encode(None, None)`、strip 系列和大小写/`is*` 方法的多余参数 TypeError。
+  - 共享 `str` 方法修正 None/负数/超大边界：`find`/`rfind`/`index`/`rindex`/`count`、`startswith`/`endswith`、直接 `__getitem__(slice(...))` 和空 needle 边界。
+  - `%` 格式化共享路径补齐 `%c`、宽度/精度、`%ld`、mapping key 嵌套括号、参数数量错误和 `str.__mod__` 直接调用委派；UserString 格式化和 `join()` 生成器错误传播同步改善。
+  - Unicode `capitalize()` 增加 CPython 3.8 需要的 titlecase 兼容点，避免 Rust 当前 Unicode case mapping 与 CPython 3.8 表差异导致测试偏移。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-cli`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userstring` -> `run=54 pass=50 fail=2 err=0 skip=2`
+  - 剩余 2 个失败均为 lone surrogate `'\ud800'.encode()` 应抛 `UnicodeError`；当前 Ferrython 字符串表示已在解析阶段失去原始 surrogate 信息，需后续全局字符串/Unicode 表示修复，不适合在 `UserString` 层特判。
 
 - 已推进 `deque` / `slice` / `tuple` / `codeop` 小批兼容与 deque 热点优化：
   - `tools/run_cpython_tests.py` 增加窄范围 Ferrython unneeded skip：`test_tuple.TupleTest.test_hash_exact` 为 CPython 精确 tuple hash 常量，`test_slice.SliceTest.test_cycle` 为 CPython GC cycle timing 实现细节。

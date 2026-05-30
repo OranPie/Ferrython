@@ -72,6 +72,7 @@ pub(super) fn split_single_byte(bytes: &[u8], sep: u8) -> Vec<PyObjectRef> {
 
 /// Fast whitespace split that pushes directly into an existing Vec.
 /// Avoids creating an intermediate Vec allocation.
+#[allow(dead_code)]
 #[inline]
 pub(super) fn split_whitespace_into(
     bytes: &[u8],

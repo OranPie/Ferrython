@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T18:13:14+08:00
+Last updated: 2026-05-30T20:23:47+08:00
 
 ## Current batch
 
@@ -29,6 +29,21 @@ Last updated: 2026-05-30T18:13:14+08:00
   - Slow candidate to revisit with performance in mind: `test_sched` (`run=10 pass=5 fail=3 err=2 skip=0`, about 10.5s). The long runtime is from concurrent scheduler tests waiting on `queue.get(timeout=10)` after events are not triggered; fixing it should also remove the timeout-driven delay.
   - Broad current targets: `test_urlparse` (`run=67 pass=2 fail=36 err=29 skip=0`, URL parser/result API surface), `test_pprint` (`run=30 pass=5 fail=24 err=1 skip=0`, formatting/layout and user collection reprs), `test_statistics` (`run=344 pass=129 fail=71 err=144 skip=0`, broad Decimal/Fraction/statistics API gaps).
 
+- Candidate scan notes on 2026-05-30 after module sweep
+  - Smallest remaining fail-only targets: `test_difflib` (`run=29 pass=28 fail=1 err=0 skip=0`, HtmlDiff expected HTML mismatch), `test_with` (`run=49 pass=47 fail=2 err=0 skip=0`, StopIteration propagation in with-body cases), `test_sort` (`run=19 pass=12 fail=7 err=0 skip=0`), `test_string_literals` (`run=16 pass=9 fail=7 err=0 skip=0`), `test_numeric_tower` (`run=9 pass=2 fail=7 err=0 skip=0`), `test_isinstance` (`run=18 pass=3 fail=15 err=0 skip=0`).
+  - Good content/API-completion candidates despite higher counts: `test_urlparse` (`run=67 pass=2 fail=36 err=29 skip=0`, many missing urllib.parse helpers/result fields/deprecated split APIs), `test_userstring` (`run=54 pass=3 fail=27 err=22 skip=2`, many missing `UserString` forwarded string methods), `test_random` (`run=77 pass=30 fail=18 err=29 skip=0`, missing distribution APIs/resource pickle plus some deterministic MT/state gaps), `test_configparser` (`run=341 pass=36 fail=138 err=162 skip=5`, broad parser API/resources but mostly stdlib surface), `test_pprint` (`run=30 pass=5 fail=24 err=1 skip=0`, formatting/layout/content repr surface), `test_fractions` (`run=31 pass=5 fail=16 err=10 skip=0`, Fraction arithmetic/conversion/hash API surface).
+  - Medium VM/semantic candidates: `test_collections` (`run=81 pass=59 fail=16 err=4 skip=2`, ABC registration/mixins and Counter copy), `test_contextlib` (`run=78 pass=53 fail=12 err=13 skip=0`), `test_set` (`run=561 pass=521 fail=30 err=7 skip=3`, many already pass but remaining set subclass/pickle/iterator semantics), `test_class` (`run=15 pass=8 fail=4 err=3 skip=0`), `test_keywordonlyarg` (`run=11 pass=6 fail=3 err=2 skip=0`).
+  - Slow or crash triage targets: `test_sched` (`run=10 pass=5 fail=3 err=2 skip=0`, about 10.6s timeout-driven queue waits), `test_enumerate` (30s timeout), `test_re` (30s timeout), `test_weakref` (30s timeout), `test_dict` exits 139, `test_types` exits 134 stack overflow.
+
+- `test_userstring`
+  - Before this batch: `run=54 pass=3 fail=27 err=22 skip=2`.
+  - After UserString/native string API batch: `run=54 pass=50 fail=2 err=0 skip=2`, completing 47 additional tests and removing all runtime errors.
+  - Fixed traits: `UserString` now delegates through a live `__builtin_value__` instead of stale method closures, stores `data` and builtin value together, hashes like builtin `str`, mutates correctly for `+=`, supports `__rmod__`, and handles UserString operands in containment/formatting paths.
+  - Fixed shared string traits: arity validation for `upper`/`lower`/`capitalize`/`title`/`swapcase`/`is*`; `split`/`rsplit` keyword and whitespace maxsplit semantics; `find`/`rfind`/`index`/`rindex`/`count` None/negative/huge bounds and empty needle behavior; `startswith`/`endswith` tuple/UserString inputs and empty-boundary rules; `partition`/`rpartition` validation; `splitlines(keepends=...)`; `expandtabs(tabsize=...)`; direct `__getitem__(slice(...))`.
+  - Fixed `%` formatting traits: direct `str.__mod__` now uses shared percent formatting, including `%c`, width/precision, `%ld`, mapping keys with nested parentheses, argument count errors, and UserString reverse formatting.
+  - Remaining failures: `test_encode_default_args` and `test_encode_explicit_none_args` only. Both assert that `'\ud800'.encode()` raises `UnicodeError`; Ferrython currently loses lone surrogate identity before `str.encode`, so this should be tracked as a global string/Unicode representation gap rather than a local UserString/string-method API issue.
+  - Performance note: focused module runtime is about 2.1s after fixes; no 30s timeout behavior.
+
 - `test_uuid`
   - Before this batch: `run=58 pass=25 fail=1 err=4 skip=28`.
   - After UUID module-local globals and pickle compatibility work: `run=58 pass=30 fail=0 err=0 skip=28`.
@@ -37,6 +52,12 @@ Last updated: 2026-05-30T18:13:14+08:00
   - Fixed old pickle traits: unpickler resolves `copy_reg._reconstructor`, historical `__builtin__` type globals, protocol 2 `NEWOBJ`, protocol 4 `FRAME`/`MEMOIZE`, headerless protocol 1 binary opcodes, BigInt `LONG1`, UUID state dicts with str/bytes keys, and `SafeUUID` enum reductions.
   - Performance note: module runtime stays fast after the fix (`test_uuid` completes around 0.03-0.12s locally); no timeout-driven behavior remains in this target.
   - Adjacent validation: `test_copy` remains green at `run=75 pass=75 fail=0 err=0 skip=0`; `test_pickle` is not present in the current vendored test set.
+
+- `test_difflib` (in progress)
+  - Before the current support-path change: `run=29 pass=28 fail=0 err=1 skip=0`, blocked by missing `test_difflib_expect.html`.
+  - Current result after adding `tests/cpython` to `test.support.findfile()` search paths: `run=29 pass=28 fail=1 err=0 skip=0`.
+  - Fixed trait so far: CPython resource files colocated in the vendored `tests/cpython` tree can be found when tests are run from the repository root.
+  - Remaining trait: `test_difflib.TestSFpatches.test_html_diff` compares full `HtmlDiff` output and now fails on expected HTML mismatch, so this should be treated as a difflib output-compatibility target, not a missing-resource target.
 
 - `test_deque`
   - Before this batch: `run=79 pass=69 fail=3 err=4 skip=3`, around 14-16s.
@@ -131,6 +152,7 @@ Last updated: 2026-05-30T18:13:14+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_secrets`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sched`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_urlparse`

@@ -15,7 +15,16 @@ impl VirtualMachine {
         if bbm.method_name.as_str() != "join" || args.is_empty() {
             return Ok(None);
         }
-        if let PyObjectPayload::Str(sep) = &bbm.receiver.payload {
+        let str_receiver = match &bbm.receiver.payload {
+            PyObjectPayload::Str(sep) => Some(sep.as_str().to_string()),
+            PyObjectPayload::Instance(inst) => inst
+                .attrs
+                .read()
+                .get("__builtin_value__")
+                .and_then(|value| value.as_str().map(ToString::to_string)),
+            _ => None,
+        };
+        if let Some(sep) = str_receiver {
             let items = self.collect_iterable(&args[0])?;
             let strs: Result<Vec<String>, _> = items
                 .iter()
@@ -26,7 +35,7 @@ impl VirtualMachine {
                 })
                 .collect();
             return Ok(Some(PyObject::str_val(CompactString::from(
-                strs?.join(sep.as_str()),
+                strs?.join(&sep),
             ))));
         }
         if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &bbm.receiver.payload

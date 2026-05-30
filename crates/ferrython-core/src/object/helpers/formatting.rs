@@ -300,52 +300,6 @@ pub(in crate::object) fn python_fmod(a: f64, b: f64) -> f64 {
     }
 }
 
-pub(in crate::object) fn format_int_spec(n: i64, spec: &str) -> String {
-    let left_align = spec.contains('-');
-    let zero_pad = spec.contains('0') && !left_align;
-    let width: usize = spec
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
-    let s = n.to_string();
-    if width == 0 {
-        return s;
-    }
-    if zero_pad && !left_align {
-        if n < 0 {
-            format!("-{:0>width$}", &s[1..], width = width - 1)
-        } else {
-            format!("{:0>width$}", s, width = width)
-        }
-    } else if left_align {
-        format!("{:<width$}", s, width = width)
-    } else {
-        format!("{:>width$}", s, width = width)
-    }
-}
-
-pub(in crate::object) fn format_float_spec(f: f64, spec: &str) -> String {
-    // Parse precision from spec (e.g., ".2")
-    if let Some(dot_pos) = spec.find('.') {
-        let prec_str = &spec[dot_pos + 1..];
-        let prec: usize = prec_str.parse().unwrap_or(6);
-        format!("{:.prec$}", f, prec = prec)
-    } else {
-        format!("{:.6}", f)
-    }
-}
-
-/// Parse precision from a printf spec string like ".2" or "10.3"
-pub(in crate::object) fn parse_precision(spec: &str) -> Option<usize> {
-    if let Some(dot_pos) = spec.find('.') {
-        spec[dot_pos + 1..].parse().ok()
-    } else {
-        None
-    }
-}
-
 /// Normalize Rust scientific notation to CPython format.
 /// Rust: "1.23e3" or "1.23e-3"  →  Python: "1.23e+03" or "1.23e-03"
 pub(in crate::object) fn normalize_scientific_exponent(raw: &str, e_char: char) -> String {

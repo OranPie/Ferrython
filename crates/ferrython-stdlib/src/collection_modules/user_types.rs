@@ -3,8 +3,8 @@ use compact_str::CompactString;
 use ferrython_core::error::ExceptionKind;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    call_callable, is_hidden_dict_key, lookup_in_class_mro, make_builtin, new_fx_hashkey_map,
-    repr_enter, repr_leave, BuiltinFn, CompareOp, FxHashKeyMap, PyCell, PyObject, PyObjectMethods,
+    call_callable, is_hidden_dict_key, lookup_in_class_mro, new_fx_hashkey_map, repr_enter,
+    repr_leave, BuiltinFn, CompareOp, FxHashKeyMap, PyCell, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, SharedFxAttrMap,
 };
 use ferrython_core::types::HashableKey;
