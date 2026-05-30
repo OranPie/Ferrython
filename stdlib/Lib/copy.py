@@ -78,7 +78,21 @@ def _deepcopy_bytearray(x, memo):
 
 
 def _deepcopy_range(x, memo):
-    return range(deepcopy(x.start, memo), deepcopy(x.stop, memo), deepcopy(x.step, memo))
+    start = _deepcopy_range_bound(x.start, memo)
+    stop = _deepcopy_range_bound(x.stop, memo)
+    step = _deepcopy_range_bound(x.step, memo)
+    return range(start, stop, step)
+
+
+def _deepcopy_range_bound(value, memo):
+    copied = deepcopy(value, memo)
+    value_type = type(value)
+    if copied is value and value_type is not int:
+        try:
+            return value_type(value)
+        except Exception:
+            return copied
+    return copied
 
 
 def _deepcopy_method(x, memo):
@@ -147,6 +161,31 @@ def _register_dispatch():
 _register_dispatch()
 
 
+def _class_dict_get(cls, name, default=None):
+    for base in getattr(cls, "__mro__", (cls,)):
+        value = getattr(base, "__dict__", {}).get(name, _nil)
+        if value is not _nil:
+            return value
+    return default
+
+
+def _call_special(method, obj, *args):
+    try:
+        return method(obj, *args)
+    except TypeError:
+        bound = getattr(obj, getattr(method, "__name__", ""), None)
+        if bound is None:
+            raise
+        return bound(*args)
+
+
+def _safe_getattr(obj, name, default=None):
+    try:
+        return getattr(obj, name)
+    except AttributeError:
+        return default
+
+
 def copy(x):
     """Shallow copy operation on arbitrary Python objects."""
     cls = type(x)
@@ -165,19 +204,19 @@ def copy(x):
     if issubclass(cls, type):
         return x
 
-    copier = getattr(cls, "__copy__", None)
+    copier = _class_dict_get(cls, "__copy__")
     if copier is not None:
-        return copier(x)
+        return _call_special(copier, x)
 
     reductor = copyreg.dispatch_table.get(cls)
     if reductor is not None:
         rv = reductor(x)
     else:
-        reductor = getattr(x, "__reduce_ex__", None)
+        reductor = _safe_getattr(x, "__reduce_ex__")
         if reductor is not None:
             rv = reductor(4)
         else:
-            reductor = getattr(x, "__reduce__", None)
+            reductor = _safe_getattr(x, "__reduce__")
             if reductor is not None:
                 rv = reductor()
             else:
@@ -225,19 +264,19 @@ def deepcopy(x, memo=None):
 
 
 def _deepcopy_object(x, memo, cls):
-    copier = getattr(x, "__deepcopy__", None)
+    copier = _class_dict_get(cls, "__deepcopy__")
     if copier is not None:
-        return copier(memo)
+        return _call_special(copier, x, memo)
 
     reductor = copyreg.dispatch_table.get(cls)
     if reductor is not None:
         rv = reductor(x)
     else:
-        reductor = getattr(x, "__reduce_ex__", None)
+        reductor = _safe_getattr(x, "__reduce_ex__")
         if reductor is not None:
             rv = reductor(4)
         else:
-            reductor = getattr(x, "__reduce__", None)
+            reductor = _safe_getattr(x, "__reduce__")
             if reductor is not None:
                 rv = reductor()
             else:
@@ -295,7 +334,7 @@ def _deepcopy_weak_value_dict(x, memo):
 
 
 def _can_copy_instance(x):
-    return hasattr(x, "__dict__") or _slotnames(type(x))
+    return _safe_getattr(x, "__dict__") is not None or _slotnames(type(x))
 
 
 def _has_custom_getattribute(cls):
@@ -330,14 +369,16 @@ def _copy_instance(x, memo=None):
         new = getattr(cls, "__new__", None)
         if new is None:
             raise Error("un(shallow)copyable object of type %s" % cls)
-        if hasattr(x, "__getnewargs_ex__"):
-            args, kwargs = x.__getnewargs_ex__()
+        getnewargs_ex = _safe_getattr(x, "__getnewargs_ex__")
+        getnewargs = _safe_getattr(x, "__getnewargs__")
+        if getnewargs_ex is not None:
+            args, kwargs = getnewargs_ex()
             if deep:
                 args = deepcopy(args, memo)
                 kwargs = deepcopy(kwargs, memo)
             y = new(cls, *args, **kwargs)
-        elif hasattr(x, "__getnewargs__"):
-            args = x.__getnewargs__()
+        elif getnewargs is not None:
+            args = getnewargs()
             if deep:
                 args = deepcopy(args, memo)
             y = new(cls, *args)
@@ -359,12 +400,12 @@ def _copy_instance(x, memo=None):
 
 
 def _instance_state(x):
-    getstate = getattr(x, "__getstate__", None)
+    getstate = _class_dict_get(type(x), "__getstate__")
     if getstate is not None:
-        return getstate()
+        return _call_special(getstate, x)
 
     state = None
-    d = getattr(x, "__dict__", None)
+    d = _safe_getattr(x, "__dict__")
     if d is not None:
         state = {}
         for key, value in d.items():
@@ -373,8 +414,10 @@ def _instance_state(x):
 
     slotstate = {}
     for name in _slotnames(type(x)):
-        if hasattr(x, name):
-            slotstate[name] = getattr(x, name)
+        sentinel = object()
+        value = _safe_getattr(x, name, sentinel)
+        if value is not sentinel:
+            slotstate[name] = value
 
     if slotstate:
         return (state, slotstate)
@@ -435,9 +478,9 @@ def _reconstruct(x, memo, func, args, state=None, listiter=None, dictiter=None):
 
 
 def _apply_state(y, state):
-    setstate = getattr(y, "__setstate__", None)
+    setstate = _class_dict_get(type(y), "__setstate__")
     if setstate is not None:
-        setstate(state)
+        _call_special(setstate, y, state)
         return
 
     if isinstance(state, tuple) and len(state) == 2:
@@ -446,7 +489,7 @@ def _apply_state(y, state):
         slotstate = None
 
     if state is not None:
-        d = getattr(y, "__dict__", None)
+        d = _safe_getattr(y, "__dict__")
         if d is not None:
             for key, value in state.items():
                 if key != "__builtin_value__":

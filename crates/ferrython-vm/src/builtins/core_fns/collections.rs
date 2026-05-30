@@ -274,7 +274,22 @@ fn range_index_arg(obj: &PyObjectRef) -> PyResult<(i64, PyObjectRef)> {
         PyInt::Big(n) if n.sign() == num_bigint::Sign::Minus => i64::MIN,
         PyInt::Big(_) => i64::MAX,
     };
-    Ok((saturated, index.to_object()))
+    let bound_obj = match &obj.payload {
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .filter(|value| {
+                matches!(
+                    value.payload,
+                    PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)
+                )
+            })
+            .map(|_| obj.clone())
+            .unwrap_or_else(|| index.to_object()),
+        _ => index.to_object(),
+    };
+    Ok((saturated, bound_obj))
 }
 
 pub(crate) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
