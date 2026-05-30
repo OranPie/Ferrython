@@ -367,6 +367,7 @@ fn abc_required_methods(abc_name: &str) -> &'static [&'static str] {
         "AsyncIterable" => &["__aiter__"],
         "AsyncIterator" => &["__aiter__", "__anext__"],
         "AsyncGenerator" => &["__aiter__", "__anext__", "asend", "athrow"],
+        "AbstractContextManager" => &["__enter__", "__exit__"],
         _ => &[],
     }
 }
@@ -538,6 +539,7 @@ fn is_known_structural_abc(name: &str) -> bool {
             | "AsyncIterable"
             | "AsyncIterator"
             | "AsyncGenerator"
+            | "AbstractContextManager"
             | "Number"
             | "Complex"
             | "Real"

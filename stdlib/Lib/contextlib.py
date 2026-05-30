@@ -10,9 +10,9 @@ class ContextDecorator:
     def __call__(self, func):
         from functools import wraps
         @wraps(func)
-        def inner(*args, **kwds):
-            with self._recreate_cm():
-                return func(*args, **kwds)
+        def inner(*args, _func=func, _self=self, **kwds):
+            with _self._recreate_cm():
+                return _func(*args, **kwds)
         return inner
 
 
@@ -24,11 +24,13 @@ class _GeneratorContextManager(ContextDecorator):
         self.func = func
         self.args = args
         self.kwds = kwds
+        self.__doc__ = getattr(func, "__doc__", None)
 
     def _recreate_cm(self):
         return self.__class__(self.func, self.args, self.kwds)
 
     def __enter__(self):
+        del self.args, self.kwds
         try:
             return next(self.gen)
         except StopIteration:
@@ -50,9 +52,18 @@ class _GeneratorContextManager(ContextDecorator):
             except StopIteration as exc:
                 return exc is not value
             except RuntimeError as exc:
-                return exc is not value
-            except BaseException:
+                if exc is value:
+                    exc.__traceback__ = traceback
+                    return False
+                if isinstance(value, StopIteration) and exc.__cause__ is value:
+                    value.__traceback__ = traceback
+                    return False
                 raise
+            except BaseException as exc:
+                if exc is not value:
+                    raise
+                exc.__traceback__ = traceback
+                return False
             else:
                 raise RuntimeError("generator didn't stop after throw()")
 
@@ -70,10 +81,10 @@ def contextmanager(func):
             finally:
                 <cleanup>
     """
-    def helper(*args, **kwds):
-        return _GeneratorContextManager(func, args, kwds)
-    helper.__name__ = getattr(func, '__name__', 'contextmanager')
-    helper.__doc__ = getattr(func, '__doc__', None)
+    from functools import wraps
+    @wraps(func)
+    def helper(*args, _func=func, **kwds):
+        return _GeneratorContextManager(_func, args, kwds)
     return helper
 
 
@@ -137,14 +148,13 @@ class ExitStack:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc_details):
+    def __exit__(_self, *exc_details):
         received_exc = exc_details[0] is not None
         suppressed_exc = False
         pending_raise = False
-        new_exc_details = (None, None, None)
 
-        while self._exit_callbacks:
-            cb = self._exit_callbacks.pop()
+        while _self._exit_callbacks:
+            _, cb = _self._exit_callbacks.pop()
             try:
                 if cb(*exc_details):
                     suppressed_exc = True
@@ -152,41 +162,53 @@ class ExitStack:
                     exc_details = (None, None, None)
             except Exception:
                 import sys
-                new_exc_details = sys.exc_info()
-                exc_details = new_exc_details
+                exc_details = sys.exc_info()
                 pending_raise = True
 
         if pending_raise:
             raise exc_details[1]
         return received_exc and suppressed_exc
 
-    def enter_context(self, cm):
+    def enter_context(_self, cm):
         _exit = type(cm).__exit__
         result = type(cm).__enter__(cm)
-        def _exit_wrapper(exc_type, exc, tb):
-            return _exit(cm, exc_type, exc, tb)
-        self._exit_callbacks.append(_exit_wrapper)
+        _exit_wrapper = _exit.__get__(cm, type(cm))
+        _self._exit_callbacks.append((True, _exit_wrapper))
         return result
 
-    def push(self, exit_callback):
-        self._exit_callbacks.append(exit_callback)
-        return exit_callback
+    def push(_self, exit):
+        _exit = type(exit).__dict__.get("__exit__")
+        if _exit is None or not callable(_exit):
+            _self._exit_callbacks.append((True, exit))
+        else:
+            _exit_wrapper = _exit.__get__(exit, type(exit))
+            _self._exit_callbacks.append((True, _exit_wrapper))
+        return exit
 
-    def callback(self, callback, *args, **kwds):
-        def _exit_wrapper(exc_type, exc, tb):
-            callback(*args, **kwds)
+    def callback(_self, _callback=None, *args, **kwds):
+        if _callback is None:
+            if "callback" in kwds:
+                import warnings
+                warnings.warn("callback as a keyword argument is deprecated",
+                              DeprecationWarning, stacklevel=2)
+                _callback = kwds.pop("callback")
+            else:
+                raise TypeError("callback() missing 1 required positional argument: 'callback'")
+        def _exit_wrapper(exc_type, exc, tb, _callback=_callback, _args=args, _kwds=kwds):
+            _callback(*_args, **_kwds)
             return False
-        self._exit_callbacks.append(_exit_wrapper)
-        return callback
+        _exit_wrapper.__wrapped__ = _callback
+        _self._exit_callbacks.append((True, _exit_wrapper))
+        return _callback
 
-    def close(self):
+    def close(_self):
         """Immediately unwind the callback stack."""
-        self.__exit__(None, None, None)
+        _self.__exit__(None, None, None)
 
-    def pop_all(self):
+    def pop_all(_self):
         new_stack = ExitStack()
-        new_stack._exit_callbacks = self._exit_callbacks
-        self._exit_callbacks = []
+        new_stack._exit_callbacks = _self._exit_callbacks
+        _self._exit_callbacks = []
         return new_stack
 
 
@@ -212,8 +234,28 @@ class AbstractContextManager:
     def __enter__(self):
         return self
 
+    @classmethod
+    def __subclasshook__(cls, C):
+        if cls is AbstractContextManager:
+            return _check_methods(C, "__enter__", "__exit__")
+        return NotImplemented
+
+    from abc import abstractmethod
+    @abstractmethod
     def __exit__(self, exc_type, exc_value, traceback):
         return None
+
+
+def _check_methods(C, *methods):
+    for method in methods:
+        for B in C.__mro__:
+            if method in B.__dict__:
+                if B.__dict__[method] is None:
+                    return NotImplemented
+                break
+        else:
+            return NotImplemented
+    return True
 
 
 class AbstractAsyncContextManager:

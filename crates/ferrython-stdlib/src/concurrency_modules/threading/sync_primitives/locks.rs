@@ -175,6 +175,13 @@ pub(super) fn create_lock_primitives() -> (PyObjectRef, PyObjectRef) {
                     Ok(PyObject::bool_val(s3.read().0))
                 }),
             );
+            let s3b = state.clone();
+            attrs.insert(
+                CompactString::from("_is_owned"),
+                PyObject::native_closure("_is_owned", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(s3b.read().0))
+                }),
+            );
             let s4 = state.clone();
             let ir = inst_ref.clone();
             attrs.insert(

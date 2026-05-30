@@ -14,24 +14,36 @@ pub(super) fn create_condition_timer_primitives() -> (PyObjectRef, PyObjectRef) 
         let inst = PyObject::instance(cc.clone());
         let mutex = Arc::new(std::sync::Mutex::new(false));
         let condvar = Arc::new(std::sync::Condvar::new());
+        let owned = Rc::new(PyCell::new(false));
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             let m1 = mutex.clone();
+            let owned1 = owned.clone();
             attrs.insert(
                 CompactString::from("acquire"),
                 PyObject::native_closure("acquire", move |_: &[PyObjectRef]| {
                     let _guard = m1.lock().unwrap();
+                    *owned1.write() = true;
                     Ok(PyObject::bool_val(true))
                 }),
             );
             let m2 = mutex.clone();
+            let owned2 = owned.clone();
             attrs.insert(
                 CompactString::from("release"),
                 PyObject::native_closure("release", move |_: &[PyObjectRef]| {
                     // Release is implicit when guard drops
                     let _guard = m2.lock();
+                    *owned2.write() = false;
                     Ok(PyObject::none())
+                }),
+            );
+            let owned2b = owned.clone();
+            attrs.insert(
+                CompactString::from("_is_owned"),
+                PyObject::native_closure("_is_owned", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(*owned2b.read()))
                 }),
             );
             // wait(timeout=None) — release lock, wait for notify, re-acquire lock
@@ -106,19 +118,23 @@ pub(super) fn create_condition_timer_primitives() -> (PyObjectRef, PyObjectRef) 
                 }),
             );
             let m6 = mutex.clone();
+            let owned6 = owned.clone();
             let ir = inst_ref.clone();
             attrs.insert(
                 CompactString::from("__enter__"),
                 PyObject::native_closure("__enter__", move |_: &[PyObjectRef]| {
                     let _guard = m6.lock().unwrap();
+                    *owned6.write() = true;
                     Ok(ir.clone())
                 }),
             );
             let m7 = mutex.clone();
+            let owned7 = owned.clone();
             attrs.insert(
                 CompactString::from("__exit__"),
                 PyObject::native_closure("__exit__", move |_: &[PyObjectRef]| {
                     let _guard = m7.lock();
+                    *owned7.write() = false;
                     Ok(PyObject::bool_val(false))
                 }),
             );

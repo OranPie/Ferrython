@@ -12,6 +12,32 @@ use ferrython_core::object::{
 
 // ── Group 11: Return + Import ────────────────────────────────────────
 impl VirtualMachine {
+    fn unwind_for_return(
+        frame: &mut crate::frame::Frame,
+        value: PyObjectRef,
+    ) -> Option<PyObjectRef> {
+        frame.pending_jump = None;
+        while let Some(block) = frame.block_stack.pop() {
+            match block.kind() {
+                BlockKind::Finally | BlockKind::With => {
+                    while frame.stack.len() > block.stack_level() {
+                        frame.pop();
+                    }
+                    frame.pending_return = Some(value);
+                    frame.push(PyObject::none());
+                    frame.ip = block.handler();
+                    return None;
+                }
+                _ => {
+                    while frame.stack.len() > block.stack_level() {
+                        frame.pop();
+                    }
+                }
+            }
+        }
+        Some(value)
+    }
+
     pub(crate) fn exec_return_import(
         &mut self,
         instr: Instruction,
@@ -20,24 +46,7 @@ impl VirtualMachine {
             Opcode::ReturnValue => {
                 let frame = self.vm_frame();
                 let value = frame.pop();
-                // If inside a finally block, the new return overrides any pending return
-                frame.pending_jump = None;
-                let mut found_finally = false;
-                while let Some(block) = frame.block_stack.last() {
-                    if block.kind() == BlockKind::Finally {
-                        let handler = block.handler();
-                        frame.block_stack.pop();
-                        frame.pending_return = Some(value.clone());
-                        frame.push(PyObject::none());
-                        frame.ip = handler;
-                        found_finally = true;
-                        break;
-                    } else {
-                        frame.block_stack.pop();
-                    }
-                }
-                if !found_finally {
-                    // Return immediately — new return value overrides any pending
+                if let Some(value) = Self::unwind_for_return(frame, value) {
                     return Ok(Some(value));
                 }
             }
@@ -61,45 +70,14 @@ impl VirtualMachine {
                         )))
                     }
                 };
-                // Handle finally blocks
-                frame.pending_jump = None;
-                let mut found_finally = false;
-                while let Some(block) = frame.block_stack.last() {
-                    if block.kind() == BlockKind::Finally {
-                        let handler = block.handler();
-                        frame.block_stack.pop();
-                        frame.pending_return = Some(val.clone());
-                        frame.push(PyObject::none());
-                        frame.ip = handler;
-                        found_finally = true;
-                        break;
-                    } else {
-                        frame.block_stack.pop();
-                    }
-                }
-                if !found_finally {
+                if let Some(val) = Self::unwind_for_return(frame, val) {
                     return Ok(Some(val));
                 }
             }
             Opcode::LoadConstReturnValue => {
                 let frame = self.vm_frame();
                 let val = frame.constant_cache[instr.arg as usize].clone();
-                frame.pending_jump = None;
-                let mut found_finally = false;
-                while let Some(block) = frame.block_stack.last() {
-                    if block.kind() == BlockKind::Finally {
-                        let handler = block.handler();
-                        frame.block_stack.pop();
-                        frame.pending_return = Some(val.clone());
-                        frame.push(PyObject::none());
-                        frame.ip = handler;
-                        found_finally = true;
-                        break;
-                    } else {
-                        frame.block_stack.pop();
-                    }
-                }
-                if !found_finally {
+                if let Some(val) = Self::unwind_for_return(frame, val) {
                     return Ok(Some(val));
                 }
             }

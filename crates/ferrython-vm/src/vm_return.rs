@@ -1,6 +1,6 @@
 //! Fast return opcode helpers for the VM dispatch loop.
 
-use crate::frame::{BlockKind, Frame};
+use crate::frame::Frame;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::PyException;
 use ferrython_core::object::{PyObjectPayload, PyObjectRef};
@@ -24,11 +24,7 @@ pub(crate) fn try_fast_return(frame: &mut Frame, instr: Instruction) -> FastRetu
 
 #[inline(always)]
 fn return_value(frame: &mut Frame) -> FastReturnResult {
-    if frame
-        .block_stack
-        .iter()
-        .any(|b| b.kind() == BlockKind::Finally)
-    {
+    if !frame.block_stack.is_empty() {
         return FastReturnResult::Fallback;
     }
 

@@ -1,8 +1,24 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T20:23:47+08:00
+Last updated: 2026-05-30T20:50:44+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `test_with` 全绿并顺手大幅补齐 `contextlib` 表面行为：
+  - `contextlib._GeneratorContextManager.__exit__` 补齐 PEP 479 后 `RuntimeError.__cause__ is value` 的 StopIteration 身份判断，避免 `with` body 内主动抛出的 StopIteration 被 contextmanager 错误吞掉。
+  - `_GeneratorContextManager` 现在复制被装饰函数 docstring，`contextmanager()` 使用 `functools.wraps()` 保留 `__name__`、`__doc__` 和自定义属性，并在 `__enter__()` 后释放保存的 positional/keyword 参数引用。
+  - `ContextDecorator.__call__()` 使用默认参数绑定绕过当前闭包解析缺口，修复 context manager 作为装饰器时的 `free variable 'func'` 错误。
+  - VM return unwind 现在会在 `with` block 内 `return` 时跳转到 with cleanup handler，且 fast return path 遇到任意 block stack 都回退完整路径，保证 `__exit__` 被调用。
+  - `ExitStack` 补齐 `enter_context()`、`push()`、`callback()`、`callback=` deprecated keyword 路径、`pop_all()` 等基础 callback 形状，内部保存 `(is_sync, callback)`，并保留 context manager bound `__exit__`。
+  - `AbstractContextManager` 标记 `__exit__` 为 abstract，并把结构化 `issubclass(..., AbstractContextManager)` 纳入 ABC structural 检查；`threading.RLock` 和 `threading.Condition` 补齐 `_is_owned()`。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-cli`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop` -> `run=51 pass=51 fail=0 err=0 skip=0`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib` -> `run=78 pass=73 fail=5 err=0 skip=0`
+  - 剩余 5 个 `test_contextlib` 失败均集中在 exception `__context__` 链；其中 nested `with` reference test 也失败，说明下一步应修 VM exception chaining，而不是继续在 `ExitStack` 层补丁。
 
 - 已推进 `cmath` 兼容修复并顺手修正 core complex abs：
   - `cmath` 补齐 CPython 3.8 常用函数表：`acos`/`acosh`/`asin`/`asinh`/`atan`/`atanh`、`sinh`/`cosh`/`tanh`、`log10` 和 `isclose`。

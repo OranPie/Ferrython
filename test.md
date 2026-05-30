@@ -1,8 +1,21 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T20:23:47+08:00
+Last updated: 2026-05-30T20:50:44+08:00
 
 ## Current batch
+
+- `test_with`
+  - Before this batch: `run=49 pass=47 fail=2 err=0 skip=0`.
+  - After contextmanager/with-cleanup fixes: `run=49 pass=49 fail=0 err=0 skip=0`.
+  - Fixed traits: `@contextmanager` no longer suppresses `StopIteration` raised from inside the `with` body after PEP 479 wraps the generator throw into `RuntimeError`; explicit `StopIteration("from with")` and `raise next(iter([]))` both propagate as CPython expects.
+  - Adjacent validation: `test_generator_stop` remains green at `run=2 pass=2 fail=0 err=0 skip=0`, so generator-body StopIteration wrapping stayed intact.
+
+- `test_contextlib`
+  - Before this batch: recorded candidate baseline was `run=78 pass=53 fail=12 err=13 skip=0`.
+  - After contextlib surface and with-return cleanup work: `run=78 pass=73 fail=5 err=0 skip=0`.
+  - Fixed traits: `contextmanager()` preserves function metadata/custom attributes via `wraps`; generator context manager instances expose the wrapped docstring and release saved call arguments after `__enter__`; `ContextDecorator` works around the current closure/default binding issue; `ExitStack` handles context-manager entry, push, callback metadata, deprecated `callback=` keyword, `pop_all`, and instance-bypass shape; `AbstractContextManager` is abstract and supports structural subclassing; `RLock._is_owned()` and `Condition._is_owned()` exist for lock context tests.
+  - VM fix: `return` inside `with` now runs `__exit__`; the fast return path falls back whenever the frame has active block-stack cleanup.
+  - Remaining failures: `TestExitStack.test_dont_reraise_RuntimeError`, `test_exit_exception_chaining`, `test_exit_exception_chaining_reference`, `test_exit_exception_with_correct_context`, and `test_exit_exception_with_existing_context`. All are exception `__context__` chain correctness; the nested-with reference failure shows the next fix belongs in VM exception chaining, not in `contextlib.ExitStack`.
 
 - `test_cmath`
   - Before this batch: module load failed because `cmath.acos` was missing.
