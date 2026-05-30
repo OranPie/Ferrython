@@ -340,6 +340,34 @@ fn unicode_error_to_string(ei: &ExceptionInstanceData) -> Option<String> {
     }
 }
 
+fn slice_part_repr(part: &Option<PyObjectRef>) -> String {
+    part.as_ref()
+        .map(|obj| obj.repr())
+        .unwrap_or_else(|| "None".to_string())
+}
+
+fn deque_repr(obj: &PyObjectRef, inst: &InstanceData) -> Option<String> {
+    let attrs = inst.attrs.read();
+    let data = attrs.get("_data")?;
+    let PyObjectPayload::List(list) = &data.payload else {
+        return Some("deque([])".to_string());
+    };
+    let ptr = PyObjectRef::as_ptr(obj) as usize;
+    if !repr_enter(ptr) {
+        return Some("deque([...])".to_string());
+    }
+    let items: Vec<String> = list.read().iter().map(|item| item.repr()).collect();
+    let joined = items.join(", ");
+    let result = match attrs.get("__maxlen__") {
+        Some(maxlen) if !matches!(&maxlen.payload, PyObjectPayload::None) => {
+            format!("deque([{}], maxlen={})", joined, maxlen.py_to_string())
+        }
+        _ => format!("deque([{}])", joined),
+    };
+    repr_leave(ptr);
+    Some(result)
+}
+
 pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
     match &obj.payload {
         PyObjectPayload::None => "None".into(),
@@ -406,6 +434,12 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 format_collection("(", ")", items)
             }
         }
+        PyObjectPayload::Slice(sd) => format!(
+            "slice({}, {}, {})",
+            slice_part_repr(&sd.start),
+            slice_part_repr(&sd.stop),
+            slice_part_repr(&sd.step)
+        ),
         PyObjectPayload::Set(m) => {
             let m = m.read();
             if m.is_empty() {
@@ -608,15 +642,9 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 }
                 // Deque → display as deque([items])
                 if attrs.contains_key("__deque__") {
-                    if let Some(data) = attrs.get("_data") {
-                        let maxlen = attrs.get("__maxlen__");
-                        let items_str = data.py_to_string();
-                        return match maxlen {
-                            Some(ml) if !matches!(&ml.payload, PyObjectPayload::None) => {
-                                format!("deque({}, maxlen={})", items_str, ml.py_to_string())
-                            }
-                            _ => format!("deque({})", items_str),
-                        };
+                    drop(attrs);
+                    if let Some(text) = deque_repr(obj, inst) {
+                        return text;
                     }
                 }
             }
@@ -901,6 +929,11 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return bv.repr();
+            }
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(text) = deque_repr(obj, inst) {
+                    return text;
+                }
             }
             // Dict subclass: repr like a dict
             if let Some(ref ds) = inst.dict_storage {

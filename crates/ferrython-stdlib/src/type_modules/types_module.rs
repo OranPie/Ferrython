@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 fn compare_namespaces(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
     match (&a.payload, &b.payload) {
@@ -339,10 +340,30 @@ pub fn create_types_module() -> PyObjectRef {
             (
                 "DynamicClassAttribute",
                 make_builtin(|args| {
-                    if args.is_empty() {
-                        return Ok(PyObject::none());
-                    }
-                    Ok(args[0].clone())
+                    let prop_arg = |idx: usize| {
+                        args.get(idx).and_then(|arg| {
+                            if matches!(&arg.payload, PyObjectPayload::None) {
+                                None
+                            } else {
+                                Some(arg.clone())
+                            }
+                        })
+                    };
+                    let fget = prop_arg(0);
+                    let fset = prop_arg(1);
+                    let fdel = prop_arg(2);
+                    let doc = prop_arg(3).or_else(|| {
+                        ferrython_core::object::property_doc_from_getter(fget.as_ref())
+                    });
+                    Ok(PyObjectRef::new(PyObject {
+                        payload: PyObjectPayload::Property(Box::new(PropertyData {
+                            fget,
+                            fset,
+                            fdel,
+                            doc: PyCell::new(doc),
+                            doc_from_getter: Cell::new(args.len() < 4),
+                        })),
+                    }))
                 }),
             ),
             (

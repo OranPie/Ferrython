@@ -448,7 +448,7 @@ pub fn property_set_doc(obj: &PyObjectRef, value: PyObjectRef) -> PyResult<()> {
     }
 }
 
-fn index_to_i128_unbounded(obj: &PyObjectRef) -> PyResult<i128> {
+pub(in crate::object) fn index_to_i128_unbounded(obj: &PyObjectRef) -> PyResult<i128> {
     match obj.to_index()? {
         PyInt::Small(n) => Ok(n as i128),
         PyInt::Big(n) => Ok(n.to_i128().unwrap_or_else(|| {

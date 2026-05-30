@@ -124,8 +124,22 @@ fn instance_class(obj: &PyObjectRef) -> Option<PyObjectRef> {
 
 fn instance_defines_eq_or_ne(obj: &PyObjectRef) -> bool {
     if let PyObjectPayload::Instance(inst) = &obj.payload {
-        lookup_in_class_mro(&inst.class, "__eq__").is_some()
-            || lookup_in_class_mro(&inst.class, "__ne__").is_some()
+        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+            if cd.namespace.read().contains_key("__eq__")
+                || cd.namespace.read().contains_key("__ne__")
+            {
+                return true;
+            }
+            for base in &cd.mro {
+                if let PyObjectPayload::Class(base_cd) = &base.payload {
+                    let ns = base_cd.namespace.read();
+                    if ns.contains_key("__eq__") || ns.contains_key("__ne__") {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     } else {
         false
     }
@@ -398,6 +412,25 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let a_snapshot = a_items.read().clone();
             let b_snapshot = b_items.read().clone();
             return compare_sequence_items(&a_snapshot, &b_snapshot, op);
+        }
+        (PyObjectPayload::Slice(a_slice), PyObjectPayload::Slice(b_slice)) => {
+            if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+                return Err(PyException::type_error(format!(
+                    "'{}' not supported between instances of 'slice' and 'slice'",
+                    compare_op_symbol(op)
+                )));
+            }
+            let a_items = [
+                a_slice.start.clone().unwrap_or_else(PyObject::none),
+                a_slice.stop.clone().unwrap_or_else(PyObject::none),
+                a_slice.step.clone().unwrap_or_else(PyObject::none),
+            ];
+            let b_items = [
+                b_slice.start.clone().unwrap_or_else(PyObject::none),
+                b_slice.stop.clone().unwrap_or_else(PyObject::none),
+                b_slice.step.clone().unwrap_or_else(PyObject::none),
+            ];
+            return compare_sequence_items(&a_items, &b_items, op);
         }
         (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_))
         | (PyObjectPayload::Dict(_), PyObjectPayload::MappingProxy(_))

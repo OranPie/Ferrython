@@ -10,7 +10,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::PyInt;
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use std::rc::Rc;
 
 use super::partial_cmp_for_sort;
@@ -23,6 +23,26 @@ fn sequence_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<b
         return Ok(true);
     }
     Ok(target.compare(item, CompareOp::Eq)?.is_truthy())
+}
+
+fn sequence_index_bound(arg: Option<&PyObjectRef>, len: usize, default: usize) -> PyResult<usize> {
+    let Some(arg) = arg else {
+        return Ok(default);
+    };
+    let index = arg.to_index()?;
+    Ok(match index {
+        PyInt::Small(raw) => {
+            let len_i = len as i64;
+            let adjusted = if raw < 0 {
+                len_i.saturating_add(raw)
+            } else {
+                raw
+            };
+            adjusted.clamp(0, len_i) as usize
+        }
+        PyInt::Big(big) if big.is_negative() => 0,
+        PyInt::Big(_) => len,
+    })
 }
 
 pub(crate) fn call_list_method(
@@ -667,7 +687,9 @@ pub(crate) fn call_tuple_method(
         "index" => {
             check_args_min("index", args, 1)?;
             let target = &args[0];
-            for (i, x) in items.iter().enumerate() {
+            let start = sequence_index_bound(args.get(1), items.len(), 0)?;
+            let stop = sequence_index_bound(args.get(2), items.len(), items.len())?;
+            for (i, x) in items.iter().enumerate().take(stop).skip(start) {
                 if sequence_item_matches(x, target)? {
                     return Ok(PyObject::int(i as i64));
                 }
@@ -693,7 +715,11 @@ pub(crate) fn call_tuple_method(
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;
-            let idx = index_to_i64(&args[0])?;
+            if matches!(&args[0].payload, PyObjectPayload::Slice(_)) {
+                return receiver.get_item(&args[0]);
+            }
+            let idx = index_to_i64(&args[0])
+                .map_err(|_| PyException::type_error("tuple indices must be integers or slices"))?;
             let len = items.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
             if actual < 0 || actual >= len {

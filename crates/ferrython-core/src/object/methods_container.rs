@@ -377,7 +377,7 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                 if e.kind == crate::error::ExceptionKind::OverflowError {
                     PyException::index_error(e.message)
                 } else {
-                    e
+                    PyException::type_error("tuple indices must be integers or slices")
                 }
             })?;
             let len = items.len() as i64;

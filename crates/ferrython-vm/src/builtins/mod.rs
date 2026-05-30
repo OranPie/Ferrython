@@ -364,6 +364,7 @@ pub fn call_method(
         PyObjectPayload::Float(f) => call_float_method(*f, method, args),
         PyObjectPayload::Tuple(items) => call_tuple_method(receiver, items, method, args),
         PyObjectPayload::Range(rd) => call_range_method(receiver, rd, method, args),
+        PyObjectPayload::Slice(sd) => call_slice_method(receiver, sd, method, args),
         PyObjectPayload::Set(m) => call_set_method(m, method, args),
         PyObjectPayload::FrozenSet(m) => call_frozenset_method(m, method, args),
         PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
@@ -375,6 +376,51 @@ pub fn call_method(
         _ => Err(PyException::attribute_error(format!(
             "'{}' object has no attribute '{}'",
             receiver.type_name(),
+            method
+        ))),
+    }
+}
+
+fn slice_part_repr(part: &Option<PyObjectRef>) -> String {
+    part.as_ref()
+        .map(|obj| obj.repr())
+        .unwrap_or_else(|| "None".to_string())
+}
+
+fn call_slice_method(
+    receiver: &PyObjectRef,
+    sd: &ferrython_core::object::SliceData,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    match method {
+        "__repr__" | "__str__" => Ok(PyObject::str_val(CompactString::from(format!(
+            "slice({}, {}, {})",
+            slice_part_repr(&sd.start),
+            slice_part_repr(&sd.stop),
+            slice_part_repr(&sd.step)
+        )))),
+        "__eq__" | "__ne__" => {
+            if args.len() != 1 {
+                return Ok(PyObject::not_implemented());
+            }
+            let equal = if let PyObjectPayload::Slice(other) = &args[0].payload {
+                let _ = other;
+                receiver
+                    .compare(&args[0], ferrython_core::object::CompareOp::Eq)?
+                    .is_truthy()
+            } else {
+                false
+            };
+            Ok(PyObject::bool_val(if method == "__eq__" {
+                equal
+            } else {
+                !equal
+            }))
+        }
+        "__hash__" => Err(PyException::type_error("unhashable type: 'slice'")),
+        _ => Err(PyException::attribute_error(format!(
+            "'slice' object has no attribute '{}'",
             method
         ))),
     }

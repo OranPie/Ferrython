@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::PyResult;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::PyObjectRef;
 
 use crate::VirtualMachine;
@@ -62,7 +62,15 @@ impl VirtualMachine {
             "bool" => {
                 return self.builtin_bool_kw(func, pos_args, &kwargs);
             }
-            "float" | "str" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
+            "float" | "str" | "bytes" | "bytearray" | "list" | "set" | "frozenset" => {
+                return self.call_object(func, pos_args);
+            }
+            "tuple" => {
+                if !kwargs.is_empty() {
+                    return Err(PyException::type_error(
+                        "tuple() takes no keyword arguments",
+                    ));
+                }
                 return self.call_object(func, pos_args);
             }
             "complex" => {

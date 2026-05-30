@@ -818,7 +818,7 @@ pub(in crate::object) fn resolve_slice_i128(
     let normalize = |index: i128| {
         if index < 0 {
             let lower = if step_val < 0 { -1 } else { 0 };
-            if index <= -len {
+            if index < -len {
                 lower
             } else {
                 (len + index).max(lower)

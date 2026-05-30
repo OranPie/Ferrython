@@ -27,6 +27,9 @@ impl VirtualMachine {
                 if args.is_empty() {
                     return Ok(PyObject::tuple(vec![]));
                 }
+                if matches!(&args[0].payload, PyObjectPayload::Tuple(_)) {
+                    return Ok(args[0].clone());
+                }
                 let items = self.collect_iterable(&args[0])?;
                 Ok(PyObject::tuple(items))
             }

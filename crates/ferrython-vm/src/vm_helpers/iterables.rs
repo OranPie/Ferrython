@@ -141,6 +141,12 @@ impl VirtualMachine {
                 Ok(items)
             }
             PyObjectPayload::Instance(inst) => {
+                if obj.get_attr("__next__").is_some() && obj.get_attr("__iter__").is_none() {
+                    return Err(PyException::type_error(format!(
+                        "'{}' object is not iterable",
+                        obj.type_name()
+                    )));
+                }
                 if inst.attrs.read().contains_key("__chainmap__") {
                     if let Some(maps_obj) = obj.get_attr("maps") {
                         let maps = maps_obj.to_list()?;
@@ -195,6 +201,12 @@ impl VirtualMachine {
                         return Ok(items);
                     }
                     // Otherwise, it's an instance with __next__
+                    if iter_obj.get_attr("__next__").is_none() {
+                        return Err(PyException::type_error(format!(
+                            "iter() returned non-iterator of type '{}'",
+                            iter_obj.type_name()
+                        )));
+                    }
                     let mut items = Vec::new();
                     loop {
                         if let Some(next_method) = iter_obj.get_attr("__next__") {

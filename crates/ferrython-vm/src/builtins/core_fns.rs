@@ -370,11 +370,15 @@ pub(super) fn builtin_slice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         )),
         1 => Ok(PyObject::slice(None, to_opt(&args[0]), None)),
         2 => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), None)),
-        _ => Ok(PyObject::slice(
+        3 => Ok(PyObject::slice(
             to_opt(&args[0]),
             to_opt(&args[1]),
             to_opt(&args[2]),
         )),
+        n => Err(PyException::type_error(format!(
+            "slice expected at most 3 arguments, got {}",
+            n
+        ))),
     }
 }
 

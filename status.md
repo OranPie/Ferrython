@@ -1588,6 +1588,29 @@ Last updated: 2026-05-30T13:36:41+08:00
     - `git diff --check`
     - `timeout 30s cargo test --workspace` 在 30s 内超时于编译阶段，未产出 Rust test failure。
 
+- 2026-05-30 deque / tuple / slice focused 兼容与性能批次：
+  - `collections.deque`：
+    - Python fallback 的 `extend()`、`extendleft()` 和 maxlen trim 改为批量 list 操作，避免逐个 `append`/`insert(0)`/`pop(0)`。
+    - Rust deque marker path 的 maxlen trim 改为 `drain`/`truncate`，`extendleft()` 改为一次性 prepend，降低大输入的前端插入成本。
+    - core `repr()`/`str()` 识别 deque marker，修复 maxlen、weakref/subclass 和递归 repr 场景；`test_deque` 从 `pass=69 fail=3 err=4` 提升到 `pass=72 fail=1 err=3`。
+  - `tuple`：
+    - `tuple(existing_tuple)` 返回原对象；keyword 调用拒绝关键字参数。
+    - tuple bound `__getitem__` 支持 slice，非 int/slice index 报错文案对齐；`tuple.index()` 支持 start/stop 归一化和超大整数边界。
+    - tuple subclass 与 tuple 的比较走 `__builtin_value__`，修复 seq_tests add/mul 子类比较；`test_tuple` 从 `pass=23 fail=7 err=1` 提升到 `pass=30 fail=1 err=0`，剩余为 CPython exact tuple hash。
+  - `slice`：
+    - `slice` 补齐 `repr`、`__hash__ = None`、`__eq__`/`__ne__` 方法路径和 core `repr()` 路径。
+    - `slice.indices()` 使用未截断 index 转换，并修复负步长 `None` stop 的 public `-1` 结果；`test_slice` 当前 `pass=6 fail=2 err=1`，剩余为 slice GC、pickle 和一个 huge range endpoint 比较。
+  - `types.DynamicClassAttribute`：
+    - 构造结果从裸函数改为 property payload，测试从 load error 变为可运行 `run=12 pass=5 fail=4 err=2 skip=1`；剩余是完整 subclass/property doc/abstract behavior。
+  - 新增 `test.md`，记录本批每个测试组的结果、错误特征和后续候选。
+  - 验证：
+    - `cargo check -p ferrython-cli`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice test_tuple test_deque`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_tuple`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_slice test_tuple test_deque test_dynamicclassattribute test_codeop`（run=140 pass=115 fail=10 err=7 skip=8，剩余特征已写入 `test.md`）
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

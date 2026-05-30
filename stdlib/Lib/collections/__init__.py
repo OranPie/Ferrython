@@ -254,13 +254,15 @@ class deque:
 
     def _trim_left(self):
         if self._maxlen is not None:
-            while len(self._data) > self._maxlen:
-                self._data.pop(0)
+            excess = len(self._data) - self._maxlen
+            if excess > 0:
+                del self._data[:excess]
 
     def _trim_right(self):
         if self._maxlen is not None:
-            while len(self._data) > self._maxlen:
-                self._data.pop()
+            excess = len(self._data) - self._maxlen
+            if excess > 0:
+                del self._data[self._maxlen:]
 
     def append(self, x):
         self._data.append(x)
@@ -286,15 +288,14 @@ class deque:
 
     def extend(self, iterable):
         items = list(iterable)
-        for item in items:
-            self._data.append(item)
+        self._data.extend(items)
         self._trim_left()
         self._bump()
 
     def extendleft(self, iterable):
         items = list(iterable)
-        for item in items:
-            self._data.insert(0, item)
+        if items:
+            self._data = list(reversed(items)) + self._data
         self._trim_right()
         self._bump()
 

@@ -139,16 +139,17 @@ pub(crate) fn call_deque_method(
     let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
-            while v.len() > ml {
-                v.remove(0); // trim from left when appending to right
+            let excess = v.len().saturating_sub(ml);
+            if excess > 0 {
+                v.drain(0..excess);
             }
         }
     };
     let enforce_maxlen_left = |list: &PyCell<Vec<PyObjectRef>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
-            while v.len() > ml {
-                v.pop(); // trim from right when appending to left
+            if v.len() > ml {
+                v.truncate(ml);
             }
         }
     };
@@ -271,9 +272,10 @@ pub(crate) fn call_deque_method(
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
-                // CPython: appendleft each item in order — insert(0) naturally reverses
-                for item in items.into_iter() {
-                    v.insert(0, item);
+                if !items.is_empty() {
+                    let mut new_items: Vec<PyObjectRef> = items.into_iter().rev().collect();
+                    new_items.extend(v.iter().cloned());
+                    *v = new_items;
                 }
                 drop(v);
                 enforce_maxlen_left(list);

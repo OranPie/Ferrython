@@ -51,6 +51,7 @@ fn builtin_value_compare_operands(
                     | PyObjectPayload::Bool(_)
                     | PyObjectPayload::Float(_)
                     | PyObjectPayload::Str(_)
+                    | PyObjectPayload::Tuple(_)
             ) =>
         {
             Some((left, b.clone()))
@@ -62,6 +63,7 @@ fn builtin_value_compare_operands(
                     | PyObjectPayload::Bool(_)
                     | PyObjectPayload::Float(_)
                     | PyObjectPayload::Str(_)
+                    | PyObjectPayload::Tuple(_)
             ) =>
         {
             Some((a.clone(), right))
@@ -522,6 +524,23 @@ impl VirtualMachine {
                                 return Ok(None);
                             }
                         }
+                    }
+                }
+            }
+            if cmp == 2 || cmp == 3 {
+                if let Some((left, right)) = builtin_value_compare_operands(&a, &b) {
+                    if matches!(
+                        (&left.payload, &right.payload),
+                        (PyObjectPayload::Tuple(_), PyObjectPayload::Tuple(_))
+                    ) {
+                        let result = left.compare(&right, CompareOp::Eq)?;
+                        let val = if cmp == 2 {
+                            result.is_truthy()
+                        } else {
+                            !result.is_truthy()
+                        };
+                        self.vm_push(PyObject::bool_val(val));
+                        return Ok(None);
                     }
                 }
             }

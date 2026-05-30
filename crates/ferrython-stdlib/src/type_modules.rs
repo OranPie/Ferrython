@@ -4,8 +4,8 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min, make_builtin, make_module, new_fx_hashkey_map, CompareOp,
-    FxHashKeyFlatMap, FxHashKeyMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef,
+    FxHashKeyFlatMap, FxHashKeyMap, PropertyData, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;

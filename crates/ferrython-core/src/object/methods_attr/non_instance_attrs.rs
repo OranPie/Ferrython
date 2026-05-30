@@ -28,6 +28,8 @@ pub(super) fn non_instance_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjec
             "stop" => Some(sd.stop.clone().unwrap_or_else(PyObject::none)),
             "step" => Some(sd.step.clone().unwrap_or_else(PyObject::none)),
             "__class__" => Some(PyObject::builtin_type(CompactString::from("slice"))),
+            "__hash__" => Some(PyObject::none()),
+            "__repr__" | "__str__" | "__eq__" | "__ne__" => Some(bound_builtin(obj, name)),
             "indices" => {
                 let s_start = sd.start.clone();
                 let s_stop = sd.stop.clone();
@@ -38,13 +40,22 @@ pub(super) fn non_instance_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjec
                             "slice.indices() requires a length argument",
                         ));
                     }
-                    let length = index_to_i64(&args[0])
+                    let length = index_to_i128_unbounded(&args[0])
                         .map_err(|_| PyException::type_error("length must be an integer"))?;
                     if length < 0 {
                         return Err(PyException::value_error("length should not be negative"));
                     }
                     let (start_val, stop_val, step_val) =
-                        resolve_slice_i128(&s_start, &s_stop, &s_step, length as i128)?;
+                        resolve_slice_i128(&s_start, &s_stop, &s_step, length)?;
+                    let stop_is_none = s_stop
+                        .as_ref()
+                        .map(|s| matches!(s.payload, PyObjectPayload::None))
+                        .unwrap_or(true);
+                    let stop_val = if step_val < 0 && stop_is_none {
+                        -1
+                    } else {
+                        stop_val
+                    };
                     let int_obj = |value: i128| {
                         i64::try_from(value)
                             .map(PyObject::int)

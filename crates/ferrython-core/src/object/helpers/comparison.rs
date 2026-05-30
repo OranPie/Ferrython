@@ -118,6 +118,25 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             }
             a.len().partial_cmp(&b.len())
         }
+        (PyObjectPayload::Slice(a), PyObjectPayload::Slice(b)) => {
+            let a_items = [
+                a.start.clone().unwrap_or_else(PyObject::none),
+                a.stop.clone().unwrap_or_else(PyObject::none),
+                a.step.clone().unwrap_or_else(PyObject::none),
+            ];
+            let b_items = [
+                b.start.clone().unwrap_or_else(PyObject::none),
+                b.stop.clone().unwrap_or_else(PyObject::none),
+                b.step.clone().unwrap_or_else(PyObject::none),
+            ];
+            for (x, y) in a_items.iter().zip(b_items.iter()) {
+                match partial_cmp_objects(x, y) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b {
                 Some(std::cmp::Ordering::Equal)
