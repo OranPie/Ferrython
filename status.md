@@ -1,8 +1,23 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T16:03:35+08:00
+Last updated: 2026-05-30T17:08:19+08:00
 
 ## CPython 兼容修复进度
+
+- 已推进 `cmath` 兼容修复并顺手修正 core complex abs：
+  - `cmath` 补齐 CPython 3.8 常用函数表：`acos`/`acosh`/`asin`/`asinh`/`atan`/`atanh`、`sinh`/`cosh`/`tanh`、`log10` 和 `isclose`。
+  - 复数参数转换不再把不支持的对象静默当作 `0j`；现在支持内置 numeric、Decimal/Fraction 实数抽取、用户 `__complex__`、以及 `__index__` fallback。
+  - `log()`/`log10()` 对零值域错误、二参数 complex division 和 `log(1.0, 0.5)` 的 signed-zero 结果更接近 CPython。
+  - 极坐标路径使用 `hypot()`；`rect()`、三角/双曲/反三角函数覆盖实数对照和基础复数公式。
+  - core `abs(complex)` 改用 `hypot()`，避免有限极大复数先平方变 `nan`，并在真实结果溢出时抛 `OverflowError`。
+  - 补入 `stdlib/Lib/test/cmath_testcases.txt`，让 vendored `test_cmath` 不再因缺 CPython 资源文件在 `setUp()` 阶段整体报错。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-cli`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_cmath` -> `run=32 pass=31 fail=0 err=0 skip=1`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_pow` -> `run=30 pass=30 fail=0 err=0 skip=0`
 
 - 已推进 `deque` / `slice` / `tuple` / `codeop` 小批兼容与 deque 热点优化：
   - `tools/run_cpython_tests.py` 增加窄范围 Ferrython unneeded skip：`test_tuple.TupleTest.test_hash_exact` 为 CPython 精确 tuple hash 常量，`test_slice.SliceTest.test_cycle` 为 CPython GC cycle timing 实现细节。

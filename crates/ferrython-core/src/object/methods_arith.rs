@@ -999,7 +999,11 @@ pub(super) fn py_abs(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Float(f) => Ok(PyObject::float(f.abs())),
         PyObjectPayload::Bool(b) => Ok(PyObject::int(*b as i64)),
         PyObjectPayload::Complex { real, imag } => {
-            Ok(PyObject::float((real * real + imag * imag).sqrt()))
+            let result = real.hypot(*imag);
+            if result.is_infinite() && real.is_finite() && imag.is_finite() {
+                return Err(PyException::overflow_error("absolute value too large"));
+            }
+            Ok(PyObject::float(result))
         }
         _ => Err(PyException::type_error(format!(
             "bad operand type for abs(): '{}'",

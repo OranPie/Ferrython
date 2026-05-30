@@ -1,8 +1,20 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T16:39:03+08:00
+Last updated: 2026-05-30T17:08:19+08:00
 
 ## Current batch
+
+- `test_cmath`
+  - Before this batch: module load failed because `cmath.acos` was missing.
+  - After completing the cmath function family and adding the missing CPython-format testcase resource: `run=32 pass=31 fail=0 err=0 skip=1`.
+  - Fixed traits: module exposes `acos`/`acosh`/`asin`/`asinh`/`atan`/`atanh`, `sinh`/`cosh`/`tanh`, `log10`, and `isclose`; cmath calls accept Decimal/Fraction real values, `__complex__`, `__float__`, and `__index__` inputs; invalid objects raise `TypeError` instead of becoming `0j`; `log(1.0, 0.5)` preserves signed zero; `polar()` uses `hypot()`.
+  - Support fix: added `stdlib/Lib/test/cmath_testcases.txt` so `test.test_math.test_file` resolves during `test_cmath.setUp()`.
+  - Related core fix: `abs(complex)` now uses `hypot()` and raises `OverflowError` for finite complex values whose magnitude overflows, matching the `test_abs` / `test_abs_overflows` expectations.
+
+- Candidate scan notes after `test_cmath`
+  - Passing/currently green: `test_time`, `test_calendar`, `test_heapq`, `test_bisect`, `test_operator`, `test_reprlib`, `test_copyreg`, `test_complex`, plus previous `test_pow`.
+  - Not present in current vendored set: `test_stat`, `test_weakrefset`, `test_structseq`, `test_math`.
+  - Not small current targets: `test_collections` (`run=81 pass=59 fail=16 err=4 skip=2`, ABC/mixin/iterator and recursion gaps), `test_contextlib` (`run=78 pass=53 fail=12 err=13 skip=0`, closure/contextmanager/ExitStack/threading gaps), `test_types` currently stack-overflows and needs a separate crash triage.
 
 - `test_deque`
   - Before this batch: `run=79 pass=69 fail=3 err=4 skip=3`, around 14-16s.
@@ -74,3 +86,15 @@ Last updated: 2026-05-30T16:39:03+08:00
 - `target/debug/ferrython -c '<UserString hash smoke>'`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakset`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_time`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_calendar`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_heapq`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_bisect`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_operator`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_collections`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_types`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_cmath`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copyreg`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_pow`
