@@ -48,7 +48,23 @@ impl VirtualMachine {
                                 } else {
                                     vec![args[0].clone()]
                                 };
-                            return self.call_object(method, ca).map(Some);
+                            let result = self.call_object(method, ca)?;
+                            if matches!(&result.payload, PyObjectPayload::Int(_))
+                                || matches!(&result.payload, PyObjectPayload::Bool(_))
+                            {
+                                return Ok(Some(result));
+                            }
+                            if let Some(bv) = Self::get_builtin_value(&result) {
+                                if matches!(&bv.payload, PyObjectPayload::Int(_))
+                                    || matches!(&bv.payload, PyObjectPayload::Bool(_))
+                                {
+                                    return Ok(Some(bv));
+                                }
+                            }
+                            return Err(PyException::type_error(format!(
+                                "__int__ returned non-int (type {})",
+                                result.type_name()
+                            )));
                         }
                     }
                 }
@@ -71,7 +87,19 @@ impl VirtualMachine {
                                 } else {
                                     vec![args[0].clone()]
                                 };
-                            return self.call_object(method, ca).map(Some);
+                            let result = self.call_object(method, ca)?;
+                            if matches!(&result.payload, PyObjectPayload::Float(_)) {
+                                return Ok(Some(result));
+                            }
+                            if let Some(bv) = Self::get_builtin_value(&result) {
+                                if matches!(&bv.payload, PyObjectPayload::Float(_)) {
+                                    return Ok(Some(bv));
+                                }
+                            }
+                            return Err(PyException::type_error(format!(
+                                "__float__ returned non-float (type {})",
+                                result.type_name()
+                            )));
                         }
                     }
                 }

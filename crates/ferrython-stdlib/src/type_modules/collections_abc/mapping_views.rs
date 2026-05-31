@@ -126,6 +126,9 @@ pub(super) fn add_mapping_view_methods(
                 }
                 let hk = pair[0].to_hashable_key()?;
                 if let Some(v) = map.read().get(&hk) {
+                    if PyObjectRef::ptr_eq(v, &pair[1]) {
+                        return Ok(PyObject::bool_val(true));
+                    }
                     return Ok(PyObject::bool_val(
                         v.compare(&pair[1], CompareOp::Eq)
                             .map(|r| r.is_truthy())
@@ -169,10 +172,20 @@ pub(super) fn add_mapping_view_methods(
                 .get_attr("_mapping")
                 .or_else(|| args[0].get_attr("mapping"))
                 .ok_or_else(|| PyException::attribute_error("_mapping"))?;
-            Ok(PyObject::bool_val(mapping.to_list()?.iter().any(|v| {
-                v.compare(&args[1], CompareOp::Eq)
-                    .map(|r| r.is_truthy())
-                    .unwrap_or(false)
+            let values = match &mapping.payload {
+                PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+                    map.read().values().cloned().collect::<Vec<_>>()
+                }
+                PyObjectPayload::InstanceDict(attrs) => {
+                    attrs.read().values().cloned().collect::<Vec<_>>()
+                }
+                _ => mapping.to_list()?,
+            };
+            Ok(PyObject::bool_val(values.iter().any(|v| {
+                PyObjectRef::ptr_eq(v, &args[1])
+                    || v.compare(&args[1], CompareOp::Eq)
+                        .map(|r| r.is_truthy())
+                        .unwrap_or(false)
             })))
         }),
     );

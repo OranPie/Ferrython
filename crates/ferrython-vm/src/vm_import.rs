@@ -584,6 +584,8 @@ class _AwaitableMixin:
         return self
 
 class _CoroutineMixin(_AwaitableMixin):
+    def throw(self, typ, val=None, tb=None):
+        raise StopIteration
     def close(self):
         try:
             self.throw(GeneratorExit)
@@ -646,6 +648,7 @@ class _MappingMixin:
         if result is NotImplemented:
             return result
         return not result
+    __reversed__ = None
 
 class _MutableMappingMixin(_MappingMixin):
     def pop(self, key, *args):
@@ -775,20 +778,40 @@ class _SetMixin:
     def __lt__(self, other):
         if not isinstance(other, Set):
             return NotImplemented
-        return len(self) < len(other) and self <= other
+        if len(self) >= len(other):
+            return False
+        for value in self:
+            if value not in other:
+                return False
+        return True
     def __ge__(self, other):
         if not isinstance(other, Set):
             return NotImplemented
-        return other <= self
+        for value in other:
+            if value not in self:
+                return False
+        return True
     def __gt__(self, other):
         if not isinstance(other, Set):
             return NotImplemented
-        return other < self
+        if len(self) <= len(other):
+            return False
+        for value in other:
+            if value not in self:
+                return False
+        return True
     def __eq__(self, other):
         if not isinstance(other, Set):
             return False
-        return len(self) == len(other) and self <= other
+        if len(self) != len(other):
+            return False
+        for value in self:
+            if value not in other:
+                return False
+        return True
     def __ne__(self, other):
+        if not isinstance(other, Set):
+            return NotImplemented
         return not self == other
     def __and__(self, other):
         if not isinstance(other, Iterable):

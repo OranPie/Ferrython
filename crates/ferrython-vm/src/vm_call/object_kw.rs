@@ -19,12 +19,14 @@ impl VirtualMachine {
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
                 let globals = pyfunc.globals.clone();
+                let defaults = pyfunc.defaults.read();
+                let kw_defaults = pyfunc.kw_defaults.read();
                 self.call_function_kw(
                     &pyfunc.code,
                     pos_args,
                     kwargs,
-                    &pyfunc.defaults,
-                    &pyfunc.kw_defaults,
+                    &defaults,
+                    &kw_defaults,
                     globals,
                     &pyfunc.closure,
                     &pyfunc.constant_cache,

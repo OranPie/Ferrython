@@ -90,6 +90,18 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                 func: builtin_object_delattr,
             }),
         ))),
+        ("type", "__setattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("type.__setattr__"),
+                func: builtin_type_setattr,
+            },
+        )))),
+        ("type", "__delattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
+            NativeFunctionData {
+                name: CompactString::from("type.__delattr__"),
+                func: builtin_type_delattr,
+            },
+        )))),
         ("type", "__new__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
             NativeFunctionData {
                 name: CompactString::from("type.__new__"),
@@ -532,4 +544,51 @@ pub(super) fn builtin_object_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
             obj.type_name()
         )))
     }
+}
+
+fn builtin_type_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() != 3 {
+        return Err(PyException::type_error(
+            "type.__setattr__() takes exactly 3 arguments",
+        ));
+    }
+    let attr_name = match &args[1].payload {
+        PyObjectPayload::Str(s) => s.to_compact_string(),
+        _ => return Err(PyException::type_error("attribute name must be string")),
+    };
+    let PyObjectPayload::Class(cd) = &args[0].payload else {
+        return Err(PyException::type_error(
+            "descriptor '__setattr__' requires a 'type' object",
+        ));
+    };
+    cd.namespace.write().insert(attr_name, args[2].clone());
+    cd.invalidate_cache();
+    Ok(PyObject::none())
+}
+
+fn builtin_type_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() != 2 {
+        return Err(PyException::type_error(
+            "type.__delattr__() takes exactly 2 arguments",
+        ));
+    }
+    let attr_name = match &args[1].payload {
+        PyObjectPayload::Str(s) => s.to_compact_string(),
+        _ => return Err(PyException::type_error("attribute name must be string")),
+    };
+    let PyObjectPayload::Class(cd) = &args[0].payload else {
+        return Err(PyException::type_error(
+            "descriptor '__delattr__' requires a 'type' object",
+        ));
+    };
+    if cd
+        .namespace
+        .write()
+        .shift_remove(attr_name.as_str())
+        .is_none()
+    {
+        return Err(PyException::attribute_error(attr_name.to_string()));
+    }
+    cd.invalidate_cache();
+    Ok(PyObject::none())
 }

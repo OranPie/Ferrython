@@ -63,12 +63,6 @@ impl VirtualMachine {
                     let result = self.call_object(method, ca)?;
                     match &result.payload {
                         PyObjectPayload::Float(f) => return Ok(Some(PyObject::complex(*f, 0.0))),
-                        PyObjectPayload::Int(n) => {
-                            return Ok(Some(PyObject::complex(n.to_f64(), 0.0)))
-                        }
-                        PyObjectPayload::Bool(b) => {
-                            return Ok(Some(PyObject::complex(if *b { 1.0 } else { 0.0 }, 0.0)))
-                        }
                         _ => {
                             return Err(PyException::type_error(format!(
                                 "__float__ returned non-float (type {})",
@@ -151,14 +145,18 @@ impl VirtualMachine {
                         vec![obj.clone()]
                     };
                     let res = self.call_object(method, ca)?;
-                    if matches!(
-                        &res.payload,
-                        PyObjectPayload::Complex { .. }
-                            | PyObjectPayload::Int(_)
-                            | PyObjectPayload::Float(_)
-                            | PyObjectPayload::Bool(_)
-                    ) {
-                        return Ok(res);
+                    match (*dunder, &res.payload) {
+                        ("__complex__", PyObjectPayload::Complex { .. })
+                        | ("__float__", PyObjectPayload::Float(_))
+                        | ("__index__", PyObjectPayload::Int(_))
+                        | ("__index__", PyObjectPayload::Bool(_)) => return Ok(res),
+                        _ => {
+                            return Err(PyException::type_error(format!(
+                                "{} returned invalid type '{}'",
+                                dunder,
+                                res.type_name()
+                            )))
+                        }
                     }
                 }
             }

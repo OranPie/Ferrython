@@ -187,6 +187,15 @@ pub(crate) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &args[0].payload {
         PyObjectPayload::Instance(inst) => Ok(inst.class.clone()),
         PyObjectPayload::ExceptionInstance(ei) => Ok(PyObject::exception_type(ei.kind)),
+        PyObjectPayload::DictKeys { .. } => {
+            Ok(PyObject::builtin_type(CompactString::from("dict_keys")))
+        }
+        PyObjectPayload::DictValues { .. } => {
+            Ok(PyObject::builtin_type(CompactString::from("dict_values")))
+        }
+        PyObjectPayload::DictItems { .. } => {
+            Ok(PyObject::builtin_type(CompactString::from("dict_items")))
+        }
         // For classes with a custom metaclass, return the metaclass
         PyObjectPayload::Class(cd) => {
             if let Some(ref mcs) = cd.metaclass {
@@ -235,7 +244,9 @@ fn builtin_type_create(
     };
     let mut mro = Vec::new();
     for base in &bases {
-        mro.push(base.clone());
+        if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object") {
+            mro.push(base.clone());
+        }
         if let PyObjectPayload::Class(cd) = &base.payload {
             for m in &cd.mro {
                 if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {

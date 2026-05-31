@@ -45,7 +45,8 @@ impl Compiler {
         let has_kw_defaults = !kw_defaults.is_empty();
         if has_kw_defaults {
             for (default, arg) in &kw_defaults {
-                let key_idx = self.add_const(ConstantValue::Str(arg.arg.clone()));
+                let key = CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref());
+                let key_idx = self.add_const(ConstantValue::Str(key));
                 self.emit_arg(Opcode::LoadConst, key_idx);
                 self.compile_expression(default.as_ref().unwrap())?;
             }
@@ -65,6 +66,29 @@ impl Compiler {
 
         // Set the first line number from the def statement location
         self.current_unit_mut().code.first_line_number = location.line;
+        let posonly_names: Vec<CompactString> = args
+            .posonlyargs
+            .iter()
+            .map(|arg| CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref()))
+            .collect();
+        let positional_names: Vec<CompactString> = args
+            .args
+            .iter()
+            .map(|arg| CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref()))
+            .collect();
+        let vararg_name = args
+            .vararg
+            .as_ref()
+            .map(|arg| CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref()));
+        let kwonly_names: Vec<CompactString> = args
+            .kwonlyargs
+            .iter()
+            .map(|arg| CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref()))
+            .collect();
+        let kwarg_name = args
+            .kwarg
+            .as_ref()
+            .map(|arg| CompactString::from(self.mangle_name(arg.arg.as_str()).as_ref()));
 
         // Set up argument info on the code object
         {
@@ -74,41 +98,41 @@ impl Compiler {
             unit.code.kwonlyarg_count = args.kwonlyargs.len() as u32;
 
             // Add parameters as varnames
-            for arg in &args.posonlyargs {
-                let name_str = arg.arg.as_str();
+            for name in &posonly_names {
+                let name_str = name.as_str();
                 let varnames = &unit.code.varnames;
                 if !varnames.iter().any(|v| v.as_str() == name_str) {
-                    unit.code.varnames.push(arg.arg.clone());
+                    unit.code.varnames.push(name.clone());
                 }
             }
-            for arg in &args.args {
-                let name_str = arg.arg.as_str();
+            for name in &positional_names {
+                let name_str = name.as_str();
                 let varnames = &unit.code.varnames;
                 if !varnames.iter().any(|v| v.as_str() == name_str) {
-                    unit.code.varnames.push(arg.arg.clone());
+                    unit.code.varnames.push(name.clone());
                 }
             }
-            if let Some(ref vararg) = args.vararg {
+            if let Some(ref name) = vararg_name {
                 unit.code.flags |= CodeFlags::VARARGS;
-                let name_str = vararg.arg.as_str();
+                let name_str = name.as_str();
                 let varnames = &unit.code.varnames;
                 if !varnames.iter().any(|v| v.as_str() == name_str) {
-                    unit.code.varnames.push(vararg.arg.clone());
+                    unit.code.varnames.push(name.clone());
                 }
             }
-            for arg in &args.kwonlyargs {
-                let name_str = arg.arg.as_str();
+            for name in &kwonly_names {
+                let name_str = name.as_str();
                 let varnames = &unit.code.varnames;
                 if !varnames.iter().any(|v| v.as_str() == name_str) {
-                    unit.code.varnames.push(arg.arg.clone());
+                    unit.code.varnames.push(name.clone());
                 }
             }
-            if let Some(ref kwarg) = args.kwarg {
+            if let Some(ref name) = kwarg_name {
                 unit.code.flags |= CodeFlags::VARKEYWORDS;
-                let name_str = kwarg.arg.as_str();
+                let name_str = name.as_str();
                 let varnames = &unit.code.varnames;
                 if !varnames.iter().any(|v| v.as_str() == name_str) {
-                    unit.code.varnames.push(kwarg.arg.clone());
+                    unit.code.varnames.push(name.clone());
                 }
             }
 

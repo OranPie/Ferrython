@@ -114,6 +114,21 @@ pub(super) fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResul
                 .entry(CompactString::from("__maxlen__"))
                 .or_insert_with(PyObject::none);
         }
+        if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.name.as_str() == "Counter")
+        {
+            if let Some(dst) = inst.dict_storage.as_ref() {
+                let mut storage = dst.write();
+                for (key, value) in map.read().iter() {
+                    if let HashableKey::Str(name) = key {
+                        if name.as_str() == "__counter_kwargs__" {
+                            continue;
+                        }
+                    }
+                    storage.insert(key.clone(), value.clone());
+                }
+            }
+            return Ok(());
+        }
     }
 
     for (key, value) in map.read().iter() {

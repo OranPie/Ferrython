@@ -3,7 +3,28 @@ use ferrython_core::object::{PyObject, PyObjectRef};
 
 pub(super) fn str_encode(s: &str, encoding: &str, errors: &str) -> PyResult<PyObjectRef> {
     match encoding {
-        "utf-8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
+        "utf-8" | "utf8" => {
+            if errors == "strict" {
+                if let Some(pos) = s.chars().position(|ch| ch == '\u{fffd}') {
+                    return Err(PyException::with_original(
+                        ExceptionKind::UnicodeEncodeError,
+                        "'utf-8' codec can't encode surrogate character",
+                        PyObject::exception_instance_with_args(
+                            ExceptionKind::UnicodeEncodeError,
+                            "'utf-8' codec can't encode surrogate character",
+                            vec![
+                                PyObject::str_val("utf-8".into()),
+                                PyObject::str_val(s.into()),
+                                PyObject::int(pos as i64),
+                                PyObject::int(pos as i64 + 1),
+                                PyObject::str_val("surrogates not allowed".into()),
+                            ],
+                        ),
+                    ));
+                }
+            }
+            Ok(PyObject::bytes(s.as_bytes().to_vec()))
+        }
         "ascii" | "us-ascii" | "us_ascii" => encode_ascii(s, errors),
         "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => encode_latin1(s, errors),
         "utf-16" | "utf16" => {

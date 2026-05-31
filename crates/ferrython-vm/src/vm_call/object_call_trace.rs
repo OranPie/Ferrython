@@ -19,7 +19,12 @@ impl VirtualMachine {
         } else {
             None
         };
-        if needs_current_frame && !self.call_stack.is_empty() {
+        if needs_current_frame
+            && !self.call_stack.is_empty()
+            && !(matches!(&func.payload, PyObjectPayload::NativeFunction(nf)
+                if nf.name.as_str() == "sys._getframe")
+                && ferrython_stdlib::get_current_frame().is_some())
+        {
             ferrython_stdlib::set_current_frame(Some(self.make_trace_frame()));
         }
         CallObjectTraceFrame { prev_frame }

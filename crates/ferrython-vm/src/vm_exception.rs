@@ -10,15 +10,19 @@ use indexmap::IndexMap;
 impl VirtualMachine {
     /// Attach traceback entries from the current call stack to an exception.
     pub(crate) fn attach_traceback(&self, exc: &mut PyException) {
-        use ferrython_core::error::TracebackEntry;
         for frame in &self.call_stack {
-            let lineno = ferrython_debug::resolve_lineno(&frame.code, frame.ip.saturating_sub(1));
-            exc.traceback.push(TracebackEntry {
-                filename: frame.code.filename.to_string(),
-                function: frame.code.name.to_string(),
-                lineno,
-            });
+            Self::push_frame_traceback_entry(exc, frame);
         }
+    }
+
+    pub(crate) fn push_frame_traceback_entry(exc: &mut PyException, frame: &crate::frame::Frame) {
+        use ferrython_core::error::TracebackEntry;
+        let lineno = ferrython_debug::resolve_lineno(&frame.code, frame.ip.saturating_sub(1));
+        exc.traceback.push(TracebackEntry {
+            filename: frame.code.filename.to_string(),
+            function: frame.code.name.to_string(),
+            lineno,
+        });
     }
 
     /// Build a Python-level traceback object chain (CPython-compatible).
@@ -27,15 +31,28 @@ impl VirtualMachine {
     pub(crate) fn build_traceback_object(
         entries: &[ferrython_core::error::TracebackEntry],
     ) -> PyObjectRef {
+        Self::build_traceback_object_with_tail(entries, PyObject::none())
+    }
+
+    pub(crate) fn build_traceback_object_with_tail(
+        entries: &[ferrython_core::error::TracebackEntry],
+        tail: PyObjectRef,
+    ) -> PyObjectRef {
+        let has_tail = !matches!(&tail.payload, PyObjectPayload::None);
+        let entries = if has_tail && !entries.is_empty() {
+            &entries[entries.len() - 1..]
+        } else {
+            Self::trim_traceback_entries(entries)
+        };
         if entries.is_empty() {
-            return PyObject::none();
+            return tail;
         }
         // entries are ordered [outermost, ..., innermost].
-        // CPython chain: outermost -> ... -> innermost -> None
+        // CPython chain: outermost -> ... -> innermost -> tail
         // Build from innermost to outermost so tb_next links are correct.
         let tb_class = PyObject::builtin_type(CompactString::from("traceback"));
         let frame_class = PyObject::builtin_type(CompactString::from("frame"));
-        let mut tb_next = PyObject::none();
+        let mut tb_next = tail;
         for entry in entries.iter().rev() {
             // Build a minimal frame-like object for tb_frame
             let mut frame_attrs = IndexMap::new();
@@ -72,6 +89,7 @@ impl VirtualMachine {
             );
             attrs.insert(CompactString::from("tb_frame"), frame_obj);
             attrs.insert(CompactString::from("tb_next"), tb_next);
+            attrs.insert(CompactString::from("tb_lasti"), PyObject::int(0));
             attrs.insert(
                 CompactString::from("tb_filename"),
                 PyObject::str_val(CompactString::from(&entry.filename)),
@@ -83,6 +101,23 @@ impl VirtualMachine {
             tb_next = PyObject::instance_with_attrs(tb_class.clone(), attrs);
         }
         tb_next
+    }
+
+    fn trim_traceback_entries(
+        entries: &[ferrython_core::error::TracebackEntry],
+    ) -> &[ferrython_core::error::TracebackEntry] {
+        if entries.len() <= 1 {
+            return entries;
+        }
+        let first_non_module = entries
+            .iter()
+            .position(|entry| entry.function != "<module>");
+        if let Some(idx) = first_non_module {
+            if idx > 0 {
+                return &entries[idx..];
+            }
+        }
+        entries
     }
 
     /// Store an attribute on an exception value object (works for both Instance and ExceptionInstance).
@@ -108,6 +143,10 @@ impl VirtualMachine {
                 .and_then(|attrs| attrs.read().get(name).cloned()),
             _ => None,
         }
+    }
+
+    pub(crate) fn clear_exc_context(exc_value: &PyObjectRef) {
+        Self::store_exc_attr(exc_value, "__context__", PyObject::none());
     }
 
     pub(crate) fn same_exception_object(a: &PyException, b: &PyException) -> bool {

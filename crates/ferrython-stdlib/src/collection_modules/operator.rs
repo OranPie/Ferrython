@@ -16,8 +16,8 @@ use callables::{
     operator_attrgetter, operator_itemgetter, operator_length_hint, operator_methodcaller,
 };
 use helpers::{
-    builtin_index_value, call_dunder, call_inplace_dunder, object_index_result, operator_count_of,
-    operator_index_of,
+    builtin_index_value, call_binary_dunder, call_dunder, call_inplace_dunder, object_index_result,
+    operator_count_of, operator_index_of,
 };
 
 pub fn create_operator_module() -> PyObjectRef {
@@ -35,16 +35,12 @@ pub fn create_operator_module() -> PyObjectRef {
                 "sub",
                 make_builtin(|args| {
                     check_args("sub", args, 2)?;
-                    let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
-                        || matches!(&args[1].payload, PyObjectPayload::Float(_));
-                    if !either_float {
-                        if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
-                            return Ok(PyObject::int(a - b));
-                        }
+                    if let Some(result) =
+                        call_binary_dunder(&args[0], &args[1], "__sub__", Some("__rsub__"))?
+                    {
+                        return Ok(result);
                     }
-                    let a = args[0].to_float()?;
-                    let b = args[1].to_float()?;
-                    Ok(PyObject::float(a - b))
+                    args[0].sub(&args[1])
                 }),
             ),
             (
@@ -277,27 +273,36 @@ pub fn create_operator_module() -> PyObjectRef {
                 "and_",
                 make_builtin(|args| {
                     check_args("and_", args, 2)?;
-                    let a = args[0].to_int()?;
-                    let b = args[1].to_int()?;
-                    Ok(PyObject::int(a & b))
+                    if let Some(result) =
+                        call_binary_dunder(&args[0], &args[1], "__and__", Some("__rand__"))?
+                    {
+                        return Ok(result);
+                    }
+                    args[0].bit_and(&args[1])
                 }),
             ),
             (
                 "or_",
                 make_builtin(|args| {
                     check_args("or_", args, 2)?;
-                    let a = args[0].to_int()?;
-                    let b = args[1].to_int()?;
-                    Ok(PyObject::int(a | b))
+                    if let Some(result) =
+                        call_binary_dunder(&args[0], &args[1], "__or__", Some("__ror__"))?
+                    {
+                        return Ok(result);
+                    }
+                    args[0].bit_or(&args[1])
                 }),
             ),
             (
                 "xor",
                 make_builtin(|args| {
                     check_args("xor", args, 2)?;
-                    let a = args[0].to_int()?;
-                    let b = args[1].to_int()?;
-                    Ok(PyObject::int(a ^ b))
+                    if let Some(result) =
+                        call_binary_dunder(&args[0], &args[1], "__xor__", Some("__rxor__"))?
+                    {
+                        return Ok(result);
+                    }
+                    args[0].bit_xor(&args[1])
                 }),
             ),
             (

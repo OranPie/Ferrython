@@ -95,6 +95,18 @@ impl VirtualMachine {
             return Ok(None);
         };
 
+        if tn.as_str() == "type"
+            && matches!(bbm.method_name.as_str(), "__setattr__" | "__delattr__")
+        {
+            if let Some(method) =
+                builtins::resolve_type_class_method("type", bbm.method_name.as_str())
+            {
+                if let PyObjectPayload::NativeFunction(nf) = &method.payload {
+                    return (nf.func)(args).map(Some);
+                }
+            }
+        }
+
         if tn.as_str() == "type" && bbm.method_name.as_str() == "__call__" && !args.is_empty() {
             if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
                 let cls = args[0].clone();

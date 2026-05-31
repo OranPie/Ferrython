@@ -1,8 +1,23 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-31T15:25:21+08:00
+Last updated: 2026-05-31T19:30:54+08:00
 
 ## Current batch
+
+- Compatibility batch: userstring, keywordonlyarg, raise, class, collections
+  - Combined validation: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userstring test_keywordonlyarg test_raise test_class test_collections` -> `run=196 pass=192 fail=0 err=0 skip=4`.
+  - Per-module result observed in the combined run:
+    - `test_collections`: `run=81 pass=79 fail=0 err=0 skip=2`.
+    - The other four modules in the batch are green in aggregate; combined totals are the tracked gate for this commit.
+  - Fixed traits:
+    - UserString/string encoding now handles the previously remaining lone-surrogate encode paths through shared encoding behavior.
+    - Keyword-only argument parsing/calling and inspect argspec behavior now cover the CPython test combinations without test-specific branches.
+    - Raise/class work fills generic exception, traceback, super, MRO, class attr, bound/native callable, and object protocol gaps used by the batch.
+    - `collections.abc` now respects virtual registration, inherited ABC registration, `None` blockers, builtin iterator/view registrations, Sequence mixin abstractness, Awaitable/Coroutine inheritance, and Generator lambda-yield cases.
+    - `operator.__sub__`, `operator.__and__`, `operator.__or__`, and `operator.__xor__` now dispatch generic left/reflected dunders before primitive fallback, matching bytecode operator behavior for Set mixins and user classes.
+  - Regression checks:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_collections` -> `run=81 pass=79 fail=0 err=0 skip=2`.
+    - `cargo build -p ferrython-cli --bin ferrython` succeeds with the existing `build_traceback_object` dead-code warning.
 
 - Compatibility batch: baseexception, csv, sched, codeop, contextlib
   - Combined validation: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_baseexception test_csv test_sched test_codeop test_contextlib` -> `run=207 pass=206 fail=0 err=0 skip=1`.

@@ -100,6 +100,12 @@ pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 },
             ))));
         }
+        if obj.get_attr("__reversed__").is_none() {
+            return Err(PyException::type_error(format!(
+                "'{}' object is not reversible",
+                obj.type_name()
+            )));
+        }
     }
     if let Some(reversed_attr) = obj.get_attr("__reversed__") {
         if !matches!(&reversed_attr.payload, PyObjectPayload::None) {

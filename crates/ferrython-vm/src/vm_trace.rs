@@ -74,7 +74,8 @@ impl VirtualMachine {
                 CompactString::from("co_varnames"),
                 PyObject::tuple(varnames),
             );
-            PyObject::module_with_attrs(CompactString::from("code"), code_attrs)
+            let code_class = PyObject::builtin_type(CompactString::from("code"));
+            PyObject::instance_with_attrs(code_class, code_attrs)
         });
 
         attrs.insert(
@@ -118,7 +119,8 @@ impl VirtualMachine {
         };
         attrs.insert(CompactString::from("f_back"), f_back);
 
-        PyObject::module_with_attrs(CompactString::from("frame"), attrs)
+        let frame_class = PyObject::builtin_type(CompactString::from("frame"));
+        PyObject::instance_with_attrs(frame_class, attrs)
     }
 
     /// Resolve instruction pointer to source line number.

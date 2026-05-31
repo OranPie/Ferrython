@@ -39,6 +39,16 @@ impl VirtualMachine {
         ferrython_core::types::set_hash_dispatch(move |obj: &PyObjectRef| {
             let vm = unsafe { &mut *vm_ptr2 };
             if let PyObjectPayload::Instance(inst) = &obj.payload {
+                let is_weak_ref_like = {
+                    let attrs = inst.attrs.read();
+                    attrs.contains_key("__weakref_ref__") || attrs.contains_key("__weakmethod__")
+                };
+                if !is_weak_ref_like && Self::class_blocks_hash(&inst.class) {
+                    return Err(PyException::type_error(format!(
+                        "unhashable type: '{}'",
+                        obj.type_name()
+                    )));
+                }
                 if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
                     if matches!(&value.payload, PyObjectPayload::FrozenSet(_)) {
                         if let Ok(key) = value.to_hashable_key() {
@@ -100,6 +110,28 @@ impl VirtualMachine {
                 }
                 if Self::is_exception_class(base) {
                     return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn class_blocks_hash(cls: &PyObjectRef) -> bool {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if let Some(value) = cd.namespace.read().get("__hash__") {
+                return matches!(&value.payload, PyObjectPayload::None);
+            }
+            if cd.namespace.read().contains_key("__eq__") {
+                return true;
+            }
+            for base in &cd.mro {
+                if let PyObjectPayload::Class(base_cd) = &base.payload {
+                    if let Some(value) = base_cd.namespace.read().get("__hash__") {
+                        return matches!(&value.payload, PyObjectPayload::None);
+                    }
+                    if base_cd.namespace.read().contains_key("__eq__") {
+                        return true;
+                    }
                 }
             }
         }
@@ -211,6 +243,10 @@ impl VirtualMachine {
         let Some(method) = Self::lookup_plain_class_dunder(inst, name) else {
             return Ok(None);
         };
+        if ferrython_core::object::has_descriptor_get(&method) {
+            let method = self.resolve_descriptor(&method, obj)?;
+            return self.call_object(method, args).map(Some);
+        }
         if !matches!(
             &method.payload,
             PyObjectPayload::Function(_)
@@ -248,6 +284,16 @@ impl VirtualMachine {
         val: &PyObjectRef,
         instance: &PyObjectRef,
     ) -> PyResult<PyObjectRef> {
+        if ferrython_core::object::is_property_like(val) {
+            let Some(getter) = ferrython_core::object::property_field(val, "fget") else {
+                return Err(PyException::attribute_error("unreadable attribute"));
+            };
+            if matches!(&getter.payload, PyObjectPayload::None) {
+                return Err(PyException::attribute_error("unreadable attribute"));
+            }
+            let getter = crate::builtins::unwrap_abstract_fget(&getter);
+            return self.call_object(getter, vec![instance.clone()]);
+        }
         use ferrython_core::object::has_descriptor_get;
         if has_descriptor_get(val) {
             if let Some(get_method) = val.get_attr("__get__") {

@@ -89,6 +89,9 @@ impl VirtualMachine {
         if name.as_str() == "module" {
             return self.call_module_type(args);
         }
+        if name.as_str() == "traceback" {
+            return self.call_traceback_type(args);
+        }
         if matches!(name.as_str(), "any" | "all" | "isinstance" | "issubclass") {
             return self.call_predicate_builtin(name.as_str(), args);
         }
@@ -123,6 +126,7 @@ impl VirtualMachine {
             name.as_str(),
             "len"
                 | "abs"
+                | "divmod"
                 | "hash"
                 | "bin"
                 | "oct"
@@ -177,6 +181,51 @@ impl VirtualMachine {
             CompactString::from(name),
             attrs,
         ))
+    }
+
+    fn call_traceback_type(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
+        if args.len() != 4 {
+            return Err(PyException::type_error(format!(
+                "TracebackType() takes exactly 4 arguments ({} given)",
+                args.len()
+            )));
+        }
+        if !matches!(&args[0].payload, PyObjectPayload::None)
+            && !Self::is_builtin_instance_type(&args[0], "traceback")
+        {
+            return Err(PyException::type_error(
+                "TracebackType() argument 1 must be traceback or None",
+            ));
+        }
+        if !Self::is_builtin_instance_type(&args[1], "frame") {
+            return Err(PyException::type_error(
+                "TracebackType() argument 2 must be frame",
+            ));
+        }
+        let lasti = args[2]
+            .as_int()
+            .ok_or_else(|| PyException::type_error("TracebackType() argument 3 must be int"))?;
+        let lineno = args[3]
+            .as_int()
+            .ok_or_else(|| PyException::type_error("TracebackType() argument 4 must be int"))?;
+        let tb_class = PyObject::builtin_type(CompactString::from("traceback"));
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("tb_next"), args[0].clone());
+        attrs.insert(CompactString::from("tb_frame"), args[1].clone());
+        attrs.insert(CompactString::from("tb_lasti"), PyObject::int(lasti));
+        attrs.insert(CompactString::from("tb_lineno"), PyObject::int(lineno));
+        Ok(PyObject::instance_with_attrs(tb_class, attrs))
+    }
+
+    fn is_builtin_instance_type(obj: &PyObjectRef, type_name: &str) -> bool {
+        match &obj.payload {
+            PyObjectPayload::Instance(inst) => match &inst.class.payload {
+                PyObjectPayload::BuiltinType(name) => name.as_str() == type_name,
+                PyObjectPayload::Class(cd) => cd.name.as_str() == type_name,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     fn call_static_builtin(&mut self, name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

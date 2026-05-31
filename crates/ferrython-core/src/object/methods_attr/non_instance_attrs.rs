@@ -142,6 +142,9 @@ pub(super) fn non_instance_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjec
             let type_name = obj.type_name();
             named_builtin_attr(obj, type_name, DICT_METHODS, name)
         }
+        PyObjectPayload::DictKeys { .. } => dict_view_attr(obj, "dict_keys", name),
+        PyObjectPayload::DictValues { .. } => dict_view_attr(obj, "dict_values", name),
+        PyObjectPayload::DictItems { .. } => dict_view_attr(obj, "dict_items", name),
         PyObjectPayload::Tuple(_) => named_builtin_attr(obj, "tuple", TUPLE_METHODS, name),
         PyObjectPayload::Set(_) => named_builtin_attr(obj, "set", SET_METHODS, name),
         PyObjectPayload::FrozenSet(_) => {
@@ -395,6 +398,14 @@ fn iterator_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
         }
         "__setstate__" if iterator_supports_setstate(obj) => Some(bound_builtin(obj, name)),
         "__class__" => Some(PyObject::builtin_type(CompactString::from(obj.type_name()))),
+        _ => None,
+    }
+}
+
+fn dict_view_attr(obj: &PyObjectRef, type_name: &str, name: &str) -> Option<PyObjectRef> {
+    match name {
+        "__class__" => Some(PyObject::builtin_type(CompactString::from(type_name))),
+        "__len__" | "__iter__" | "__contains__" | "__reversed__" => Some(bound_builtin(obj, name)),
         _ => None,
     }
 }

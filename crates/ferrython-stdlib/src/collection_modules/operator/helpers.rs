@@ -25,6 +25,27 @@ pub(super) fn call_dunder(
     }
 }
 
+pub(super) fn call_binary_dunder(
+    left: &PyObjectRef,
+    right: &PyObjectRef,
+    dunder: &str,
+    rdunder: Option<&str>,
+) -> PyResult<Option<PyObjectRef>> {
+    if matches!(&left.payload, PyObjectPayload::Instance(_)) {
+        if let Some(result) = call_dunder(left, dunder, &[right.clone()])? {
+            return Ok(Some(result));
+        }
+    }
+    if let Some(rdunder) = rdunder {
+        if matches!(&right.payload, PyObjectPayload::Instance(_)) {
+            if let Some(result) = call_dunder(right, rdunder, &[left.clone()])? {
+                return Ok(Some(result));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub(super) fn call_inplace_dunder(
     obj: &PyObjectRef,
     arg: &PyObjectRef,

@@ -550,6 +550,28 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
                 return py_get_attr(&effective_class, name);
             }
+            if name == "__init__" {
+                let init_name = match &effective_class.payload {
+                    PyObjectPayload::Class(cd) => format!("{}.__init__", cd.name.as_str()),
+                    _ => "object.__init__".to_string(),
+                };
+                let err_name = init_name.clone();
+                let method = PyObject::native_closure(&init_name, move |args| {
+                    if args.len() != 1 {
+                        return Err(PyException::type_error(format!(
+                            "{}() takes exactly one argument (the instance to initialize)",
+                            err_name
+                        )));
+                    }
+                    Ok(PyObject::none())
+                });
+                return Some(PyObjectRef::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method,
+                    },
+                }));
+            }
             if name == "__eq__" {
                 let inst_obj = obj.clone();
                 return Some(PyObject::native_closure(

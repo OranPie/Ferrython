@@ -349,6 +349,11 @@ pub(super) fn super_attr(
                     if args.is_empty() {
                         return Err(PyException::type_error("__new__ requires cls"));
                     }
+                    if args.len() != 1 {
+                        return Err(PyException::type_error(
+                            "object.__new__() takes exactly one argument (the type to instantiate)",
+                        ));
+                    }
                     Ok(PyObject::instance(args[0].clone()))
                 }));
             }
@@ -368,7 +373,12 @@ pub(super) fn super_attr(
             }
             // Builtin __init__: object.__init__() is a no-op
             if name == "__init__" {
-                return Some(PyObject::native_function("__init__", |_args| {
+                return Some(PyObject::native_function("__init__", |args| {
+                    if args.len() != 1 {
+                        return Err(PyException::type_error(
+                            "object.__init__() takes exactly one argument (the instance to initialize)",
+                        ));
+                    }
                     Ok(PyObject::none())
                 }));
             }

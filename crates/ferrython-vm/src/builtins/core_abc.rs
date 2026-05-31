@@ -132,6 +132,13 @@ fn type_bases(obj: &PyObjectRef, depth: usize) -> PyResult<Option<Vec<PyObjectRe
             };
             Ok(Some(parent.map_or_else(Vec::new, |p| vec![p])))
         }
+        PyObjectPayload::NativeFunction(nf)
+            if native_function_class_name(nf.name.as_str()).is_some() =>
+        {
+            Ok(Some(vec![PyObject::builtin_type(CompactString::from(
+                "object",
+            ))]))
+        }
         _ => match descriptor_attr(obj, "__bases__")? {
             Some(bases) => match &bases.payload {
                 PyObjectPayload::Tuple(items) => Ok(Some(items.iter().cloned().collect())),
@@ -163,7 +170,35 @@ fn is_subclass_result(sub: &PyObjectRef, sup: &PyObjectRef, depth: usize) -> PyR
         | (PyObjectPayload::BuiltinType(_), PyObjectPayload::BuiltinType(_))
         | (PyObjectPayload::Class(_), PyObjectPayload::BuiltinType(_))
         | (PyObjectPayload::BuiltinType(_), PyObjectPayload::Class(_)) => {
+            if let (PyObjectPayload::Class(_), PyObjectPayload::Class(_)) =
+                (&sub.payload, &sup.payload)
+            {
+                if class_abc_virtual_match(sub, sup) {
+                    return Ok(true);
+                }
+            }
+            if class_blocks_structural_abc(sub, sup) {
+                return Ok(false);
+            }
             if check_subclass(sub, sup) {
+                return Ok(true);
+            }
+        }
+        (PyObjectPayload::NativeFunction(nf), PyObjectPayload::Class(sup_cd)) => {
+            if let Some(class_name) = native_function_class_name(nf.name.as_str()) {
+                if abc_builtin_type_names(sup_cd.name.as_str())
+                    .iter()
+                    .any(|builtin| *builtin == class_name)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        (PyObjectPayload::BuiltinFunction(name), PyObjectPayload::Class(sup_cd)) => {
+            if abc_builtin_type_names(sup_cd.name.as_str())
+                .iter()
+                .any(|builtin| *builtin == name.as_str())
+            {
                 return Ok(true);
             }
         }
@@ -181,6 +216,14 @@ fn is_subclass_result(sub: &PyObjectRef, sup: &PyObjectRef, depth: usize) -> PyR
     }
     if PyObjectRef::ptr_eq(sub, sup) {
         return Ok(true);
+    }
+    if let (PyObjectPayload::Class(_), PyObjectPayload::Class(_)) = (&sub.payload, &sup.payload) {
+        if class_abc_virtual_match(sub, sup) {
+            return Ok(true);
+        }
+    }
+    if class_blocks_structural_abc(sub, sup) {
+        return Ok(false);
     }
     for base in sub_bases {
         if PyObjectRef::ptr_eq(&base, sup) || is_subclass_result(&base, sup, depth + 1)? {
@@ -335,51 +378,28 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                     }
                 }
             }
+            if let Some(obj_class) = match &obj.payload {
+                PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                PyObjectPayload::Class(_) => Some(obj.clone()),
+                _ => None,
+            } {
+                if class_blocks_structural_abc(&obj_class, cls) {
+                    return false;
+                }
+            }
             // Check collections.abc structural typing for Class-based ABCs
             if check_abc_structural(obj, target_cd.name.as_str()) {
                 return true;
             }
             // Check _abc_registry for ABCMeta.register() virtual subclasses
             // Walk the class and its bases (MRO) to find registries
-            {
-                let mut classes_to_check: Vec<PyObjectRef> = vec![cls.clone()];
-                classes_to_check.extend(target_cd.bases.iter().cloned());
-                for check_cls in &classes_to_check {
-                    if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
-                        if let Some(registry) =
-                            check_cd.namespace.read().get("_abc_registry").cloned()
-                        {
-                            if let PyObjectPayload::Dict(map) = &registry.payload {
-                                let obj_class = match &obj.payload {
-                                    PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
-                                    PyObjectPayload::Class(_) => Some(obj.clone()),
-                                    _ => None,
-                                };
-                                if let Some(oc) = obj_class {
-                                    let obj_class_name = match &oc.payload {
-                                        PyObjectPayload::Class(cd) => Some(cd.name.clone()),
-                                        _ => None,
-                                    };
-                                    for (k, _) in map.read().iter() {
-                                        if let HashableKey::Identity(_, registered) = k {
-                                            if PyObjectRef::ptr_eq(registered, &oc) {
-                                                return true;
-                                            }
-                                            if let Some(ref ocn) = obj_class_name {
-                                                if let PyObjectPayload::Class(rc) =
-                                                    &registered.payload
-                                                {
-                                                    if rc.name == *ocn {
-                                                        return true;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            if let Some(obj_class) = match &obj.payload {
+                PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                PyObjectPayload::Class(_) => Some(obj.clone()),
+                _ => None,
+            } {
+                if class_abc_virtual_match(&obj_class, cls) {
+                    return true;
                 }
             }
             // runtime_checkable Protocol check
@@ -397,7 +417,7 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             }
             // User-defined class check: walk the instance's class MRO
             if let PyObjectPayload::Instance(inst) = &obj.payload {
-                class_is_subclass_of(&inst.class, &target_cd.name)
+                class_has_exact_base(&inst.class, cls)
             } else if let PyObjectPayload::Class(obj_cd) = &obj.payload {
                 // Metaclass check: isinstance(MyClass, Meta) where Meta is a metaclass
                 if let Some(ref mcs) = obj_cd.metaclass {
@@ -511,8 +531,10 @@ fn abc_required_methods(abc_name: &str) -> &'static [&'static str] {
         "Container" => &["__contains__"],
         "Callable" => &["__call__"],
         "Collection" => &["__len__", "__iter__", "__contains__"],
-        "Sequence" => &["__getitem__", "__len__"],
+        "Sequence" => &["__contains__", "__iter__", "__getitem__", "__len__"],
         "MutableSequence" => &[
+            "__contains__",
+            "__iter__",
             "__getitem__",
             "__len__",
             "__setitem__",
@@ -572,15 +594,22 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
             "dict_keyiterator",
             "dict_valueiterator",
             "dict_itemiterator",
+            "set_iterator",
         ],
         "Iterator" => &[
             "iterator",
             "generator",
+            "str_ascii_iterator",
+            "bytes_iterator",
+            "bytearray_iterator",
+            "range_iterator",
             "list_iterator",
             "tuple_iterator",
             "dict_keyiterator",
             "dict_valueiterator",
             "dict_itemiterator",
+            "set_iterator",
+            "list_reverseiterator",
         ],
         "Reversible" => &[
             "list",
@@ -609,6 +638,9 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
             "dict_keys",
             "dict_items",
             "dict_values",
+            "dict_keyiterator",
+            "dict_valueiterator",
+            "dict_itemiterator",
         ],
         "Container" => &[
             "list",
@@ -622,6 +654,8 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
             "range",
             "dict_keys",
             "dict_items",
+            "dict_keyiterator",
+            "dict_itemiterator",
         ],
         "Collection" => &[
             "list",
@@ -636,6 +670,9 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
             "dict_keys",
             "dict_items",
             "dict_values",
+            "dict_keyiterator",
+            "dict_valueiterator",
+            "dict_itemiterator",
         ],
         "Sequence" => &[
             "list",
@@ -652,7 +689,7 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
         "MutableSet" => &["set"],
         "Mapping" => &["dict", "Counter", "UserDict"],
         "MutableMapping" => &["dict", "Counter", "UserDict"],
-        "Callable" => &["function", "builtin_function_or_method", "method", "type"],
+        "Callable" => &["function", "method", "type"],
         "Awaitable" => &["coroutine"],
         "Coroutine" => &["coroutine"],
         "AsyncIterable" => &["async_generator"],
@@ -665,26 +702,145 @@ fn abc_builtin_type_names(abc_name: &str) -> &'static [&'static str] {
     }
 }
 
+fn class_lookup_abc_method_blocking(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        if let Some(attr) = cd.namespace.read().get(name) {
+            return Some(attr.clone());
+        }
+        for base in &cd.mro {
+            if matches!(&base.payload, PyObjectPayload::BuiltinType(name) if name.as_str() == "object")
+                && name != "__hash__"
+            {
+                continue;
+            }
+            if let Some(attr) = class_lookup_abc_method_blocking(base, name) {
+                return Some(attr);
+            } else if !matches!(&base.payload, PyObjectPayload::Class(_)) {
+                if let Some(attr) = base.get_attr(name) {
+                    return Some(attr);
+                }
+            }
+        }
+        for base in &cd.bases {
+            if matches!(&base.payload, PyObjectPayload::BuiltinType(type_name) if type_name.as_str() == "object")
+                && name != "__hash__"
+            {
+                continue;
+            }
+            if let Some(attr) = class_lookup_abc_method_blocking(base, name) {
+                return Some(attr);
+            }
+        }
+    } else {
+        return cls.get_attr(name);
+    }
+    None
+}
+
+fn class_blocks_structural_abc(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
+    let (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(sup_cd)) =
+        (&sub.payload, &sup.payload)
+    else {
+        return false;
+    };
+    if !is_known_structural_abc(sup_cd.name.as_str()) {
+        return false;
+    }
+    let ns = sub_cd.namespace.read();
+    abc_required_methods(sup_cd.name.as_str())
+        .iter()
+        .any(|name| {
+            ns.get(*name)
+                .map(|attr| matches!(&attr.payload, PyObjectPayload::None))
+                .unwrap_or(false)
+        })
+}
+
+fn classes_for_abc_registry(cls: &PyObjectRef) -> Vec<PyObjectRef> {
+    let mut classes = vec![cls.clone()];
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        classes.extend(cd.bases.iter().cloned());
+        classes.extend(cd.mro.iter().cloned());
+    }
+    classes
+}
+
+fn abc_registry_contains(abc: &PyObjectRef, sub: &PyObjectRef) -> bool {
+    let Some(registry) = abc.get_attr("_abc_registry") else {
+        return false;
+    };
+    let PyObjectPayload::Dict(map) = &registry.payload else {
+        return false;
+    };
+    map.read().iter().any(|(key, _)| match key {
+        HashableKey::Identity(_, registered) => {
+            PyObjectRef::ptr_eq(registered, sub) || check_subclass(sub, registered)
+        }
+        _ => false,
+    })
+}
+
+fn abc_registry_or_subclass_registry_contains(abc: &PyObjectRef, sub: &PyObjectRef) -> bool {
+    if abc_registry_contains(abc, sub) {
+        return true;
+    }
+    let PyObjectPayload::Class(cd) = &abc.payload else {
+        return false;
+    };
+    let subclasses: Vec<_> = cd
+        .subclasses
+        .read()
+        .iter()
+        .filter_map(|weak| weak.upgrade())
+        .collect();
+    subclasses
+        .iter()
+        .any(|child| abc_registry_or_subclass_registry_contains(child, sub))
+}
+
+fn class_abc_virtual_match(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
+    classes_for_abc_registry(sup)
+        .iter()
+        .any(|abc| abc_registry_or_subclass_registry_contains(abc, sub))
+}
+
+fn class_has_exact_base(cls: &PyObjectRef, target: &PyObjectRef) -> bool {
+    if PyObjectRef::ptr_eq(cls, target) {
+        return true;
+    }
+    let PyObjectPayload::Class(cd) = &cls.payload else {
+        return false;
+    };
+    cd.mro.iter().any(|base| PyObjectRef::ptr_eq(base, target))
+        || cd
+            .bases
+            .iter()
+            .any(|base| PyObjectRef::ptr_eq(base, target) || class_has_exact_base(base, target))
+}
+
+fn native_function_class_name(name: &str) -> Option<&'static str> {
+    match name {
+        "range" => Some("range"),
+        "collections.deque" => Some("deque"),
+        _ => None,
+    }
+}
+
 fn object_has_abc_method(obj: &PyObjectRef, name: &str) -> bool {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        return class_lookup_abc_method_blocking(&inst.class, name)
+            .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
+            .unwrap_or(false);
+    }
     obj.get_attr(name)
         .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
         .unwrap_or(false)
 }
 
 fn class_has_abc_method(cls: &PyObjectRef, name: &str) -> bool {
-    if let PyObjectPayload::Class(cd) = &cls.payload {
-        if let Some(attr) = cd.namespace.read().get(name) {
-            return !matches!(&attr.payload, PyObjectPayload::None);
-        }
-        for base in &cd.mro {
-            if let PyObjectPayload::Class(base_cd) = &base.payload {
-                if let Some(attr) = base_cd.namespace.read().get(name) {
-                    return !matches!(&attr.payload, PyObjectPayload::None);
-                }
-            }
-        }
-    }
-    false
+    class_lookup_abc_method_blocking(cls, name)
+        .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
+        .unwrap_or(false)
 }
 
 fn abc_hashable_blocked_type(name: &str) -> bool {
@@ -757,7 +913,9 @@ fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
                     class_has_abc_method(cls, "__hash__")
                 }
             }
-            "Callable" => true,
+            "Callable" => class_has_abc_method(cls, "__call__"),
+            "Sequence" | "MutableSequence" | "ByteString" | "Set" | "MutableSet" | "Mapping"
+            | "MutableMapping" => false,
             _ => abc_required_methods(abc_name)
                 .iter()
                 .all(|name| class_has_abc_method(cls, name)),
@@ -779,7 +937,7 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
     }
     match abc_name {
         "ByteString" => matches!(obj.type_name(), "bytes" | "bytearray"),
-        "Callable" => obj.is_callable(),
+        "Callable" => object_has_abc_method(obj, "__call__"),
         "Hashable" => {
             if abc_hashable_blocked_type(obj.type_name()) {
                 false
@@ -795,6 +953,9 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
         }
         "Rational" | "Integral" => {
             matches!(obj.type_name(), "int" | "bool")
+        }
+        "Sequence" | "MutableSequence" | "Set" | "MutableSet" | "Mapping" | "MutableMapping" => {
+            false
         }
         _ => abc_required_methods(abc_name)
             .iter()
@@ -816,23 +977,24 @@ pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
 pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
     match (&sub.payload, &sup.payload) {
         (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(sup_cd)) => {
-            if sub_cd.name == sup_cd.name {
+            if PyObjectRef::ptr_eq(sub, sup) {
                 return true;
+            }
+            if let Some(registered) = sub_cd.namespace.read().get("__abc_registered__") {
+                if PyObjectRef::ptr_eq(registered, sup) || check_subclass(registered, sup) {
+                    return true;
+                }
             }
             // Walk full MRO
             for base in &sub_cd.mro {
-                if let PyObjectPayload::Class(bc) = &base.payload {
-                    if bc.name == sup_cd.name {
-                        return true;
-                    }
+                if PyObjectRef::ptr_eq(base, sup) {
+                    return true;
                 }
             }
             // Also check direct bases
             for base in &sub_cd.bases {
-                if let PyObjectPayload::Class(bc) = &base.payload {
-                    if bc.name == sup_cd.name {
-                        return true;
-                    }
+                if PyObjectRef::ptr_eq(base, sup) || check_subclass(base, sup) {
+                    return true;
                 }
             }
             if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
@@ -851,31 +1013,11 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
                 }
             }
             // Check _abc_registry for virtual subclass registration
-            {
-                let mut classes_to_check: Vec<PyObjectRef> = vec![sup.clone()];
-                classes_to_check.extend(sup_cd.bases.iter().cloned());
-                for check_cls in &classes_to_check {
-                    if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
-                        if let Some(registry) =
-                            check_cd.namespace.read().get("_abc_registry").cloned()
-                        {
-                            if let PyObjectPayload::Dict(map) = &registry.payload {
-                                for (k, _) in map.read().iter() {
-                                    if let HashableKey::Identity(_, registered) = k {
-                                        if PyObjectRef::ptr_eq(registered, sub) {
-                                            return true;
-                                        }
-                                        if let PyObjectPayload::Class(rc) = &registered.payload {
-                                            if rc.name == sub_cd.name {
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if class_abc_virtual_match(sub, sup) {
+                return true;
+            }
+            if class_blocks_structural_abc(sub, sup) {
+                return false;
             }
             if check_abc_structural_class(sub, sup_cd.name.as_str()) {
                 return true;

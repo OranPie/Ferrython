@@ -38,10 +38,11 @@ pub(super) fn inspect_getargspec(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         } else {
             PyObject::none()
         };
-        let defaults = if pf.defaults.is_empty() {
+        let defaults_guard = pf.defaults.read();
+        let defaults = if defaults_guard.is_empty() {
             PyObject::none()
         } else {
-            PyObject::tuple(pf.defaults.clone())
+            PyObject::tuple(defaults_guard.clone())
         };
         Ok(PyObject::tuple(vec![
             PyObject::list(positional),

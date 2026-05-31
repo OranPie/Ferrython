@@ -9,6 +9,79 @@ use std::rc::Rc;
 use crate::frame::Frame;
 use crate::VirtualMachine;
 
+fn required_arg_names<'a>(
+    code: &'a CodeObject,
+    start: usize,
+    end: usize,
+    locals: &[Option<PyObjectRef>],
+) -> Vec<&'a str> {
+    (start..end)
+        .filter(|&i| locals.get(i).map_or(true, |slot| slot.is_none()))
+        .filter_map(|i| code.varnames.get(i).map(|s| s.as_str()))
+        .collect()
+}
+
+pub(super) fn format_missing_required(names: &[&str], kind: &str) -> String {
+    let quoted = names
+        .iter()
+        .map(|n| format!("'{}'", n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "missing {} required {} argument{}: {}",
+        names.len(),
+        kind,
+        if names.len() == 1 { "" } else { "s" },
+        quoted
+    )
+}
+
+pub(super) fn format_too_many_positional(
+    fname: &str,
+    nparams: usize,
+    ndefaults: usize,
+    nargs: usize,
+) -> String {
+    let required = nparams.saturating_sub(ndefaults);
+    if ndefaults > 0 && required != nparams {
+        format!(
+            "{}() takes from {} to {} positional arguments but {} {} given",
+            fname,
+            required,
+            nparams,
+            nargs,
+            if nargs == 1 { "was" } else { "were" }
+        )
+    } else {
+        format!(
+            "{}() takes {} positional argument{} but {} {} given",
+            fname,
+            nparams,
+            if nparams == 1 { "" } else { "s" },
+            nargs,
+            if nargs == 1 { "was" } else { "were" }
+        )
+    }
+}
+
+pub(super) fn check_missing_keyword_only(
+    code: &CodeObject,
+    locals: &[Option<PyObjectRef>],
+    kwonly_start: usize,
+    nkwonly: usize,
+) -> PyResult<()> {
+    let missing = required_arg_names(code, kwonly_start, kwonly_start + nkwonly, locals);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(PyException::type_error(format!(
+            "{}() {}",
+            code.name,
+            format_missing_required(&missing, "keyword-only")
+        )))
+    }
+}
+
 impl VirtualMachine {
     pub(crate) fn call_function(
         &mut self,
@@ -89,14 +162,11 @@ impl VirtualMachine {
             };
             frame.set_local(nparams, PyObject::tuple(extra));
         } else if nargs > nparams {
-            let fname = code.name.as_str();
-            return Err(PyException::type_error(format!(
-                "{}() takes {} positional argument{} but {} {} given",
-                fname,
+            return Err(PyException::type_error(format_too_many_positional(
+                code.name.as_str(),
                 nparams,
-                if nparams == 1 { "" } else { "s" },
+                defaults.len(),
                 nargs,
-                if nargs == 1 { "was" } else { "were" }
             )));
         }
 
@@ -112,6 +182,7 @@ impl VirtualMachine {
                 }
             }
         }
+        check_missing_keyword_only(code, &frame.locals, kwonly_start, nkwonly)?;
 
         // Pack **kwargs into a dict
         if has_varkw {

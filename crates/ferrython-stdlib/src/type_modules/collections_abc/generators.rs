@@ -1,6 +1,32 @@
 use super::helpers::{add_method, drop_abstract};
 use super::*;
 
+fn raise_from_arg(args: &[PyObjectRef], offset: usize) -> PyException {
+    let typ = args
+        .get(offset)
+        .cloned()
+        .unwrap_or_else(|| PyObject::exception_type(ExceptionKind::ValueError));
+    let value = args.get(offset + 1);
+    let kind = match &typ.payload {
+        PyObjectPayload::ExceptionType(kind) => *kind,
+        PyObjectPayload::Class(_) => ExceptionKind::ValueError,
+        PyObjectPayload::Instance(inst) => {
+            if let Some(kind) = inst.class.get_attr("__builtin_exception_kind__") {
+                ExceptionKind::from_name(&kind.py_to_string()).unwrap_or(ExceptionKind::Exception)
+            } else {
+                ExceptionKind::Exception
+            }
+        }
+        PyObjectPayload::ExceptionInstance(ei) => ei.kind,
+        _ => ExceptionKind::ValueError,
+    };
+    let message = value
+        .map(|obj| obj.py_to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| typ.py_to_string());
+    PyException::new(kind, message)
+}
+
 pub(super) fn add_generator_methods(
     generator_cls: &PyObjectRef,
     coroutine_cls: &PyObjectRef,
@@ -17,7 +43,33 @@ pub(super) fn add_generator_methods(
             Ok(args[0].clone())
         }),
     );
-    drop_abstract(&generator_cls, &["__iter__", "__next__", "close"]);
+    drop_abstract(&generator_cls, &["__iter__", "__next__", "close", "send"]);
+    add_method(
+        &generator_cls,
+        "send",
+        PyObject::native_closure("Generator.send", move |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("send() requires value"));
+            }
+            if matches!(&args[1].payload, PyObjectPayload::None) {
+                return Err(PyException::new(
+                    ExceptionKind::StopIteration,
+                    String::new(),
+                ));
+            }
+            Ok(args[1].clone())
+        }),
+    );
+    add_method(
+        &generator_cls,
+        "throw",
+        PyObject::native_closure("Generator.throw", move |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("throw() requires an exception"));
+            }
+            Err(raise_from_arg(args, 1))
+        }),
+    );
     add_method(
         &generator_cls,
         "__next__",
@@ -42,11 +94,33 @@ pub(super) fn add_generator_methods(
                 .get_attr("throw")
                 .ok_or_else(|| PyException::attribute_error("throw"))?;
             let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
-            let _ = ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]);
-            Ok(PyObject::none())
+            match ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]) {
+                Ok(_) => Err(PyException::runtime_error(
+                    "generator ignored GeneratorExit",
+                )),
+                Err(err)
+                    if matches!(
+                        err.kind,
+                        ExceptionKind::GeneratorExit | ExceptionKind::StopIteration
+                    ) =>
+                {
+                    Ok(PyObject::none())
+                }
+                Err(err) => Err(err),
+            }
         }),
     );
     drop_abstract(&coroutine_cls, &["close"]);
+    add_method(
+        &coroutine_cls,
+        "throw",
+        PyObject::native_closure("Coroutine.throw", move |_args: &[PyObjectRef]| {
+            Err(PyException::new(
+                ExceptionKind::StopIteration,
+                String::new(),
+            ))
+        }),
+    );
     add_method(
         &coroutine_cls,
         "close",
@@ -58,8 +132,20 @@ pub(super) fn add_generator_methods(
                 .get_attr("throw")
                 .ok_or_else(|| PyException::attribute_error("throw"))?;
             let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
-            let _ = ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]);
-            Ok(PyObject::none())
+            match ferrython_core::object::helpers::call_callable(&throw, &[gen_exit]) {
+                Ok(_) => Err(PyException::runtime_error(
+                    "coroutine ignored GeneratorExit",
+                )),
+                Err(err)
+                    if matches!(
+                        err.kind,
+                        ExceptionKind::GeneratorExit | ExceptionKind::StopIteration
+                    ) =>
+                {
+                    Ok(PyObject::none())
+                }
+                Err(err) => Err(err),
+            }
         }),
     );
     add_method(
@@ -86,7 +172,7 @@ pub(super) fn add_generator_methods(
             Ok(args[0].clone())
         }),
     );
-    drop_abstract(&async_generator_cls, &["__aiter__", "__anext__"]);
+    drop_abstract(&async_generator_cls, &["__aiter__", "__anext__", "aclose"]);
     add_method(
         &async_generator_cls,
         "__anext__",
@@ -119,15 +205,7 @@ pub(super) fn add_generator_methods(
             if args.len() < 2 {
                 return Err(PyException::type_error("athrow() requires an exception"));
             }
-            let typ_name = args[1].type_name();
-            if typ_name == "GeneratorExit" {
-                Err(PyException::new(
-                    ExceptionKind::GeneratorExit,
-                    String::new(),
-                ))
-            } else {
-                Err(PyException::value_error(args[1].py_to_string()))
-            }
+            Err(raise_from_arg(args, 1))
         }),
     );
     add_method(
@@ -143,7 +221,20 @@ pub(super) fn add_generator_methods(
                 .get_attr("athrow")
                 .ok_or_else(|| PyException::attribute_error("athrow"))?;
             let gen_exit = PyObject::exception_type(ExceptionKind::GeneratorExit);
-            ferrython_core::object::helpers::call_callable(&athrow, &[gen_exit])
+            match ferrython_core::object::helpers::call_callable(&athrow, &[gen_exit]) {
+                Ok(_) => Err(PyException::runtime_error(
+                    "async generator ignored GeneratorExit",
+                )),
+                Err(err)
+                    if matches!(
+                        err.kind,
+                        ExceptionKind::GeneratorExit | ExceptionKind::StopIteration
+                    ) =>
+                {
+                    Ok(PyObject::builtin_awaitable(PyObject::none()))
+                }
+                Err(err) => Err(err),
+            }
         }),
     );
 }

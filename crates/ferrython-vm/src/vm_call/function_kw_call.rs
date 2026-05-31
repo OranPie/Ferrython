@@ -6,6 +6,9 @@ use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+use super::function_call::{
+    check_missing_keyword_only, format_missing_required, format_too_many_positional,
+};
 use crate::frame::Frame;
 use crate::VirtualMachine;
 
@@ -119,15 +122,9 @@ impl VirtualMachine {
             .collect();
         if !missing_names.is_empty() {
             return Err(PyException::type_error(format!(
-                "{}() missing {} required positional argument{}: {}",
+                "{}() {}",
                 code.name,
-                missing_names.len(),
-                if missing_names.len() == 1 { "" } else { "s" },
-                missing_names
-                    .iter()
-                    .map(|n| format!("'{}'", n))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                format_missing_required(&missing_names, "positional")
             )));
         }
 
@@ -141,19 +138,17 @@ impl VirtualMachine {
                 }
             }
         }
+        check_missing_keyword_only(code, &frame.locals, kwonly_start, nkwonly)?;
 
         if has_varargs {
             let extra: Vec<PyObjectRef> = if npos > nparams { pos_args } else { Vec::new() };
             frame.set_local(varargs_slot, PyObject::tuple(extra));
         } else if npos > nparams {
-            let fname = code.name.as_str();
-            return Err(PyException::type_error(format!(
-                "{}() takes {} positional argument{} but {} {} given",
-                fname,
+            return Err(PyException::type_error(format_too_many_positional(
+                code.name.as_str(),
                 nparams,
-                if nparams == 1 { "" } else { "s" },
+                defaults.len(),
                 npos,
-                if npos == 1 { "was" } else { "were" }
             )));
         }
 

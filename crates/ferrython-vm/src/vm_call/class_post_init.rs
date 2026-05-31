@@ -1,10 +1,23 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    has_descriptor_get, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 
 use crate::VirtualMachine;
 
 impl VirtualMachine {
+    fn default_object_init_error(cls: &PyObjectRef) -> PyException {
+        let cls_name = match &cls.payload {
+            PyObjectPayload::Class(cd) => cd.name.as_str(),
+            _ => "object",
+        };
+        PyException::type_error(format!(
+            "{}.__init__() takes exactly one argument (the instance to initialize)",
+            cls_name
+        ))
+    }
+
     pub(super) fn call_user_init_for_instance(
         &mut self,
         cls: &PyObjectRef,
@@ -13,6 +26,11 @@ impl VirtualMachine {
         kwargs: &[(CompactString, PyObjectRef)],
     ) -> PyResult<()> {
         if let Some(init) = cls.get_attr("__init__") {
+            let init = if has_descriptor_get(&init) {
+                self.resolve_descriptor(&init, instance)?
+            } else {
+                init
+            };
             if matches!(
                 &init.payload,
                 PyObjectPayload::NativeFunction(nf)
@@ -31,6 +49,13 @@ impl VirtualMachine {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                     _ => init.clone(),
                 };
+                if let PyObjectPayload::NativeFunction(nf) = &init_fn.payload {
+                    if nf.name.as_str() == "__init__"
+                        && (!pos_args.is_empty() || !kwargs.is_empty())
+                    {
+                        return Err(Self::default_object_init_error(cls));
+                    }
+                }
                 let mut init_args = vec![instance.clone()];
                 init_args.extend(pos_args.iter().cloned());
                 let init_result = if kwargs.is_empty() {

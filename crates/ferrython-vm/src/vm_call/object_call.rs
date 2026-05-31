@@ -16,11 +16,13 @@ impl VirtualMachine {
                 // Borrow fields directly from the Arc-backed func instead of cloning
                 // expensive Vec/IndexMap payloads. Only globals needs cloning (moved into frame).
                 let globals = pyfunc.globals.clone();
+                let defaults = pyfunc.defaults.read();
+                let kw_defaults = pyfunc.kw_defaults.read();
                 self.call_function(
                     &pyfunc.code,
                     args,
-                    &pyfunc.defaults,
-                    &pyfunc.kw_defaults,
+                    &defaults,
+                    &kw_defaults,
                     globals,
                     &pyfunc.closure,
                     &pyfunc.constant_cache,

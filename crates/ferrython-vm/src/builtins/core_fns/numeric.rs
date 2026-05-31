@@ -448,6 +448,16 @@ pub(crate) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if inst.attrs.read().contains_key("__deque__") {
             return Err(PyException::type_error("unhashable type: 'deque'"));
         }
+        let is_weak_ref_like = {
+            let attrs = inst.attrs.read();
+            attrs.contains_key("__weakref_ref__") || attrs.contains_key("__weakmethod__")
+        };
+        if !is_weak_ref_like && crate::VirtualMachine::class_blocks_hash(&inst.class) {
+            return Err(PyException::type_error(format!(
+                "unhashable type: '{}'",
+                args[0].type_name()
+            )));
+        }
         let is_weak_method = inst.attrs.read().contains_key("__weakmethod__");
         let weak_call = {
             let attrs = inst.attrs.read();

@@ -14,6 +14,9 @@ pub(super) fn add_sequence_methods(sequence_cls: &PyObjectRef, mutable_sequence_
             let len = self_obj.py_len()? as i64;
             for i in 0..len {
                 let item = self_obj.get_item(&PyObject::int(i))?;
+                if PyObjectRef::ptr_eq(&item, target) {
+                    return Ok(PyObject::bool_val(true));
+                }
                 if item
                     .compare(target, CompareOp::Eq)
                     .map(|v| v.is_truthy())
@@ -76,6 +79,9 @@ pub(super) fn add_sequence_methods(sequence_cls: &PyObjectRef, mutable_sequence_
             let stop = if stop < 0 { (len + stop).max(0) } else { stop }.min(len);
             for i in start..stop {
                 let item = self_obj.get_item(&PyObject::int(i))?;
+                if PyObjectRef::ptr_eq(&item, target) {
+                    return Ok(PyObject::int(i));
+                }
                 if item
                     .compare(target, CompareOp::Eq)
                     .map(|v| v.is_truthy())
@@ -103,6 +109,10 @@ pub(super) fn add_sequence_methods(sequence_cls: &PyObjectRef, mutable_sequence_
             let mut count = 0i64;
             for i in 0..len {
                 let item = self_obj.get_item(&PyObject::int(i))?;
+                if PyObjectRef::ptr_eq(&item, target) {
+                    count += 1;
+                    continue;
+                }
                 if item
                     .compare(target, CompareOp::Eq)
                     .map(|v| v.is_truthy())

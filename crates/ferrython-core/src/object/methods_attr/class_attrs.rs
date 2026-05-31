@@ -169,6 +169,16 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
             if args.is_empty() {
                 return Err(PyException::type_error("__new__ requires cls"));
             }
+            if args.len() != 1 {
+                let cls_name = match &args[0].payload {
+                    PyObjectPayload::Class(cd) => cd.name.as_str(),
+                    _ => "object",
+                };
+                return Err(PyException::type_error(format!(
+                    "{}() takes no arguments",
+                    cls_name
+                )));
+            }
             Ok(PyObject::instance(args[0].clone()))
         }));
     }

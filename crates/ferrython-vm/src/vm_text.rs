@@ -2,7 +2,7 @@
 
 use crate::VirtualMachine;
 use compact_str::CompactString;
-use ferrython_core::error::PyResult;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
 fn class_or_mro_defines_method(cls: &PyObjectRef, name: &str) -> bool {
@@ -44,7 +44,18 @@ impl VirtualMachine {
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
-                    return Ok(result.py_to_string());
+                    if let PyObjectPayload::Str(s) = &result.payload {
+                        return Ok(s.to_string());
+                    }
+                    if let Some(bv) = Self::get_builtin_value(&result) {
+                        if let PyObjectPayload::Str(s) = &bv.payload {
+                            return Ok(s.to_string());
+                        }
+                    }
+                    return Err(PyException::type_error(format!(
+                        "__str__ returned non-string (type {})",
+                        result.type_name()
+                    )));
                 }
                 // Fall back to __repr__ before __builtin_value__: namedtuples, dataclasses, etc.
                 // define custom __repr__ that should serve as str() too.
@@ -57,7 +68,18 @@ impl VirtualMachine {
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
-                    return Ok(result.py_to_string());
+                    if let PyObjectPayload::Str(s) = &result.payload {
+                        return Ok(s.to_string());
+                    }
+                    if let Some(bv) = Self::get_builtin_value(&result) {
+                        if let PyObjectPayload::Str(s) = &bv.payload {
+                            return Ok(s.to_string());
+                        }
+                    }
+                    return Err(PyException::type_error(format!(
+                        "__repr__ returned non-string (type {})",
+                        result.type_name()
+                    )));
                 }
                 // namedtuple: use BuiltinBoundMethod __str__ (dispatches to call_namedtuple_method)
                 if inst.class.get_attr("__namedtuple__").is_some() {
@@ -418,7 +440,18 @@ impl VirtualMachine {
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
-                    return Ok(result.py_to_string());
+                    if let PyObjectPayload::Str(s) = &result.payload {
+                        return Ok(s.to_string());
+                    }
+                    if let Some(bv) = Self::get_builtin_value(&result) {
+                        if let PyObjectPayload::Str(s) = &bv.payload {
+                            return Ok(s.to_string());
+                        }
+                    }
+                    return Err(PyException::type_error(format!(
+                        "__repr__ returned non-string (type {})",
+                        result.type_name()
+                    )));
                 }
                 // Dataclass auto-repr (before __builtin_value__ delegation)
                 let class = &inst.class;

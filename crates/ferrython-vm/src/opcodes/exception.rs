@@ -9,7 +9,116 @@ use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
+fn is_valid_exception_cause(cause: &PyObjectRef) -> bool {
+    match &cause.payload {
+        PyObjectPayload::ExceptionInstance(_) | PyObjectPayload::ExceptionType(_) => true,
+        PyObjectPayload::Instance(inst) => VirtualMachine::is_exception_class(&inst.class),
+        PyObjectPayload::Class(_) => VirtualMachine::is_exception_class(cause),
+        _ => false,
+    }
+}
+
 impl VirtualMachine {
+    pub(crate) fn active_exception_chain_contains(
+        active: &PyException,
+        candidate: &PyException,
+    ) -> bool {
+        let mut current = Some(active);
+        while let Some(exc) = current {
+            if Self::same_exception_object(exc, candidate) {
+                return true;
+            }
+            current = exc.context.as_deref();
+        }
+        false
+    }
+
+    pub(crate) fn context_for_raise(
+        active: &PyException,
+        candidate: &PyException,
+    ) -> Option<PyException> {
+        let mut ctx = active.clone();
+        let mut current = &mut ctx;
+        loop {
+            if Self::same_exception_object(current, candidate) {
+                return None;
+            }
+            let next_contains_candidate = current
+                .context
+                .as_deref()
+                .is_some_and(|next| Self::active_exception_chain_contains(next, candidate));
+            if next_contains_candidate {
+                if let Some(original) = current.original.as_ref() {
+                    Self::clear_exc_context(original);
+                }
+                current.context = None;
+                return Some(ctx);
+            }
+            match current.context.as_deref_mut() {
+                Some(next) => current = next,
+                None => return Some(ctx),
+            }
+        }
+    }
+
+    fn exception_class_is_builtin(cls: &PyObjectRef) -> bool {
+        matches!(
+            cls.payload,
+            PyObjectPayload::Class(ref cd)
+                if cd.namespace.read().get("__builtin_exception_kind__").is_some()
+        )
+    }
+
+    fn exception_message_from_instance(exc: &PyObjectRef) -> String {
+        if let Some(a) = exc.get_attr("args") {
+            if let PyObjectPayload::Tuple(items) = &a.payload {
+                if items.len() == 1 {
+                    items[0].py_to_string()
+                } else if items.is_empty() {
+                    String::new()
+                } else {
+                    a.repr()
+                }
+            } else {
+                exc.py_to_string()
+            }
+        } else {
+            exc.py_to_string()
+        }
+    }
+
+    fn exception_from_instance(exc: PyObjectRef, class: &PyObjectRef) -> PyException {
+        let kind = Self::find_exception_kind(class);
+        let msg = Self::exception_message_from_instance(&exc);
+        PyException::with_original(kind, msg, exc)
+    }
+
+    fn exception_from_class(&mut self, exc: &PyObjectRef) -> Result<PyException, PyException> {
+        if !Self::is_exception_class(exc) {
+            return Err(PyException::type_error(
+                "exceptions must derive from BaseException",
+            ));
+        }
+        if Self::exception_class_is_builtin(exc) {
+            let kind = Self::find_exception_kind(exc);
+            return Ok(PyException::new(kind, ""));
+        }
+        let inst = self.instantiate_class(exc, vec![], vec![])?;
+        match &inst.payload {
+            PyObjectPayload::Instance(idata) if Self::is_exception_class(&idata.class) => {
+                Ok(Self::exception_from_instance(inst.clone(), &idata.class))
+            }
+            PyObjectPayload::ExceptionInstance(ei) => Ok(PyException::with_original(
+                ei.kind,
+                ei.message.clone(),
+                inst,
+            )),
+            _ => Err(PyException::type_error(
+                "exceptions must derive from BaseException",
+            )),
+        }
+    }
+
     pub(crate) fn exec_exception_ops(
         &mut self,
         instr: Instruction,
@@ -465,24 +574,7 @@ impl VirtualMachine {
                             "exceptions must derive from BaseException",
                         );
                     }
-                    let kind = Self::find_exception_kind(&inst.class);
-                    // Derive message from args (CPython: str(exc) uses args)
-                    let msg = if let Some(a) = exc.get_attr("args") {
-                        if let PyObjectPayload::Tuple(items) = &a.payload {
-                            if items.len() == 1 {
-                                items[0].py_to_string()
-                            } else if items.is_empty() {
-                                String::new()
-                            } else {
-                                a.repr()
-                            }
-                        } else {
-                            exc.py_to_string()
-                        }
-                    } else {
-                        exc.py_to_string()
-                    };
-                    PyException::with_original(kind, msg, exc.clone())
+                    Self::exception_from_instance(exc.clone(), &inst.class)
                 }
                 PyObjectPayload::Class(_) => {
                     if !Self::is_exception_class(exc) {
@@ -508,23 +600,8 @@ impl VirtualMachine {
             }
             1 => {
                 let exc = frame.pop();
-                // If raising a user-defined exception class, auto-instantiate to preserve class identity
-                if let PyObjectPayload::Class(cd) = &exc.payload {
-                    if !Self::is_exception_class(&exc) {
-                        return Err(PyException::type_error(
-                            "exceptions must derive from BaseException",
-                        ));
-                    }
-                    let is_builtin_exc = cd
-                        .namespace
-                        .read()
-                        .get("__builtin_exception_kind__")
-                        .is_some();
-                    if !is_builtin_exc {
-                        let inst = self.instantiate_class(&exc, vec![], vec![])?;
-                        let kind = Self::find_exception_kind(&exc);
-                        return Err(PyException::with_original(kind, String::new(), inst));
-                    }
+                if matches!(&exc.payload, PyObjectPayload::Class(_)) {
+                    return Err(self.exception_from_class(&exc)?);
                 }
                 let py_exc = raise_exc(&exc);
                 return Err(py_exc);
@@ -548,12 +625,23 @@ impl VirtualMachine {
                         }
                     }
                 } else {
-                    let cause_exc = raise_exc(&cause);
+                    if !is_valid_exception_cause(&cause) {
+                        return Err(PyException::type_error(
+                            "exception causes must derive from BaseException",
+                        ));
+                    }
+                    let cause_exc = if matches!(&cause.payload, PyObjectPayload::Class(_)) {
+                        self.exception_from_class(&cause)?
+                    } else {
+                        raise_exc(&cause)
+                    };
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             let mut w = ei.ensure_attrs().write();
-                            w.insert(intern_or_new("__cause__"), cause.clone());
+                            let cause_obj =
+                                cause_exc.original.clone().unwrap_or_else(|| cause.clone());
+                            w.insert(intern_or_new("__cause__"), cause_obj);
                             w.insert(
                                 intern_or_new("__suppress_context__"),
                                 PyObject::bool_val(true),
@@ -564,12 +652,12 @@ impl VirtualMachine {
                 }
                 // Implicit chaining: set __context__ to active exception
                 if let Some(active) = &self.active_exception {
-                    if !Self::same_exception_object(&py_exc, active) {
-                        py_exc.context = Some(Box::new(active.clone()));
+                    if let Some(ctx_exc) = Self::context_for_raise(active, &py_exc) {
+                        py_exc.context = Some(Box::new(ctx_exc.clone()));
                         if let Some(ref original) = py_exc.original {
                             if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                                 // Store __context__ as the active exception's original object
-                                if let Some(ref ctx_orig) = active.original {
+                                if let Some(ref ctx_orig) = ctx_exc.original {
                                     ei.ensure_attrs()
                                         .write()
                                         .insert(intern_or_new("__context__"), ctx_orig.clone());

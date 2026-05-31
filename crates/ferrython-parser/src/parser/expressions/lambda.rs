@@ -45,8 +45,13 @@ impl Parser {
             } else if self.check(TokenKind::Star) {
                 self.advance();
                 seen_star = true;
-                if self.check(TokenKind::Comma) || self.check(TokenKind::Colon) {
+                if self.check(TokenKind::Comma) {
                     // bare * separator
+                } else if self.check(TokenKind::Colon) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax("named arguments must follow bare *".into()),
+                        self.peek().span,
+                    ));
                 } else {
                     let location = self.current_location();
                     let name = self.expect_name()?;
@@ -58,6 +63,12 @@ impl Parser {
                     });
                 }
             } else if self.check(TokenKind::DoubleStar) {
+                if seen_star && args.vararg.is_none() && args.kwonlyargs.is_empty() {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax("named arguments must follow bare *".into()),
+                        self.peek().span,
+                    ));
+                }
                 self.advance();
                 let location = self.current_location();
                 let name = self.expect_name()?;

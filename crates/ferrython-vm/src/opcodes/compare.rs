@@ -5,7 +5,8 @@ use crate::VirtualMachine;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
-    lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    has_descriptor_get, lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::PyInt;
 
@@ -283,17 +284,32 @@ impl VirtualMachine {
                     }
                     return Ok(None);
                 }
-                if let Some(result) =
-                    vm.call_plain_instance_dunder(obj, inst, method_name, vec![other.clone()])?
-                {
-                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
-                        return Ok(Some(result));
+                match vm.call_plain_instance_dunder(obj, inst, method_name, vec![other.clone()]) {
+                    Ok(Some(result)) => {
+                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                            return Ok(Some(result));
+                        }
+                        return Ok(None);
                     }
-                    return Ok(None);
+                    Ok(None) => {}
+                    Err(err) if matches!(err.kind, ExceptionKind::AttributeError) => {
+                        return Ok(None);
+                    }
+                    Err(err) => return Err(err),
                 }
                 if let Some(method) = lookup_in_class_mro(&inst.class, method_name) {
-                    let bound = vm.bind_method(obj, method);
-                    let result = vm.call_object(bound, vec![other.clone()])?;
+                    let callable = if has_descriptor_get(&method) {
+                        match vm.resolve_descriptor(&method, obj) {
+                            Ok(resolved) => resolved,
+                            Err(err) if matches!(err.kind, ExceptionKind::AttributeError) => {
+                                return Ok(None);
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    } else {
+                        vm.bind_method(obj, method)
+                    };
+                    let result = vm.call_object(callable, vec![other.clone()])?;
                     if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
                         return Ok(Some(result));
                     }
@@ -333,6 +349,26 @@ impl VirtualMachine {
                 let left = unwrapped_a.unwrap_or_else(|| a.clone());
                 let right = unwrapped_b.unwrap_or_else(|| b.clone());
                 return self.exec_compare_op(cmp, left, right);
+            }
+
+            if matches!(cmp, 0 | 1 | 4 | 5)
+                && (matches!(&a.payload, PyObjectPayload::BoundMethod { .. })
+                    || matches!(&b.payload, PyObjectPayload::BoundMethod { .. })
+                    || matches!(&a.payload, PyObjectPayload::Function(_))
+                    || matches!(&b.payload, PyObjectPayload::Function(_)))
+            {
+                return Err(PyException::type_error(format!(
+                    "'{}' not supported between instances of '{}' and '{}'",
+                    match cmp {
+                        0 => "<",
+                        1 => "<=",
+                        4 => ">",
+                        5 => ">=",
+                        _ => unreachable!(),
+                    },
+                    a.type_name(),
+                    b.type_name()
+                )));
             }
 
             // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup

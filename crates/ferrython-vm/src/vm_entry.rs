@@ -52,6 +52,17 @@ impl VirtualMachine {
             exc.traceback.clone(),
         );
         self.active_exception = Some(exc);
+        if let Some(exc) = &self.active_exception {
+            if let Some(original) = exc.original.as_ref() {
+                if Self::stored_exc_attr(original, "__traceback__").is_none()
+                    && !exc.traceback.is_empty()
+                {
+                    let tb_obj =
+                        Self::build_traceback_object_with_tail(&exc.traceback, PyObject::none());
+                    Self::store_exc_attr(original, "__traceback__", tb_obj);
+                }
+            }
+        }
     }
 
     pub(crate) fn restore_previous_exception(&mut self) {

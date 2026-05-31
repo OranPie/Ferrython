@@ -960,6 +960,38 @@ impl VirtualMachine {
         }
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
+                if matches!(&inst.class.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "traceback")
+                {
+                    if name.as_str() == "tb_next" {
+                        if !matches!(&value.payload, PyObjectPayload::None)
+                            && !matches!(
+                                &value.payload,
+                                PyObjectPayload::Instance(next_inst)
+                                    if matches!(&next_inst.class.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "traceback")
+                            )
+                        {
+                            return Err(PyException::type_error(
+                                "expected traceback object or None",
+                            ));
+                        }
+                        let mut next = Some(value.clone());
+                        while let Some(tb) = next {
+                            if PyObjectRef::ptr_eq(&tb, &obj) {
+                                return Err(PyException::value_error("traceback loop detected"));
+                            }
+                            next = tb
+                                .get_attr("tb_next")
+                                .filter(|next| !matches!(&next.payload, PyObjectPayload::None));
+                        }
+                        inst.attrs.write().insert(name.clone(), value);
+                    } else {
+                        return Err(PyException::attribute_error(format!(
+                            "readonly attribute '{}'",
+                            name
+                        )));
+                    }
+                    return Ok(None);
+                }
                 // Check __slots__ restriction via ClassData.slots field
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     if let Some(allowed) = cd.collect_all_slots() {
@@ -1008,9 +1040,45 @@ impl VirtualMachine {
             PyObjectPayload::Module(md) => {
                 md.attrs.write().insert(name.clone(), value);
             }
-            PyObjectPayload::Function(f) => {
-                f.attrs.write().insert(name.clone(), value);
-            }
+            PyObjectPayload::Function(f) => match name.as_str() {
+                "__defaults__" => {
+                    let mut defaults = f.defaults.write();
+                    defaults.clear();
+                    if !matches!(&value.payload, PyObjectPayload::None) {
+                        if let PyObjectPayload::Tuple(items) = &value.payload {
+                            defaults.extend(items.iter().cloned());
+                        } else {
+                            return Err(PyException::type_error(
+                                "__defaults__ must be set to a tuple object",
+                            ));
+                        }
+                    }
+                }
+                "__kwdefaults__" => {
+                    let mut kw_defaults = f.kw_defaults.write();
+                    kw_defaults.clear();
+                    if !matches!(&value.payload, PyObjectPayload::None) {
+                        if let PyObjectPayload::Dict(map) = &value.payload {
+                            for (k, v) in map.read().iter() {
+                                if let HashableKey::Str(name) = k {
+                                    kw_defaults.insert(name.to_compact_string(), v.clone());
+                                } else {
+                                    return Err(PyException::type_error(
+                                        "__kwdefaults__ keys must be strings",
+                                    ));
+                                }
+                            }
+                        } else {
+                            return Err(PyException::type_error(
+                                "__kwdefaults__ must be set to a dict object",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    f.attrs.write().insert(name.clone(), value);
+                }
+            },
             PyObjectPayload::Property(_) if name.as_str() == "__doc__" => {
                 ferrython_core::object::property_set_doc(&obj, value)?;
             }
@@ -1055,6 +1123,13 @@ impl VirtualMachine {
             }
         }
         match &obj.payload {
+            PyObjectPayload::Instance(inst) if matches!(&inst.class.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "traceback") =>
+            {
+                return Err(PyException::type_error(format!(
+                    "can't delete traceback attribute '{}'",
+                    name
+                )));
+            }
             PyObjectPayload::Instance(inst) => {
                 // Check for descriptor with __delete__ or property fdel first
                 if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {

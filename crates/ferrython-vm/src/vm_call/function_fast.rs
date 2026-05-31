@@ -15,8 +15,8 @@ impl VirtualMachine {
             PyObjectPayload::Function(pyfunc)
                 if pyfunc.is_simple
                     && pyfunc.code.arg_count == 1
-                    && pyfunc.defaults.is_empty()
-                    && pyfunc.kw_defaults.is_empty()
+                    && pyfunc.defaults.read().is_empty()
+                    && pyfunc.kw_defaults.read().is_empty()
                     && pyfunc.closure.is_empty() =>
             {
                 &**pyfunc as *const PyFunction
@@ -66,8 +66,8 @@ impl VirtualMachine {
             PyObjectPayload::Function(pyfunc)
                 if pyfunc.is_simple
                     && pyfunc.code.arg_count == 2
-                    && pyfunc.defaults.is_empty()
-                    && pyfunc.kw_defaults.is_empty()
+                    && pyfunc.defaults.read().is_empty()
+                    && pyfunc.kw_defaults.read().is_empty()
                     && pyfunc.closure.is_empty() =>
             {
                 &**pyfunc as *const PyFunction

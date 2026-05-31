@@ -762,11 +762,8 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         PyObjectPayload::Partial(_) => Some(PyObject::builtin_type_by_name("functools.partial")),
         PyObjectPayload::Range(_) => Some(PyObject::builtin_type_by_name("range")),
         PyObjectPayload::DeferredSleep { .. } => Some(PyObject::builtin_type_by_name("coroutine")),
-        PyObjectPayload::DictKeys { .. } => {
-            Some(PyObject::builtin_type_by_name("dict_keyiterator"))
-        }
-        PyObjectPayload::DictValues { .. } | PyObjectPayload::DictItems { .. } => {
-            Some(PyObject::builtin_type_by_name("dict_itemiterator"))
-        }
+        PyObjectPayload::DictKeys { .. } => Some(PyObject::builtin_type_by_name("dict_keys")),
+        PyObjectPayload::DictValues { .. } => Some(PyObject::builtin_type_by_name("dict_values")),
+        PyObjectPayload::DictItems { .. } => Some(PyObject::builtin_type_by_name("dict_items")),
     }
 }

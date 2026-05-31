@@ -1068,15 +1068,13 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             }
         }
         PyObjectPayload::DictValues { map: m, owner } => {
-            let expected_len = m.read().len();
-            let iter = PyObject::wrap(PyObjectPayload::DictValueIter(Box::new(
-                DictValueIterData {
-                    source: m.clone(),
-                    index: SyncUsize::new(0),
-                    expected_len,
-                    expected_version: dict_storage_version(m),
+            let values: Vec<PyObjectRef> = m.read().values().cloned().collect();
+            let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                IteratorData::List {
+                    items: values,
+                    index: 0,
                 },
-            )));
+            ))));
             if let Some(owner) = owner.clone() {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                     PyCell::new(IteratorData::HeldIter {

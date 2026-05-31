@@ -180,7 +180,9 @@ pub fn create_inspect_module() -> PyObjectRef {
         if let PyObjectPayload::Function(f) = &func.payload {
             let ac = f.code.arg_count as usize;
             let kwc = f.code.kwonlyarg_count as usize;
-            let n_defaults = f.defaults.len();
+            let defaults = f.defaults.read();
+            let kw_defaults = f.kw_defaults.read();
+            let n_defaults = defaults.len();
             let has_varargs = f.code.flags.contains(CodeFlags::VARARGS);
             let has_varkw = f.code.flags.contains(CodeFlags::VARKEYWORDS);
             let varargs_idx = if has_varargs { Some(ac) } else { None };
@@ -195,7 +197,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             for i in 0..ac.min(f.code.varnames.len()) {
                 let name = &f.code.varnames[i];
                 let default = if n_defaults > 0 && i >= ac - n_defaults {
-                    f.defaults[i - (ac - n_defaults)].clone()
+                    defaults[i - (ac - n_defaults)].clone()
                 } else {
                     empty.clone()
                 };
@@ -223,8 +225,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                     break;
                 }
                 let name = &f.code.varnames[idx];
-                let default = f
-                    .kw_defaults
+                let default = kw_defaults
                     .get(name)
                     .cloned()
                     .unwrap_or_else(|| empty.clone());
@@ -733,11 +734,13 @@ pub fn create_inspect_module() -> PyObjectRef {
                 None
             };
 
-            let defaults = if pf.defaults.is_empty() {
+            let defaults_guard = pf.defaults.read();
+            let defaults = if defaults_guard.is_empty() {
                 PyObject::tuple(vec![])
             } else {
-                PyObject::tuple(pf.defaults.clone())
+                PyObject::tuple(defaults_guard.clone())
             };
+            let kw_defaults_guard = pf.kw_defaults.read();
 
             let cls = PyObject::class(CompactString::from("FullArgSpec"), vec![], IndexMap::new());
             if let PyObjectPayload::Class(ref cd) = cls.payload {
@@ -775,11 +778,11 @@ pub fn create_inspect_module() -> PyObjectRef {
                 a.insert(CompactString::from("kwonlyargs"), PyObject::list(kwonly));
                 a.insert(
                     CompactString::from("kwonlydefaults"),
-                    if pf.kw_defaults.is_empty() {
+                    if kw_defaults_guard.is_empty() {
                         PyObject::none()
                     } else {
                         let mut kw_dict: FxHashKeyMap = new_fx_hashkey_map();
-                        for (k, v) in &pf.kw_defaults {
+                        for (k, v) in kw_defaults_guard.iter() {
                             kw_dict.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                         PyObject::dict(kw_dict)

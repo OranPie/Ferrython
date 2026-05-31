@@ -28,10 +28,11 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
         }
         "__class__" => Some(PyObject::builtin_type(CompactString::from("function"))),
         "__defaults__" => {
-            if f.defaults.is_empty() {
+            let defaults = f.defaults.read();
+            if defaults.is_empty() {
                 Some(PyObject::none())
             } else {
-                Some(PyObject::tuple(f.defaults.clone()))
+                Some(PyObject::tuple(defaults.clone()))
             }
         }
         "__module__" => {
@@ -86,11 +87,12 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
         }
         "__code__" => Some(PyObject::wrap(PyObjectPayload::Code(Rc::clone(&f.code)))),
         "__kwdefaults__" => {
-            if f.kw_defaults.is_empty() {
+            let kw_defaults = f.kw_defaults.read();
+            if kw_defaults.is_empty() {
                 Some(PyObject::none())
             } else {
                 let mut map = new_fx_hashkey_map();
-                for (k, v) in &f.kw_defaults {
+                for (k, v) in kw_defaults.iter() {
                     if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                         map.insert(hk, v.clone());
                     }

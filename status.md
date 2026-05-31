@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-31T15:25:21+08:00
+Last updated: 2026-05-31T19:30:54+08:00
 
 ## 性能优化进度
 
@@ -76,6 +76,20 @@ Last updated: 2026-05-31T15:25:21+08:00
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
+
+- 2026-05-31 userstring / keyword-only args / raise / class / collections 兼容批次：
+  - `test_userstring` 剩余 lone-surrogate encode 问题已通过共享字符串编码路径补齐，避免在 UserString 层做特判。
+  - keyword-only 参数解析、lambda 参数、函数调用和 inspect argspec 路径同步补齐，覆盖 positional-only/keyword-only/default 组合。
+  - `raise` / exception chaining / traceback 表面继续泛化：异常属性、cause/context 校验、reraising、traceback object 构造和 pickle/copy 相邻路径保持一致。
+  - class/runtime 调用路径补齐 `super()`、class attr lookup、bound/native callable 参数绑定、`__class__`/MRO、simple class init 和 object protocol 的缺口。
+  - `collections.abc` 补齐 builtin registry、virtual subclass registry、None blocker、Sequence/MultiSequence mixin abstractness、Generator/Awaitable inheritance、dict view type identity 和 mapping reversed blocking。
+  - `operator.__sub__` / `__and__` / `__or__` / `__xor__` 改为先走 generic left/reflected dunder dispatch，再回退内置数值/集合操作；修复 Set mixin 与 `operator` 模块行为不一致。
+  - lambda body 中含 `yield` 时现在标记为 generator，同时不让 nested lambda 的 yield 泄漏到外层 generator 判定。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_collections` -> `run=81 pass=79 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userstring test_keywordonlyarg test_raise test_class test_collections` -> `run=196 pass=192 fail=0 err=0 skip=4`
 
 - 2026-05-31 baseexception / csv / sched / codeop / contextlib 兼容批次：
   - `BaseException` 的 ABC/type 继承面补齐为 object subclass，`test_baseexception` 维持全绿。

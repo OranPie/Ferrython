@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -1784,8 +1784,8 @@ impl VirtualMachine {
                     // Implicit chaining: link to active exception (only when present)
                     if exc.context.is_none() {
                         if let Some(ref active) = self.active_exception {
-                            if !Self::same_exception_object(&exc, active) {
-                                exc.context = Some(Box::new(active.clone()));
+                            if let Some(ctx_exc) = Self::context_for_raise(active, &exc) {
+                                exc.context = Some(Box::new(ctx_exc));
                             }
                         }
                     }
@@ -1795,6 +1795,17 @@ impl VirtualMachine {
                             // Attach traceback from call stack if not already present
                             if exc.traceback.is_empty() {
                                 self.attach_traceback(&mut exc);
+                            } else if let Some(frame) = self.call_stack.last() {
+                                let parent_name = frame.code.name.as_str();
+                                let first_name =
+                                    exc.traceback.first().map(|entry| entry.function.as_str());
+                                if first_name != Some(parent_name) {
+                                    let mut parent_exc =
+                                        PyException::new(exc.kind, exc.message.clone());
+                                    Self::push_frame_traceback_entry(&mut parent_exc, frame);
+                                    parent_exc.traceback.extend(exc.traceback.drain(..));
+                                    exc.traceback = parent_exc.traceback;
+                                }
                             }
                             // Extract exc_value and exc_type, reusing original when available
                             let exc_kind = exc.kind;
@@ -1877,13 +1888,25 @@ impl VirtualMachine {
                                     Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                                 }
                             }
-                            // Build traceback object and attach to exception value
+                            let existing_traceback =
+                                Self::stored_exc_attr(&exc_value, "__traceback__")
+                                    .filter(|tb| !matches!(&tb.payload, PyObjectPayload::None))
+                                    .unwrap_or_else(PyObject::none);
+                            // Build traceback object and attach to exception value.  A
+                            // traceback set via with_traceback() becomes the tail of the
+                            // newly raised frame chain.
                             let tb_obj = if !exc.traceback.is_empty() {
-                                Self::build_traceback_object(&exc.traceback)
+                                Self::build_traceback_object_with_tail(
+                                    &exc.traceback,
+                                    existing_traceback,
+                                )
                             } else {
-                                PyObject::none()
+                                existing_traceback
                             };
                             Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
+                            if let Some(frame_obj) = tb_obj.get_attr("tb_frame") {
+                                ferrython_stdlib::set_current_frame(Some(frame_obj));
+                            }
                             // Ensure exc.original points to the same exc_value so that
                             // sys.exc_info() can retrieve __traceback__ later.
                             exc.original = Some(exc_value.clone());
@@ -1900,6 +1923,9 @@ impl VirtualMachine {
                         // No handler in current frame — unwind iteratively
                         if self.call_stack.len() > initial_depth {
                             if let Some(child) = self.call_stack.pop() {
+                                if exc.traceback.is_empty() {
+                                    Self::push_frame_traceback_entry(&mut exc, &child);
+                                }
                                 Self::keep_frame_objects_alive(&mut exc, &child);
                                 child.recycle(&mut self.frame_pool);
                             }

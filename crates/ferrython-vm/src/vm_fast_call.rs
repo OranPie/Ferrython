@@ -366,6 +366,10 @@ pub(crate) fn try_fast_simple_class_call(
         return FastCallResult::NewFrame(new_frame);
     }
 
+    if arg_count > 0 && !cd.is_exception_subclass {
+        return FastCallResult::Fallback;
+    }
+
     let instance = PyObject::instance(cls_obj.clone());
     if cd.is_exception_subclass {
         if let PyObjectPayload::Instance(inst) = &instance.payload {

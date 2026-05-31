@@ -1,6 +1,8 @@
 use compact_str::CompactString;
-use ferrython_core::error::PyResult;
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::{
+    lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 
 use crate::VirtualMachine;
 
@@ -64,6 +66,20 @@ impl VirtualMachine {
             return Ok(instance);
         }
         self.check_abstract_class_instantiation(cls)?;
+        let default_object_new = !pos_args.is_empty()
+            && kwargs.is_empty()
+            && Self::class_uses_default_object_new(cls)
+            && lookup_in_class_mro(cls, "__init__").is_none();
+        if default_object_new {
+            let cls_name = match &cls.payload {
+                PyObjectPayload::Class(cd) => cd.name.as_str(),
+                _ => "object",
+            };
+            return Err(PyException::type_error(format!(
+                "{}() takes no arguments",
+                cls_name
+            )));
+        }
         if let Some(instance) = self.try_instantiate_enum(cls, &pos_args, &kwargs)? {
             return Ok(instance);
         }
@@ -82,6 +98,7 @@ impl VirtualMachine {
                     if nf.name.ends_with(".__new__") && matches!(nf.name.as_str(),
                         "tuple.__new__" | "list.__new__" | "str.__new__" | "int.__new__"
                         | "float.__new__" | "complex.__new__" | "object.__new__")
+                        || nf.name.as_str() == "__new__"
             );
             if is_builtin_new || is_native_builtin_new {
                 let inst = PyObject::instance(cls.clone());
@@ -108,6 +125,32 @@ impl VirtualMachine {
         } else {
             PyObject::instance(cls.clone())
         };
+
+        if !pos_args.is_empty()
+            && kwargs.is_empty()
+            && Self::class_uses_default_object_new(cls)
+            && lookup_in_class_mro(cls, "__init__").is_none()
+        {
+            let has_builtin_base = matches!(&cls.payload, PyObjectPayload::Class(cd) if cd.builtin_base_name.is_some());
+            if !has_builtin_base && !Self::is_exception_class(cls) {
+                let cls_name = match &cls.payload {
+                    PyObjectPayload::Class(cd) => cd.name.as_str(),
+                    _ => "object",
+                };
+                return Err(PyException::type_error(format!(
+                    "{}() takes no arguments",
+                    cls_name
+                )));
+            }
+        }
+
+        if let PyObjectPayload::Instance(inst) = &instance.payload {
+            if !Self::runtime_class_is_subclass(&inst.class, cls) {
+                return Ok(instance);
+            }
+        } else {
+            return Ok(instance);
+        }
 
         self.ensure_builtin_subclass_value(cls, &instance, &pos_args)?;
 
@@ -146,6 +189,27 @@ impl VirtualMachine {
         Ok(instance)
     }
 
+    fn class_uses_default_object_new(cls: &PyObjectRef) -> bool {
+        let Some(new_method) = cls.get_attr("__new__") else {
+            return false;
+        };
+        match &new_method.payload {
+            PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "__new__",
+            PyObjectPayload::BuiltinBoundMethod(bbm) => {
+                bbm.method_name.as_str() == "__new__"
+                    && matches!(
+                        &bbm.receiver.payload,
+                        PyObjectPayload::BuiltinType(name) if name.as_str() == "object"
+                    )
+            }
+            PyObjectPayload::BoundMethod { method, .. } => match &method.payload {
+                PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "__new__",
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     pub(super) fn abstract_marker_func(func: Option<&PyObjectRef>) -> Option<PyObjectRef> {
         let func = func?;
         if let PyObjectPayload::Tuple(items) = &func.payload {
@@ -154,5 +218,22 @@ impl VirtualMachine {
             }
         }
         None
+    }
+
+    fn runtime_class_is_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
+        if PyObjectRef::ptr_eq(child, parent) {
+            return true;
+        }
+        if let PyObjectPayload::Class(cd) = &child.payload {
+            cd.bases
+                .iter()
+                .any(|base| Self::runtime_class_is_subclass(base, parent))
+                || cd
+                    .mro
+                    .iter()
+                    .any(|base| Self::runtime_class_is_subclass(base, parent))
+        } else {
+            false
+        }
     }
 }

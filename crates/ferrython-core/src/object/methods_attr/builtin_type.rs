@@ -200,6 +200,50 @@ pub(super) fn builtin_type_attr(
                 },
             ))))
         }
+        "__setattr__" if n.as_str() == "type" => {
+            Some(PyObject::native_function("type.__setattr__", |args| {
+                if args.len() != 3 {
+                    return Err(PyException::type_error(
+                        "type.__setattr__() takes exactly 3 arguments",
+                    ));
+                }
+                let name = args[1]
+                    .as_str()
+                    .ok_or_else(|| PyException::type_error("attribute name must be string"))?;
+                let PyObjectPayload::Class(cd) = &args[0].payload else {
+                    return Err(PyException::type_error(
+                        "descriptor '__setattr__' requires a 'type' object",
+                    ));
+                };
+                cd.namespace
+                    .write()
+                    .insert(CompactString::from(name), args[2].clone());
+                cd.invalidate_cache();
+                Ok(PyObject::none())
+            }))
+        }
+        "__delattr__" if n.as_str() == "type" => {
+            Some(PyObject::native_function("type.__delattr__", |args| {
+                if args.len() != 2 {
+                    return Err(PyException::type_error(
+                        "type.__delattr__() takes exactly 2 arguments",
+                    ));
+                }
+                let name = args[1]
+                    .as_str()
+                    .ok_or_else(|| PyException::type_error("attribute name must be string"))?;
+                let PyObjectPayload::Class(cd) = &args[0].payload else {
+                    return Err(PyException::type_error(
+                        "descriptor '__delattr__' requires a 'type' object",
+                    ));
+                };
+                if cd.namespace.write().shift_remove(name).is_none() {
+                    return Err(PyException::attribute_error(name));
+                }
+                cd.invalidate_cache();
+                Ok(PyObject::none())
+            }))
+        }
         // object.__setattr__(instance, name, value) — bypass custom __setattr__
         "__setattr__" => Some(PyObject::native_function("object.__setattr__", |args| {
             if args.len() != 3 {

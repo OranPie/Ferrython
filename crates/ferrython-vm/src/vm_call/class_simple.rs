@@ -20,6 +20,7 @@ impl VirtualMachine {
                 && kwargs.is_empty()
                 && !cd.has_custom_new.get()
                 && !cd.is_dict_subclass
+                && !cd.has_descriptors
                 && cd.builtin_base_name.is_none()
             {
                 let instance = PyObject::instance(cls.clone());
@@ -136,6 +137,11 @@ impl VirtualMachine {
                             ));
                         }
                     }
+                } else if !pos_args.is_empty() {
+                    return Err(PyException::type_error(format!(
+                        "{}() takes no arguments",
+                        cd.name
+                    )));
                 } else if cd.is_exception_subclass {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
                         let mut attrs = inst.attrs.write();

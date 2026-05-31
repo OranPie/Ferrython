@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::PyResult;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
 use crate::builtins;
@@ -66,6 +66,17 @@ impl VirtualMachine {
             "hash" => {
                 if args.len() == 1 {
                     if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                        let is_weak_ref_like = {
+                            let attrs = inst.attrs.read();
+                            attrs.contains_key("__weakref_ref__")
+                                || attrs.contains_key("__weakmethod__")
+                        };
+                        if !is_weak_ref_like && Self::class_blocks_hash(&inst.class) {
+                            return Err(PyException::type_error(format!(
+                                "unhashable type: '{}'",
+                                args[0].type_name()
+                            )));
+                        }
                         if let Some(result) =
                             self.call_plain_instance_dunder(&args[0], inst, "__hash__", Vec::new())?
                         {
@@ -83,6 +94,18 @@ impl VirtualMachine {
                     }
                 }
             }
+            "divmod" => {
+                if args.len() == 2 {
+                    if let Some(result) = self.try_binary_dunder(
+                        &args[0],
+                        &args[1],
+                        "__divmod__",
+                        Some("__rdivmod__"),
+                    )? {
+                        return Ok(Some(result));
+                    }
+                }
+            }
             "bin" | "oct" | "hex" => {
                 if args.len() == 1 {
                     if let PyObjectPayload::Instance(_) = &args[0].payload {
@@ -94,6 +117,21 @@ impl VirtualMachine {
                                     vec![args[0].clone()]
                                 };
                             let idx_val = self.call_object(method, ca)?;
+                            if !matches!(&idx_val.payload, PyObjectPayload::Int(_))
+                                && !matches!(&idx_val.payload, PyObjectPayload::Bool(_))
+                            {
+                                if let Some(bv) = Self::get_builtin_value(&idx_val) {
+                                    if matches!(&bv.payload, PyObjectPayload::Int(_))
+                                        || matches!(&bv.payload, PyObjectPayload::Bool(_))
+                                    {
+                                        return self.call_object(func.clone(), vec![bv]).map(Some);
+                                    }
+                                }
+                                return Err(PyException::type_error(format!(
+                                    "__index__ returned non-int (type {})",
+                                    idx_val.type_name()
+                                )));
+                            }
                             return self.call_object(func.clone(), vec![idx_val]).map(Some);
                         }
                     }

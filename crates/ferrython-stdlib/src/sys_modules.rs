@@ -600,7 +600,8 @@ pub fn create_sys_module() -> PyObjectRef {
             attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
             attrs.insert(CompactString::from("f_code"), PyObject::none());
             attrs.insert(CompactString::from("f_back"), PyObject::none());
-            Ok(PyObject::module_with_attrs(CompactString::from("frame"), attrs))
+            let frame_class = PyObject::builtin_type(CompactString::from("frame"));
+            Ok(PyObject::instance_with_attrs(frame_class, attrs))
         })),
         ("base_prefix", PyObject::str_val(CompactString::from("/usr/local"))),
         ("base_exec_prefix", PyObject::str_val(CompactString::from("/usr/local"))),

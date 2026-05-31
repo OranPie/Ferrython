@@ -71,7 +71,10 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 };
                 let mut mro = Vec::new();
                 for base in &bases {
-                    mro.push(base.clone());
+                    if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object")
+                    {
+                        mro.push(base.clone());
+                    }
                     if let PyObjectPayload::Class(cd) = &base.payload {
                         for m in &cd.mro {
                             if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {
@@ -106,7 +109,10 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 };
                 let mut mro = Vec::new();
                 for base in &bases {
-                    mro.push(base.clone());
+                    if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object")
+                    {
+                        mro.push(base.clone());
+                    }
                     if let PyObjectPayload::Class(cd) = &base.payload {
                         for m in &cd.mro {
                             if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {
@@ -292,7 +298,43 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if args.is_empty() {
                 return Err(PyException::type_error("object.__new__ requires cls"));
             }
+            if args.len() != 1 {
+                if let Some(cls) = args.first() {
+                    if let PyObjectPayload::Class(cd) = &cls.payload {
+                        let ns = cd.namespace.read();
+                        if !ns.contains_key("__new__") && !ns.contains_key("__init__") {
+                            return Err(PyException::type_error(format!(
+                                "{}() takes no arguments",
+                                cd.name
+                            )));
+                        }
+                    }
+                }
+                return Err(PyException::type_error(
+                    "object.__new__() takes exactly one argument (the type to instantiate)",
+                ));
+            }
             Ok(PyObject::instance(args[0].clone()))
+        })),
+        ("object", "__init__") => Some(PyObject::native_function("object.__init__", |args| {
+            if args.len() != 1 {
+                if let Some(instance) = args.first() {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            if !cd.namespace.read().contains_key("__init__") {
+                                return Err(PyException::type_error(format!(
+                                    "{}.__init__() takes exactly one argument (the instance to initialize)",
+                                    cd.name
+                                )));
+                            }
+                        }
+                    }
+                }
+                return Err(PyException::type_error(
+                    "object.__init__() takes exactly one argument (the instance to initialize)",
+                ));
+            }
+            Ok(PyObject::none())
         })),
         // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
         // Store fget/fset/fdel on Instance attrs so property subclasses work

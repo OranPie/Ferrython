@@ -17,9 +17,14 @@ fn is_set_like_for_comparison(
         | PyObjectPayload::DictKeys { .. }
         | PyObjectPayload::DictItems { .. } => true,
         PyObjectPayload::Instance(inst) => match &inst.class.payload {
-            PyObjectPayload::Class(cd) => cd.mro.iter().any(|base| {
-                PyObjectRef::ptr_eq(base, set_cls) || PyObjectRef::ptr_eq(base, mutable_set_cls)
-            }),
+            PyObjectPayload::Class(cd) => {
+                PyObjectRef::ptr_eq(&inst.class, set_cls)
+                    || PyObjectRef::ptr_eq(&inst.class, mutable_set_cls)
+                    || cd.mro.iter().any(|base| {
+                        PyObjectRef::ptr_eq(base, set_cls)
+                            || PyObjectRef::ptr_eq(base, mutable_set_cls)
+                    })
+            }
             _ => false,
         },
         _ => false,
@@ -141,6 +146,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
             "dict_keyiterator",
             "dict_valueiterator",
             "dict_itemiterator",
+            "set_iterator",
             "list_reverseiterator",
         ],
         vec![],
@@ -160,6 +166,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
             "dict_keyiterator",
             "dict_valueiterator",
             "dict_itemiterator",
+            "set_iterator",
             "list_reverseiterator",
         ],
         vec![iterable_cls.clone()],
@@ -256,6 +263,9 @@ pub fn create_collections_abc_module() -> PyObjectRef {
             "dict_keys",
             "dict_items",
             "dict_values",
+            "dict_keyiterator",
+            "dict_valueiterator",
+            "dict_itemiterator",
         ],
         vec![
             sized_cls.clone(),

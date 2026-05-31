@@ -114,6 +114,9 @@ impl Compiler {
         }
 
         // Compile the lambda body and return it
+        if expr_contains_yield(body) {
+            self.current_unit_mut().code.flags |= CodeFlags::GENERATOR;
+        }
         self.compile_expression(body)?;
         self.emit_op(Opcode::ReturnValue);
 
@@ -596,6 +599,7 @@ pub(in crate::compiler::expressions) fn expr_contains_yield(expr: &Expression) -
         ExpressionKind::Compare {
             left, comparators, ..
         } => expr_contains_yield(left) || comparators.iter().any(|c| expr_contains_yield(c)),
+        ExpressionKind::Lambda { .. } => false,
         _ => false,
     }
 }
