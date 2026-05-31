@@ -1,11 +1,16 @@
+use crate::vm_helpers::mark_list_mutated;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
+use ferrython_core::object::helpers::{
+    instance_class_special_method, instance_dict_get_item, instance_dict_remove_item,
+    instance_dict_set_item, mark_dict_storage_mutated,
+};
 use ferrython_core::object::{
-    index_to_i64, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    index_to_i64, slice_indices_for_len, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
@@ -208,7 +213,9 @@ impl VirtualMachine {
                                 self.vm_push(val);
                             } else {
                                 // Check for __missing__
-                                if let Some(missing) = obj.get_attr("__missing__") {
+                                if let Some(missing) =
+                                    instance_class_special_method(&obj, inst, "__missing__")
+                                {
                                     let result = self.call_object(missing, vec![key])?;
                                     self.vm_push(result);
                                 } else {
@@ -250,11 +257,14 @@ impl VirtualMachine {
                             {
                                 let mut w = map.write();
                                 clear_key_compare_error();
-                                w.insert(hk.clone(), default.clone());
+                                let old = w.insert(hk.clone(), default.clone());
                                 if let Some(err) = take_pending_eq_error() {
                                     let _ = w.swap_remove(&hk);
                                     clear_key_compare_error();
                                     return Err(err);
+                                }
+                                if old.is_none() {
+                                    mark_dict_storage_mutated(map);
                                 }
                             }
                             self.vm_push(default);
@@ -264,8 +274,7 @@ impl VirtualMachine {
                         }
                     }
                 } else if let PyObjectPayload::InstanceDict(attrs) = &obj.payload {
-                    let key_str = CompactString::from(key.py_to_string());
-                    if let Some(val) = attrs.read().get(&key_str).cloned() {
+                    if let Some(val) = instance_dict_get_item(attrs, &key)? {
                         self.vm_push(val);
                     } else {
                         return Err(missing_key_error(&key));
@@ -291,17 +300,21 @@ impl VirtualMachine {
                 }
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
+                        mark_list_mutated(&obj);
                         if let PyObjectPayload::Slice(sd) = &key.payload {
                             let step_val = sd
                                 .step
                                 .as_ref()
                                 .map(|v| v.as_int().unwrap_or(1))
                                 .unwrap_or(1);
+                            if step_val == 0 {
+                                return Err(PyException::value_error("slice step cannot be zero"));
+                            }
                             let new_items = value.to_list()?;
                             let mut w = items.write();
-                            let len = w.len() as i64;
+                            let len = w.len();
 
-                            if step_val == 1 || step_val == 0 {
+                            if step_val == 1 {
                                 // Contiguous slice assignment: a[s:e] = items
                                 let s_val = sd
                                     .start
@@ -311,67 +324,24 @@ impl VirtualMachine {
                                 let e_val = sd
                                     .stop
                                     .as_ref()
-                                    .map(|v| v.as_int().unwrap_or(len))
-                                    .unwrap_or(len);
+                                    .map(|v| v.as_int().unwrap_or(len as i64))
+                                    .unwrap_or(len as i64);
                                 let s = (if s_val < 0 {
-                                    (len + s_val).max(0)
+                                    (len as i64 + s_val).max(0)
                                 } else {
-                                    s_val.min(len)
+                                    s_val.min(len as i64)
                                 }) as usize;
                                 let e = (if e_val < 0 {
-                                    (len + e_val).max(0)
+                                    (len as i64 + e_val).max(0)
                                 } else {
-                                    e_val.min(len)
+                                    e_val.min(len as i64)
                                 }) as usize;
                                 let e = e.max(s);
                                 w.splice(s..e, new_items);
                             } else {
                                 // Extended slice assignment: a[s:e:step] = items
-                                let s_val = if step_val > 0 {
-                                    sd.start
-                                        .as_ref()
-                                        .map(|v| v.as_int().unwrap_or(0))
-                                        .unwrap_or(0)
-                                } else {
-                                    sd.start
-                                        .as_ref()
-                                        .map(|v| v.as_int().unwrap_or(len - 1))
-                                        .unwrap_or(len - 1)
-                                };
-                                let e_val = if step_val > 0 {
-                                    sd.stop
-                                        .as_ref()
-                                        .map(|v| v.as_int().unwrap_or(len))
-                                        .unwrap_or(len)
-                                } else {
-                                    sd.stop
-                                        .as_ref()
-                                        .map(|v| v.as_int().unwrap_or(-len - 1))
-                                        .unwrap_or(-len - 1)
-                                };
-                                // Collect indices
-                                let mut indices = Vec::new();
-                                let mut i = if s_val < 0 {
-                                    (len + s_val).max(0)
-                                } else {
-                                    s_val.min(len)
-                                };
-                                let end = if e_val < 0 {
-                                    (len + e_val).max(-1)
-                                } else {
-                                    e_val.min(len)
-                                };
-                                if step_val > 0 {
-                                    while i < end {
-                                        indices.push(i as usize);
-                                        i += step_val;
-                                    }
-                                } else {
-                                    while i > end {
-                                        indices.push(i as usize);
-                                        i += step_val;
-                                    }
-                                }
+                                let indices =
+                                    slice_indices_for_len(&sd.start, &sd.stop, &sd.step, len)?;
                                 if indices.len() != new_items.len() {
                                     return Err(PyException::value_error(format!(
                                         "attempt to assign sequence of size {} to extended slice of size {}",
@@ -383,7 +353,9 @@ impl VirtualMachine {
                                 }
                             }
                         } else {
-                            let idx = index_to_i64(&key)?;
+                            let idx = index_to_i64(&key).map_err(|_| {
+                                PyException::type_error("list indices must be integers or slices")
+                            })?;
                             let mut w = items.write();
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
@@ -399,12 +371,18 @@ impl VirtualMachine {
                         let hk = self.vm_to_hashable_key(&key)?;
                         let mut w = map.write();
                         clear_key_compare_error();
-                        w.insert(hk.clone(), value);
+                        let old = w.insert(hk.clone(), value);
                         if let Some(err) = take_pending_eq_error() {
                             let _ = w.swap_remove(&hk);
                             clear_key_compare_error();
                             return Err(err);
                         }
+                        if old.is_none() {
+                            mark_dict_storage_mutated(map);
+                        }
+                        drop(w);
+                        drop(old);
+                        self.drain_pending_finalizers();
                     }
                     PyObjectPayload::ByteArray(ref bytes) => {
                         if let PyObjectPayload::Slice(sd) = &key.payload {
@@ -536,8 +514,7 @@ impl VirtualMachine {
                         }
                     }
                     PyObjectPayload::InstanceDict(attrs) => {
-                        let key_str = CompactString::from(key.py_to_string());
-                        attrs.write().insert(key_str, value);
+                        instance_dict_set_item(attrs, &key, value)?;
                     }
                     PyObjectPayload::Instance(inst) => {
                         // Dict subclass: use dict_storage if no user override
@@ -551,7 +528,12 @@ impl VirtualMachine {
                                 }
                             }
                             let hk = self.vm_to_hashable_key(&key)?;
-                            ds.write().insert(hk, value);
+                            let old = ds.write().insert(hk, value);
+                            if old.is_none() {
+                                mark_dict_storage_mutated(ds);
+                            }
+                            drop(old);
+                            self.drain_pending_finalizers();
                         } else if let Some(m) = obj.get_attr("__setitem__") {
                             self.call_object(m, vec![key, value])?;
                             return Ok(None);
@@ -597,53 +579,22 @@ impl VirtualMachine {
                 }
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
+                        mark_list_mutated(&obj);
                         if let PyObjectPayload::Slice(sd) = &key.payload {
                             let mut w = items.write();
-                            let len = w.len() as i64;
-                            let s = sd
-                                .start
-                                .as_ref()
-                                .map(|v| v.to_int().unwrap_or(0))
-                                .unwrap_or(0);
-                            let e = sd
-                                .stop
-                                .as_ref()
-                                .map(|v| v.to_int().unwrap_or(len))
-                                .unwrap_or(len);
-                            let st = sd
-                                .step
-                                .as_ref()
-                                .map(|v| v.to_int().unwrap_or(1))
-                                .unwrap_or(1);
-                            let s = if s < 0 { (len + s).max(0) } else { s.min(len) };
-                            let e = if e < 0 { (len + e).max(0) } else { e.min(len) };
-                            if st == 1 && s <= e {
-                                w.drain(s as usize..e as usize);
-                            } else if st == -1 && s >= e {
-                                let mut indices: Vec<usize> =
-                                    ((e + 1) as usize..=(s) as usize).collect();
-                                indices.reverse();
-                                for idx in indices {
-                                    if idx < w.len() {
-                                        w.remove(idx);
-                                    }
-                                }
-                            } else if st > 1 {
-                                let mut indices = Vec::new();
-                                let mut i = s;
-                                while i < e {
-                                    indices.push(i as usize);
-                                    i += st;
-                                }
-                                indices.reverse();
-                                for idx in indices {
-                                    if idx < w.len() {
-                                        w.remove(idx);
-                                    }
+                            let mut indices =
+                                slice_indices_for_len(&sd.start, &sd.stop, &sd.step, w.len())?;
+                            indices.sort_unstable();
+                            indices.reverse();
+                            for idx in indices {
+                                if idx < w.len() {
+                                    w.remove(idx);
                                 }
                             }
                         } else {
-                            let idx = index_to_i64(&key)?;
+                            let idx = index_to_i64(&key).map_err(|_| {
+                                PyException::type_error("list indices must be integers or slices")
+                            })?;
                             let mut w = items.write();
                             let len = w.len() as i64;
                             let actual = if idx < 0 { len + idx } else { idx };
@@ -660,17 +611,17 @@ impl VirtualMachine {
                         let removed = {
                             let mut w = map.write();
                             clear_key_compare_error();
-                            let removed = w.swap_remove(&hk);
+                            let removed = w.shift_remove(&hk);
                             finish_key_compare()?;
                             removed
                         };
                         if removed.is_none() {
                             return Err(missing_key_error(&key));
                         }
+                        mark_dict_storage_mutated(map);
                     }
                     PyObjectPayload::InstanceDict(attrs) => {
-                        let key_str = CompactString::from(key.py_to_string());
-                        if attrs.write().swap_remove(&key_str).is_none() {
+                        if instance_dict_remove_item(attrs, &key)?.is_none() {
                             return Err(missing_key_error(&key));
                         }
                     }
@@ -684,13 +635,14 @@ impl VirtualMachine {
                             let removed = {
                                 let mut w = ds.write();
                                 clear_key_compare_error();
-                                let removed = w.swap_remove(&hk);
+                                let removed = w.shift_remove(&hk);
                                 finish_key_compare()?;
                                 removed
                             };
                             if removed.is_none() {
                                 return Err(missing_key_error(&key));
                             }
+                            mark_dict_storage_mutated(ds);
                             return Ok(None);
                         }
                         return Err(PyException::type_error(format!(

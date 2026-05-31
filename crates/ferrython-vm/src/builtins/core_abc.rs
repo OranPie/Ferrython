@@ -1,41 +1,20 @@
 //! isinstance/issubclass and structural ABC helpers.
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args, lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    call_callable, check_args, lookup_in_class_mro, property_field, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 
+const CLASSINFO_RECURSION_LIMIT: usize = 1000;
+
 pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("isinstance", args, 2)?;
-    let obj = &args[0];
-    let cls = &args[1];
-    // Handle tuple of types: isinstance(x, (int, str))
-    if let PyObjectPayload::Tuple(types) = &cls.payload {
-        for t in types.iter() {
-            if is_instance_of(obj, t) {
-                return Ok(PyObject::bool_val(true));
-            }
-        }
-        return Ok(PyObject::bool_val(false));
-    }
-    // Handle PEP 604 union types: isinstance(x, int | str)
-    if let Some(union_flag) = cls.get_attr("__union_params__") {
-        if union_flag.is_truthy() {
-            if let Some(args_tuple) = cls.get_attr("__args__") {
-                if let PyObjectPayload::Tuple(types) = &args_tuple.payload {
-                    for t in types.iter() {
-                        if is_instance_of(obj, t) {
-                            return Ok(PyObject::bool_val(true));
-                        }
-                    }
-                    return Ok(PyObject::bool_val(false));
-                }
-            }
-        }
-    }
-    Ok(PyObject::bool_val(is_instance_of(obj, cls)))
+    Ok(PyObject::bool_val(is_instance_of_result(
+        &args[0], &args[1], 0,
+    )?))
 }
 
 fn ast_constant_value(obj: &PyObjectRef) -> Option<Option<PyObjectRef>> {
@@ -98,6 +77,192 @@ fn ast_constant_matches_legacy(value: &PyObjectRef, legacy: &str) -> bool {
         "Ellipsis" => matches!(&value.payload, PyObjectPayload::Ellipsis),
         _ => false,
     }
+}
+
+fn classinfo_recursion_error() -> PyException {
+    PyException::recursion_error("maximum recursion depth exceeded in __instancecheck__")
+}
+
+fn descriptor_attr(obj: &PyObjectRef, name: &str) -> PyResult<Option<PyObjectRef>> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return Ok(obj.get_attr(name));
+    };
+    if let Some(attr) = lookup_in_class_mro(&inst.class, name) {
+        if let Some(getter) = property_field(&attr, "fget") {
+            if matches!(&getter.payload, PyObjectPayload::None) {
+                return Err(PyException::attribute_error(format!(
+                    "unreadable attribute '{}'",
+                    name
+                )));
+            }
+            return Ok(Some(call_callable(&getter, &[obj.clone()])?));
+        }
+    }
+    Ok(obj.get_attr(name))
+}
+
+fn type_bases(obj: &PyObjectRef, depth: usize) -> PyResult<Option<Vec<PyObjectRef>>> {
+    if depth > CLASSINFO_RECURSION_LIMIT {
+        return Err(classinfo_recursion_error());
+    }
+    match &obj.payload {
+        PyObjectPayload::Class(cd) => Ok(Some(cd.bases.clone())),
+        PyObjectPayload::BuiltinType(name) | PyObjectPayload::BuiltinFunction(name) => {
+            if name.as_str() == "object" {
+                Ok(Some(vec![]))
+            } else if name.as_str() == "bool" {
+                Ok(Some(vec![PyObject::builtin_type(CompactString::from(
+                    "int",
+                ))]))
+            } else {
+                Ok(Some(vec![PyObject::builtin_type(CompactString::from(
+                    "object",
+                ))]))
+            }
+        }
+        PyObjectPayload::ExceptionType(kind) => {
+            let parent = match kind {
+                ExceptionKind::BaseException => None,
+                ExceptionKind::Exception => {
+                    Some(PyObject::exception_type(ExceptionKind::BaseException))
+                }
+                _ => Some(PyObject::exception_type(ExceptionKind::Exception)),
+            };
+            Ok(Some(parent.map_or_else(Vec::new, |p| vec![p])))
+        }
+        _ => match descriptor_attr(obj, "__bases__")? {
+            Some(bases) => match &bases.payload {
+                PyObjectPayload::Tuple(items) => Ok(Some(items.iter().cloned().collect())),
+                _ => Err(PyException::type_error("__bases__ must be tuple")),
+            },
+            None => Ok(None),
+        },
+    }
+}
+
+fn is_subclass_result(sub: &PyObjectRef, sup: &PyObjectRef, depth: usize) -> PyResult<bool> {
+    if depth > CLASSINFO_RECURSION_LIMIT {
+        return Err(classinfo_recursion_error());
+    }
+    if let PyObjectPayload::Tuple(types) = &sup.payload {
+        for t in types.iter() {
+            if is_subclass_result(sub, t, depth + 1)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    match (&sub.payload, &sup.payload) {
+        (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
+            return Ok(a == b || is_exception_subclass(a, b));
+        }
+        (PyObjectPayload::Class(_), PyObjectPayload::Class(_))
+        | (PyObjectPayload::Class(_), PyObjectPayload::ExceptionType(_))
+        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::BuiltinType(_))
+        | (PyObjectPayload::Class(_), PyObjectPayload::BuiltinType(_))
+        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::Class(_)) => {
+            if check_subclass(sub, sup) {
+                return Ok(true);
+            }
+        }
+        _ => {}
+    }
+    let Some(sub_bases) = type_bases(sub, depth + 1)? else {
+        return Err(PyException::type_error(
+            "issubclass() arg 1 must be a class",
+        ));
+    };
+    if type_bases(sup, depth + 1)?.is_none() {
+        return Err(PyException::type_error(
+            "issubclass() arg 2 must be a class or tuple of classes",
+        ));
+    }
+    if PyObjectRef::ptr_eq(sub, sup) {
+        return Ok(true);
+    }
+    for base in sub_bases {
+        if PyObjectRef::ptr_eq(&base, sup) || is_subclass_result(&base, sup, depth + 1)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_instance_of_result(obj: &PyObjectRef, cls: &PyObjectRef, depth: usize) -> PyResult<bool> {
+    if depth > CLASSINFO_RECURSION_LIMIT {
+        return Err(classinfo_recursion_error());
+    }
+    if let PyObjectPayload::Tuple(types) = &cls.payload {
+        for t in types.iter() {
+            if is_instance_of_result(obj, t, depth + 1)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    // Handle PEP 604 union types: isinstance(x, int | str)
+    if let Some(union_flag) = cls.get_attr("__union_params__") {
+        if union_flag.is_truthy() {
+            if let Some(args_tuple) = cls.get_attr("__args__") {
+                if let PyObjectPayload::Tuple(types) = &args_tuple.payload {
+                    for t in types.iter() {
+                        if is_instance_of_result(obj, t, depth + 1)? {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    if is_instance_of(obj, cls) {
+        return Ok(true);
+    }
+    let inst_class = descriptor_attr(obj, "__class__")?;
+    if let Some(inst_class) = inst_class {
+        match type_bases(&inst_class, depth + 1) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(false),
+            Err(err) if err.kind == ExceptionKind::AttributeError => return Ok(false),
+            Err(err) => return Err(err),
+        }
+        match type_bases(cls, depth + 1) {
+            Ok(Some(_)) => {}
+            Ok(None)
+            | Err(PyException {
+                kind: ExceptionKind::AttributeError,
+                ..
+            }) => {
+                return Err(PyException::type_error(
+                    "isinstance() arg 2 must be a type or tuple of types",
+                ));
+            }
+            Err(err) => return Err(err),
+        }
+        match is_subclass_result(&inst_class, cls, depth + 1) {
+            Ok(value) => return Ok(value),
+            Err(err) if err.kind == ExceptionKind::AttributeError => {
+                return Err(PyException::type_error(
+                    "isinstance() arg 2 must be a type or tuple of types",
+                ));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    match type_bases(cls, depth + 1) {
+        Ok(Some(_)) => {}
+        Ok(None)
+        | Err(PyException {
+            kind: ExceptionKind::AttributeError,
+            ..
+        }) => {
+            return Err(PyException::type_error(
+                "isinstance() arg 2 must be a type or tuple of types",
+            ));
+        }
+        Err(err) => return Err(err),
+    }
+    Ok(false)
 }
 
 /// Check if obj is an instance of cls (including inheritance).
@@ -506,9 +671,19 @@ fn object_has_abc_method(obj: &PyObjectRef, name: &str) -> bool {
 }
 
 fn class_has_abc_method(cls: &PyObjectRef, name: &str) -> bool {
-    lookup_in_class_mro(cls, name)
-        .map(|attr| !matches!(&attr.payload, PyObjectPayload::None))
-        .unwrap_or(false)
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        if let Some(attr) = cd.namespace.read().get(name) {
+            return !matches!(&attr.payload, PyObjectPayload::None);
+        }
+        for base in &cd.mro {
+            if let PyObjectPayload::Class(base_cd) = &base.payload {
+                if let Some(attr) = base_cd.namespace.read().get(name) {
+                    return !matches!(&attr.payload, PyObjectPayload::None);
+                }
+            }
+        }
+    }
+    false
 }
 
 fn abc_hashable_blocked_type(name: &str) -> bool {
@@ -628,18 +803,13 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
 
 pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("issubclass", args, 2)?;
-    let sub = &args[0];
-    let sup = &args[1];
-    // Handle tuple of types: issubclass(A, (B, C))
-    if let PyObjectPayload::Tuple(types) = &sup.payload {
-        for t in types.iter() {
-            if check_subclass(sub, t) {
-                return Ok(PyObject::bool_val(true));
-            }
-        }
-        return Ok(PyObject::bool_val(false));
+    match is_subclass_result(&args[0], &args[1], 0) {
+        Ok(value) => Ok(PyObject::bool_val(value)),
+        Err(err) if err.kind == ExceptionKind::AttributeError => Err(PyException::type_error(
+            "issubclass() arg 2 must be a class or tuple of classes",
+        )),
+        Err(err) => Err(err),
     }
-    Ok(PyObject::bool_val(check_subclass(sub, sup)))
 }
 
 pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {

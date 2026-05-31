@@ -5,10 +5,35 @@ use compact_str::CompactString;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
+fn class_or_mro_defines_method(cls: &PyObjectRef, name: &str) -> bool {
+    let PyObjectPayload::Class(cd) = &cls.payload else {
+        return false;
+    };
+    if cd.namespace.read().contains_key(name) {
+        return true;
+    }
+    cd.mro.iter().any(|base| {
+        if let PyObjectPayload::Class(base_cd) = &base.payload {
+            base_cd.namespace.read().contains_key(name)
+        } else {
+            false
+        }
+    })
+}
+
 impl VirtualMachine {
     pub(crate) fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
+                if let Some(bv) = Self::get_builtin_value(obj) {
+                    if matches!(
+                        &bv.payload,
+                        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                    ) && !class_or_mro_defines_method(&inst.class, "__str__")
+                    {
+                        return self.vm_repr(obj);
+                    }
+                }
                 // Check for custom __str__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let method = self.resolve_descriptor(&str_method, obj)?;
@@ -444,6 +469,44 @@ impl VirtualMachine {
                 }
                 // Builtin base type subclass: delegate to __builtin_value__
                 if let Some(bv) = Self::get_builtin_value(obj) {
+                    if matches!(
+                        &bv.payload,
+                        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                    ) {
+                        let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.name.to_string()
+                        } else {
+                            obj.type_name().to_string()
+                        };
+                        let ptr = PyObjectRef::as_ptr(obj) as usize;
+                        if !ferrython_core::object::repr_enter(ptr) {
+                            if ferrython_core::object::helpers::repr_depth_exceeded() {
+                                return Err(ferrython_core::error::PyException::recursion_error(
+                                    "maximum recursion depth exceeded while getting the repr of an object",
+                                ));
+                            }
+                            return Ok(format!("{}(...)", class_name));
+                        }
+                        let inner = match self.vm_repr(&bv) {
+                            Ok(text) => text,
+                            Err(err) => {
+                                ferrython_core::object::repr_leave(ptr);
+                                return Err(err);
+                            }
+                        };
+                        ferrython_core::object::repr_leave(ptr);
+                        let body = match &bv.payload {
+                            PyObjectPayload::Set(_) => {
+                                inner.strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                            }
+                            PyObjectPayload::FrozenSet(_) => inner
+                                .strip_prefix("frozenset({")
+                                .and_then(|s| s.strip_suffix("})")),
+                            _ => None,
+                        }
+                        .unwrap_or(inner.as_str());
+                        return Ok(format!("{}({{{}}})", class_name, body));
+                    }
                     return self.vm_repr(&bv);
                 }
                 Ok(obj.repr())
@@ -451,30 +514,63 @@ impl VirtualMachine {
             PyObjectPayload::List(items) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(ferrython_core::error::PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
                     return Ok("[...]".to_string());
                 }
                 let items = items.read().clone();
                 let mut parts = Vec::new();
                 for item in &items {
-                    parts.push(self.vm_repr(item)?);
+                    match self.vm_repr(item) {
+                        Ok(text) => parts.push(text),
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    }
                 }
                 ferrython_core::object::repr_leave(ptr);
                 Ok(format!("[{}]", parts.join(", ")))
             }
             PyObjectPayload::Tuple(items) => {
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                if !ferrython_core::object::repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(ferrython_core::error::PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
+                    return Ok("(...)".to_string());
+                }
                 let mut parts = Vec::new();
                 for item in items.iter() {
-                    parts.push(self.vm_repr(item)?);
+                    match self.vm_repr(item) {
+                        Ok(text) => parts.push(text),
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    }
                 }
-                if parts.len() == 1 {
+                let result = if parts.len() == 1 {
                     Ok(format!("({},)", parts[0]))
                 } else {
                     Ok(format!("({})", parts.join(", ")))
-                }
+                };
+                ferrython_core::object::repr_leave(ptr);
+                result
             }
             PyObjectPayload::Dict(m) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(ferrython_core::error::PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
                     return Ok("{...}".to_string());
                 }
                 let m = m.read().clone();
@@ -483,8 +579,20 @@ impl VirtualMachine {
                     if ferrython_core::object::is_hidden_dict_key(k) {
                         continue;
                     }
-                    let kr = self.vm_repr(&k.to_object())?;
-                    let vr = self.vm_repr(v)?;
+                    let kr = match self.vm_repr(&k.to_object()) {
+                        Ok(text) => text,
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    };
+                    let vr = match self.vm_repr(v) {
+                        Ok(text) => text,
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    };
                     parts.push(format!("{}: {}", kr, vr));
                 }
                 ferrython_core::object::repr_leave(ptr);
@@ -493,6 +601,11 @@ impl VirtualMachine {
             PyObjectPayload::Set(m) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(ferrython_core::error::PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
                     return Ok("set(...)".to_string());
                 }
                 let m = m.read().clone();
@@ -502,10 +615,44 @@ impl VirtualMachine {
                 }
                 let mut parts = Vec::new();
                 for v in m.values() {
-                    parts.push(self.vm_repr(v)?);
+                    match self.vm_repr(v) {
+                        Ok(text) => parts.push(text),
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    }
                 }
                 ferrython_core::object::repr_leave(ptr);
                 Ok(format!("{{{}}}", parts.join(", ")))
+            }
+            PyObjectPayload::FrozenSet(m) => {
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                if !ferrython_core::object::repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(ferrython_core::error::PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
+                    return Ok("frozenset(...)".to_string());
+                }
+                if m.is_empty() {
+                    ferrython_core::object::repr_leave(ptr);
+                    return Ok("frozenset()".to_string());
+                }
+                let items = m.items.clone();
+                let mut parts = Vec::new();
+                for v in items.values() {
+                    match self.vm_repr(v) {
+                        Ok(text) => parts.push(text),
+                        Err(err) => {
+                            ferrython_core::object::repr_leave(ptr);
+                            return Err(err);
+                        }
+                    }
+                }
+                ferrython_core::object::repr_leave(ptr);
+                Ok(format!("frozenset({{{}}})", parts.join(", ")))
             }
             _ => Ok(obj.repr()),
         }

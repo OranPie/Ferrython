@@ -741,6 +741,35 @@ pub(in crate::object) fn resolve_slice(
     Ok((to_i64(start), to_i64(stop), to_i64(step)))
 }
 
+pub fn slice_indices_for_len(
+    start: &Option<PyObjectRef>,
+    stop: &Option<PyObjectRef>,
+    step: &Option<PyObjectRef>,
+    len: usize,
+) -> PyResult<Vec<usize>> {
+    let (start, stop, step) = resolve_slice(start, stop, step, len as i64)?;
+    let mut indices = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < stop {
+            indices.push(i as usize);
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
+        }
+    } else {
+        while i > stop {
+            indices.push(i as usize);
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
+        }
+    }
+    Ok(indices)
+}
+
 pub(in crate::object) fn resolve_slice_i128(
     start: &Option<PyObjectRef>,
     stop: &Option<PyObjectRef>,
@@ -764,7 +793,7 @@ pub(in crate::object) fn resolve_slice_i128(
     }
 
     let (default_start, default_stop) = if step_val < 0 {
-        (len - 1, -len - 1)
+        (len - 1, -1)
     } else {
         (0, len)
     };

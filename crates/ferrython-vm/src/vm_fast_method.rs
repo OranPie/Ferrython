@@ -2,6 +2,7 @@
 
 use crate::frame::{Frame, FramePool, ScopeKind, SharedBuiltins};
 use crate::vm::VirtualMachine;
+use crate::vm_helpers::{is_list_sort_active, mark_list_mutated};
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
@@ -135,17 +136,8 @@ impl VirtualMachine {
         name: &str,
     ) -> PyResult<PyObjectRef> {
         if name == "sort" && matches!(&receiver.payload, PyObjectPayload::List(_)) {
-            let mut values = if let PyObjectPayload::List(items) = &receiver.payload {
-                items.read().clone()
-            } else {
-                Vec::new()
-            };
-            self.vm_sort(&mut values).and_then(|()| {
-                if let PyObjectPayload::List(items) = &receiver.payload {
-                    *items.write() = values;
-                }
-                Ok(PyObject::none())
-            })
+            self.vm_sort_list_in_place(&receiver, None, false)?;
+            Ok(PyObject::none())
         } else {
             crate::builtins::call_method(&receiver, name, &[])
         }
@@ -393,6 +385,10 @@ fn try_builtin_method_1(frame: &mut Frame, base_idx: usize, name: &str) -> FastM
     ) {
         ("append", PyObjectPayload::List(_)) => {
             let len = frame.stack.len();
+            let receiver = unsafe { &*frame.stack.as_ptr().add(len - 2) };
+            if is_list_sort_active(receiver) {
+                mark_list_mutated(receiver);
+            }
             unsafe {
                 let value = std::ptr::read(frame.stack.as_ptr().add(len - 1));
                 let receiver = &*frame.stack.as_ptr().add(len - 2);
@@ -475,6 +471,8 @@ fn pop_stack(frame: &mut Frame) -> PyObjectRef {
 #[inline(always)]
 fn append_list_arg(frame: &mut Frame) {
     let len = frame.stack.len();
+    let receiver = unsafe { &*frame.stack.as_ptr().add(len - 2) };
+    mark_list_mutated(receiver);
     unsafe {
         let value = std::ptr::read(frame.stack.as_ptr().add(len - 1));
         let receiver = &*frame.stack.as_ptr().add(len - 2);
@@ -491,6 +489,8 @@ fn append_list_arg(frame: &mut Frame) {
 #[inline(always)]
 fn pop_list_receiver(frame: &mut Frame) -> PyResult<()> {
     let len = frame.stack.len();
+    let receiver = unsafe { &*frame.stack.as_ptr().add(len - 1) };
+    mark_list_mutated(receiver);
     unsafe {
         let receiver = &*frame.stack.as_ptr().add(len - 1);
         let PyObjectPayload::List(items) = &receiver.payload else {
@@ -561,6 +561,7 @@ fn is_vm_collectable_join_arg(obj: &PyObjectRef) -> bool {
             | PyObjectPayload::Instance(_)
             | PyObjectPayload::Iterator(_)
             | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
             | PyObjectPayload::DequeIter(_)
@@ -649,6 +650,9 @@ fn call_direct_method(
                 }
             }
             PyObjectPayload::Set(map) => crate::builtins::call_set_method(map, name, args),
+            PyObjectPayload::FrozenSet(map) => {
+                crate::builtins::call_frozenset_method(Some(receiver.clone()), map, name, args)
+            }
             PyObjectPayload::Tuple(items) => {
                 crate::builtins::call_tuple_method(receiver, items, name, args)
             }

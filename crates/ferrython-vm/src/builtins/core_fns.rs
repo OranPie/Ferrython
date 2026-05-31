@@ -40,6 +40,7 @@ pub(super) fn builtin_len(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("repr", args, 1)?;
+    ferrython_core::object::helpers::repr_reset_overflow();
     // Check for user-defined __repr__
     if let Some(repr_method) = args[0].get_attr("__repr__") {
         if matches!(&repr_method.payload, PyObjectPayload::BoundMethod { .. }) {
@@ -48,7 +49,13 @@ pub(super) fn builtin_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // For now, fall through to default
         }
     }
-    Ok(PyObject::str_val(CompactString::from(args[0].repr())))
+    let text = args[0].repr();
+    if ferrython_core::object::helpers::repr_depth_exceeded() {
+        return Err(PyException::recursion_error(
+            "maximum recursion depth exceeded while getting the repr of an object",
+        ));
+    }
+    Ok(PyObject::str_val(CompactString::from(text)))
 }
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -108,18 +115,17 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hasattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hasattr", args, 2)?;
-    let name = args[1]
-        .as_str()
+    let name = ferrython_core::object::helpers::string_key_name(&args[1])
         .ok_or_else(|| PyException::type_error("hasattr(): attribute name must be string"))?;
     Ok(PyObject::bool_val(ferrython_core::object::py_has_attr(
-        &args[0], name,
+        &args[0],
+        name.as_str(),
     )))
 }
 
 pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("getattr", args, 2)?;
-    let name = args[1]
-        .as_str()
+    let name = ferrython_core::object::helpers::string_key_name(&args[1])
         .ok_or_else(|| PyException::type_error("getattr(): attribute name must be string"))?;
     let target = match &args[0].payload {
         PyObjectPayload::Instance(inst)
@@ -135,7 +141,7 @@ pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => None,
     };
     let obj = target.as_ref().unwrap_or(&args[0]);
-    match obj.get_attr(name) {
+    match obj.get_attr(name.as_str()) {
         Some(v) => Ok(v),
         None => {
             if args.len() > 2 {

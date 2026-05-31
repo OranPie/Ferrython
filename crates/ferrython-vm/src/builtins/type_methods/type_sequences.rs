@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::helpers::{index_to_i64, index_to_usize_repeat};
+use ferrython_core::object::helpers::{index_to_i64, index_to_usize_repeat, slice_indices_for_len};
 use ferrython_core::object::IteratorData;
 use ferrython_core::object::{
     check_args_min, checked_repeat_len, CompareOp, PyCell, PyObject, PyObjectMethods,
@@ -13,7 +13,34 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::rc::Rc;
 
+use crate::vm_helpers::mark_list_mutated;
+
 use super::partial_cmp_for_sort;
+
+fn check_args_range(name: &str, args: &[PyObjectRef], min: usize, max: usize) -> PyResult<()> {
+    if args.len() < min || args.len() > max {
+        return Err(PyException::type_error(format!(
+            "{}() takes between {} and {} argument(s) ({} given)",
+            name,
+            min,
+            max,
+            args.len()
+        )));
+    }
+    Ok(())
+}
+
+fn check_args_exact(name: &str, args: &[PyObjectRef], expected: usize) -> PyResult<()> {
+    if args.len() != expected {
+        return Err(PyException::type_error(format!(
+            "{}() takes exactly {} argument(s) ({} given)",
+            name,
+            expected,
+            args.len()
+        )));
+    }
+    Ok(())
+}
 
 fn sequence_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<bool> {
     if PyObjectRef::ptr_eq(item, target) {
@@ -52,9 +79,23 @@ pub(crate) fn call_list_method(
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {
     match method {
-        "copy" => Ok(PyObject::list(items.read().to_vec())),
+        "__init__" => {
+            check_args_range("list.__init__", args, 0, 1)?;
+            let new_items = if let Some(arg) = args.first() {
+                arg.to_list()?
+            } else {
+                Vec::new()
+            };
+            mark_list_mutated(receiver);
+            *items.write() = new_items;
+            Ok(PyObject::none())
+        }
+        "copy" => {
+            check_args_exact("copy", args, 0)?;
+            Ok(PyObject::list(items.read().to_vec()))
+        }
         "count" => {
-            check_args_min("count", args, 1)?;
+            check_args_exact("count", args, 1)?;
             let target = &args[0];
             let snapshot = items.read().clone();
             let mut c = 0usize;
@@ -66,30 +107,12 @@ pub(crate) fn call_list_method(
             Ok(PyObject::int(c as i64))
         }
         "index" => {
-            check_args_min("index", args, 1)?;
+            check_args_range("index", args, 1, 3)?;
             let target = &args[0];
             let snapshot = items.read().clone();
             let len = snapshot.len();
-            let start = if args.len() > 1 {
-                let s = args[1].to_int().unwrap_or(0);
-                if s < 0 {
-                    (len as i64 + s).max(0) as usize
-                } else {
-                    s as usize
-                }
-            } else {
-                0
-            };
-            let stop = if args.len() > 2 {
-                let s = args[2].to_int().unwrap_or(len as i64);
-                if s < 0 {
-                    (len as i64 + s).max(0) as usize
-                } else {
-                    (s as usize).min(len)
-                }
-            } else {
-                len
-            };
+            let start = sequence_index_bound(args.get(1), len, 0)?;
+            let stop = sequence_index_bound(args.get(2), len, len)?;
             for i in start..stop {
                 if sequence_item_matches(&snapshot[i], target)? {
                     return Ok(PyObject::int(i as i64));
@@ -101,19 +124,22 @@ pub(crate) fn call_list_method(
             )))
         }
         "append" => {
-            check_args_min("append", args, 1)?;
+            check_args_exact("append", args, 1)?;
+            mark_list_mutated(receiver);
             items.write().push(args[0].clone());
             Ok(PyObject::none())
         }
         "extend" => {
-            check_args_min("extend", args, 1)?;
+            check_args_exact("extend", args, 1)?;
             let other = args[0].to_list()?;
+            mark_list_mutated(receiver);
             items.write().extend(other);
             Ok(PyObject::none())
         }
         "insert" => {
-            check_args_min("insert", args, 2)?;
+            check_args_exact("insert", args, 2)?;
             let idx = index_to_i64(&args[0])?;
+            mark_list_mutated(receiver);
             let mut w = items.write();
             let len = w.len() as i64;
             let actual = if idx < 0 {
@@ -125,6 +151,8 @@ pub(crate) fn call_list_method(
             Ok(PyObject::none())
         }
         "pop" => {
+            check_args_range("pop", args, 0, 1)?;
+            mark_list_mutated(receiver);
             let mut w = items.write();
             if w.is_empty() {
                 return Err(PyException::index_error("pop from empty list"));
@@ -142,7 +170,7 @@ pub(crate) fn call_list_method(
             }
         }
         "remove" => {
-            check_args_min("remove", args, 1)?;
+            check_args_exact("remove", args, 1)?;
             let target = &args[0];
             let snapshot = items.read().clone();
             let mut pos = None;
@@ -154,6 +182,7 @@ pub(crate) fn call_list_method(
             }
             match pos {
                 Some(i) => {
+                    mark_list_mutated(receiver);
                     items.write().remove(i);
                     Ok(PyObject::none())
                 }
@@ -161,10 +190,19 @@ pub(crate) fn call_list_method(
             }
         }
         "reverse" => {
+            check_args_exact("reverse", args, 0)?;
+            mark_list_mutated(receiver);
             items.write().reverse();
             Ok(PyObject::none())
         }
         "sort" => {
+            for arg in args {
+                if !matches!(&arg.payload, PyObjectPayload::Dict(_)) {
+                    return Err(PyException::type_error(
+                        "sort() takes no positional arguments",
+                    ));
+                }
+            }
             let mut w = items.write();
             let mut v: Vec<_> = w.drain(..).collect();
             // Homogeneous small-int sort: only for large lists (≥32 elements)
@@ -207,10 +245,13 @@ pub(crate) fn call_list_method(
             Ok(PyObject::none())
         }
         "clear" => {
+            check_args_exact("clear", args, 0)?;
+            mark_list_mutated(receiver);
             items.write().clear();
             Ok(PyObject::none())
         }
         "__iter__" => {
+            check_args_exact("__iter__", args, 0)?;
             let snapshot = items.read().clone();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                 PyCell::new(IteratorData::List {
@@ -219,9 +260,12 @@ pub(crate) fn call_list_method(
                 }),
             ))))
         }
-        "__len__" => Ok(PyObject::int(items.read().len() as i64)),
+        "__len__" => {
+            check_args_exact("__len__", args, 0)?;
+            Ok(PyObject::int(items.read().len() as i64))
+        }
         "__contains__" => {
-            check_args_min("__contains__", args, 1)?;
+            check_args_exact("__contains__", args, 1)?;
             let target = &args[0];
             let snapshot = items.read().clone();
             for item in &snapshot {
@@ -232,7 +276,7 @@ pub(crate) fn call_list_method(
             Ok(PyObject::bool_val(false))
         }
         "__getitem__" => {
-            check_args_min("__getitem__", args, 1)?;
+            check_args_exact("__getitem__", args, 1)?;
             if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let r = items.read();
                 let len = r.len() as i64;
@@ -288,7 +332,9 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::list(result))
             } else {
-                let idx = index_to_i64(&args[0])?;
+                let idx = index_to_i64(&args[0]).map_err(|_| {
+                    PyException::type_error("list indices must be integers or slices")
+                })?;
                 let r = items.read();
                 let len = r.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -299,17 +345,21 @@ pub(crate) fn call_list_method(
             }
         }
         "__setitem__" => {
-            check_args_min("__setitem__", args, 2)?;
+            check_args_exact("__setitem__", args, 2)?;
+            mark_list_mutated(receiver);
             if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let new_items = args[1].to_list()?;
                 let mut w = items.write();
-                let len = w.len() as i64;
+                let len = w.len();
                 let step_val = sd
                     .step
                     .as_ref()
                     .map(|v| v.as_int().unwrap_or(1))
                     .unwrap_or(1);
-                if step_val == 1 || step_val == 0 {
+                if step_val == 0 {
+                    return Err(PyException::value_error("slice step cannot be zero"));
+                }
+                if step_val == 1 {
                     let s_val = sd
                         .start
                         .as_ref()
@@ -318,65 +368,22 @@ pub(crate) fn call_list_method(
                     let e_val = sd
                         .stop
                         .as_ref()
-                        .map(|v| v.as_int().unwrap_or(len))
-                        .unwrap_or(len);
+                        .map(|v| v.as_int().unwrap_or(len as i64))
+                        .unwrap_or(len as i64);
                     let s = (if s_val < 0 {
-                        (len + s_val).max(0)
+                        (len as i64 + s_val).max(0)
                     } else {
-                        s_val.min(len)
+                        s_val.min(len as i64)
                     }) as usize;
                     let e = (if e_val < 0 {
-                        (len + e_val).max(0)
+                        (len as i64 + e_val).max(0)
                     } else {
-                        e_val.min(len)
+                        e_val.min(len as i64)
                     }) as usize;
                     let e = e.max(s);
                     w.splice(s..e, new_items);
                 } else {
-                    let s_val = if step_val > 0 {
-                        sd.start
-                            .as_ref()
-                            .map(|v| v.as_int().unwrap_or(0))
-                            .unwrap_or(0)
-                    } else {
-                        sd.start
-                            .as_ref()
-                            .map(|v| v.as_int().unwrap_or(len - 1))
-                            .unwrap_or(len - 1)
-                    };
-                    let e_val = if step_val > 0 {
-                        sd.stop
-                            .as_ref()
-                            .map(|v| v.as_int().unwrap_or(len))
-                            .unwrap_or(len)
-                    } else {
-                        sd.stop
-                            .as_ref()
-                            .map(|v| v.as_int().unwrap_or(-len - 1))
-                            .unwrap_or(-len - 1)
-                    };
-                    let mut indices = Vec::new();
-                    let mut i = if s_val < 0 {
-                        (len + s_val).max(0)
-                    } else {
-                        s_val.min(len)
-                    };
-                    let end = if e_val < 0 {
-                        (len + e_val).max(-1)
-                    } else {
-                        e_val.min(len)
-                    };
-                    if step_val > 0 {
-                        while i < end {
-                            indices.push(i as usize);
-                            i += step_val;
-                        }
-                    } else {
-                        while i > end {
-                            indices.push(i as usize);
-                            i += step_val;
-                        }
-                    }
+                    let indices = slice_indices_for_len(&sd.start, &sd.stop, &sd.step, len)?;
                     if indices.len() != new_items.len() {
                         return Err(PyException::value_error(format!(
                             "attempt to assign sequence of size {} to extended slice of size {}",
@@ -390,7 +397,9 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::none())
             } else {
-                let idx = index_to_i64(&args[0])?;
+                let idx = index_to_i64(&args[0]).map_err(|_| {
+                    PyException::type_error("list indices must be integers or slices")
+                })?;
                 let mut w = items.write();
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -404,51 +413,11 @@ pub(crate) fn call_list_method(
             }
         }
         "__delitem__" => {
-            check_args_min("__delitem__", args, 1)?;
+            check_args_exact("__delitem__", args, 1)?;
+            mark_list_mutated(receiver);
             if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let mut w = items.write();
-                let len = w.len() as i64;
-                let step_val = sd
-                    .step
-                    .as_ref()
-                    .map(|v| v.as_int().unwrap_or(1))
-                    .unwrap_or(1);
-                let s_val = sd
-                    .start
-                    .as_ref()
-                    .map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 }))
-                    .unwrap_or(if step_val > 0 { 0 } else { len - 1 });
-                let e_val = sd
-                    .stop
-                    .as_ref()
-                    .map(|v| {
-                        v.as_int()
-                            .unwrap_or(if step_val > 0 { len } else { -len - 1 })
-                    })
-                    .unwrap_or(if step_val > 0 { len } else { -len - 1 });
-                let mut indices = Vec::new();
-                let mut i = if s_val < 0 {
-                    (len + s_val).max(0)
-                } else {
-                    s_val.min(len)
-                };
-                let end = if e_val < 0 {
-                    (len + e_val).max(if step_val > 0 { 0 } else { -1 })
-                } else {
-                    e_val.min(len)
-                };
-                if step_val > 0 {
-                    while i < end {
-                        indices.push(i as usize);
-                        i += step_val;
-                    }
-                } else if step_val < 0 {
-                    while i > end {
-                        indices.push(i as usize);
-                        i += step_val;
-                    }
-                }
-                // Remove in reverse order to preserve indices
+                let mut indices = slice_indices_for_len(&sd.start, &sd.stop, &sd.step, w.len())?;
                 indices.sort_unstable();
                 indices.reverse();
                 for idx in indices {
@@ -458,7 +427,9 @@ pub(crate) fn call_list_method(
                 }
                 Ok(PyObject::none())
             } else {
-                let idx = index_to_i64(&args[0])?;
+                let idx = index_to_i64(&args[0]).map_err(|_| {
+                    PyException::type_error("list indices must be integers or slices")
+                })?;
                 let mut w = items.write();
                 let len = w.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -472,14 +443,14 @@ pub(crate) fn call_list_method(
             }
         }
         "__add__" => {
-            check_args_min("__add__", args, 1)?;
+            check_args_exact("__add__", args, 1)?;
             let other = args[0].to_list()?;
             let mut result = items.read().clone();
             result.extend(other);
             Ok(PyObject::list(result))
         }
         "__mul__" | "__rmul__" => {
-            check_args_min("__mul__", args, 1)?;
+            check_args_exact("__mul__", args, 1)?;
             let n = index_to_usize_repeat(&args[0])?;
             let base = items.read().clone();
             let size = checked_repeat_len(base.len(), n, "list repeat")?;
@@ -490,14 +461,16 @@ pub(crate) fn call_list_method(
             Ok(PyObject::list(result))
         }
         "__iadd__" => {
-            check_args_min("__iadd__", args, 1)?;
+            check_args_exact("__iadd__", args, 1)?;
             let other = args[0].to_list()?;
+            mark_list_mutated(receiver);
             items.write().extend(other);
             Ok(receiver.clone())
         }
         "__imul__" => {
-            check_args_min("__imul__", args, 1)?;
+            check_args_exact("__imul__", args, 1)?;
             let n = index_to_usize_repeat(&args[0])?;
+            mark_list_mutated(receiver);
             let mut w = items.write();
             let base = w.clone();
             checked_repeat_len(base.len(), n, "list repeat")?;
@@ -508,6 +481,7 @@ pub(crate) fn call_list_method(
             Ok(receiver.clone())
         }
         "__reversed__" => {
+            check_args_exact("__reversed__", args, 0)?;
             let len = items.read().len();
             Ok(PyObject::wrap(PyObjectPayload::RevRefIter {
                 source: receiver.clone(),
@@ -515,6 +489,7 @@ pub(crate) fn call_list_method(
             }))
         }
         "__repr__" | "__str__" => {
+            check_args_exact(method, args, 0)?;
             let r = items.read();
             let parts: Vec<String> = r.iter().map(|x| x.repr()).collect();
             Ok(PyObject::str_val(CompactString::from(format!(
@@ -523,7 +498,7 @@ pub(crate) fn call_list_method(
             ))))
         }
         "__eq__" => {
-            check_args_min("__eq__", args, 1)?;
+            check_args_exact("__eq__", args, 1)?;
             if let PyObjectPayload::List(other) = &args[0].payload {
                 let a = items.read();
                 let b = other.read();
@@ -541,7 +516,7 @@ pub(crate) fn call_list_method(
             }
         }
         "__ne__" => {
-            check_args_min("__ne__", args, 1)?;
+            check_args_exact("__ne__", args, 1)?;
             if let PyObjectPayload::List(other) = &args[0].payload {
                 let a = items.read();
                 let b = other.read();
@@ -558,8 +533,14 @@ pub(crate) fn call_list_method(
                 Ok(PyObject::not_implemented())
             }
         }
-        "__bool__" => Ok(PyObject::bool_val(!items.read().is_empty())),
-        "__hash__" => Err(PyException::type_error("unhashable type: 'list'")),
+        "__bool__" => {
+            check_args_exact("__bool__", args, 0)?;
+            Ok(PyObject::bool_val(!items.read().is_empty()))
+        }
+        "__hash__" => {
+            check_args_exact("__hash__", args, 0)?;
+            Err(PyException::type_error("unhashable type: 'list'"))
+        }
         "__sizeof__" => Ok(PyObject::int(
             (std::mem::size_of::<Vec<PyObjectRef>>()
                 + items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64,

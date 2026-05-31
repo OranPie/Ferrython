@@ -5,6 +5,7 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
+use ferrython_core::object::helpers::{checked_repeat_len, index_to_usize_repeat};
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -169,11 +170,71 @@ impl VirtualMachine {
                     }
                 }
             }
+            if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                match (idunder, &bv.payload) {
+                    ("__iadd__", PyObjectPayload::List(items)) => {
+                        let other = b.to_list()?;
+                        items.write().extend(other);
+                        return Ok(Some(a.clone()));
+                    }
+                    ("__imul__", PyObjectPayload::List(items)) => {
+                        let count = index_to_usize_repeat(b)?;
+                        let mut w = items.write();
+                        let orig = w.clone();
+                        checked_repeat_len(orig.len(), count, "list repeat")?;
+                        w.clear();
+                        for _ in 0..count {
+                            w.extend_from_slice(&orig);
+                        }
+                        return Ok(Some(a.clone()));
+                    }
+                    ("__ior__", PyObjectPayload::Set(_))
+                    | ("__iand__", PyObjectPayload::Set(_))
+                    | ("__isub__", PyObjectPayload::Set(_))
+                    | ("__ixor__", PyObjectPayload::Set(_)) => {
+                        let result = match idunder {
+                            "__ior__" => bv.bit_or(b),
+                            "__iand__" => bv.bit_and(b),
+                            "__isub__" => bv.sub(b),
+                            "__ixor__" => bv.bit_xor(b),
+                            _ => unreachable!(),
+                        }?;
+                        inst.attrs
+                            .write()
+                            .insert(intern_or_new("__builtin_value__"), result);
+                        return Ok(Some(a.clone()));
+                    }
+                    _ => {}
+                }
+            }
             let method = lookup_in_class_mro(&inst.class, idunder)
                 .or_else(|| lookup_in_class_mro(&inst.class, dunder));
             if let Some(m) = method {
                 let bound = self.bind_method(a, m);
-                return Ok(Some(self.call_object(bound, vec![b.clone()])?));
+                let result = self.call_object(bound, vec![b.clone()])?;
+                if inst.attrs.read().contains_key("__builtin_value__")
+                    && matches!(
+                        idunder,
+                        "__iadd__" | "__imul__" | "__iand__" | "__ior__" | "__isub__" | "__ixor__"
+                    )
+                {
+                    if !PyObjectRef::ptr_eq(&result, a)
+                        && matches!(
+                            &result.payload,
+                            PyObjectPayload::List(_)
+                                | PyObjectPayload::Set(_)
+                                | PyObjectPayload::FrozenSet(_)
+                                | PyObjectPayload::Tuple(_)
+                                | PyObjectPayload::Str(_)
+                        )
+                    {
+                        inst.attrs
+                            .write()
+                            .insert(intern_or_new("__builtin_value__"), result);
+                    }
+                    return Ok(Some(a.clone()));
+                }
+                return Ok(Some(result));
             }
             if matches!(idunder, "__iand__" | "__ior__" | "__isub__" | "__ixor__") {
                 if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -427,11 +488,12 @@ impl VirtualMachine {
                     (&a.payload, &b.payload)
                 {
                     // list *= n → repeat in-place
-                    let n = n.to_i64().unwrap_or(0).max(0) as usize;
+                    let count = index_to_usize_repeat(&n.to_object())?;
                     let mut w = items.write();
                     let orig: Vec<_> = w.clone();
+                    checked_repeat_len(orig.len(), count, "list repeat")?;
                     w.clear();
-                    for _ in 0..n {
+                    for _ in 0..count {
                         w.extend_from_slice(&orig);
                     }
                     drop(w);

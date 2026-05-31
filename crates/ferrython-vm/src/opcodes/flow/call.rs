@@ -207,8 +207,33 @@ impl VirtualMachine {
                             }
                         }
                         PyObjectPayload::InstanceDict(map) => {
-                            for (k, v) in map.read().iter() {
-                                kw_vec.push((k.clone(), v.clone()));
+                            let entries =
+                                ferrython_core::object::helpers::instance_dict_as_hashkey_map(map);
+                            for (k, v) in entries.iter() {
+                                let name = match k {
+                                    HashableKey::Str(s) => s.to_compact_string(),
+                                    _ => {
+                                        return Err(PyException::type_error(
+                                            "keywords must be strings",
+                                        ));
+                                    }
+                                };
+                                kw_vec.push((name, v.clone()));
+                            }
+                        }
+                        PyObjectPayload::Instance(inst) => {
+                            if let Some(map) = inst.dict_storage.as_ref() {
+                                for (k, v) in map.read().iter() {
+                                    let name = match k {
+                                        HashableKey::Str(s) => s.to_compact_string(),
+                                        _ => {
+                                            return Err(PyException::type_error(
+                                                "keywords must be strings",
+                                            ));
+                                        }
+                                    };
+                                    kw_vec.push((name, v.clone()));
+                                }
                             }
                         }
                         _ => {}

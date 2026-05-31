@@ -414,8 +414,10 @@ impl Drop for PyObjectRef {
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     if inst.finalizer_state.get() & 1 == 0 {
                         let borrowed = PyObjectRef::from_block_borrowed(self.0);
-                        let del_fn = borrowed.get_attr("__del__");
+                        let owned = borrowed.clone();
                         std::mem::forget(borrowed);
+                        let del_fn = owned.get_attr("__del__");
+                        drop(owned);
                         if let Some(del_fn) = del_fn {
                             if (*p).strong.get() > strong {
                                 inst.finalizer_state.set(inst.finalizer_state.get() | 1);
@@ -775,6 +777,14 @@ pub struct VecIterData {
 }
 
 #[derive(Clone, Debug)]
+pub struct DictValueIterData {
+    pub source: Rc<PyCell<FxHashKeyMap>>,
+    pub index: SyncUsize,
+    pub expected_len: usize,
+    pub expected_version: u64,
+}
+
+#[derive(Clone, Debug)]
 pub enum WeakValueIterKind {
     Keys,
     Values,
@@ -890,6 +900,7 @@ pub enum PyObjectPayload {
     /// Used for dict-key/set/bytes iteration where items must be materialized.
     /// Boxed to keep PyObjectPayload at 32 bytes (Vec + SyncUsize = 32 > 24 limit).
     VecIter(Box<VecIterData>),
+    DictValueIter(Box<DictValueIterData>),
     WeakValueIter(Box<WeakValueIterData>),
     WeakKeyIter(Box<WeakKeyIterData>),
     DequeIter(Box<DequeIterData>),
@@ -1056,6 +1067,14 @@ impl fmt::Debug for PyObjectPayload {
                 ri.step
             ),
             Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
+            Self::DictValueIter(data) => {
+                write!(
+                    f,
+                    "DictValueIter({}/{})",
+                    data.index.get(),
+                    data.expected_len
+                )
+            }
             Self::WeakValueIter(data) => {
                 write!(
                     f,
@@ -1382,6 +1401,8 @@ pub enum IteratorData {
         source: Rc<PyCell<FxHashKeyMap>>,
         owner: Option<PyObjectRef>,
         index: usize,
+        expected_len: usize,
+        expected_version: u64,
         cached_tuple: Option<PyObjectRef>,
     },
     /// Snapshot dict keys iteration — converts keys eagerly at iterator creation.
@@ -1394,6 +1415,16 @@ pub enum IteratorData {
         source: Rc<PyCell<FxHashKeyMap>>,
         index: usize,
         expected_len: usize,
+        expected_version: u64,
+    },
+    SetRefs {
+        source: Rc<PyCell<FxHashKeyFlatMap>>,
+        index: usize,
+        expected_len: usize,
+    },
+    FrozenSetItems {
+        items: Vec<PyObjectRef>,
+        index: usize,
     },
     /// Wraps an iterator while keeping the original iterable alive until exhaustion.
     HeldIter {

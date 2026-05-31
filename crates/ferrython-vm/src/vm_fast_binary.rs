@@ -22,9 +22,12 @@ pub(crate) enum FastFusedBinaryResult {
 #[inline(always)]
 pub(crate) fn try_fast_binary(frame: &mut Frame, instr: Instruction) -> FastBinaryResult {
     match instr.op {
-        Opcode::BinaryAdd | Opcode::InplaceAdd => try_fast_add(frame),
-        Opcode::BinarySubtract | Opcode::InplaceSubtract => try_fast_subtract(frame),
-        Opcode::BinaryMultiply | Opcode::InplaceMultiply => try_fast_multiply(frame),
+        Opcode::BinaryAdd => try_fast_add(frame),
+        Opcode::BinarySubtract => try_fast_subtract(frame),
+        Opcode::BinaryMultiply => try_fast_multiply(frame),
+        Opcode::InplaceAdd | Opcode::InplaceSubtract | Opcode::InplaceMultiply => {
+            FastBinaryResult::Fallback
+        }
         Opcode::BinaryModulo | Opcode::InplaceModulo => try_fast_modulo(frame),
         Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => try_fast_floor_divide(frame),
         Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => try_fast_true_divide(frame),

@@ -299,10 +299,18 @@ impl VirtualMachine {
                 let store_idx = (instr.arg & 0xFFFF) as usize;
                 let for_instr = Instruction::new(Opcode::ForIter, jump_target);
                 self.exec_jump_ops(for_instr)?;
-                let frame = self.vm_frame();
-                if frame.ip != jump_target as usize {
-                    let v = frame.pop();
-                    frame.set_local(store_idx, v);
+                let needs_drain = {
+                    let frame = self.vm_frame();
+                    if frame.ip != jump_target as usize {
+                        let v = frame.pop();
+                        frame.set_local(store_idx, v);
+                        ferrython_core::error::has_pending_finalizers()
+                    } else {
+                        false
+                    }
+                };
+                if needs_drain {
+                    self.drain_pending_finalizers();
                 }
             }
             _ => unreachable!(),

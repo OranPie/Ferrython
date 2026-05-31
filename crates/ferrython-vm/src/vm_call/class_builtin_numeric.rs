@@ -1,11 +1,31 @@
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::types::float_as_integer_ratio;
 
-pub(super) fn int_builtin_value(arg: &PyObjectRef) -> Option<PyObjectRef> {
+pub(super) fn int_builtin_value(arg: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
     match &arg.payload {
-        PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => Some(arg.clone()),
-        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
-        PyObjectPayload::Str(s) => s.trim().parse::<i64>().ok().map(PyObject::int),
-        _ => None,
+        PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => Ok(Some(arg.clone())),
+        PyObjectPayload::Float(f) => {
+            if f.is_nan() {
+                return Err(PyException::value_error(
+                    "cannot convert float NaN to integer",
+                ));
+            }
+            if f.is_infinite() {
+                return Err(PyException::overflow_error(
+                    "cannot convert float infinity to integer",
+                ));
+            }
+            let truncated = f.trunc();
+            if truncated >= -9_007_199_254_740_992.0 && truncated <= 9_007_199_254_740_992.0 {
+                Ok(Some(PyObject::int(truncated as i64)))
+            } else {
+                let (n, d) = float_as_integer_ratio(truncated);
+                Ok(Some(PyObject::big_int(n / d)))
+            }
+        }
+        PyObjectPayload::Str(s) => Ok(s.trim().parse::<i64>().ok().map(PyObject::int)),
+        _ => Ok(None),
     }
 }
 

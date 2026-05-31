@@ -12,37 +12,41 @@ impl VirtualMachine {
         bbm: &BuiltinBoundMethodData,
         args: &[PyObjectRef],
     ) -> PyResult<Option<PyObjectRef>> {
+        if let Some(receiver) = set_like_receiver(&bbm.receiver) {
+            if !args.is_empty()
+                && is_set_iterable_method(bbm.method_name.as_str())
+                && args.iter().any(needs_vm_iterable_collection)
+            {
+                let mut resolved = Vec::with_capacity(args.len());
+                for arg in args {
+                    if needs_vm_iterable_collection(arg) {
+                        resolved.push(PyObject::list(self.collect_iterable(arg)?));
+                    } else {
+                        resolved.push(arg.clone());
+                    }
+                }
+                return Ok(Some(builtins::call_method(
+                    &receiver,
+                    bbm.method_name.as_str(),
+                    &resolved,
+                )?));
+            }
+        }
+
         match &bbm.receiver.payload {
             PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
                 if !args.is_empty()
-                    && matches!(
-                        bbm.method_name.as_str(),
-                        "union"
-                            | "intersection"
-                            | "difference"
-                            | "symmetric_difference"
-                            | "update"
-                            | "intersection_update"
-                            | "difference_update"
-                            | "symmetric_difference_update"
-                            | "issubset"
-                            | "issuperset"
-                            | "isdisjoint"
-                            | "__or__"
-                            | "__and__"
-                            | "__sub__"
-                            | "__xor__"
-                    )
-                    && matches!(
-                        &args[0].payload,
-                        PyObjectPayload::Generator(_)
-                            | PyObjectPayload::Instance(_)
-                            | PyObjectPayload::Iterator(_)
-                    ) =>
+                    && is_set_iterable_method(bbm.method_name.as_str())
+                    && args.iter().any(needs_vm_iterable_collection) =>
             {
                 let mut resolved = Vec::with_capacity(args.len());
-                resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
-                resolved.extend_from_slice(&args[1..]);
+                for arg in args {
+                    if needs_vm_iterable_collection(arg) {
+                        resolved.push(PyObject::list(self.collect_iterable(arg)?));
+                    } else {
+                        resolved.push(arg.clone());
+                    }
+                }
                 Ok(Some(builtins::call_method(
                     &bbm.receiver,
                     bbm.method_name.as_str(),
@@ -121,5 +125,61 @@ impl VirtualMachine {
             }
             _ => Ok(None),
         }
+    }
+}
+
+fn is_set_iterable_method(name: &str) -> bool {
+    matches!(
+        name,
+        "union"
+            | "intersection"
+            | "difference"
+            | "symmetric_difference"
+            | "update"
+            | "intersection_update"
+            | "difference_update"
+            | "symmetric_difference_update"
+            | "issubset"
+            | "issuperset"
+            | "isdisjoint"
+            | "__or__"
+            | "__and__"
+            | "__sub__"
+            | "__xor__"
+    )
+}
+
+fn needs_vm_iterable_collection(obj: &PyObjectRef) -> bool {
+    matches!(
+        &obj.payload,
+        PyObjectPayload::Generator(_)
+            | PyObjectPayload::Instance(_)
+            | PyObjectPayload::Iterator(_)
+            | PyObjectPayload::RangeIter(_)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
+            | PyObjectPayload::WeakValueIter(_)
+            | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::DequeIter(_)
+            | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::RevRefIter { .. }
+    )
+}
+
+fn set_like_receiver(receiver: &PyObjectRef) -> Option<PyObjectRef> {
+    match &receiver.payload {
+        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_) => Some(receiver.clone()),
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .cloned()
+            .filter(|value| {
+                matches!(
+                    &value.payload,
+                    PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                )
+            }),
+        _ => None,
     }
 }

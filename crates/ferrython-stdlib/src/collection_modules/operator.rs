@@ -739,6 +739,19 @@ pub fn create_operator_module() -> PyObjectRef {
         ("__iconcat__", "iconcat"),
     ];
     if let PyObjectPayload::Module(ref md) = m.payload {
+        let attr_names: Vec<CompactString> = md.attrs.read().keys().cloned().collect();
+        for attr_name in attr_names {
+            let value = md.attrs.read().get(&attr_name).cloned();
+            if let Some(value) = value {
+                if let PyObjectPayload::NativeFunction(nf) = &value.payload {
+                    if nf.name.is_empty() {
+                        let named =
+                            PyObject::native_function(&format!("operator.{}", attr_name), nf.func);
+                        md.attrs.write().insert(attr_name, named);
+                    }
+                }
+            }
+        }
         let mod_func = md.attrs.read().get(&CompactString::from("mod")).cloned();
         if let Some(v) = mod_func {
             md.attrs.write().insert(CompactString::from("mod_"), v);

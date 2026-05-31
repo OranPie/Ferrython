@@ -3,7 +3,7 @@
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     check_args_min, new_fx_hashkey_flatmap, new_fx_hashkey_map, FxHashKeyFlatMap, FxHashKeyMap,
-    PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -38,7 +38,10 @@ pub(crate) fn call_set_method(
                     }
                 }
                 if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
-                    if matches!(&value.payload, PyObjectPayload::Set(_)) {
+                    if matches!(
+                        &value.payload,
+                        PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                    ) {
                         return set_lookup_key(&value);
                     }
                 }
@@ -164,7 +167,7 @@ pub(crate) fn call_set_method(
         }
         "add" => {
             check_args_min("add", args, 1)?;
-            let hk = args[0].to_hashable_key()?;
+            let hk = set_lookup_key(&args[0])?;
             // Use entry API to avoid Rc::clone when key already exists
             m.write().entry(hk).or_insert_with(|| args[0].clone());
             check_key_error()?;
@@ -265,10 +268,14 @@ pub(crate) fn call_set_method(
         }
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
         "__bool__" => Ok(PyObject::bool_val(!m.read().is_empty())),
-        "__iter__" => {
-            let items: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
-            Ok(PyObject::list(items))
-        }
+        "__iter__" => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::SetRefs {
+                source: m.clone(),
+                index: 0,
+                expected_len: m.read().len(),
+            }),
+        )))),
+        "__hash__" => Err(PyException::type_error("unhashable type: 'set'")),
         _ => Err(PyException::attribute_error(format!(
             "'set' object has no attribute '{}'",
             method
@@ -277,6 +284,7 @@ pub(crate) fn call_set_method(
 }
 
 pub(crate) fn call_frozenset_method(
+    receiver: Option<PyObjectRef>,
     m: &FxHashKeyMap,
     method: &str,
     args: &[PyObjectRef],
@@ -291,7 +299,7 @@ pub(crate) fn call_frozenset_method(
             }
             Ok(PyObject::none())
         }
-        "copy" => Ok(PyObject::frozenset(m.clone())),
+        "copy" => Ok(receiver.unwrap_or_else(|| PyObject::frozenset(m.clone()))),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
             let mut result = m.clone();
@@ -380,13 +388,51 @@ pub(crate) fn call_frozenset_method(
         }
         "__contains__" => {
             check_args_min("frozenset.__contains__", args, 1)?;
-            let key = args[0].to_hashable_key()?;
-            Ok(PyObject::bool_val(m.contains_key(&key)))
+            let key = {
+                match &args[0].payload {
+                    PyObjectPayload::Set(items) => {
+                        let read = items.read();
+                        let mut keys: Vec<HashableKey> = read.keys().cloned().collect();
+                        keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
+                        HashableKey::FrozenSet(std::rc::Rc::new(
+                            ferrython_core::types::FrozenSetKeyData::new(keys),
+                        ))
+                    }
+                    PyObjectPayload::Instance(inst) => {
+                        if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                            if matches!(
+                                &value.payload,
+                                PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                            ) {
+                                let list = value.to_list()?;
+                                let mut keys = Vec::with_capacity(list.len());
+                                for item in list {
+                                    keys.push(item.to_hashable_key()?);
+                                }
+                                keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
+                                HashableKey::FrozenSet(std::rc::Rc::new(
+                                    ferrython_core::types::FrozenSetKeyData::new(keys),
+                                ))
+                            } else {
+                                args[0].to_hashable_key()?
+                            }
+                        } else {
+                            args[0].to_hashable_key()?
+                        }
+                    }
+                    _ => args[0].to_hashable_key()?,
+                }
+            };
+            let contains = m.contains_key(&key);
+            check_key_error()?;
+            Ok(PyObject::bool_val(contains))
         }
         "__len__" => Ok(PyObject::int(m.len() as i64)),
         "__iter__" => {
             let items: Vec<PyObjectRef> = m.keys().map(|k| k.to_object()).collect();
-            Ok(PyObject::list(items))
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::FrozenSetItems { items, index: 0 }),
+            ))))
         }
         "__lt__" => {
             check_args_min("__lt__", args, 1)?;

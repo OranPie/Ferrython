@@ -156,6 +156,7 @@ fn is_gc_payload(payload: &PyObjectPayload) -> bool {
             | PyObjectPayload::Set(_)
             | PyObjectPayload::Iterator(_)
             | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
             | PyObjectPayload::DequeIter(_)
@@ -235,6 +236,7 @@ fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
             vec![source.clone()]
         }
         PyObjectPayload::VecIter(data) => data.items.clone(),
+        PyObjectPayload::DictValueIter(data) => dict_storage_refs(&data.source),
         PyObjectPayload::WeakValueIter(data) => data
             .entries
             .iter()
@@ -388,6 +390,8 @@ fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
         }
         IteratorData::DictKeys { keys, .. } => keys.clone(),
         IteratorData::DictKeyRefs { source, .. } => dict_storage_refs(source),
+        IteratorData::SetRefs { source, .. } => set_storage_refs(source),
+        IteratorData::FrozenSetItems { items, .. } => items.clone(),
         IteratorData::HeldIter { iter, owner } => {
             let mut refs = vec![iter.clone()];
             if let Some(owner) = owner {

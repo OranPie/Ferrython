@@ -3,8 +3,8 @@
 use super::super::methods::{CompareOp, PyObjectMethods};
 use super::super::payload::*;
 use super::{
-    is_dynamic_class_attribute, property_field, property_init_doc, property_set_doc,
-    unwrap_builtin_subclass,
+    is_dynamic_class_attribute, mark_dict_storage_mutated, property_field, property_init_doc,
+    property_set_doc, unwrap_builtin_subclass,
 };
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
@@ -353,7 +353,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         match &args[1].payload {
                             PyObjectPayload::Dict(src) => {
                                 for (k, v) in src.read().iter() {
-                                    storage.insert(k.clone(), v.clone());
+                                    if storage.insert(k.clone(), v.clone()).is_none() {
+                                        mark_dict_storage_mutated(ds);
+                                    }
                                 }
                             }
                             PyObjectPayload::Instance(src_inst)
@@ -361,7 +363,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                             {
                                 if let Some(src_ds) = src_inst.dict_storage.as_ref() {
                                     for (k, v) in src_ds.read().iter() {
-                                        storage.insert(k.clone(), v.clone());
+                                        if storage.insert(k.clone(), v.clone()).is_none() {
+                                            mark_dict_storage_mutated(ds);
+                                        }
                                     }
                                 }
                             }
@@ -372,7 +376,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                                         if let Ok(pair) = item.to_list() {
                                             if pair.len() == 2 {
                                                 let hk = pair[0].to_hashable_key()?;
-                                                storage.insert(hk, pair[1].clone());
+                                                if storage.insert(hk, pair[1].clone()).is_none() {
+                                                    mark_dict_storage_mutated(ds);
+                                                }
                                             }
                                         }
                                     }
@@ -427,7 +433,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 if let Some(ref ds) = inst.dict_storage {
                     let hk = args[1].to_hashable_key()?;
-                    ds.write().insert(hk, args[2].clone());
+                    if ds.write().insert(hk, args[2].clone()).is_none() {
+                        mark_dict_storage_mutated(ds);
+                    }
                     return Ok(PyObject::none());
                 }
             }
@@ -446,6 +454,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 if let Some(ref ds) = inst.dict_storage {
                     let hk = args[1].to_hashable_key()?;
                     if ds.write().shift_remove(&hk).is_some() {
+                        mark_dict_storage_mutated(ds);
                         return Ok(PyObject::none());
                     }
                     return Err(PyException::key_error(args[1].py_to_string()));

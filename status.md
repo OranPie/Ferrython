@@ -1757,6 +1757,31 @@ Last updated: 2026-05-30T20:50:44+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash`
     - `git diff --check`
 
+- 2026-05-31 core container lifetime / sequence batch：
+  - 深挖 `test_list` 脚本模式崩溃后确认根因不是测试特判或单个 freelist bug：`list.__contains__` 等路径在调用用户 `__eq__` 时仍借用容器内部元素；用户比较代码可清空列表，使借用对象被释放，之后继续使用该引用会触发同一 `InstanceData` 被重复回收。
+  - 通用修复：list membership、list ref/reversed-ref iterator membership、dict values membership 和 dict value comparison 在进入可能运行用户代码的比较前克隆当前候选对象，确保比较期间元素被容器突变删除也仍有强引用保活。
+  - 加固 instance 生命周期：实例 freelist 使用 `try_with` 处理 TLS teardown；线程退出时泄漏 freelist 缓存避免析构顺序崩溃；被 finalizer/cycle GC 标记过的 `InstanceData` 不再回收到 freelist；`PyObjectRef::drop` 查找 `__del__` 前先持有 owned 引用，避免 finalizer probing 期间自释放。
+  - 移除了临时 `FERRYTHON_DEBUG_INSTANCE_FREELIST` 诊断 panic；保留的是生命周期修复和 freelist teardown 防护。
+  - 本批 6 个目标测试均已独立 30s 通过：
+    - `test_iter`: `run=54 pass=52 fail=0 err=0 skip=2`
+    - `test_list`: `run=57 pass=56 fail=0 err=0 skip=1`
+    - `test_tuple`: `run=35 pass=30 fail=0 err=0 skip=5`
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`
+  - 合并执行 `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_iter test_list test_tuple test_dict test_set test_weakref` 因整批总耗时超过单个 30s 预算退出 124，未产出失败摘要；按“每个测试组 30s”逐项验证全绿。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list.ListTest.test_count_index_remove_crashes`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list.ListTest.test_equal_operator_modifying_operand`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_iter`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_tuple`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakref`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

@@ -168,6 +168,7 @@ pub(super) fn non_instance_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjec
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -648,6 +649,7 @@ const LIST_METHODS: &[&str] = &[
     "copy",
     "count",
     "index",
+    "__init__",
     "__len__",
     "__contains__",
     "__iter__",

@@ -23,6 +23,9 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                 Some('v') => result.push('\x0B'),
                 Some('x') => {
                     let hex = take_n(&mut chars, 2);
+                    if hex.len() != 2 {
+                        return Err(ParseError::new(ParseErrorKind::InvalidEscape('x'), span));
+                    }
                     match u32::from_str_radix(&hex, 16) {
                         Ok(n) => {
                             if let Some(c) = char::from_u32(n) {
@@ -41,6 +44,9 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                 }
                 Some('u') => {
                     let hex = take_n(&mut chars, 4);
+                    if hex.len() != 4 {
+                        return Err(ParseError::new(ParseErrorKind::InvalidEscape('u'), span));
+                    }
                     match u32::from_str_radix(&hex, 16) {
                         Ok(n) => {
                             if let Some(c) = char::from_u32(n) {
@@ -63,6 +69,9 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                 }
                 Some('U') => {
                     let hex = take_n(&mut chars, 8);
+                    if hex.len() != 8 {
+                        return Err(ParseError::new(ParseErrorKind::InvalidEscape('U'), span));
+                    }
                     match u32::from_str_radix(&hex, 16) {
                         Ok(n) => {
                             if let Some(c) = char::from_u32(n) {
@@ -131,7 +140,7 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                     // Line continuation — skip the newline
                 }
                 Some(other) => {
-                    // Unknown escape — in Python 3.8 this is a DeprecationWarning
+                    // Unknown escape — in Python 3.8 this is a DeprecationWarning.
                     result.push('\\');
                     result.push(other);
                 }
@@ -149,6 +158,25 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
 /// Parse a raw string literal (no escape processing).
 pub fn parse_raw_string(s: &str) -> CompactString {
     CompactString::from(s)
+}
+
+/// Parse a raw bytes literal. Escape processing is disabled, but bytes source
+/// text itself must still be ASCII.
+pub fn parse_raw_bytes_literal(s: &str, span: Span) -> Result<Vec<u8>, ParseError> {
+    let mut result = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii() {
+            result.push(c as u8);
+        } else {
+            return Err(ParseError::new(
+                ParseErrorKind::InvalidSyntax(
+                    "bytes can only contain ASCII literal characters".into(),
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(result)
 }
 
 /// Parse a bytes literal.
@@ -170,6 +198,9 @@ pub fn parse_bytes_literal(s: &str, span: Span) -> Result<Vec<u8>, ParseError> {
                 Some('v') => result.push(0x0B),
                 Some('x') => {
                     let hex = take_n(&mut chars, 2);
+                    if hex.len() != 2 {
+                        return Err(ParseError::new(ParseErrorKind::InvalidEscape('x'), span));
+                    }
                     match u8::from_str_radix(&hex, 16) {
                         Ok(n) => result.push(n),
                         Err(_) => {

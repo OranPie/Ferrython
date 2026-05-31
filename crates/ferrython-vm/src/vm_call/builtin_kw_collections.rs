@@ -64,9 +64,9 @@ impl VirtualMachine {
             }
             if !handled {
                 if let PyObjectPayload::InstanceDict(src) = &pos_args[0].payload {
-                    let read = src.read();
-                    for (k, v) in read.iter() {
-                        map.insert(HashableKey::str_key(k.clone()), v.clone());
+                    let read = ferrython_core::object::helpers::instance_dict_as_hashkey_map(src);
+                    for (k, v) in read {
+                        map.insert(k, v);
                     }
                     handled = true;
                 }

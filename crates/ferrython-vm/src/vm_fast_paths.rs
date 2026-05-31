@@ -5,7 +5,7 @@ use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
-use ferrython_core::types::PyInt;
+use ferrython_core::types::{float_as_integer_ratio, PyInt};
 
 #[inline(always)]
 fn native_function_binds_to_class_name(
@@ -118,7 +118,16 @@ pub(crate) fn fast_int_conversion(arg: &PyObjectRef) -> Option<PyObjectRef> {
     match &arg.payload {
         PyObjectPayload::Int(_) => Some(arg.clone()),
         PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { 1 } else { 0 })),
-        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+        PyObjectPayload::Float(f) if f.is_finite() => {
+            let truncated = f.trunc();
+            if truncated >= -9_007_199_254_740_992.0 && truncated <= 9_007_199_254_740_992.0 {
+                Some(PyObject::int(truncated as i64))
+            } else {
+                let (n, d) = float_as_integer_ratio(truncated);
+                Some(PyObject::big_int(n / d))
+            }
+        }
+        PyObjectPayload::Float(_) => None,
         PyObjectPayload::Str(s) => s.trim().parse::<i64>().ok().map(PyObject::int),
         _ => None,
     }
@@ -707,6 +716,9 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
                 IteratorData::DictKeys { .. } | IteratorData::DictKeyRefs { .. } => {
                     "dict_keyiterator"
                 }
+                IteratorData::SetRefs { .. } | IteratorData::FrozenSetItems { .. } => {
+                    "set_iterator"
+                }
                 IteratorData::Sentinel { .. } => "callable_iterator",
                 IteratorData::Tee { .. } => "itertools._tee",
                 _ => "iterator",
@@ -715,6 +727,7 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         }
         PyObjectPayload::RangeIter(_) => Some(PyObject::builtin_type_by_name("range_iterator")),
         PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => Some(PyObject::builtin_type_by_name("list_iterator")),

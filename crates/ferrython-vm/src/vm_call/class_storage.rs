@@ -1,5 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::PyResult;
+use ferrython_core::object::helpers::mark_dict_storage_mutated;
 use ferrython_core::object::{PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::HashableKey;
 
@@ -48,10 +49,17 @@ impl VirtualMachine {
 
         let mut storage = ds.write();
         for (k, v) in entries {
-            storage.insert(k, v);
+            if storage.insert(k, v).is_none() {
+                mark_dict_storage_mutated(ds);
+            }
         }
         for (k, v) in kwargs {
-            storage.insert(HashableKey::str_key(k.clone()), v.clone());
+            if storage
+                .insert(HashableKey::str_key(k.clone()), v.clone())
+                .is_none()
+            {
+                mark_dict_storage_mutated(ds);
+            }
         }
         Ok(())
     }
@@ -76,7 +84,12 @@ impl VirtualMachine {
                 } else {
                     let mut storage = ds.write();
                     for key in keys {
-                        storage.insert(key.to_hashable_key()?, value.clone());
+                        if storage
+                            .insert(key.to_hashable_key()?, value.clone())
+                            .is_none()
+                        {
+                            mark_dict_storage_mutated(ds);
+                        }
                     }
                     return Ok(result);
                 }

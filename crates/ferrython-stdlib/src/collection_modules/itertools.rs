@@ -176,6 +176,7 @@ fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 &a.payload,
                 PyObjectPayload::Iterator(_)
                     | PyObjectPayload::VecIter(_)
+                    | PyObjectPayload::DictValueIter(_)
                     | PyObjectPayload::RefIter { .. }
             ) {
                 a.clone()
@@ -945,6 +946,7 @@ fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         &iterable.payload,
         PyObjectPayload::Iterator(_)
             | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
             | PyObjectPayload::RefIter { .. }
     ) {
         iterable.clone()

@@ -6,7 +6,8 @@ use compact_str::CompactString;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::PyException;
 use ferrython_core::object::helpers::{
-    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+    dict_storage_iteration_changed, dict_storage_version, py_int_from_bigint,
+    range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
 };
 use ferrython_core::object::{
     is_hidden_dict_key, GeneratorState, IteratorData, PyCell, PyObject, PyObjectPayload,
@@ -22,6 +23,7 @@ pub(crate) enum FastGetIterResult {
 
 pub(crate) enum FastForIterStoreResult {
     HandledChain,
+    HandledChainDrainFinalizers,
     Generator(Rc<PyCell<GeneratorState>>),
     Fallback,
 }
@@ -41,6 +43,7 @@ pub(crate) fn try_fast_get_iter(frame: &mut Frame) -> FastGetIterResult {
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -61,6 +64,7 @@ pub(crate) fn try_fast_get_iter(frame: &mut Frame) -> FastGetIterResult {
                     source: map.clone(),
                     index: 0,
                     expected_len: map.read().len(),
+                    expected_version: dict_storage_version(map),
                 },
             ))));
             replace_stack_top(frame, iter);
@@ -72,6 +76,7 @@ pub(crate) fn try_fast_get_iter(frame: &mut Frame) -> FastGetIterResult {
                     source: map.clone(),
                     index: 0,
                     expected_len: map.read().len(),
+                    expected_version: dict_storage_version(map),
                 },
             ))));
             replace_stack_top(frame, iter);
@@ -118,6 +123,7 @@ pub(crate) fn try_fast_for_iter(
             }
             FastForIterResult::Handled
         }
+        PyObjectPayload::DictValueIter(_) => FastForIterResult::Fallback,
         PyObjectPayload::DequeIter(data) => match advance_deque_iter(data) {
             Ok(Some(value)) => {
                 push(frame, value);
@@ -201,13 +207,16 @@ pub(crate) fn try_fast_for_iter_store(
             if idx < data.items.len() {
                 let obj = data.items[idx].clone();
                 data.index.set(idx + 1);
-                set_local(frame, store_idx, obj);
+                if set_local_maybe_finalizer(frame, store_idx, obj) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop_stack_top(frame);
                 frame.ip = jump_target;
             }
             FastForIterStoreResult::HandledChain
         }
+        PyObjectPayload::DictValueIter(_) => FastForIterStoreResult::Fallback,
         PyObjectPayload::RefIter { source, index } => {
             if index.get() == usize::MAX {
                 drop_stack_top(frame);
@@ -217,7 +226,9 @@ pub(crate) fn try_fast_for_iter_store(
             let idx = index.get();
             if let Some(value) = ref_iter_item(source, idx) {
                 index.set(idx + 1);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 index.set(usize::MAX);
                 drop_stack_top(frame);
@@ -237,7 +248,9 @@ pub(crate) fn try_fast_for_iter_store(
                 if pos < items.len() {
                     let obj = items[pos].clone();
                     index.set(pos);
-                    set_local(frame, store_idx, obj);
+                    if set_local_maybe_finalizer(frame, store_idx, obj) {
+                        return FastForIterStoreResult::HandledChainDrainFinalizers;
+                    }
                 } else {
                     index.set(usize::MAX);
                     drop_stack_top(frame);
@@ -276,7 +289,9 @@ fn try_store_from_iterator_data(
                 let value = PyObject::int(value);
                 *current = next;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop(data);
                 drop_stack_top(frame);
@@ -293,7 +308,9 @@ fn try_store_from_iterator_data(
                 let value = py_int_from_bigint(range_iter_item_bigint(iter));
                 iter.index += 1;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             }
             FastForIterStoreResult::HandledChain
         }
@@ -302,7 +319,9 @@ fn try_store_from_iterator_data(
                 let value = items[*index].clone();
                 *index += 1;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop(data);
                 drop_stack_top(frame);
@@ -315,7 +334,9 @@ fn try_store_from_iterator_data(
                 let value = items[*index].clone();
                 *index += 1;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop(data);
                 drop_stack_top(frame);
@@ -328,7 +349,9 @@ fn try_store_from_iterator_data(
                 let value = keys[*index].clone();
                 *index += 1;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop(data);
                 drop_stack_top(frame);
@@ -340,9 +363,9 @@ fn try_store_from_iterator_data(
             source,
             index,
             expected_len,
+            expected_version,
         } => {
-            let map_len = source.read().len();
-            if map_len != *expected_len {
+            if dict_storage_iteration_changed(source, *expected_len, *expected_version) {
                 drop(data);
                 return FastForIterStoreResult::Fallback;
             }
@@ -353,7 +376,51 @@ fn try_store_from_iterator_data(
             if let Some(value) = value {
                 *index += 1;
                 drop(data);
-                set_local(frame, store_idx, value);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterStoreResult::HandledChain
+        }
+        IteratorData::SetRefs {
+            source,
+            index,
+            expected_len,
+        } => {
+            let map_len = source.read().len();
+            if map_len != *expected_len {
+                drop(data);
+                return FastForIterStoreResult::Fallback;
+            }
+            let value = {
+                let map = source.read();
+                map.iter().nth(*index).map(|(_, value)| value.clone())
+            };
+            if let Some(value) = value {
+                *index += 1;
+                drop(data);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterStoreResult::HandledChain
+        }
+        IteratorData::FrozenSetItems { items, index } => {
+            if *index < items.len() {
+                let value = items[*index].clone();
+                *index += 1;
+                drop(data);
+                if set_local_maybe_finalizer(frame, store_idx, value) {
+                    return FastForIterStoreResult::HandledChainDrainFinalizers;
+                }
             } else {
                 drop(data);
                 drop_stack_top(frame);
@@ -552,9 +619,17 @@ fn try_for_iterator_data(
             source,
             owner: _,
             index,
+            expected_len,
+            expected_version,
             cached_tuple,
         } => {
             let map = unsafe { &*source.data_ptr() };
+            if map.len() != *expected_len || dict_storage_version(source) != *expected_version {
+                drop(data);
+                return FastForIterResult::Error(PyException::runtime_error(
+                    "dictionary changed size during iteration",
+                ));
+            }
             while *index < map.len() {
                 let (key, _) = map.get_index(*index).unwrap();
                 if !is_hidden_dict_key(key) {
@@ -594,9 +669,9 @@ fn try_for_iterator_data(
             source,
             index,
             expected_len,
+            expected_version,
         } => {
-            let map_len = source.read().len();
-            if map_len != *expected_len {
+            if dict_storage_iteration_changed(source, *expected_len, *expected_version) {
                 drop(data);
                 return FastForIterResult::Error(PyException::runtime_error(
                     "dictionary changed size during iteration",
@@ -607,6 +682,46 @@ fn try_for_iterator_data(
                 map.get_index(*index).map(|(key, _)| key.to_object())
             };
             if let Some(value) = value {
+                *index += 1;
+                drop(data);
+                push(frame, value);
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterResult::Handled
+        }
+        IteratorData::SetRefs {
+            source,
+            index,
+            expected_len,
+        } => {
+            let map_len = source.read().len();
+            if map_len != *expected_len {
+                drop(data);
+                return FastForIterResult::Error(PyException::runtime_error(
+                    "Set changed size during iteration",
+                ));
+            }
+            let value = {
+                let map = source.read();
+                map.iter().nth(*index).map(|(_, value)| value.clone())
+            };
+            if let Some(value) = value {
+                *index += 1;
+                drop(data);
+                push(frame, value);
+            } else {
+                drop(data);
+                drop_stack_top(frame);
+                frame.ip = jump_target;
+            }
+            FastForIterResult::Handled
+        }
+        IteratorData::FrozenSetItems { items, index } => {
+            if *index < items.len() {
+                let value = items[*index].clone();
                 *index += 1;
                 drop(data);
                 push(frame, value);
@@ -968,7 +1083,9 @@ fn can_advance_source_inline(source: &PyObjectRef) -> bool {
                     | IteratorData::Str { .. }
             )
         }
-        PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) => true,
+        PyObjectPayload::RangeIter(..)
+        | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_) => true,
         PyObjectPayload::RefIter { source, .. } => matches!(
             &source.payload,
             PyObjectPayload::List(_)
@@ -1063,4 +1180,11 @@ fn push(frame: &mut Frame, value: PyObjectRef) {
 #[inline(always)]
 fn set_local(frame: &mut Frame, idx: usize, value: PyObjectRef) {
     unsafe { *frame.locals.get_unchecked_mut(idx) = Some(value) };
+}
+
+#[inline(always)]
+fn set_local_maybe_finalizer(frame: &mut Frame, idx: usize, value: PyObjectRef) -> bool {
+    let old = unsafe { frame.locals.get_unchecked_mut(idx).replace(value) };
+    drop(old);
+    ferrython_core::error::has_pending_finalizers()
 }

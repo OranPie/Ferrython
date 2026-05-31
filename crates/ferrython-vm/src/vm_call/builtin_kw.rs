@@ -62,7 +62,16 @@ impl VirtualMachine {
             "bool" => {
                 return self.builtin_bool_kw(func, pos_args, &kwargs);
             }
-            "float" | "str" | "bytes" | "bytearray" | "list" | "set" | "frozenset" => {
+            "float" | "str" | "bytes" | "bytearray" => {
+                return self.call_object(func, pos_args);
+            }
+            "list" | "set" | "frozenset" => {
+                if !kwargs.is_empty() {
+                    return Err(PyException::type_error(format!(
+                        "{}() takes no keyword arguments",
+                        name
+                    )));
+                }
                 return self.call_object(func, pos_args);
             }
             "tuple" => {

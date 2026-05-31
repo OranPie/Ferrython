@@ -14,8 +14,18 @@ impl VirtualMachine {
         bbm: &BuiltinBoundMethodData,
         args: &[PyObjectRef],
     ) -> PyResult<Option<PyObjectRef>> {
+        let receiver = if let PyObjectPayload::Instance(inst) = &bbm.receiver.payload {
+            inst.attrs
+                .read()
+                .get("__builtin_value__")
+                .cloned()
+                .filter(|value| matches!(&value.payload, PyObjectPayload::List(_)))
+                .unwrap_or_else(|| bbm.receiver.clone())
+        } else {
+            bbm.receiver.clone()
+        };
         if bbm.method_name.as_str() == "extend" && !args.is_empty() {
-            if matches!(bbm.receiver.payload, PyObjectPayload::List(_)) {
+            if matches!(receiver.payload, PyObjectPayload::List(_)) {
                 if matches!(
                     args[0].payload,
                     PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)
@@ -29,20 +39,17 @@ impl VirtualMachine {
                         | IteratorData::Sentinel { .. })
                 })) {
                     let items = self.collect_iterable(&args[0])?;
-                    return builtins::call_method(
-                        &bbm.receiver,
-                        "extend",
-                        &[PyObject::list(items)],
-                    )
-                    .map(Some);
+                    return builtins::call_method(&receiver, "extend", &[PyObject::list(items)])
+                        .map(Some);
                 }
             }
         }
 
         if bbm.method_name.as_str() == "sort" {
-            if let PyObjectPayload::List(items) = &bbm.receiver.payload {
+            if matches!(&receiver.payload, PyObjectPayload::List(_)) {
                 let mut key_fn: Option<PyObjectRef> = None;
                 let mut reverse = false;
+                let mut positional = 0usize;
                 for arg in args {
                     if let PyObjectPayload::Dict(d) = &arg.payload {
                         let rd = d.read();
@@ -56,47 +63,26 @@ impl VirtualMachine {
                                 key_fn = Some(v.clone());
                             }
                         }
+                    } else {
+                        positional += 1;
                     }
                 }
-                if let Some(key) = key_fn {
-                    let mut w = items.write();
-                    let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
-                    for item in w.iter() {
-                        let k = self.call_object(key.clone(), vec![item.clone()])?;
-                        decorated.push((k, item.clone()));
-                    }
-                    let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
-                    let mut indices: Vec<usize> = (0..decorated.len()).collect();
-                    for i in 1..indices.len() {
-                        let mut j = i;
-                        while j > 0 {
-                            if self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])? {
-                                indices.swap(j, j - 1);
-                                j -= 1;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    w.clear();
-                    for i in indices {
-                        w.push(decorated[i].1.clone());
-                    }
-                    if reverse {
-                        w.reverse();
-                    }
-                    return Ok(Some(PyObject::none()));
-                } else {
-                    let mut w = items.write();
-                    let mut v: Vec<_> = w.drain(..).collect();
-                    self.vm_sort(&mut v)?;
-                    if reverse {
-                        v.reverse();
-                    }
-                    w.extend(v);
-                    return Ok(Some(PyObject::none()));
+                if positional > 0 {
+                    return builtins::call_method(&receiver, "sort", args).map(Some);
                 }
+                self.vm_sort_list_in_place(&receiver, key_fn, reverse)?;
+                return Ok(Some(PyObject::none()));
             }
+        }
+
+        if !PyObjectRef::ptr_eq(&receiver, &bbm.receiver)
+            && matches!(&receiver.payload, PyObjectPayload::List(_))
+        {
+            let result = builtins::call_method(&receiver, bbm.method_name.as_str(), args)?;
+            if matches!(bbm.method_name.as_str(), "__iadd__" | "__imul__") {
+                return Ok(Some(bbm.receiver.clone()));
+            }
+            return Ok(Some(result));
         }
 
         Ok(None)

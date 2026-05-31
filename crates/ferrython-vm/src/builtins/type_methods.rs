@@ -43,6 +43,7 @@ pub(super) fn collect_hash_entries(arg: &PyObjectRef) -> PyResult<Vec<(HashableK
             for item in items {
                 let key = item.to_hashable_key()?;
                 entries.push((key, item));
+                check_key_error()?;
             }
             Ok(entries)
         }
@@ -78,6 +79,7 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
         (PyObjectPayload::Int(x), PyObjectPayload::Float(y)) => x.to_f64().partial_cmp(y),
         (PyObjectPayload::Float(x), PyObjectPayload::Int(y)) => x.partial_cmp(&y.to_f64()),
         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => x.partial_cmp(y),
+        (PyObjectPayload::Bytes(x), PyObjectPayload::Bytes(y)) => x.partial_cmp(y),
         (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => x.partial_cmp(y),
         (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
             for (a_item, b_item) in x.iter().zip(y.iter()) {

@@ -605,6 +605,7 @@ impl<'src> Lexer<'src> {
         let mut is_raw = false;
         let mut is_bytes = false;
         let mut is_fstring = false;
+        let mut saw_u = false;
 
         // Consume prefix characters
         let mut prefix_len = 0;
@@ -627,6 +628,7 @@ impl<'src> Lexer<'src> {
                     prefix_len += 1;
                 }
                 'u' | 'U' if prefix_len == 0 => {
+                    saw_u = true;
                     prefix_len += 1;
                 }
                 '\'' | '"' => break,
@@ -646,6 +648,12 @@ impl<'src> Lexer<'src> {
         let next = self.chars[self.pos + prefix_len];
         if next != '\'' && next != '"' {
             return Ok(None);
+        }
+        if saw_u && (is_raw || is_bytes || is_fstring) {
+            return Err(ParseError::new(
+                ParseErrorKind::SyntaxErrorMessage("invalid string prefix".into()),
+                self.span_from(start),
+            ));
         }
 
         // Skip prefix characters
@@ -1075,7 +1083,7 @@ impl<'src> Lexer<'src> {
 
         if is_bytes {
             if is_raw {
-                let bytes = content.into_bytes();
+                let bytes = string_parser::parse_raw_bytes_literal(&content, span)?;
                 Ok(Token::new(TokenKind::Bytes(bytes), span))
             } else {
                 let bytes = string_parser::parse_bytes_literal(&content, span)?;

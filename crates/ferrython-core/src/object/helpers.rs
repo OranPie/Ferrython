@@ -7,11 +7,139 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use super::methods::PyObjectMethods;
 use super::payload::*;
+
+pub const INSTANCE_DICT_EXTRA_KEY: &str = "__ferrython_instance_dict_extra__";
+
+pub fn string_key_name(obj: &PyObjectRef) -> Option<CompactString> {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => Some(s.to_compact_string()),
+        PyObjectPayload::Instance(inst) => {
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if cd.builtin_base_name.as_deref() == Some("str") {
+                    let value = inst.attrs.read().get("__builtin_value__").cloned()?;
+                    if let PyObjectPayload::Str(s) = &value.payload {
+                        return Some(s.to_compact_string());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub fn is_instance_dict_internal_key(name: &str) -> bool {
+    name == INSTANCE_DICT_EXTRA_KEY
+}
+
+pub fn instance_dict_extra_map(attrs: &SharedFxAttrMap) -> Option<Rc<PyCell<FxHashKeyMap>>> {
+    let obj = attrs.read().get(INSTANCE_DICT_EXTRA_KEY).cloned()?;
+    match &obj.payload {
+        PyObjectPayload::Dict(map) => Some(map.clone()),
+        _ => None,
+    }
+}
+
+pub fn instance_dict_ensure_extra_map(attrs: &SharedFxAttrMap) -> Rc<PyCell<FxHashKeyMap>> {
+    if let Some(map) = instance_dict_extra_map(attrs) {
+        return map;
+    }
+    let obj = PyObject::dict(new_fx_hashkey_map());
+    let map = match &obj.payload {
+        PyObjectPayload::Dict(map) => map.clone(),
+        _ => unreachable!(),
+    };
+    attrs
+        .write()
+        .insert(CompactString::from(INSTANCE_DICT_EXTRA_KEY), obj);
+    map
+}
+
+pub fn instance_dict_as_hashkey_map(attrs: &SharedFxAttrMap) -> FxHashKeyMap {
+    let mut result = instance_dict_extra_map(attrs)
+        .map(|map| map.read().clone())
+        .unwrap_or_else(new_fx_hashkey_map);
+    for (key, value) in attrs.read().iter() {
+        if !is_instance_dict_internal_key(key.as_str()) {
+            result.insert(HashableKey::str_key(key.clone()), value.clone());
+        }
+    }
+    result
+}
+
+pub fn instance_dict_visible_len(attrs: &SharedFxAttrMap) -> usize {
+    let attr_len = attrs
+        .read()
+        .keys()
+        .filter(|key| !is_instance_dict_internal_key(key.as_str()))
+        .count();
+    let extra_len = instance_dict_extra_map(attrs)
+        .map(|map| map.read().len())
+        .unwrap_or(0);
+    attr_len + extra_len
+}
+
+pub fn instance_dict_get_item(
+    attrs: &SharedFxAttrMap,
+    key: &PyObjectRef,
+) -> PyResult<Option<PyObjectRef>> {
+    if let Some(name) = string_key_name(key) {
+        if let Some(value) = attrs.read().get(name.as_str()).cloned() {
+            return Ok(Some(value));
+        }
+    }
+    let hk = key.to_hashable_key()?;
+    Ok(instance_dict_extra_map(attrs).and_then(|map| map.read().get(&hk).cloned()))
+}
+
+pub fn instance_dict_set_item(
+    attrs: &SharedFxAttrMap,
+    key: &PyObjectRef,
+    value: PyObjectRef,
+) -> PyResult<()> {
+    if let Some(name) = string_key_name(key) {
+        if !is_instance_dict_internal_key(name.as_str()) {
+            attrs.write().insert(name, value);
+            return Ok(());
+        }
+    }
+    let hk = key.to_hashable_key()?;
+    instance_dict_ensure_extra_map(attrs)
+        .write()
+        .insert(hk, value);
+    Ok(())
+}
+
+pub fn instance_dict_remove_item(
+    attrs: &SharedFxAttrMap,
+    key: &PyObjectRef,
+) -> PyResult<Option<PyObjectRef>> {
+    if let Some(name) = string_key_name(key) {
+        if !is_instance_dict_internal_key(name.as_str()) {
+            if let Some(value) = attrs.write().shift_remove(name.as_str()) {
+                return Ok(Some(value));
+            }
+        }
+    }
+    let hk = key.to_hashable_key()?;
+    Ok(instance_dict_extra_map(attrs).and_then(|map| map.write().shift_remove(&hk)))
+}
+
+pub fn instance_class_special_method(
+    obj: &PyObjectRef,
+    inst: &InstanceData,
+    name: &str,
+) -> Option<PyObjectRef> {
+    super::methods_attr_helpers::lookup_in_class_mro(&inst.class, name).map(|method| {
+        super::methods_attr_helpers::wrap_class_attr_for_instance(obj, inst, name, method)
+    })
+}
 
 // ── Post-call intercept fast flag ──
 // Set when asyncio.run(), __import__(), importlib.import_module(), or reload()
@@ -51,6 +179,37 @@ thread_local! {
 
 static mut GLOBAL_LOOKUP_INVALIDATE: Option<fn()> = None;
 static BYTEARRAY_EXPORTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+static DICT_STORAGE_VERSIONS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
+
+fn dict_storage_version_map() -> &'static Mutex<HashMap<usize, u64>> {
+    DICT_STORAGE_VERSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn dict_storage_key(map: &Rc<PyCell<FxHashKeyMap>>) -> usize {
+    Rc::as_ptr(map) as usize
+}
+
+pub fn dict_storage_version(map: &Rc<PyCell<FxHashKeyMap>>) -> u64 {
+    dict_storage_version_map()
+        .lock()
+        .map(|versions| versions.get(&dict_storage_key(map)).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+pub fn mark_dict_storage_mutated(map: &Rc<PyCell<FxHashKeyMap>>) {
+    if let Ok(mut versions) = dict_storage_version_map().lock() {
+        let entry = versions.entry(dict_storage_key(map)).or_insert(0);
+        *entry = entry.wrapping_add(1);
+    }
+}
+
+pub fn dict_storage_iteration_changed(
+    map: &Rc<PyCell<FxHashKeyMap>>,
+    expected_len: usize,
+    expected_version: u64,
+) -> bool {
+    map.read().len() != expected_len || dict_storage_version(map) != expected_version
+}
 
 /// Register the VM's call dispatch function. Called once by the VM at startup.
 pub fn register_vm_call_dispatch<F>(f: F)
@@ -183,6 +342,8 @@ pub fn call_callable_kw(
 // like `lst = []; lst.append(lst)`.
 thread_local! {
     static REPR_ACTIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
+    static REPR_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REPR_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const DEFAULT_MAX_EAGER_ALLOCATION_ITEMS: usize = 8 * 1024 * 1024;
@@ -227,13 +388,35 @@ pub fn is_hidden_dict_key(k: &HashableKey) -> bool {
 /// Enter repr for an object identified by its pointer. Returns true if this is
 /// a new entry (safe to proceed). Returns false if already active (cycle detected).
 pub fn repr_enter(ptr: usize) -> bool {
-    REPR_ACTIVE.with(|set| set.borrow_mut().insert(ptr))
+    if REPR_ACTIVE.with(|set| set.borrow().contains(&ptr)) {
+        return false;
+    }
+    REPR_DEPTH.with(|depth| {
+        let next = depth.get().saturating_add(1);
+        if next > 1000 {
+            REPR_OVERFLOW.with(|flag| flag.set(true));
+            return false;
+        }
+        depth.set(next);
+        REPR_ACTIVE.with(|set| set.borrow_mut().insert(ptr))
+    })
 }
 
 pub fn repr_leave(ptr: usize) {
     REPR_ACTIVE.with(|set| {
         set.borrow_mut().remove(&ptr);
     });
+    REPR_DEPTH.with(|depth| {
+        depth.set(depth.get().saturating_sub(1));
+    });
+}
+
+pub fn repr_depth_exceeded() -> bool {
+    REPR_OVERFLOW.with(|flag| flag.get())
+}
+
+pub fn repr_reset_overflow() {
+    REPR_OVERFLOW.with(|flag| flag.set(false));
 }
 
 pub fn guard_eager_allocation(requested: usize, context: &str) -> PyResult<()> {

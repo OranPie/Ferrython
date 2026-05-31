@@ -5,10 +5,10 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
+use ferrython_core::object::helpers::mark_dict_storage_mutated;
 use ferrython_core::object::{
     FxHashKeyMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 // ── Group 9: Container building ──────────────────────────────────────
@@ -157,7 +157,9 @@ impl VirtualMachine {
                 let _ = frame;
                 if let PyObjectPayload::Dict(m) = &dict_obj.payload {
                     if let Ok(hk) = self.vm_to_hashable_key(&key) {
-                        m.write().insert(hk, value);
+                        if m.write().insert(hk, value).is_none() {
+                            mark_dict_storage_mutated(m);
+                        }
                     }
                 }
             }
@@ -172,14 +174,20 @@ impl VirtualMachine {
                             let src = source.read();
                             let mut tgt = target.write();
                             for (k, v) in src.iter() {
-                                tgt.insert(k.clone(), v.clone());
+                                if tgt.insert(k.clone(), v.clone()).is_none() {
+                                    mark_dict_storage_mutated(target);
+                                }
                             }
                         }
                         PyObjectPayload::InstanceDict(source) => {
-                            let src = source.read();
+                            let src = ferrython_core::object::helpers::instance_dict_as_hashkey_map(
+                                source,
+                            );
                             let mut tgt = target.write();
-                            for (k, v) in src.iter() {
-                                tgt.insert(HashableKey::str_key(k.clone()), v.clone());
+                            for (k, v) in src {
+                                if tgt.insert(k, v).is_none() {
+                                    mark_dict_storage_mutated(target);
+                                }
                             }
                         }
                         _ => {}

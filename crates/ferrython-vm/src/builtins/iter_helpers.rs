@@ -1,7 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::{
-    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+    dict_storage_version, py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint,
+    range_next_i64,
 };
 use ferrython_core::object::{
     call_callable, is_hidden_dict_key, DequeIterData, PyObject, PyObjectMethods, PyObjectPayload,
@@ -71,9 +72,18 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     source,
                     owner: _,
                     index,
+                    expected_len,
+                    expected_version,
                     cached_tuple,
                 } => {
                     let map = unsafe { &*source.data_ptr() };
+                    if map.len() != *expected_len
+                        || dict_storage_version(source) != *expected_version
+                    {
+                        return Err(PyException::runtime_error(
+                            "dictionary changed size during iteration",
+                        ));
+                    }
                     while *index < map.len() {
                         let (hk, _) = map.get_index(*index).unwrap();
                         if !is_hidden_dict_key(hk) {
@@ -126,15 +136,46 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                     source,
                     index,
                     expected_len,
+                    expected_version,
                 } => {
                     let map = source.read();
-                    if map.len() != *expected_len {
+                    if map.len() != *expected_len
+                        || dict_storage_version(source) != *expected_version
+                    {
                         return Err(PyException::runtime_error(
                             "dictionary changed size during iteration",
                         ));
                     }
                     if *index < map.len() {
                         let obj = map.get_index(*index).unwrap().0.to_object();
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), obj)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                IteratorData::SetRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "Set changed size during iteration",
+                        ));
+                    }
+                    if *index < map.len() {
+                        let obj = map.iter().nth(*index).unwrap().1.clone();
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), obj)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                IteratorData::FrozenSetItems { items, index } => {
+                    if *index < items.len() {
+                        let obj = items[*index].clone();
                         *index += 1;
                         Ok(Some((iter_obj.clone(), obj)))
                     } else {
@@ -210,6 +251,33 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 });
                 Ok(Some((iter_obj.clone(), v)))
             } else {
+                Ok(None)
+            }
+        }
+        PyObjectPayload::DictValueIter(data) => {
+            let idx = data.index.get();
+            if idx == usize::MAX {
+                return Ok(None);
+            }
+            let map = data.source.read();
+            if map.len() != data.expected_len
+                || dict_storage_version(&data.source) != data.expected_version
+            {
+                return Err(PyException::runtime_error(
+                    "dictionary changed size during iteration",
+                ));
+            }
+            if idx < map.len() {
+                let v = map.get_index(idx).unwrap().1.clone();
+                let new_idx = idx + 1;
+                data.index.set(if new_idx >= map.len() {
+                    usize::MAX
+                } else {
+                    new_idx
+                });
+                Ok(Some((iter_obj.clone(), v)))
+            } else {
+                data.index.set(usize::MAX);
                 Ok(None)
             }
         }
@@ -370,9 +438,18 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                     source,
                     owner: _,
                     index,
+                    expected_len,
+                    expected_version,
                     cached_tuple,
                 } => {
                     let map = unsafe { &*source.data_ptr() };
+                    if map.len() != *expected_len
+                        || dict_storage_version(source) != *expected_version
+                    {
+                        return Err(PyException::runtime_error(
+                            "dictionary changed size during iteration",
+                        ));
+                    }
                     while *index < map.len() {
                         let (hk, _) = map.get_index(*index).unwrap();
                         if !is_hidden_dict_key(hk) {
@@ -425,15 +502,46 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                     source,
                     index,
                     expected_len,
+                    expected_version,
                 } => {
                     let map = source.read();
-                    if map.len() != *expected_len {
+                    if map.len() != *expected_len
+                        || dict_storage_version(source) != *expected_version
+                    {
                         return Err(PyException::runtime_error(
                             "dictionary changed size during iteration",
                         ));
                     }
                     if *index < map.len() {
                         let obj = map.get_index(*index).unwrap().0.to_object();
+                        *index += 1;
+                        Ok(Some(obj))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                IteratorData::SetRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "Set changed size during iteration",
+                        ));
+                    }
+                    if *index < map.len() {
+                        let obj = map.iter().nth(*index).unwrap().1.clone();
+                        *index += 1;
+                        Ok(Some(obj))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                IteratorData::FrozenSetItems { items, index } => {
+                    if *index < items.len() {
+                        let obj = items[*index].clone();
                         *index += 1;
                         Ok(Some(obj))
                     } else {

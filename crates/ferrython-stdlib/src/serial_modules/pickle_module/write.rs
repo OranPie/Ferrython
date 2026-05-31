@@ -1,6 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::helpers::{py_int_from_bigint, range_iter_item_bigint};
+use ferrython_core::object::helpers::{
+    dict_storage_version, py_int_from_bigint, range_iter_item_bigint,
+};
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -32,9 +34,10 @@ fn remaining_dict_key_refs(
     source: &std::rc::Rc<ferrython_core::object::PyCell<ferrython_core::object::FxHashKeyMap>>,
     index: usize,
     expected_len: usize,
+    expected_version: u64,
 ) -> PyResult<Vec<PyObjectRef>> {
     let map = source.read();
-    if map.len() != expected_len {
+    if map.len() != expected_len || dict_storage_version(source) != expected_version {
         return Err(PyException::runtime_error(
             "dictionary changed size during iteration",
         ));
@@ -43,6 +46,44 @@ fn remaining_dict_key_refs(
         .iter()
         .skip(index)
         .map(|(key, _)| key.to_object())
+        .collect())
+}
+
+fn remaining_dict_entry_refs(
+    source: &std::rc::Rc<ferrython_core::object::PyCell<ferrython_core::object::FxHashKeyMap>>,
+    index: usize,
+    expected_len: usize,
+    expected_version: u64,
+) -> PyResult<Vec<PyObjectRef>> {
+    let map = source.read();
+    if map.len() != expected_len || dict_storage_version(source) != expected_version {
+        return Err(PyException::runtime_error(
+            "dictionary changed size during iteration",
+        ));
+    }
+    Ok(map
+        .iter()
+        .skip(index)
+        .map(|(key, value)| PyObject::tuple(vec![key.to_object(), value.clone()]))
+        .collect())
+}
+
+fn remaining_dict_value_refs(
+    source: &std::rc::Rc<ferrython_core::object::PyCell<ferrython_core::object::FxHashKeyMap>>,
+    index: usize,
+    expected_len: usize,
+    expected_version: u64,
+) -> PyResult<Vec<PyObjectRef>> {
+    let map = source.read();
+    if map.len() != expected_len || dict_storage_version(source) != expected_version {
+        return Err(PyException::runtime_error(
+            "dictionary changed size during iteration",
+        ));
+    }
+    Ok(map
+        .iter()
+        .skip(index)
+        .map(|(_, value)| value.clone())
         .collect())
 }
 
@@ -94,6 +135,30 @@ fn pickle_global_function_parts(
     resolved
         .filter(|candidate| PyObjectRef::ptr_eq(candidate, obj))
         .map(|_| (module, name))
+}
+
+fn pickle_global_native_function_parts(obj: &PyObjectRef, name: &str) -> Option<(String, String)> {
+    let (module, attr) = name.split_once('.')?;
+    if module.is_empty() || attr.is_empty() {
+        return None;
+    }
+    let module_obj = crate::get_current_sys_module()
+        .and_then(|sys| sys.get_attr("modules"))
+        .and_then(|modules| {
+            if let PyObjectPayload::Dict(map) = &modules.payload {
+                map.read()
+                    .get(&HashableKey::str_key(CompactString::from(module)))
+                    .cloned()
+            } else {
+                None
+            }
+        })?;
+    let resolved = module_obj.get_attr(attr)?;
+    if PyObjectRef::ptr_eq(&resolved, obj) {
+        Some((module.to_string(), attr.to_string()))
+    } else {
+        None
+    }
 }
 
 fn pickle_serialize_function_global_p0(module: &str, name: &str, buf: &mut Vec<u8>) {
@@ -224,6 +289,17 @@ pub(super) fn pickle_serialize_p0(
         }
         PyObjectPayload::Function(func) => {
             if let Some((module, name)) = pickle_global_function_parts(obj, func) {
+                pickle_serialize_function_global_p0(&module, &name, buf);
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
+        }
+        PyObjectPayload::NativeFunction(nf) => {
+            if let Some((module, name)) = pickle_global_native_function_parts(obj, nf.name.as_str())
+            {
                 pickle_serialize_function_global_p0(&module, &name, buf);
             } else {
                 return Err(PyException::runtime_error(format!(
@@ -387,6 +463,17 @@ pub(super) fn pickle_serialize_p0(
             pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::DictValueIter(data) => {
+            let items = remaining_dict_value_refs(
+                &data.source,
+                data.index.get(),
+                data.expected_len,
+                data.expected_version,
+            )?;
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::RangeIter(ri) => {
             buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n(");
             pickle_serialize_p0(&PyObject::int(ri.current.get()), buf, memo)?;
@@ -438,14 +525,34 @@ pub(super) fn pickle_serialize_p0(
                     source,
                     index,
                     expected_len,
-                } => remaining_dict_key_refs(source, *index, *expected_len)?,
-                IteratorData::DictEntries { source, index, .. } => {
+                    expected_version,
+                } => remaining_dict_key_refs(source, *index, *expected_len, *expected_version)?,
+                IteratorData::SetRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
                     let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "Set changed size during iteration",
+                        ));
+                    }
                     map.iter()
                         .skip(*index)
-                        .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
+                        .map(|(_, value)| value.clone())
                         .collect()
                 }
+                IteratorData::FrozenSetItems { items, index } => {
+                    items.iter().skip(*index).cloned().collect()
+                }
+                IteratorData::DictEntries {
+                    source,
+                    index,
+                    expected_len,
+                    expected_version,
+                    ..
+                } => remaining_dict_entry_refs(source, *index, *expected_len, *expected_version)?,
                 IteratorData::SeqIter {
                     obj: source,
                     index,
@@ -523,6 +630,11 @@ pub(super) fn pickle_serialize_p0(
                     pickle_serialize_p0(&PyObject::int(*index as i64), buf, memo)?;
                     buf.extend_from_slice(b"tR");
                     return Ok(());
+                }
+                IteratorData::HeldIter { iter, .. } => {
+                    let iter = iter.clone();
+                    drop(data);
+                    return pickle_serialize_p0(&iter, buf, memo);
                 }
                 _ => {
                     return Err(PyException::runtime_error(format!(
@@ -862,6 +974,17 @@ pub(super) fn pickle_serialize_p2(
                 )));
             }
         }
+        PyObjectPayload::NativeFunction(nf) => {
+            if let Some((module, name)) = pickle_global_native_function_parts(obj, nf.name.as_str())
+            {
+                pickle_serialize_function_global_p2(&module, &name, buf);
+            } else {
+                return Err(PyException::runtime_error(format!(
+                    "PicklingError: can't pickle object of type {}",
+                    obj.type_name()
+                )));
+            }
+        }
         PyObjectPayload::List(items) => {
             let items = items.read();
             buf.push(b']');
@@ -1052,6 +1175,17 @@ pub(super) fn pickle_serialize_p2(
             pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::DictValueIter(data) => {
+            let items = remaining_dict_value_refs(
+                &data.source,
+                data.index.get(),
+                data.expected_len,
+                data.expected_version,
+            )?;
+            buf.extend_from_slice(b"cbuiltins\niter\n(");
+            pickle_serialize_p2(&PyObject::list(items), buf, memo)?;
+            buf.extend_from_slice(b"tR");
+        }
         PyObjectPayload::RangeIter(ri) => {
             buf.extend_from_slice(b"cbuiltins\n__ferrython_rangeiter__\n");
             pickle_serialize_p2(
@@ -1117,14 +1251,34 @@ pub(super) fn pickle_serialize_p2(
                     source,
                     index,
                     expected_len,
-                } => remaining_dict_key_refs(source, *index, *expected_len)?,
-                IteratorData::DictEntries { source, index, .. } => {
+                    expected_version,
+                } => remaining_dict_key_refs(source, *index, *expected_len, *expected_version)?,
+                IteratorData::SetRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
                     let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "Set changed size during iteration",
+                        ));
+                    }
                     map.iter()
                         .skip(*index)
-                        .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
+                        .map(|(_, value)| value.clone())
                         .collect()
                 }
+                IteratorData::FrozenSetItems { items, index } => {
+                    items.iter().skip(*index).cloned().collect()
+                }
+                IteratorData::DictEntries {
+                    source,
+                    index,
+                    expected_len,
+                    expected_version,
+                    ..
+                } => remaining_dict_entry_refs(source, *index, *expected_len, *expected_version)?,
                 IteratorData::SeqIter {
                     obj: source,
                     index,
@@ -1238,6 +1392,11 @@ pub(super) fn pickle_serialize_p2(
                     )?;
                     buf.push(b'R');
                     return Ok(());
+                }
+                IteratorData::HeldIter { iter, .. } => {
+                    let iter = iter.clone();
+                    drop(data);
+                    return pickle_serialize_p2(&iter, buf, memo);
                 }
                 _ => {
                     return Err(PyException::runtime_error(format!(

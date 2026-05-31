@@ -528,6 +528,19 @@ impl VirtualMachine {
                                 instr_count
                             )
                         }
+                        crate::vm_fast_iter::FastForIterStoreResult::HandledChainDrainFinalizers => {
+                            self.drain_pending_finalizers();
+                            rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                            let frame = unsafe { &mut *frame_ptr };
+                            hot_ok_chain!(
+                                profiling,
+                                self.profiler,
+                                instr.op,
+                                frame,
+                                instr_base,
+                                instr_count
+                            )
+                        }
                         crate::vm_fast_iter::FastForIterStoreResult::Generator(gen_arc) => {
                             match self.resume_generator_for_iter(&gen_arc) {
                                 Ok(Some(value)) => {
@@ -554,10 +567,18 @@ impl VirtualMachine {
                             );
                             match self.execute_one(for_instr) {
                                 Ok(_) => {
-                                    let frame = self.call_stack.last_mut().unwrap();
-                                    if frame.ip != jump_target {
-                                        let v = spop!(frame);
-                                        sset_local!(frame, store_idx, v);
+                                    let needs_drain = {
+                                        let frame = self.call_stack.last_mut().unwrap();
+                                        if frame.ip != jump_target {
+                                            let v = spop!(frame);
+                                            sset_local!(frame, store_idx, v);
+                                            ferrython_core::error::has_pending_finalizers()
+                                        } else {
+                                            false
+                                        }
+                                    };
+                                    if needs_drain {
+                                        self.drain_pending_finalizers();
                                     }
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }

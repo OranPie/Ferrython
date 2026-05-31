@@ -77,6 +77,134 @@ fn warn_compile_filename_deprecated(vm: &mut VirtualMachine) -> PyResult<()> {
     Ok(())
 }
 
+fn warn_invalid_escape(vm: &mut VirtualMachine, filename: &str, escape: char) -> PyResult<()> {
+    let warnings = vm.import_module_simple("warnings", 0)?;
+    let warn = warnings.get_attr("warn_explicit").ok_or_else(|| {
+        PyException::attribute_error("module 'warnings' has no attribute 'warn_explicit'")
+    })?;
+    let category = warnings.get_attr("DeprecationWarning").ok_or_else(|| {
+        PyException::attribute_error("module 'warnings' has no attribute 'DeprecationWarning'")
+    })?;
+    let message = CompactString::from(format!("invalid escape sequence \\{}", escape));
+    let result = vm.call_object(
+        warn,
+        vec![
+            PyObject::str_val(message.clone()),
+            category,
+            PyObject::str_val(CompactString::from(filename)),
+            PyObject::int(1),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind == ExceptionKind::RuntimeError => Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            &format!("invalid escape sequence \\{}", escape),
+            filename,
+            1,
+            1,
+        )),
+        Err(err) => Err(err),
+    }
+}
+
+fn parse_with_compile_warnings(
+    vm: &mut VirtualMachine,
+    source: &str,
+    filename: &str,
+    expression: bool,
+) -> PyResult<AstModule> {
+    if let Some(ch) = first_deprecated_escape(source) {
+        warn_invalid_escape(vm, filename, ch)?;
+    }
+    let parsed = if expression {
+        ferrython_parser::parse_expression(source, filename).map(|expr| AstModule::Expression {
+            body: Box::new(expr),
+        })
+    } else {
+        ferrython_parser::parse(source, filename)
+    };
+    parsed.map_err(|e| parse_error_to_syntax_exc(filename, e))
+}
+
+fn first_deprecated_escape(source: &str) -> Option<char> {
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut raw = false;
+    let mut bytes = false;
+    let mut quote = '\0';
+    let mut triple = false;
+    while let Some(c) = chars.next() {
+        if !in_string {
+            raw = false;
+            bytes = false;
+            let mut prefix = String::new();
+            let mut probe = c;
+            if matches!(probe, 'r' | 'R' | 'b' | 'B' | 'u' | 'U') {
+                prefix.push(probe);
+                if let Some(next) = chars.peek().copied() {
+                    if matches!(next, 'r' | 'R' | 'b' | 'B') {
+                        prefix.push(chars.next().unwrap());
+                        probe = chars.peek().copied().unwrap_or('\0');
+                    } else {
+                        probe = next;
+                    }
+                }
+            }
+            if probe == '\'' || probe == '"' {
+                if !prefix.is_empty() && c != probe {
+                    chars.next();
+                }
+                in_string = true;
+                raw = prefix.chars().any(|p| matches!(p, 'r' | 'R'));
+                bytes = prefix.chars().any(|p| matches!(p, 'b' | 'B'));
+                quote = probe;
+                triple = chars.peek() == Some(&quote) && {
+                    let mut iter = chars.clone();
+                    iter.next();
+                    iter.peek() == Some(&quote)
+                };
+                if triple {
+                    chars.next();
+                    chars.next();
+                }
+            }
+            continue;
+        }
+        if c == quote {
+            if triple {
+                if chars.peek() == Some(&quote) {
+                    let mut iter = chars.clone();
+                    iter.next();
+                    if iter.peek() == Some(&quote) {
+                        chars.next();
+                        chars.next();
+                        in_string = false;
+                    }
+                }
+            } else {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                if !raw && !is_valid_escape_start(next, bytes) {
+                    return Some(next);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_valid_escape_start(c: char, bytes: bool) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '"' | '\'' | '\\' | 'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | 'x' | '0'..='7'
+    ) || (!bytes && matches!(c, 'u' | 'U' | 'N'))
+}
+
 fn compile_filename_arg(obj: &PyObjectRef) -> PyResult<String> {
     match &obj.payload {
         PyObjectPayload::Str(s) => {
@@ -589,8 +717,7 @@ impl VirtualMachine {
                 "eval() arg 1 must be a string, bytes or code object",
             )?;
             let wrapped = format!("__eval_result__ = ({})", code_str);
-            let module = ferrython_parser::parse(&wrapped, "<string>")
-                .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
+            let module = parse_with_compile_warnings(self, &wrapped, "<string>", false)?;
             Rc::new(
                 ferrython_compiler::compile(&module, "<string>")
                     .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?,
@@ -806,17 +933,10 @@ impl VirtualMachine {
         )?;
         if only_ast {
             return match mode.as_str() {
-                "eval" => ferrython_parser::parse_expression(&source, &filename)
-                    .map(|expr| {
-                        let module = ferrython_ast::Module::Expression {
-                            body: Box::new(expr),
-                        };
-                        ferrython_stdlib::module_ast_to_pyobject(&module)
-                    })
-                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+                "eval" => parse_with_compile_warnings(self, &source, &filename, true)
+                    .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module)),
                 "single" => {
-                    let module = ferrython_parser::parse(&source, &filename)
-                        .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
+                    let module = parse_with_compile_warnings(self, &source, &filename, false)?;
                     validate_single_input(&module, &filename)?;
                     Ok(match module {
                         ferrython_ast::Module::Module { body, .. } => {
@@ -836,9 +956,8 @@ impl VirtualMachine {
                         }
                     })
                 }
-                _ => ferrython_parser::parse(&source, &filename)
-                    .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module))
-                    .map_err(|e| parse_error_to_syntax_exc(&filename, e)),
+                _ => parse_with_compile_warnings(self, &source, &filename, false)
+                    .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module)),
             };
         }
         let effective_source = if mode == "eval" {
@@ -846,8 +965,7 @@ impl VirtualMachine {
         } else {
             source
         };
-        let module = ferrython_parser::parse(&effective_source, &filename)
-            .map_err(|e| parse_error_to_syntax_exc(&filename, e))?;
+        let module = parse_with_compile_warnings(self, &effective_source, &filename, false)?;
         let module = if mode == "single" {
             validate_single_input(&module, &filename)?;
             match module {

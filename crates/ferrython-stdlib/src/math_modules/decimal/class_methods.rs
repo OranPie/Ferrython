@@ -2,13 +2,16 @@ use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::helpers::{make_builtin, BuiltinFn};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::types::float_as_integer_ratio;
 use indexmap::IndexMap;
+use num_bigint::BigInt;
 
 use super::value::get_decimal_str;
 
 pub(super) fn add_extended_decimal_methods(
     dec_ns: &mut IndexMap<CompactString, PyObjectRef>,
     make_decimal: fn(&str) -> PyObjectRef,
+    make_decimal_from_ratio: fn(&str, BigInt, BigInt) -> PyObjectRef,
     decimal_quantize: BuiltinFn,
     decimal_sqrt: BuiltinFn,
     decimal_ln: BuiltinFn,
@@ -145,6 +148,34 @@ pub(super) fn add_extended_decimal_methods(
     dec_ns.insert(
         CompactString::from("to_eng_string"),
         make_builtin(decimal_to_eng_string),
+    );
+    dec_ns.insert(
+        CompactString::from("from_float"),
+        PyObject::native_closure("Decimal.from_float", move |args: &[PyObjectRef]| {
+            let value = args
+                .iter()
+                .find(|arg| !matches!(arg.payload, PyObjectPayload::Class(_)))
+                .ok_or_else(|| PyException::type_error("from_float requires an argument"))?;
+            match &value.payload {
+                PyObjectPayload::Float(f) => {
+                    if f.is_nan() {
+                        return Ok(make_decimal("NaN"));
+                    }
+                    if f.is_infinite() {
+                        return Ok(if f.is_sign_negative() {
+                            make_decimal("-Infinity")
+                        } else {
+                            make_decimal("Infinity")
+                        });
+                    }
+                    let (n, d) = float_as_integer_ratio(*f);
+                    let display = format!("{}", f);
+                    Ok(make_decimal_from_ratio(&display, n, d))
+                }
+                PyObjectPayload::Int(n) => Ok(make_decimal(&format!("{}", n))),
+                _ => Err(PyException::type_error("argument must be int or float")),
+            }
+        }),
     );
     // as_tuple() → DecimalTuple(sign, digits, exponent)
     dec_ns.insert(
@@ -523,9 +554,7 @@ pub(super) fn add_extended_decimal_methods(
                 return Ok(make_decimal("0"));
             }
             match &args[1].payload {
-                PyObjectPayload::Int(n) => {
-                    return Ok(make_decimal(&format!("{}", n.to_i64().unwrap_or(0))))
-                }
+                PyObjectPayload::Int(n) => return Ok(make_decimal(&format!("{}", n))),
                 PyObjectPayload::Float(f) => return Ok(make_decimal(&format!("{}", f))),
                 _ => {}
             }
@@ -538,10 +567,20 @@ pub(super) fn add_extended_decimal_methods(
             }
             let check = trimmed.trim_start_matches('+').trim_start_matches('-');
             let check_lower = check.to_lowercase();
-            let parts: Vec<&str> = check.splitn(2, '.').collect();
+            let mantissa = check
+                .split_once('e')
+                .or_else(|| check.split_once('E'))
+                .map(|(m, _)| m)
+                .unwrap_or(check);
+            let parts: Vec<&str> = mantissa.splitn(2, '.').collect();
             let valid = parts
                 .iter()
                 .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && check
+                    .split_once('e')
+                    .or_else(|| check.split_once('E'))
+                    .map(|(_, e)| e.parse::<i64>().is_ok())
+                    .unwrap_or(true)
                 || check == "Infinity"
                 || check == "NaN"
                 || check_lower == "inf"
@@ -560,14 +599,6 @@ pub(super) fn add_extended_decimal_methods(
                     trimmed.to_string()
                 };
                 Ok(make_decimal(&normalized))
-            } else if check.contains('E') || check.contains('e') {
-                match trimmed.parse::<f64>() {
-                    Ok(f) => Ok(make_decimal(&format!("{}", f))),
-                    Err(_) => Err(PyException::value_error(format!(
-                        "Invalid literal for Decimal: '{}'",
-                        s
-                    ))),
-                }
             } else {
                 Err(PyException::value_error(format!(
                     "Invalid literal for Decimal: '{}'",

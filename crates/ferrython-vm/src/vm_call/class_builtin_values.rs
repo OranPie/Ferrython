@@ -31,7 +31,7 @@ impl VirtualMachine {
         }
 
         let value = match base_type {
-            "int" => int_builtin_value(&pos_args[0]),
+            "int" => int_builtin_value(&pos_args[0])?,
             "float" => float_builtin_value(&pos_args[0]),
             "str" => match str_mode {
                 BuiltinSubclassStrMode::VmAware => {
@@ -71,8 +71,24 @@ impl VirtualMachine {
                     ))
                 }
             }
-            "set" => Some(set_builtin_value(self, &pos_args[0])),
-            "frozenset" => Some(frozenset_builtin_value(self, &pos_args[0])),
+            "set" => {
+                if pos_args.len() > 1 {
+                    return Err(ferrython_core::error::PyException::type_error(format!(
+                        "set expected at most 1 argument, got {}",
+                        pos_args.len()
+                    )));
+                }
+                Some(set_builtin_value(self, &pos_args[0])?)
+            }
+            "frozenset" => {
+                if pos_args.len() > 1 {
+                    return Err(ferrython_core::error::PyException::type_error(format!(
+                        "frozenset expected at most 1 argument, got {}",
+                        pos_args.len()
+                    )));
+                }
+                Some(frozenset_builtin_value(self, &pos_args[0])?)
+            }
             "bytes" | "bytearray" => Some(pos_args[0].clone()),
             "deque" => Some(PyObject::list(
                 self.collect_iterable(&pos_args[0]).unwrap_or_default(),

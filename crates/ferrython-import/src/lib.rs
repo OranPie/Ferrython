@@ -11,7 +11,7 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeObject;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::PyObjectRef;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -333,10 +333,11 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", path_str, e)))?;
     let ast = ferrython_parser::parse(&source, &path_str)
-        .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", path_str, e)))?;
-    let code = Rc::new(ferrython_compiler::compile(&ast, &path_str).map_err(|e| {
-        PyException::import_error(format!("compile error in '{}': {}", path_str, e))
-    })?);
+        .map_err(|e| PyException::new(ExceptionKind::SyntaxError, format!("{}", e.kind)))?;
+    let code = Rc::new(
+        ferrython_compiler::compile(&ast, &path_str)
+            .map_err(|e| PyException::new(ExceptionKind::SyntaxError, format!("{}", e)))?,
+    );
 
     // Store in cache if we have a valid mtime.
     if let Some(mtime) = mtime {

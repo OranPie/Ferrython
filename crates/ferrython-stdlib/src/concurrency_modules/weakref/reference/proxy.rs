@@ -93,9 +93,7 @@ pub(crate) fn make_proxy_fn(
                 CompactString::from("__str__"),
                 PyObject::native_closure("weakproxy.__str__", move |_| {
                     let referent = upgrade_or_err(&w_s)?;
-                    Ok(PyObject::str_val(CompactString::from(
-                        referent.py_to_string(),
-                    )))
+                    Ok(PyObject::str_val(CompactString::from(referent.repr())))
                 }),
             );
 

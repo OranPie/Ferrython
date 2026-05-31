@@ -59,6 +59,9 @@ impl VirtualMachine {
                 if args.is_empty() {
                     return builtins::dispatch("frozenset", &[]);
                 }
+                if matches!(&args[0].payload, PyObjectPayload::FrozenSet(_)) {
+                    return Ok(args[0].clone());
+                }
                 if let PyObjectPayload::Dict(items) = &args[0].payload {
                     let read = items.read();
                     let mut map = new_fx_hashkey_map();

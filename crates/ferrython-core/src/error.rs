@@ -605,6 +605,10 @@ pub fn request_pending_finalizer(func: PyObjectRef) {
     crate::object::set_intercept_pending();
 }
 
+pub fn has_pending_finalizers() -> bool {
+    PENDING_FINALIZERS.with(|c| !c.borrow().is_empty())
+}
+
 /// Take one pending finalizer in FIFO order.
 pub fn take_pending_finalizer() -> Option<PyObjectRef> {
     PENDING_FINALIZERS.with(|c| {

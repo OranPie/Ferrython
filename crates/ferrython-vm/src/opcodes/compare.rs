@@ -52,6 +52,9 @@ fn builtin_value_compare_operands(
                     | PyObjectPayload::Float(_)
                     | PyObjectPayload::Str(_)
                     | PyObjectPayload::Tuple(_)
+                    | PyObjectPayload::List(_)
+                    | PyObjectPayload::Set(_)
+                    | PyObjectPayload::FrozenSet(_)
             ) =>
         {
             Some((left, b.clone()))
@@ -64,6 +67,9 @@ fn builtin_value_compare_operands(
                     | PyObjectPayload::Float(_)
                     | PyObjectPayload::Str(_)
                     | PyObjectPayload::Tuple(_)
+                    | PyObjectPayload::List(_)
+                    | PyObjectPayload::Set(_)
+                    | PyObjectPayload::FrozenSet(_)
             ) =>
         {
             Some((a.clone(), right))
@@ -363,6 +369,20 @@ impl VirtualMachine {
                 5 => ("__ge__", "__le__"),
                 _ => unreachable!(),
             };
+            if let Some((left, right)) = builtin_value_compare_operands(&a, &b) {
+                let cmp_op = match cmp {
+                    0 => CompareOp::Lt,
+                    1 => CompareOp::Le,
+                    2 => CompareOp::Eq,
+                    3 => CompareOp::Ne,
+                    4 => CompareOp::Gt,
+                    5 => CompareOp::Ge,
+                    _ => unreachable!(),
+                };
+                let result = left.compare(&right, cmp_op)?;
+                self.vm_push(result);
+                return Ok(None);
+            }
             let right_is_subclass = match (instance_class(&a), instance_class(&b)) {
                 (Some(left), Some(right)) => class_is_strict_subclass(&right, &left),
                 _ => false,
@@ -527,23 +547,6 @@ impl VirtualMachine {
                     }
                 }
             }
-            if cmp == 2 || cmp == 3 {
-                if let Some((left, right)) = builtin_value_compare_operands(&a, &b) {
-                    if matches!(
-                        (&left.payload, &right.payload),
-                        (PyObjectPayload::Tuple(_), PyObjectPayload::Tuple(_))
-                    ) {
-                        let result = left.compare(&right, CompareOp::Eq)?;
-                        let val = if cmp == 2 {
-                            result.is_truthy()
-                        } else {
-                            !result.is_truthy()
-                        };
-                        self.vm_push(PyObject::bool_val(val));
-                        return Ok(None);
-                    }
-                }
-            }
             // IntEnum/enum value-based comparison fallback
             if !is_weak_ref_instance(&a) && !is_weak_ref_instance(&b) {
                 if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
@@ -611,20 +614,6 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
-            }
-            if let Some((left, right)) = builtin_value_compare_operands(&a, &b) {
-                let cmp_op = match cmp {
-                    0 => CompareOp::Lt,
-                    1 => CompareOp::Le,
-                    2 => CompareOp::Eq,
-                    3 => CompareOp::Ne,
-                    4 => CompareOp::Gt,
-                    5 => CompareOp::Ge,
-                    _ => unreachable!(),
-                };
-                let result = left.compare(&right, cmp_op)?;
-                self.vm_push(result);
-                return Ok(None);
             }
             if matches!(cmp, 2 | 3)
                 && (matches!(&a.payload, PyObjectPayload::Instance(_))

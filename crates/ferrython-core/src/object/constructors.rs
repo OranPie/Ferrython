@@ -28,10 +28,31 @@ const TUPLE_BOX_FREELIST_MAX: usize = 80;
 const LIST_BOX_FREELIST_MAX: usize = 80;
 const BBM_BOX_FREELIST_MAX: usize = 64;
 
+struct InstanceFreelist(RefCell<Vec<Box<InstanceData>>>);
+
+impl InstanceFreelist {
+    #[inline(always)]
+    fn new() -> Self {
+        Self(RefCell::new(Vec::new()))
+    }
+
+    #[inline(always)]
+    fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Box<InstanceData>>> {
+        self.0.borrow_mut()
+    }
+}
+
+impl Drop for InstanceFreelist {
+    fn drop(&mut self) {
+        let cached = std::mem::take(self.0.get_mut());
+        std::mem::forget(cached);
+    }
+}
+
 thread_local! {
     static MAP_FREELIST:       RefCell<Vec<Rc<PyCell<FxHashKeyMap>>>>            = RefCell::new(Vec::new());
     static EXCEPTION_FREELIST: RefCell<Vec<Box<ExceptionInstanceData>>>           = RefCell::new(Vec::new());
-    static INSTANCE_FREELIST:  RefCell<Vec<Box<InstanceData>>>                    = RefCell::new(Vec::new());
+    static INSTANCE_FREELIST:  InstanceFreelist                                  = InstanceFreelist::new();
     static ATTR_FREELIST:      RefCell<Vec<SharedFxAttrMap>>                      = RefCell::new(Vec::new());
     static STR_BOX_FREELIST:   RefCell<Vec<Box<CompactString>>>                   = RefCell::new(Vec::new());
     static TUPLE_BOX_FREELIST: RefCell<Vec<Box<Vec<PyObjectRef>>>>                = RefCell::new(Vec::new());
@@ -217,41 +238,48 @@ pub fn alloc_instance_box(
     dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>,
     expected_attrs: usize,
 ) -> Box<InstanceData> {
-    INSTANCE_FREELIST.with(|f| {
-        if let Some(mut data) = f.borrow_mut().pop() {
-            data.class = class;
-            data.class_flags = class_flags;
-            data.dict_storage = dict_storage;
-            data.is_special = false;
-            data.finalizer_state.set(0);
-            if Rc::strong_count(&data.attrs) == 1 {
-                unsafe { &mut *data.attrs.data_ptr() }.clear();
-            } else {
-                data.attrs = alloc_attr_map();
-            }
-            data
+    let cached = if INSTANCE_FREELIST_MAX > 0 {
+        INSTANCE_FREELIST
+            .try_with(|f| f.borrow_mut().pop())
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    if let Some(mut data) = cached {
+        data.class = class;
+        data.class_flags = class_flags;
+        data.dict_storage = dict_storage;
+        data.is_special = false;
+        data.finalizer_state.set(0);
+        if Rc::strong_count(&data.attrs) == 1 {
+            unsafe { &mut *data.attrs.data_ptr() }.clear();
         } else {
-            let attrs: FxAttrMap = if expected_attrs > 0 {
-                FxAttrMap::with_capacity_and_hasher(expected_attrs, Default::default())
-            } else {
-                FxAttrMap::default()
-            };
-            Box::new(InstanceData {
-                class,
-                attrs: alloc_attr_map_with(attrs),
-                dict_storage,
-                is_special: false,
-                class_flags,
-                finalizer_state: std::cell::Cell::new(0),
-            })
+            data.attrs = alloc_attr_map();
         }
-    })
+        data
+    } else {
+        let attrs: FxAttrMap = if expected_attrs > 0 {
+            FxAttrMap::with_capacity_and_hasher(expected_attrs, Default::default())
+        } else {
+            FxAttrMap::default()
+        };
+        Box::new(InstanceData {
+            class,
+            attrs: alloc_attr_map_with(attrs),
+            dict_storage,
+            is_special: false,
+            class_flags,
+            finalizer_state: std::cell::Cell::new(0),
+        })
+    }
 }
 
 /// Return an InstanceData box to the freelist.
 /// Clears inner references to avoid holding PyObjectRef alive.
 #[inline]
 pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
+    let reusable = data.finalizer_state.get() == 0;
     if Rc::strong_count(&data.attrs) == 1 {
         unsafe { &mut *data.attrs.data_ptr() }.clear();
     } else {
@@ -261,12 +289,25 @@ pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
     data.finalizer_state.set(0);
     let old_class = std::mem::replace(&mut data.class, NONE_SINGLETON.clone());
     drop(old_class);
-    let _ = INSTANCE_FREELIST.try_with(|f| {
-        let mut list = f.borrow_mut();
-        if list.len() < INSTANCE_FREELIST_MAX {
-            list.push(data);
-        }
-    });
+    if INSTANCE_FREELIST_MAX == 0 || !reusable {
+        drop(data);
+        return;
+    }
+    let mut data = Some(data);
+    let pushed = INSTANCE_FREELIST
+        .try_with(|f| {
+            let mut list = f.borrow_mut();
+            if list.len() < INSTANCE_FREELIST_MAX {
+                list.push(data.take().unwrap());
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !pushed {
+        drop(data.take());
+    }
 }
 
 /// Allocate an attr map (Rc<PyCell<FxAttrMap>>), reusing from freelist if possible.

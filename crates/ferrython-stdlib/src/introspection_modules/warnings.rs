@@ -18,11 +18,49 @@ static WARNING_RECORDING: AtomicBool = AtomicBool::new(false);
 static WARNING_RECORD_LIST: std::sync::LazyLock<RwLock<Option<PyObjectRef>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
 
+fn normalize_warning_category_name(raw: &str) -> String {
+    let mut name = raw.trim();
+    if let Some(start) = name.find('\'') {
+        if let Some(end) = name[start + 1..].find('\'') {
+            name = &name[start + 1..start + 1 + end];
+        }
+    } else if let Some(start) = name.find('"') {
+        if let Some(end) = name[start + 1..].find('"') {
+            name = &name[start + 1..start + 1 + end];
+        }
+    }
+    name.trim()
+        .trim_start_matches("class ")
+        .trim_matches('<')
+        .trim_matches('>')
+        .rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim_matches('\'')
+        .trim_matches('"')
+        .to_string()
+}
+
+fn warning_category_name(obj: &PyObjectRef) -> String {
+    let raw = if let PyObjectPayload::Class(cd) = &obj.payload {
+        cd.name.to_string()
+    } else {
+        obj.py_to_string()
+    };
+    normalize_warning_category_name(&raw)
+}
+
 pub(crate) fn emit_deprecation_warning(message: &str) {
     emit_warning("DeprecationWarning", message);
 }
 
-fn emit_warning(category: &str, message: &str) {
+fn emit_warning_at(
+    category: &str,
+    category_cls: PyObjectRef,
+    message: &str,
+    filename: &str,
+    lineno: i64,
+) {
     if WARNING_RECORDING.load(Ordering::Relaxed) {
         let guard = WARNING_RECORD_LIST.read();
         if let Some(ref list_obj) = *guard {
@@ -31,8 +69,6 @@ fn emit_warning(category: &str, message: &str) {
                 vec![],
                 IndexMap::new(),
             );
-            let category_cls =
-                PyObject::class(CompactString::from(category), vec![], IndexMap::new());
             let mut attrs = IndexMap::new();
             attrs.insert(
                 CompactString::from("message"),
@@ -41,17 +77,22 @@ fn emit_warning(category: &str, message: &str) {
             attrs.insert(CompactString::from("category"), category_cls);
             attrs.insert(
                 CompactString::from("filename"),
-                PyObject::str_val(CompactString::from("<stdin>")),
+                PyObject::str_val(CompactString::from(filename)),
             );
-            attrs.insert(CompactString::from("lineno"), PyObject::int(1));
+            attrs.insert(CompactString::from("lineno"), PyObject::int(lineno));
             let warning_obj = PyObject::instance_with_attrs(cls, attrs);
             if let PyObjectPayload::List(items) = &list_obj.payload {
                 items.write().push(warning_obj);
             }
         }
     } else {
-        eprintln!("<stdin>:1: {}: {}", category, message);
+        eprintln!("{}:{}: {}: {}", filename, lineno, category, message);
     }
+}
+
+fn emit_warning(category: &str, message: &str) {
+    let category_cls = PyObject::class(CompactString::from(category), vec![], IndexMap::new());
+    emit_warning_at(category, category_cls, message, "<stdin>", 1);
 }
 
 // ── warnings module ──
@@ -79,6 +120,8 @@ pub fn create_warnings_module() -> PyObjectRef {
         if !msg_pat.is_empty() && !msg.contains(msg_pat.as_str()) {
             return false;
         }
+        let cat = normalize_warning_category_name(cat);
+        let cat_pat = normalize_warning_category_name(cat_pat);
         if !cat_pat.is_empty() && cat_pat != "Warning" && cat != cat_pat {
             return false;
         }
@@ -124,12 +167,7 @@ pub fn create_warnings_module() -> PyObjectRef {
             }
         });
         if let Some(cat) = cat_obj {
-            let name = if let PyObjectPayload::Class(cd) = &cat.payload {
-                cd.name.to_string()
-            } else {
-                cat.py_to_string()
-            };
-            (name, cat)
+            (warning_category_name(&cat), cat)
         } else {
             let cls = PyObject::class(CompactString::from("UserWarning"), vec![], IndexMap::new());
             ("UserWarning".to_string(), cls)
@@ -179,30 +217,48 @@ pub fn create_warnings_module() -> PyObjectRef {
             _ => {}
         }
 
-        if WARNING_RECORDING.load(Ordering::Relaxed) {
-            let guard = WARNING_RECORD_LIST.read();
-            if let Some(ref list_obj) = *guard {
-                let cls = PyObject::class(
-                    CompactString::from("WarningMessage"),
-                    vec![],
-                    IndexMap::new(),
-                );
-                let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("message"), args[0].clone());
-                attrs.insert(CompactString::from("category"), category_cls.clone());
-                attrs.insert(
-                    CompactString::from("filename"),
-                    PyObject::str_val(CompactString::from("<stdin>")),
-                );
-                attrs.insert(CompactString::from("lineno"), PyObject::int(1));
-                let warning_obj = PyObject::instance_with_attrs(cls, attrs);
-                if let PyObjectPayload::List(items) = &list_obj.payload {
-                    items.write().push(warning_obj);
+        emit_warning_at(&category, category_cls, &message, "<stdin>", 1);
+        Ok(PyObject::none())
+    });
+
+    // warn_explicit(message, category, filename, lineno, ...)
+    let warn_explicit_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("warn_explicit", args, 4)?;
+        let message = args[0].py_to_string();
+        let category = warning_category_name(&args[1]);
+        let category_cls = args[1].clone();
+        let filename = args[2].py_to_string();
+        let lineno = args[3].as_int().unwrap_or(1);
+        let action = {
+            let filters = WARNING_FILTERS.read();
+            let mut found = "default".to_string();
+            for f in filters.iter() {
+                if match_filter(&f.0, &message, &category, &filename, f) {
+                    found = f.0.clone();
+                    break;
                 }
             }
-        } else {
-            eprintln!("<stdin>:1: {}: {}", category, message);
+            found
+        };
+        match action.as_str() {
+            "ignore" => return Ok(PyObject::none()),
+            "error" => {
+                return Err(PyException::runtime_error(&format!(
+                    "{}: {}",
+                    category, message
+                )));
+            }
+            "once" => {
+                let key = format!("{}:{}:{}", message, category, filename);
+                let mut seen = WARNING_ONCE_SEEN.write();
+                if seen.contains(&key) {
+                    return Ok(PyObject::none());
+                }
+                seen.insert(key);
+            }
+            _ => {}
         }
+        emit_warning_at(&category, category_cls, &message, &filename, lineno);
         Ok(PyObject::none())
     });
 
@@ -212,13 +268,7 @@ pub fn create_warnings_module() -> PyObjectRef {
         let action = args[0].py_to_string();
         let message = get_kwarg_str(args, "message", "");
         let category = get_kwarg(args, "category")
-            .map(|cat| {
-                if let PyObjectPayload::Class(cd) = &cat.payload {
-                    cd.name.to_string()
-                } else {
-                    cat.py_to_string()
-                }
-            })
+            .map(|cat| warning_category_name(&cat))
             .unwrap_or_else(|| "Warning".to_string());
         let module = get_kwarg_str(args, "module", "");
         let lineno = get_kwarg(args, "lineno")
@@ -255,24 +305,14 @@ pub fn create_warnings_module() -> PyObjectRef {
         check_args_min("simplefilter", args, 1)?;
         let action = args[0].py_to_string();
         let category = get_kwarg(args, "category")
-            .map(|cat| {
-                if let PyObjectPayload::Class(cd) = &cat.payload {
-                    cd.name.to_string()
-                } else {
-                    cat.py_to_string()
-                }
-            })
+            .map(|cat| warning_category_name(&cat))
             .unwrap_or_else(|| {
                 let non_dict: Vec<_> = args[1..]
                     .iter()
                     .filter(|a| !matches!(a.payload, PyObjectPayload::Dict(_)))
                     .collect();
                 if !non_dict.is_empty() && !matches!(non_dict[0].payload, PyObjectPayload::None) {
-                    if let PyObjectPayload::Class(cd) = &non_dict[0].payload {
-                        cd.name.to_string()
-                    } else {
-                        non_dict[0].py_to_string()
-                    }
+                    warning_category_name(non_dict[0])
                 } else {
                     "Warning".to_string()
                 }
@@ -342,8 +382,11 @@ pub fn create_warnings_module() -> PyObjectRef {
         let saved_filters: Vec<WarningFilterEntry> = WARNING_FILTERS.read().clone();
 
         if record {
-            let wl = warning_recorder.unwrap_or_else(|| warning_list.clone());
             let enter_list = warning_list.clone();
+            let enter_recorder = warning_recorder
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| enter_list.clone());
             attrs.insert(
                 CompactString::from("__enter__"),
                 PyObject::native_closure(
@@ -351,7 +394,7 @@ pub fn create_warnings_module() -> PyObjectRef {
                     move |_args: &[PyObjectRef]| {
                         WARNING_RECORDING.store(true, Ordering::Relaxed);
                         *WARNING_RECORD_LIST.write() = Some(enter_list.clone());
-                        Ok(wl.clone())
+                        Ok(enter_recorder.clone())
                     },
                 ),
             );
@@ -507,6 +550,7 @@ pub fn create_warnings_module() -> PyObjectRef {
         "warnings",
         vec![
             ("warn", warn_fn),
+            ("warn_explicit", warn_explicit_fn),
             ("filterwarnings", filter_warnings_fn),
             ("simplefilter", simple_filter_fn),
             ("resetwarnings", reset_fn),

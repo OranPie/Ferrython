@@ -104,6 +104,7 @@ pub fn create_decimal_module() -> PyObjectRef {
                 class_methods::add_extended_decimal_methods(
                     &mut dec_ns,
                     make_decimal,
+                    make_decimal_from_ratio,
                     decimal_quantize,
                     decimal_sqrt,
                     decimal_ln,
@@ -137,6 +138,26 @@ pub fn create_decimal_module() -> PyObjectRef {
             w.insert(
                 CompactString::from("_value"),
                 PyObject::str_val(CompactString::from(s)),
+            );
+        }
+        inst
+    }
+
+    fn make_decimal_from_ratio(
+        s: &str,
+        numerator: num_bigint::BigInt,
+        denominator: num_bigint::BigInt,
+    ) -> PyObjectRef {
+        let inst = make_decimal(s);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(
+                CompactString::from("_ratio_num"),
+                PyObject::big_int(numerator),
+            );
+            w.insert(
+                CompactString::from("_ratio_den"),
+                PyObject::big_int(denominator),
             );
         }
         inst

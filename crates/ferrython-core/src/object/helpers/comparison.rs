@@ -1,11 +1,13 @@
 //! Object comparison helpers.
 
 use super::super::payload::*;
-use super::{is_hidden_dict_key, range_canonical_parts};
+use super::{instance_dict_as_hashkey_map, is_hidden_dict_key, range_canonical_parts};
 use crate::object::methods::PyObjectMethods;
-use crate::types::PyInt;
+use crate::types::{float_as_integer_ratio, PyInt};
 use compact_str::CompactString;
 use ferrython_bytecode::{CodeObject, ConstantValue};
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
 
 fn code_objects_equal(a: &CodeObject, b: &CodeObject) -> bool {
     a.instructions == b.instructions
@@ -80,15 +82,200 @@ fn dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> bool {
     }
 }
 
+fn object_rational_parts(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
+    match &obj.payload {
+        PyObjectPayload::Bool(flag) => {
+            Some((BigInt::from(if *flag { 1 } else { 0 }), BigInt::one()))
+        }
+        PyObjectPayload::Int(PyInt::Small(n)) => Some((BigInt::from(*n), BigInt::one())),
+        PyObjectPayload::Int(PyInt::Big(n)) => Some((n.as_ref().clone(), BigInt::one())),
+        PyObjectPayload::Float(f) if f.is_finite() => Some(float_as_integer_ratio(*f)),
+        PyObjectPayload::Float(f) if f.is_infinite() => Some((
+            if f.is_sign_negative() {
+                -BigInt::one()
+            } else {
+                BigInt::one()
+            },
+            BigInt::zero(),
+        )),
+        PyObjectPayload::Instance(inst) => {
+            let attrs = inst.attrs.read();
+            if attrs.contains_key("__fraction__") {
+                let n = attrs.get("numerator").and_then(object_int_to_bigint)?;
+                let d = attrs.get("denominator").and_then(object_int_to_bigint)?;
+                Some((n, d))
+            } else if attrs.contains_key("__decimal__") {
+                attrs
+                    .get("_value")
+                    .and_then(|v| v.as_str())
+                    .and_then(decimal_ratio)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn object_int_to_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Bool(flag) => Some(BigInt::from(if *flag { 1 } else { 0 })),
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(BigInt::from(*n)),
+        PyObjectPayload::Int(PyInt::Big(n)) => Some(n.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn decimal_ratio(s: &str) -> Option<(BigInt, BigInt)> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("nan") {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("infinity")
+        || s.eq_ignore_ascii_case("+infinity")
+        || s.eq_ignore_ascii_case("inf")
+        || s.eq_ignore_ascii_case("+inf")
+    {
+        return Some((BigInt::one(), BigInt::zero()));
+    }
+    if s.eq_ignore_ascii_case("-infinity") || s.eq_ignore_ascii_case("-inf") {
+        return Some((-BigInt::one(), BigInt::zero()));
+    }
+    let (negative, body) = if let Some(rest) = s.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, s)
+    };
+    let (mantissa, exp) =
+        if let Some((m, e)) = body.split_once('e').or_else(|| body.split_once('E')) {
+            (m, e.parse::<i64>().ok()?)
+        } else {
+            (body, 0)
+        };
+    let mut digits = String::new();
+    let mut scale = 0i64;
+    if let Some((int_part, frac_part)) = mantissa.split_once('.') {
+        digits.push_str(int_part);
+        digits.push_str(frac_part);
+        scale = frac_part.len() as i64;
+    } else {
+        digits.push_str(mantissa);
+    }
+    if digits.is_empty() || digits.chars().all(|c| c == '0') {
+        return Some((BigInt::zero(), BigInt::one()));
+    }
+    let mut numerator = digits.parse::<BigInt>().ok()?;
+    if negative {
+        numerator = -numerator;
+    }
+    let power = scale - exp;
+    if power.abs() > 10_000 {
+        if numerator.is_zero() {
+            return Some((BigInt::zero(), BigInt::one()));
+        }
+        return None;
+    }
+    if power >= 0 {
+        Some((numerator, BigInt::from(10u8).pow(power as u32)))
+    } else {
+        Some((
+            numerator * BigInt::from(10u8).pow((-power) as u32),
+            BigInt::one(),
+        ))
+    }
+}
+
+fn compare_rational_parts(
+    left: (BigInt, BigInt),
+    right: (BigInt, BigInt),
+) -> Option<std::cmp::Ordering> {
+    let (an, ad) = left;
+    let (bn, bd) = right;
+    if ad.is_zero() || bd.is_zero() {
+        return if ad.is_zero() && bd.is_zero() {
+            an.sign().partial_cmp(&bn.sign())
+        } else if ad.is_zero() {
+            if an.sign() == num_bigint::Sign::Minus {
+                Some(std::cmp::Ordering::Less)
+            } else {
+                Some(std::cmp::Ordering::Greater)
+            }
+        } else if bn.sign() == num_bigint::Sign::Minus {
+            Some(std::cmp::Ordering::Greater)
+        } else {
+            Some(std::cmp::Ordering::Less)
+        };
+    }
+    Some((an * bd).cmp(&(bn * ad)))
+}
+
+fn complex_equal_rational(real: f64, imag: f64, other: &PyObjectRef) -> Option<std::cmp::Ordering> {
+    if imag != 0.0 || real.is_nan() {
+        return None;
+    }
+    let parts = object_rational_parts(other)?;
+    compare_rational_parts(float_as_integer_ratio(real), parts)
+        .filter(|ordering| *ordering == std::cmp::Ordering::Equal)
+}
+
+fn builtin_value(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.read().contains_key("__weakref_ref__") {
+            return None;
+        }
+        return inst.attrs.read().get("__builtin_value__").cloned();
+    }
+    None
+}
+
 #[inline]
 pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
+    if let Some(left) = builtin_value(a) {
+        if matches!(
+            (&left.payload, &b.payload),
+            (PyObjectPayload::List(_), PyObjectPayload::List(_))
+                | (PyObjectPayload::Set(_), PyObjectPayload::Set(_))
+                | (PyObjectPayload::Set(_), PyObjectPayload::FrozenSet(_))
+                | (PyObjectPayload::FrozenSet(_), PyObjectPayload::Set(_))
+                | (PyObjectPayload::FrozenSet(_), PyObjectPayload::FrozenSet(_))
+        ) {
+            return partial_cmp_objects(&left, b);
+        }
+    }
+    if let Some(right) = builtin_value(b) {
+        if matches!(
+            (&a.payload, &right.payload),
+            (PyObjectPayload::List(_), PyObjectPayload::List(_))
+                | (PyObjectPayload::Set(_), PyObjectPayload::Set(_))
+                | (PyObjectPayload::Set(_), PyObjectPayload::FrozenSet(_))
+                | (PyObjectPayload::FrozenSet(_), PyObjectPayload::Set(_))
+                | (PyObjectPayload::FrozenSet(_), PyObjectPayload::FrozenSet(_))
+        ) {
+            return partial_cmp_objects(a, &right);
+        }
+    }
+
     match (&a.payload, &b.payload) {
         (PyObjectPayload::None, PyObjectPayload::None) => Some(std::cmp::Ordering::Equal),
         (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a.partial_cmp(b),
         (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => a.partial_cmp(b),
         (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a.partial_cmp(b),
-        (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => a.to_f64().partial_cmp(b),
-        (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => a.partial_cmp(&b.to_f64()),
+        (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => {
+            if b.is_finite() {
+                compare_rational_parts((a.to_bigint(), BigInt::one()), float_as_integer_ratio(*b))
+            } else {
+                a.to_f64().partial_cmp(b)
+            }
+        }
+        (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => {
+            if a.is_finite() {
+                compare_rational_parts(float_as_integer_ratio(*a), (b.to_bigint(), BigInt::one()))
+            } else {
+                a.partial_cmp(&b.to_f64())
+            }
+        }
         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a.partial_cmp(b),
         (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => {
             PyInt::Small(*a as i64).partial_cmp(b)
@@ -98,6 +285,41 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Bool(a), PyObjectPayload::Float(b)) => (*a as i64 as f64).partial_cmp(b),
         (PyObjectPayload::Float(a), PyObjectPayload::Bool(b)) => a.partial_cmp(&(*b as i64 as f64)),
+        (PyObjectPayload::Float(f), PyObjectPayload::Instance(_)) if f.is_infinite() => {
+            match object_rational_parts(b) {
+                Some(parts) => compare_rational_parts(object_rational_parts(a)?, parts),
+                None => {
+                    if *f == f64::NEG_INFINITY {
+                        Some(std::cmp::Ordering::Less)
+                    } else {
+                        Some(std::cmp::Ordering::Greater)
+                    }
+                }
+            }
+        }
+        (PyObjectPayload::Instance(_), PyObjectPayload::Float(f)) if f.is_infinite() => {
+            match object_rational_parts(a) {
+                Some(parts) => compare_rational_parts(parts, object_rational_parts(b)?),
+                None => {
+                    if *f == f64::NEG_INFINITY {
+                        Some(std::cmp::Ordering::Greater)
+                    } else {
+                        Some(std::cmp::Ordering::Less)
+                    }
+                }
+            }
+        }
+        (PyObjectPayload::Instance(_), PyObjectPayload::Float(_))
+        | (PyObjectPayload::Float(_), PyObjectPayload::Instance(_))
+        | (PyObjectPayload::Instance(_), PyObjectPayload::Int(_))
+        | (PyObjectPayload::Int(_), PyObjectPayload::Instance(_))
+        | (PyObjectPayload::Instance(_), PyObjectPayload::Bool(_))
+        | (PyObjectPayload::Bool(_), PyObjectPayload::Instance(_)) => {
+            match (object_rational_parts(a), object_rational_parts(b)) {
+                (Some(left), Some(right)) => compare_rational_parts(left, right),
+                _ => None,
+            }
+        }
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read();
             let b = b.read();
@@ -221,16 +443,11 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
                 None
             }
         }
-        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(n))
-        | (PyObjectPayload::Int(n), PyObjectPayload::Complex { real, imag }) => {
-            if *imag == 0.0
-                && *real == n.to_f64()
-                && n.to_i64().map(|i| (*real as i64) == i).unwrap_or(false)
-            {
-                Some(std::cmp::Ordering::Equal)
-            } else {
-                None
-            }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(_)) => {
+            complex_equal_rational(*real, *imag, b)
+        }
+        (PyObjectPayload::Int(_), PyObjectPayload::Complex { real, imag }) => {
+            complex_equal_rational(*real, *imag, a)
         }
         (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(f))
         | (PyObjectPayload::Float(f), PyObjectPayload::Complex { real, imag }) => {
@@ -242,12 +459,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Bool(b))
         | (PyObjectPayload::Bool(b), PyObjectPayload::Complex { real, imag }) => {
-            let bf = if *b { 1.0 } else { 0.0 };
-            if *imag == 0.0 && *real == bf {
-                Some(std::cmp::Ordering::Equal)
-            } else {
-                None
-            }
+            complex_equal_rational(*real, *imag, &PyObject::bool_val(*b))
+        }
+        (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Instance(_)) => {
+            complex_equal_rational(*real, *imag, b)
+        }
+        (PyObjectPayload::Instance(_), PyObjectPayload::Complex { real, imag }) => {
+            complex_equal_rational(*real, *imag, a)
         }
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
             if a == b {
@@ -350,13 +568,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             }
         }
         (PyObjectPayload::InstanceDict(a), PyObjectPayload::InstanceDict(b)) => {
-            let a = a.read();
-            let b = b.read();
+            let a = instance_dict_as_hashkey_map(a);
+            let b = instance_dict_as_hashkey_map(b);
             if a.len() != b.len() {
                 return None;
             }
             for (k, v1) in a.iter() {
-                match b.get(k.as_str()) {
+                match b.get(k) {
                     Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
                     _ => return None,
                 }
@@ -365,18 +583,13 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         // Cross-type: InstanceDict == Dict
         (PyObjectPayload::InstanceDict(a), PyObjectPayload::Dict(b)) => {
-            let a = a.read();
+            let a = instance_dict_as_hashkey_map(a);
             let b = b.read();
             if a.len() != b.len() {
                 return None;
             }
             for (k, v1) in a.iter() {
-                let hk = match PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key()
-                {
-                    Ok(hk) => hk,
-                    Err(_) => return None,
-                };
-                match b.get(&hk) {
+                match b.get(k) {
                     Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
                     _ => return None,
                 }
@@ -385,17 +598,12 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::Dict(a_dict), PyObjectPayload::InstanceDict(b_idict)) => {
             let a_r = a_dict.read();
-            let b_r = b_idict.read();
+            let b_r = instance_dict_as_hashkey_map(b_idict);
             if a_r.len() != b_r.len() {
                 return None;
             }
             for (k, v1) in b_r.iter() {
-                let hk = match PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key()
-                {
-                    Ok(hk) => hk,
-                    Err(_) => return None,
-                };
-                match a_r.get(&hk) {
+                match a_r.get(k) {
                     Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
                     _ => return None,
                 }

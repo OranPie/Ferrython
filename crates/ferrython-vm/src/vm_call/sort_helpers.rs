@@ -2,9 +2,37 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::PyInt;
 
+use crate::vm_helpers::{begin_list_sort_guard, list_sort_was_mutated};
 use crate::VirtualMachine;
 
 impl VirtualMachine {
+    pub(crate) fn vm_sort_list_in_place(
+        &mut self,
+        receiver: &PyObjectRef,
+        key_fn: Option<PyObjectRef>,
+        reverse: bool,
+    ) -> PyResult<()> {
+        let PyObjectPayload::List(items_arc) = &receiver.payload else {
+            return Err(PyException::type_error(
+                "descriptor 'sort' for 'list' objects doesn't apply",
+            ));
+        };
+        let guard = begin_list_sort_guard(receiver);
+        let original = items_arc.read().clone();
+        let mut items_vec = original.clone();
+        let sort_result = self.sort_with_key(&mut items_vec, key_fn, reverse);
+        self.drain_pending_finalizers();
+        if sort_result.is_err() {
+            return sort_result;
+        }
+        if list_sort_was_mutated(&guard) {
+            *items_arc.write() = original;
+            return Err(PyException::value_error("list modified during sort"));
+        }
+        *items_arc.write() = items_vec;
+        Ok(())
+    }
+
     /// Schwartzian transform: sort items by key function, optionally reversed.
     pub(super) fn sort_with_key(
         &mut self,

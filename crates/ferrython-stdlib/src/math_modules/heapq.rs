@@ -355,6 +355,7 @@ fn heap_collect_iterable(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             | PyObjectPayload::Iterator(_)
             | PyObjectPayload::RangeIter(..)
             | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
             | PyObjectPayload::RefIter { .. }
     ) {
         return heap_collect_via_list(obj);

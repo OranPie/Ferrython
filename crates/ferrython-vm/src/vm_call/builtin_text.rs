@@ -47,6 +47,7 @@ impl VirtualMachine {
         if args.is_empty() {
             return Ok(PyObject::str_val(CompactString::from("")));
         }
+        ferrython_core::object::helpers::repr_reset_overflow();
         self.vm_repr(&args[0])
             .map(|s| PyObject::str_val(CompactString::from(s)))
     }

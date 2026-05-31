@@ -15,6 +15,7 @@ impl VirtualMachine {
         if let PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -32,6 +33,11 @@ impl VirtualMachine {
                     return Ok(Some(bbm.receiver.clone()));
                 }
                 "__length_hint__" => {
+                    if matches!(&bbm.receiver.payload, PyObjectPayload::RevRefIter { .. }) {
+                        return Err(PyException::type_error(
+                            "object of type 'list_reverseiterator' has no len()",
+                        ));
+                    }
                     let len = bbm.receiver.py_len().unwrap_or(0);
                     return Ok(Some(PyObject::int(len as i64)));
                 }

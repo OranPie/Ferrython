@@ -67,8 +67,7 @@ impl VirtualMachine {
                 if let PyObjectPayload::BuiltinBoundMethod(bbm) = &func.payload {
                     // Handle list.sort(key=..., reverse=...)
                     if bbm.method_name.as_str() == "sort" {
-                        if let PyObjectPayload::List(items_arc) = &bbm.receiver.payload {
-                            let mut items_vec = items_arc.read().clone();
+                        if matches!(&bbm.receiver.payload, PyObjectPayload::List(_)) {
                             let key_fn = kwargs
                                 .iter()
                                 .find(|(k, _)| k.as_str() == "key")
@@ -78,25 +77,21 @@ impl VirtualMachine {
                                 .find(|(k, _)| k.as_str() == "reverse")
                                 .map(|(_, v)| v.is_truthy())
                                 .unwrap_or(false);
-                            self.sort_with_key(&mut items_vec, key_fn, reverse)?;
-                            *items_arc.write() = items_vec;
+                            self.vm_sort_list_in_place(&bbm.receiver, key_fn, reverse)?;
                             return Ok(PyObject::none());
                         }
                     }
                     // Handle dict.update(key=val, ...)
                     if bbm.method_name.as_str() == "update" && !kwargs.is_empty() {
                         if let PyObjectPayload::Dict(map) = &bbm.receiver.payload {
-                            // First process positional arg (another dict or iterable)
-                            if !pos_args.is_empty() {
-                                if let PyObjectPayload::Dict(other) = &pos_args[0].payload {
-                                    let other_items = other.read().clone();
-                                    let mut w = map.write();
-                                    for (k, v) in other_items {
-                                        w.insert(k, v);
-                                    }
-                                }
+                            if let Some(first) = pos_args.first() {
+                                let update = bbm.receiver.get_attr("update").ok_or_else(|| {
+                                    PyException::attribute_error(
+                                        "'dict' object has no attribute 'update'",
+                                    )
+                                })?;
+                                self.call_object(update, vec![first.clone()])?;
                             }
-                            // Then add kwargs
                             let mut w = map.write();
                             for (k, v) in &kwargs {
                                 w.insert(HashableKey::str_key(k.clone()), v.clone());

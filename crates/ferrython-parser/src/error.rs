@@ -34,6 +34,8 @@ pub enum ParseErrorKind {
     UnterminatedString,
     #[error("invalid escape sequence: \\{0}")]
     InvalidEscape(char),
+    #[error("invalid escape sequence: \\{0}")]
+    DeprecatedEscape(char),
     #[error("invalid number literal: {0}")]
     InvalidNumber(String),
     #[error("expression expected")]

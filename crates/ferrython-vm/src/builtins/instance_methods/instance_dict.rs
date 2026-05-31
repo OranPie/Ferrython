@@ -1,10 +1,11 @@
-use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
-    check_args_min, FxHashKeyMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    SharedFxAttrMap,
+use ferrython_core::object::helpers::{
+    instance_dict_as_hashkey_map, instance_dict_get_item, instance_dict_remove_item,
+    instance_dict_set_item,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::object::{
+    check_args_min, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
+};
 
 pub(crate) fn call_instance_dict_method(
     attrs: &SharedFxAttrMap,
@@ -14,53 +15,45 @@ pub(crate) fn call_instance_dict_method(
     match method {
         "get" => {
             check_args_min("get", args, 1)?;
-            let key_str = args[0].py_to_string();
             let default = if args.len() >= 2 {
                 args[1].clone()
             } else {
                 PyObject::none()
             };
-            Ok(attrs
-                .read()
-                .get(key_str.as_str())
-                .cloned()
-                .unwrap_or(default))
+            Ok(instance_dict_get_item(attrs, &args[0])?.unwrap_or(default))
         }
         "keys" => {
-            let guard = attrs.read();
-            let keys: Vec<PyObjectRef> =
-                guard.keys().map(|k| PyObject::str_val(k.clone())).collect();
+            let map = instance_dict_as_hashkey_map(attrs);
+            let keys: Vec<PyObjectRef> = map.keys().map(|k| k.to_object()).collect();
             Ok(PyObject::list(keys))
         }
         "values" => {
-            let guard = attrs.read();
-            let vals: Vec<PyObjectRef> = guard.values().cloned().collect();
+            let map = instance_dict_as_hashkey_map(attrs);
+            let vals: Vec<PyObjectRef> = map.values().cloned().collect();
             Ok(PyObject::list(vals))
         }
         "items" => {
-            let guard = attrs.read();
-            let items: Vec<PyObjectRef> = guard
+            let map = instance_dict_as_hashkey_map(attrs);
+            let items: Vec<PyObjectRef> = map
                 .iter()
-                .map(|(k, v)| PyObject::tuple(vec![PyObject::str_val(k.clone()), v.clone()]))
+                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                 .collect();
             Ok(PyObject::list(items))
         }
         "__contains__" => {
             check_args_min("__contains__", args, 1)?;
-            let key_str = args[0].py_to_string();
             Ok(PyObject::bool_val(
-                attrs.read().contains_key(key_str.as_str()),
+                instance_dict_get_item(attrs, &args[0])?.is_some(),
             ))
         }
         "pop" => {
             check_args_min("pop", args, 1)?;
-            let key_str = CompactString::from(args[0].py_to_string());
             let default = if args.len() >= 2 {
                 Some(args[1].clone())
             } else {
                 None
             };
-            match attrs.write().swap_remove(&key_str) {
+            match instance_dict_remove_item(attrs, &args[0])? {
                 Some(v) => Ok(v),
                 None => match default {
                     Some(d) => Ok(d),
@@ -72,48 +65,33 @@ pub(crate) fn call_instance_dict_method(
             check_args_min("update", args, 1)?;
             if let PyObjectPayload::Dict(other) = &args[0].payload {
                 let other_items = other.read().clone();
-                let mut w = attrs.write();
                 for (k, v) in other_items {
-                    w.insert(CompactString::from(k.to_object().py_to_string()), v);
+                    instance_dict_set_item(attrs, &k.to_object(), v)?;
                 }
             } else if let PyObjectPayload::InstanceDict(other) = &args[0].payload {
-                let other_items: Vec<_> = other
-                    .read()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let mut w = attrs.write();
+                let other_items = instance_dict_as_hashkey_map(other);
                 for (k, v) in other_items {
-                    w.insert(k, v);
+                    instance_dict_set_item(attrs, &k.to_object(), v)?;
                 }
             }
             Ok(PyObject::none())
         }
-        "copy" => {
-            let guard = attrs.read();
-            let copy: FxHashKeyMap = guard
-                .iter()
-                .map(|(k, v)| (HashableKey::str_key(k.clone()), v.clone()))
-                .collect();
-            Ok(PyObject::dict(copy))
-        }
+        "copy" => Ok(PyObject::dict(instance_dict_as_hashkey_map(attrs))),
         "clear" => {
             attrs.write().clear();
             Ok(PyObject::none())
         }
         "setdefault" => {
             check_args_min("setdefault", args, 1)?;
-            let key = CompactString::from(args[0].py_to_string());
             let default = if args.len() >= 2 {
                 args[1].clone()
             } else {
                 PyObject::none()
             };
-            let mut w = attrs.write();
-            if let Some(v) = w.get(key.as_str()) {
+            if let Some(v) = instance_dict_get_item(attrs, &args[0])? {
                 Ok(v.clone())
             } else {
-                w.insert(key, default.clone());
+                instance_dict_set_item(attrs, &args[0], default.clone())?;
                 Ok(default)
             }
         }

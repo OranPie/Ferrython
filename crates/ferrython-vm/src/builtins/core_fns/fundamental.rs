@@ -3,7 +3,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     check_args, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{float_as_integer_ratio, HashableKey};
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -78,6 +78,24 @@ pub(crate) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             ))
         })?;
         return Ok(PyObject::int(val));
+    }
+    if let PyObjectPayload::Float(f) = &args[0].payload {
+        if f.is_nan() {
+            return Err(PyException::value_error(
+                "cannot convert float NaN to integer",
+            ));
+        }
+        if f.is_infinite() {
+            return Err(PyException::overflow_error(
+                "cannot convert float infinity to integer",
+            ));
+        }
+        let truncated = f.trunc();
+        if truncated >= -9_007_199_254_740_992.0 && truncated <= 9_007_199_254_740_992.0 {
+            return Ok(PyObject::int(truncated as i64));
+        }
+        let (n, d) = float_as_integer_ratio(truncated);
+        return Ok(PyObject::big_int(n / d));
     }
     Ok(PyObject::int(args[0].to_int()?))
 }

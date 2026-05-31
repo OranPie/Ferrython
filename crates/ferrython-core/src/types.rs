@@ -9,7 +9,8 @@ use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::CodeObject;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_integer::Integer;
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
@@ -328,18 +329,7 @@ impl Ord for PyInt {
 }
 impl Hash for PyInt {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            PyInt::Small(n) => n.hash(state),
-            PyInt::Big(n) => {
-                if let Some(small) = n.to_i64() {
-                    small.hash(state);
-                } else {
-                    let (sign, digits) = n.to_bytes_le();
-                    sign.hash(state);
-                    digits.hash(state);
-                }
-            }
-        }
+        py_hash_bigint(&self.to_bigint()).hash(state);
     }
 }
 
@@ -598,18 +588,9 @@ impl HashableKey {
             PyObjectPayload::Bool(b) => Ok(HashableKey::Int(PyInt::Small(*b as i64))),
             PyObjectPayload::Int(n) => Ok(HashableKey::Int(n.clone())),
             PyObjectPayload::Float(f) => Ok(HashableKey::Float(OrderedFloat(*f))),
-            PyObjectPayload::Complex { real, imag } => {
-                // CPython: hash(complex(r,i)) == hash(r) when imag==0, else a combined value.
-                if *imag == 0.0 {
-                    Ok(HashableKey::Float(OrderedFloat(*real)))
-                } else {
-                    let rb = real.to_bits() as i64;
-                    let ib = imag.to_bits() as i64;
-                    Ok(HashableKey::Int(PyInt::Small(
-                        rb ^ ib.wrapping_mul(1_000_003),
-                    )))
-                }
-            }
+            PyObjectPayload::Complex { real, imag } => Ok(HashableKey::Int(PyInt::Small(
+                py_hash_complex(*real, *imag),
+            ))),
             PyObjectPayload::Str(s) => Ok(HashableKey::Str(s.clone())),
             PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
             PyObjectPayload::Tuple(items) => {
@@ -774,23 +755,15 @@ pub fn hash_frozenset_keys(items: &[HashableKey]) -> i64 {
 #[inline]
 pub fn hash_key_like_python(key: &HashableKey) -> i64 {
     match key {
-        HashableKey::Int(n) => n.to_i64().unwrap_or(0),
+        HashableKey::Int(n) => py_hash_bigint(&n.to_bigint()),
         HashableKey::Bool(b) => *b as i64,
         HashableKey::Str(s) => {
-            let mut h: u64 = 5381;
-            for c in s.bytes() {
-                h = h.wrapping_mul(33).wrapping_add(c as u64);
-            }
-            h as i64
+            let mut hasher = rustc_hash::FxHasher::default();
+            3u8.hash(&mut hasher);
+            s.hash(&mut hasher);
+            hasher.finish() as i64
         }
-        HashableKey::Float(f) => {
-            let fv = f.0;
-            if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
-                fv as i64
-            } else {
-                f.0.to_bits() as i64
-            }
-        }
+        HashableKey::Float(f) => py_hash_float(f.0),
         HashableKey::None => 0,
         HashableKey::Tuple(items) => {
             let mut h: u64 = 0x345678;
@@ -907,6 +880,9 @@ impl PartialEq for HashableKey {
                 if *hash_value != hash_key_like_python(other) {
                     return false;
                 }
+                if let Some(result) = call_eq_dispatch(&other.to_object(), object) {
+                    return result;
+                }
                 if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
                     return result;
                 }
@@ -932,26 +908,14 @@ impl Hash for HashableKey {
             HashableKey::Bool(b) => {
                 (*b as i64).hash(state);
             }
-            HashableKey::Int(PyInt::Small(v)) => {
-                v.hash(state);
-            }
-            HashableKey::Int(PyInt::Big(n)) => {
-                n.to_i64().unwrap_or(0).hash(state);
+            HashableKey::Int(v) => {
+                py_hash_bigint(&v.to_bigint()).hash(state);
             }
             HashableKey::Float(f) => {
-                let fv = f.0;
-                if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
-                    (fv as i64).hash(state);
-                } else {
-                    // Non-integral floats: use bit representation with a tag
-                    // to avoid colliding with integers
-                    2u8.hash(state);
-                    f.hash(state);
-                }
+                py_hash_float(f.0).hash(state);
             }
-            HashableKey::Str(s) => {
-                3u8.hash(state);
-                s.hash(state);
+            HashableKey::Str(_) => {
+                hash_key_like_python(self).hash(state);
             }
             HashableKey::Bytes(b) => {
                 4u8.hash(state);
@@ -988,6 +952,133 @@ impl Hash for HashableKey {
     }
 }
 
+pub const PY_HASH_MODULUS: i64 = 2_305_843_009_213_693_951;
+pub const PY_HASH_INF: i64 = 314_159;
+pub const PY_HASH_IMAG: i64 = 1_000_003;
+
+pub fn py_hash_bigint(value: &BigInt) -> i64 {
+    let modulus = BigInt::from(PY_HASH_MODULUS);
+    let mut x = value.abs().mod_floor(&modulus).to_i64().unwrap_or(0);
+    if value.is_negative() {
+        x = -x;
+    }
+    if x == -1 {
+        -2
+    } else {
+        x
+    }
+}
+
+pub fn py_hash_rational(numerator: &BigInt, denominator: &BigInt) -> i64 {
+    if numerator.is_zero() {
+        return 0;
+    }
+    if denominator.is_zero() {
+        return if numerator.is_negative() {
+            -PY_HASH_INF
+        } else {
+            PY_HASH_INF
+        };
+    }
+    let modulus = BigInt::from(PY_HASH_MODULUS);
+    let mut n = numerator.clone();
+    let mut d = denominator.clone();
+    if d.is_negative() {
+        n = -n;
+        d = -d;
+    }
+    let g = n.abs().gcd(&d);
+    n /= &g;
+    d /= g;
+    while !n.is_zero() && (&n % &modulus).is_zero() && (&d % &modulus).is_zero() {
+        n /= &modulus;
+        d /= &modulus;
+    }
+    if (&d % &modulus).is_zero() {
+        return if n.is_negative() {
+            -PY_HASH_INF
+        } else {
+            PY_HASH_INF
+        };
+    }
+    let sign_negative = n.is_negative();
+    let n_mod = ((n.abs() % &modulus) + &modulus) % &modulus;
+    let d_mod = ((&d % &modulus) + &modulus) % &modulus;
+    let inv = d_mod
+        .modpow(&BigInt::from(PY_HASH_MODULUS - 2), &modulus)
+        .to_i64()
+        .unwrap_or(0);
+    let n_i = n_mod.to_i64().unwrap_or(0);
+    let mut hash = ((n_i as i128 * inv as i128) % PY_HASH_MODULUS as i128) as i64;
+    if sign_negative {
+        hash = -hash;
+    }
+    if hash == -1 {
+        -2
+    } else {
+        hash
+    }
+}
+
+pub fn py_hash_float(value: f64) -> i64 {
+    if value.is_nan() {
+        return 0;
+    }
+    if value.is_infinite() {
+        return if value.is_sign_negative() {
+            -PY_HASH_INF
+        } else {
+            PY_HASH_INF
+        };
+    }
+    let (n, d) = float_as_integer_ratio(value);
+    py_hash_rational(&n, &d)
+}
+
+pub fn py_hash_complex(real: f64, imag: f64) -> i64 {
+    let mut hash = py_hash_float(real).wrapping_add(PY_HASH_IMAG.wrapping_mul(py_hash_float(imag)));
+    hash = normalize_hash_width(hash);
+    if hash == -1 {
+        -2
+    } else {
+        hash
+    }
+}
+
+pub fn float_as_integer_ratio(value: f64) -> (BigInt, BigInt) {
+    if value == 0.0 {
+        return (BigInt::zero(), BigInt::one());
+    }
+    let bits = value.to_bits();
+    let negative = (bits >> 63) != 0;
+    let raw_exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & 0x000f_ffff_ffff_ffff;
+    let (mantissa, exp) = if raw_exp == 0 {
+        (frac, -1074)
+    } else {
+        ((1u64 << 52) | frac, raw_exp - 1075)
+    };
+    let mut numerator = BigInt::from(mantissa);
+    let mut denominator = BigInt::one();
+    if exp >= 0 {
+        numerator <<= exp as usize;
+    } else {
+        denominator <<= (-exp) as usize;
+    }
+    if negative {
+        numerator = -numerator;
+    }
+    let g = numerator.abs().gcd(&denominator);
+    (numerator / &g, denominator / g)
+}
+
+fn normalize_hash_width(hash: i64) -> i64 {
+    let m = (1_i128 << 61) - 1;
+    let mut x = hash as i128;
+    x = (x & m) - (x & (1_i128 << 61));
+    x as i64
+}
+
 // ── Zero-clone dict lookup keys ──
 // These types allow IndexMap::get without cloning the key.
 // They hash and compare identically to their HashableKey counterparts.
@@ -998,15 +1089,25 @@ pub struct BorrowedStrKey<'a>(pub &'a str);
 impl Hash for BorrowedStrKey<'_> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        3u8.hash(state);
-        self.0.hash(state);
+        hash_borrowed_str_key(self.0).hash(state);
     }
 }
 
 impl indexmap::Equivalent<HashableKey> for BorrowedStrKey<'_> {
     #[inline]
     fn equivalent(&self, key: &HashableKey) -> bool {
-        matches!(key, HashableKey::Str(s) if s.as_str() == self.0)
+        match key {
+            HashableKey::Str(s) => s.as_str() == self.0,
+            HashableKey::Custom { hash_value, object }
+                if *hash_value == hash_borrowed_str_key(self.0) =>
+            {
+                let str_obj = PyObject::str_val(CompactString::from(self.0));
+                call_eq_dispatch(&str_obj, object)
+                    .or_else(|| call_eq_dispatch(object, &str_obj))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1016,6 +1117,13 @@ impl PartialEq for BorrowedStrKey<'_> {
     }
 }
 impl Eq for BorrowedStrKey<'_> {}
+
+fn hash_borrowed_str_key(value: &str) -> i64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    3u8.hash(&mut hasher);
+    value.hash(&mut hasher);
+    hasher.finish() as i64
+}
 
 /// Borrowed small-int key for zero-clone dict[int] lookups.
 pub struct BorrowedIntKey(pub i64);

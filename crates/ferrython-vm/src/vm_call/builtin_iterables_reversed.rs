@@ -16,6 +16,9 @@ impl VirtualMachine {
         if args.is_empty() {
             return Ok(None);
         }
+        if args.len() != 1 {
+            return builtins::dispatch("reversed", args).map(Some);
+        }
         if matches!(
             &args[0].payload,
             PyObjectPayload::List(_) | PyObjectPayload::Range(_)

@@ -2,7 +2,7 @@ use crate::builtins;
 use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::helpers::{range_len, range_next_i64};
+use ferrython_core::object::helpers::{dict_storage_version, range_len, range_next_i64};
 use ferrython_core::object::{
     IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -179,6 +179,7 @@ impl VirtualMachine {
                         PyObjectPayload::Iterator(_)
                             | PyObjectPayload::RangeIter(..)
                             | PyObjectPayload::VecIter(_)
+                            | PyObjectPayload::DictValueIter(_)
                             | PyObjectPayload::WeakValueIter(_)
                             | PyObjectPayload::WeakKeyIter(_)
                             | PyObjectPayload::DequeIter(_)
@@ -247,6 +248,13 @@ impl VirtualMachine {
                 let result = data.items[idx..].to_vec();
                 data.index.set(usize::MAX);
                 Ok(result)
+            }
+            PyObjectPayload::DictValueIter(_) => {
+                let mut items = Vec::new();
+                while let Some(item) = self.vm_iter_next(obj)? {
+                    items.push(item);
+                }
+                Ok(items)
             }
             PyObjectPayload::WeakValueIter(_) => {
                 let mut items = Vec::new();
@@ -474,9 +482,12 @@ impl VirtualMachine {
                         source,
                         index,
                         expected_len,
+                        expected_version,
                     } => {
                         let map = source.read();
-                        if map.len() != *expected_len {
+                        if map.len() != *expected_len
+                            || dict_storage_version(source) != *expected_version
+                        {
                             return Err(PyException::runtime_error(
                                 "dictionary changed size during iteration",
                             ));
@@ -488,6 +499,42 @@ impl VirtualMachine {
                             result.push(self.call_object_one_arg_fast_or_fallback(
                                 func.clone(),
                                 key.to_object(),
+                            )?);
+                        }
+                        *index = end;
+                        Ok(result)
+                    }
+                    IteratorData::SetRefs {
+                        source,
+                        index,
+                        expected_len,
+                    } => {
+                        let map = source.read();
+                        if map.len() != *expected_len {
+                            return Err(PyException::runtime_error(
+                                "Set changed size during iteration",
+                            ));
+                        }
+                        let start = *index;
+                        let end = map.len();
+                        let mut result = Vec::with_capacity(end.saturating_sub(start));
+                        for (_, value) in map.iter().skip(start) {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                value.clone(),
+                            )?);
+                        }
+                        *index = end;
+                        Ok(result)
+                    }
+                    IteratorData::FrozenSetItems { items, index } => {
+                        let start = *index;
+                        let end = items.len();
+                        let mut result = Vec::with_capacity(end.saturating_sub(start));
+                        for item in &items[start..] {
+                            result.push(self.call_object_one_arg_fast_or_fallback(
+                                func.clone(),
+                                item.clone(),
                             )?);
                         }
                         *index = end;
@@ -561,6 +608,7 @@ impl VirtualMachine {
                 data.index.set(usize::MAX);
                 Ok(result)
             }
+            PyObjectPayload::DictValueIter(_) => self.collect_map_one_iterable_slow(func, source),
             PyObjectPayload::RangeIter(ri) => {
                 let mut current = ri.current.get();
                 let len = range_len(current, ri.stop, ri.step);
@@ -609,6 +657,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(_)
             | PyObjectPayload::RangeIter(..)
             | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
             | PyObjectPayload::WeakValueIter(_)
             | PyObjectPayload::WeakKeyIter(_)
             | PyObjectPayload::DequeIter(_)

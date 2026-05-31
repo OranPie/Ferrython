@@ -2,12 +2,15 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::helpers::is_hidden_dict_key;
+use ferrython_core::object::helpers::{
+    dict_storage_version, is_hidden_dict_key, mark_dict_storage_mutated,
+};
 use ferrython_core::object::{
     check_args, check_args_min, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject,
     PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{take_pending_eq_error, HashableKey};
+use indexmap::map::Entry;
 use std::rc::Rc;
 
 use super::extract_kwarg;
@@ -43,6 +46,7 @@ fn dict_contains_key(map: &FxHashKeyMap, key: &HashableKey) -> PyResult<bool> {
 
 #[inline]
 fn dict_insert(
+    owner: &Rc<PyCell<FxHashKeyMap>>,
     map: &mut FxHashKeyMap,
     key: HashableKey,
     value: PyObjectRef,
@@ -55,28 +59,80 @@ fn dict_insert(
         clear_key_compare_error();
         return Err(err);
     }
+    if old.is_none() {
+        mark_dict_storage_mutated(owner);
+    }
     Ok(old)
 }
 
 #[inline]
-fn dict_swap_remove(map: &mut FxHashKeyMap, key: &HashableKey) -> PyResult<Option<PyObjectRef>> {
-    clear_key_compare_error();
-    let removed = map.swap_remove(key);
-    finish_key_compare()?;
-    Ok(removed)
-}
-
-#[inline]
-fn dict_shift_remove(map: &mut FxHashKeyMap, key: &HashableKey) -> PyResult<Option<PyObjectRef>> {
+fn dict_shift_remove(
+    owner: &Rc<PyCell<FxHashKeyMap>>,
+    map: &mut FxHashKeyMap,
+    key: &HashableKey,
+) -> PyResult<Option<PyObjectRef>> {
     clear_key_compare_error();
     let removed = map.shift_remove(key);
     finish_key_compare()?;
+    if removed.is_some() {
+        mark_dict_storage_mutated(owner);
+    }
     Ok(removed)
 }
 
 #[inline]
 fn missing_key_error(key: &PyObjectRef) -> PyException {
     PyException::key_error_value(key.clone())
+}
+
+fn source_dict_state(obj: &PyObjectRef) -> Option<(Rc<PyCell<FxHashKeyMap>>, usize, u64)> {
+    match &obj.payload {
+        PyObjectPayload::Dict(map) => {
+            Some((map.clone(), map.read().len(), dict_storage_version(map)))
+        }
+        PyObjectPayload::Instance(inst) => inst
+            .dict_storage
+            .as_ref()
+            .map(|map| (map.clone(), map.read().len(), dict_storage_version(map))),
+        _ => None,
+    }
+}
+
+fn check_source_dict_unchanged(
+    state: &Option<(Rc<PyCell<FxHashKeyMap>>, usize, u64)>,
+) -> PyResult<()> {
+    if let Some((map, expected_len, expected_version)) = state {
+        if map.read().len() != *expected_len || dict_storage_version(map) != *expected_version {
+            return Err(PyException::runtime_error(
+                "dictionary changed size during update",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn merge_update_sequence(
+    owner: &Rc<PyCell<FxHashKeyMap>>,
+    target: &mut FxHashKeyMap,
+    items: Vec<PyObjectRef>,
+) -> PyResult<()> {
+    for (index, item) in items.iter().enumerate() {
+        let pair = item.to_list().map_err(|_| {
+            PyException::type_error(
+                "cannot convert dictionary update sequence element to a sequence",
+            )
+        })?;
+        if pair.len() != 2 {
+            return Err(PyException::value_error(format!(
+                "dictionary update sequence element #{} has length {}; 2 is required",
+                index,
+                pair.len()
+            )));
+        }
+        let key = pair[0].to_hashable_key()?;
+        dict_insert(owner, target, key, pair[1].clone())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn call_dict_method(
@@ -156,7 +212,7 @@ pub(crate) fn call_dict_method(
                         for ch in s.chars() {
                             let key = HashableKey::str_key(CompactString::from(ch.to_string()));
                             let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
-                            w.insert(key, PyObject::int(count + 1));
+                            dict_insert(map, &mut w, key, PyObject::int(count + 1))?;
                         }
                     }
                     PyObjectPayload::Dict(other) => {
@@ -169,7 +225,7 @@ pub(crate) fn call_dict_method(
                             }
                             let existing = dict_get(&w, &k)?.and_then(|v| v.as_int()).unwrap_or(0);
                             let add = v.as_int().unwrap_or(0);
-                            dict_insert(&mut w, k, PyObject::int(existing + add))?;
+                            dict_insert(map, &mut w, k, PyObject::int(existing + add))?;
                         }
                     }
                     PyObjectPayload::List(items) => {
@@ -178,7 +234,7 @@ pub(crate) fn call_dict_method(
                         for item in &items {
                             let key = item.to_hashable_key()?;
                             let count = dict_get(&w, &key)?.and_then(|v| v.as_int()).unwrap_or(0);
-                            dict_insert(&mut w, key, PyObject::int(count + 1))?;
+                            dict_insert(map, &mut w, key, PyObject::int(count + 1))?;
                         }
                     }
                     _ => {
@@ -190,90 +246,48 @@ pub(crate) fn call_dict_method(
             } else {
                 match &args[0].payload {
                     PyObjectPayload::Dict(other) => {
+                        let source_state = source_dict_state(&args[0]);
                         let other_items = other.read().clone();
                         let mut w = map.write();
                         for (k, v) in other_items {
-                            dict_insert(&mut w, k, v)?;
+                            dict_insert(map, &mut w, k, v)?;
+                            check_source_dict_unchanged(&source_state)?;
                         }
                     }
                     PyObjectPayload::Instance(_) => {
+                        let source_state = source_dict_state(&args[0]);
                         if let Some(keys_method) = args[0].get_attr("keys") {
                             let keys_obj =
                                 ferrython_core::object::call_callable(&keys_method, &[])?;
                             let keys = keys_obj.to_list()?;
-                            let mut w = map.write();
+                            let source_len = keys.len();
                             for key_obj in keys {
+                                if keys_obj.py_len().unwrap_or(source_len) != source_len {
+                                    return Err(PyException::runtime_error(
+                                        "dictionary changed size during update",
+                                    ));
+                                }
                                 let value = args[0].get_item(&key_obj)?;
                                 let key = key_obj.to_hashable_key()?;
-                                dict_insert(&mut w, key, value)?;
+                                let mut w = map.write();
+                                dict_insert(map, &mut w, key, value)?;
+                                check_source_dict_unchanged(&source_state)?;
                             }
                         } else {
                             let items = args[0].to_list()?;
                             let mut w = map.write();
-                            for item in &items {
-                                match &item.payload {
-                                    PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
-                                        let key = pair[0].to_hashable_key()?;
-                                        dict_insert(&mut w, key, pair[1].clone())?;
-                                    }
-                                    PyObjectPayload::Tuple(pair) => {
-                                        return Err(PyException::value_error(
-                                            format!("dictionary update sequence element has length {}; 2 is required", pair.len())
-                                        ));
-                                    }
-                                    PyObjectPayload::List(pair_items) => {
-                                        let pair = pair_items.read();
-                                        if pair.len() == 2 {
-                                            let key = pair[0].to_hashable_key()?;
-                                            dict_insert(&mut w, key, pair[1].clone())?;
-                                        } else {
-                                            return Err(PyException::value_error(
-                                                format!("dictionary update sequence element has length {}; 2 is required", pair.len())
-                                            ));
-                                        }
-                                    }
-                                    _ => {
-                                        return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
-                                    }
-                                }
-                            }
+                            merge_update_sequence(map, &mut w, items)?;
                         }
                     }
                     PyObjectPayload::List(items) => {
                         let items = items.read().clone();
                         let mut w = map.write();
-                        for item in &items {
-                            match &item.payload {
-                                PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
-                                    let key = pair[0].to_hashable_key()?;
-                                    dict_insert(&mut w, key, pair[1].clone())?;
-                                }
-                                PyObjectPayload::Tuple(pair) => {
-                                    return Err(PyException::value_error(
-                                        format!("dictionary update sequence element has length {}; 2 is required", pair.len())
-                                    ));
-                                }
-                                PyObjectPayload::List(pair_items) => {
-                                    let pair = pair_items.read();
-                                    if pair.len() == 2 {
-                                        let key = pair[0].to_hashable_key()?;
-                                        dict_insert(&mut w, key, pair[1].clone())?;
-                                    } else {
-                                        return Err(PyException::value_error(
-                                            format!("dictionary update sequence element has length {}; 2 is required", pair.len())
-                                        ));
-                                    }
-                                }
-                                _ => {
-                                    return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
-                                }
-                            }
-                        }
+                        merge_update_sequence(map, &mut w, items)?;
                     }
                     _ => {
-                        return Err(PyException::type_error(
-                            "update() argument must be a mapping or iterable",
-                        ));
+                        let items = args[0].to_list()?;
+                        let mut w = map.write();
+                        merge_update_sequence(map, &mut w, items)?;
                     }
                 }
             }
@@ -298,7 +312,7 @@ pub(crate) fn call_dict_method(
                         }
                         let existing = dict_get(&w, &k)?.and_then(|v| v.as_int()).unwrap_or(0);
                         let sub = v.as_int().unwrap_or(0);
-                        dict_insert(&mut w, k, PyObject::int(existing - sub))?;
+                        dict_insert(map, &mut w, k, PyObject::int(existing - sub))?;
                     }
                 }
                 PyObjectPayload::Str(s) => {
@@ -306,7 +320,7 @@ pub(crate) fn call_dict_method(
                     for ch in s.chars() {
                         let key = HashableKey::str_key(CompactString::from(ch.to_string()));
                         let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
-                        w.insert(key, PyObject::int(count - 1));
+                        dict_insert(map, &mut w, key, PyObject::int(count - 1))?;
                     }
                 }
                 PyObjectPayload::List(items) => {
@@ -315,7 +329,7 @@ pub(crate) fn call_dict_method(
                     for item in &items {
                         let key = item.to_hashable_key()?;
                         let count = dict_get(&w, &key)?.and_then(|v| v.as_int()).unwrap_or(0);
-                        dict_insert(&mut w, key, PyObject::int(count - 1))?;
+                        dict_insert(map, &mut w, key, PyObject::int(count - 1))?;
                     }
                 }
                 _ => {
@@ -336,7 +350,7 @@ pub(crate) fn call_dict_method(
             };
             let removed = {
                 let mut w = map.write();
-                dict_swap_remove(&mut w, &key)?
+                dict_shift_remove(map, &mut w, &key)?
             };
             match removed {
                 Some(v) => Ok(v),
@@ -355,24 +369,47 @@ pub(crate) fn call_dict_method(
                 PyObject::none()
             };
             let mut w = map.write();
-            if let Some(value) = dict_get(&w, &key)? {
-                Ok(value)
-            } else {
-                dict_insert(&mut w, key, default.clone())?;
-                Ok(default)
+            clear_key_compare_error();
+            let result = match w.entry(key) {
+                Entry::Occupied(entry) => entry.get().clone(),
+                Entry::Vacant(entry) => {
+                    entry.insert(default.clone());
+                    mark_dict_storage_mutated(map);
+                    default
+                }
+            };
+            if let Some(err) = take_pending_eq_error() {
+                clear_key_compare_error();
+                return Err(err);
             }
+            Ok(result)
         }
         "clear" => {
             check_args("clear", args, 0)?;
-            map.write().clear();
+            let mut w = map.write();
+            if !w.is_empty() {
+                w.clear();
+                mark_dict_storage_mutated(map);
+            }
             Ok(PyObject::none())
         }
         "popitem" => {
-            let last = if let Some(v) = extract_kwarg(args, "last") {
-                v.is_truthy()
-            } else if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
-                args[0].is_truthy()
+            let is_ordered = map
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from(
+                    "__ordered_dict__",
+                )));
+            let last = if is_ordered {
+                if let Some(v) = extract_kwarg(args, "last") {
+                    v.is_truthy()
+                } else if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_))
+                {
+                    args[0].is_truthy()
+                } else {
+                    true
+                }
             } else {
+                check_args("popitem", args, 0)?;
                 true
             };
             let mut w = map.write();
@@ -401,6 +438,9 @@ pub(crate) fn call_dict_method(
                 }
                 result
             };
+            if entry.is_some() {
+                mark_dict_storage_mutated(map);
+            }
             match entry {
                 Some((k, v)) => Ok(PyObject::tuple(vec![k.to_object(), v])),
                 None => Err(PyException::key_error("popitem(): dictionary is empty")),
@@ -453,9 +493,9 @@ pub(crate) fn call_dict_method(
                 true
             };
             let mut w = map.write();
-            if let Some(val) = dict_shift_remove(&mut w, &key)? {
+            if let Some(val) = dict_shift_remove(map, &mut w, &key)? {
                 if last {
-                    dict_insert(&mut w, key, val)?;
+                    dict_insert(map, &mut w, key, val)?;
                 } else {
                     let mut new_map = new_fx_hashkey_map();
                     new_map.insert(key, val);
@@ -464,6 +504,7 @@ pub(crate) fn call_dict_method(
                     }
                     *w = new_map;
                 }
+                mark_dict_storage_mutated(map);
                 Ok(PyObject::none())
             } else {
                 Err(missing_key_error(&args[0]))
@@ -527,7 +568,7 @@ pub(crate) fn call_dict_method(
                         };
                         {
                             let mut w = map.write();
-                            dict_insert(&mut w, key, default.clone())?;
+                            dict_insert(map, &mut w, key, default.clone())?;
                         }
                         Ok(default)
                     } else {
@@ -624,7 +665,7 @@ pub(crate) fn call_dict_method(
             let key = args[0].to_hashable_key()?;
             {
                 let mut w = map.write();
-                dict_insert(&mut w, key, args[1].clone())?;
+                dict_insert(map, &mut w, key, args[1].clone())?;
             }
             Ok(PyObject::none())
         }
@@ -636,7 +677,7 @@ pub(crate) fn call_dict_method(
                 .contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
             let removed = {
                 let mut w = map.write();
-                dict_swap_remove(&mut w, &key)?
+                dict_shift_remove(map, &mut w, &key)?
             };
             match removed {
                 Some(_) => Ok(PyObject::none()),

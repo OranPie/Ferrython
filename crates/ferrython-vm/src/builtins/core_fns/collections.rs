@@ -1,5 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::object::helpers::dict_storage_version;
 use ferrython_core::object::{
     check_args, check_args_min, guarded_push, new_fx_hashkey_flatmap, new_fx_hashkey_map,
     DequeIterData, FxHashKeyMap, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
@@ -21,6 +22,57 @@ pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             source: obj.clone(),
             index: SyncUsize::new(len),
         }));
+    }
+    match &obj.payload {
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+            let items: Vec<PyObjectRef> = map
+                .read()
+                .iter()
+                .filter(|(key, _)| !ferrython_core::object::helpers::is_hidden_dict_key(key))
+                .map(|(key, _)| key.to_object())
+                .rev()
+                .collect();
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List { items, index: 0 }),
+            ))));
+        }
+        PyObjectPayload::DictKeys { map, .. } => {
+            let items: Vec<PyObjectRef> = map
+                .read()
+                .iter()
+                .filter(|(key, _)| !ferrython_core::object::helpers::is_hidden_dict_key(key))
+                .map(|(key, _)| key.to_object())
+                .rev()
+                .collect();
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List { items, index: 0 }),
+            ))));
+        }
+        PyObjectPayload::DictValues { map, .. } => {
+            let items: Vec<PyObjectRef> = map
+                .read()
+                .iter()
+                .filter(|(key, _)| !ferrython_core::object::helpers::is_hidden_dict_key(key))
+                .map(|(_, value)| value.clone())
+                .rev()
+                .collect();
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List { items, index: 0 }),
+            ))));
+        }
+        PyObjectPayload::DictItems { map, .. } => {
+            let items: Vec<PyObjectRef> = map
+                .read()
+                .iter()
+                .filter(|(key, _)| !ferrython_core::object::helpers::is_hidden_dict_key(key))
+                .map(|(key, value)| PyObject::tuple(vec![key.to_object(), value.clone()]))
+                .rev()
+                .collect();
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::List { items, index: 0 }),
+            ))));
+        }
+        _ => {}
     }
     if let PyObjectPayload::Range(rd) = &obj.payload {
         let len = ferrython_core::object::helpers::range_data_len_bigint(rd);
@@ -148,6 +200,7 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -172,20 +225,19 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 PyCell::new(IteratorData::Str { chars, index: 0 }),
             ))))
         }
-        PyObjectPayload::Set(m) => {
-            let items: Vec<PyObjectRef> = m.read().values().cloned().collect();
-            Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(
-                ferrython_core::object::VecIterData {
-                    items,
-                    index: SyncUsize::new(0),
-                },
-            ))))
-        }
+        PyObjectPayload::Set(m) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+            PyCell::new(IteratorData::SetRefs {
+                source: m.clone(),
+                index: 0,
+                expected_len: m.read().len(),
+            }),
+        )))),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Ok(PyObject::wrap(
             PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::DictKeyRefs {
                 source: map.clone(),
                 index: 0,
                 expected_len: map.read().len(),
+                expected_version: dict_storage_version(map),
             }))),
         )),
         PyObjectPayload::Instance(_) => match obj.get_iter() {
@@ -207,6 +259,7 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     | PyObjectPayload::Iterator(_)
                     | PyObjectPayload::RangeIter(..)
                     | PyObjectPayload::VecIter(_)
+                    | PyObjectPayload::DictValueIter(_)
                     | PyObjectPayload::WeakValueIter(_)
                     | PyObjectPayload::WeakKeyIter(_)
                     | PyObjectPayload::DequeIter(_)
@@ -434,6 +487,7 @@ pub(crate) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | PyObjectPayload::Iterator(_)
         | PyObjectPayload::RangeIter(..)
         | PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -534,7 +588,8 @@ pub(crate) fn builtin_frozenset(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             return Ok(PyObject::frozenset(set));
         }
         PyObjectPayload::FrozenSet(items) => {
-            return Ok(PyObject::frozenset(items.items.clone()));
+            let _ = items;
+            return Ok(args[0].clone());
         }
         _ => {}
     }

@@ -9,6 +9,8 @@ use num_bigint::{BigInt, Sign};
 use num_traits::{ToPrimitive, Zero};
 use std::cell::RefCell;
 
+use super::number::bigint_to_object;
+
 // ── random module ──
 
 pub fn create_random_module() -> PyObjectRef {
@@ -246,6 +248,10 @@ thread_local! {
 
 fn simple_random() -> f64 {
     RNG.with(|rng| rng.borrow_mut().next_f64())
+}
+
+fn random_u64() -> u64 {
+    RNG.with(|rng| rng.borrow_mut().next_u64())
 }
 
 fn random_all() -> PyObjectRef {
@@ -690,21 +696,52 @@ fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "randrange requires at least 1 argument",
         ));
     }
+    let obj_to_bigint = |obj: &PyObjectRef| -> PyResult<BigInt> {
+        match &obj.payload {
+            PyObjectPayload::Bool(flag) => Ok(BigInt::from(if *flag { 1 } else { 0 })),
+            PyObjectPayload::Int(PyInt::Small(n)) => Ok(BigInt::from(*n)),
+            PyObjectPayload::Int(PyInt::Big(n)) => Ok(n.as_ref().clone()),
+            _ => obj.to_int().map(BigInt::from),
+        }
+    };
     let start = if args.len() == 1 {
-        0
+        BigInt::zero()
     } else {
-        args[0].to_int()?
+        obj_to_bigint(&args[0])?
     };
     let stop = if args.len() == 1 {
-        args[0].to_int()?
+        obj_to_bigint(&args[0])?
     } else {
-        args[1].to_int()?
+        obj_to_bigint(&args[1])?
     };
-    let step = if args.len() > 2 { args[2].to_int()? } else { 1 };
-    let range = ((stop - start) as f64 / step as f64).ceil() as i64;
-    if range <= 0 {
+    let step = if args.len() > 2 {
+        obj_to_bigint(&args[2])?
+    } else {
+        BigInt::from(1)
+    };
+    if step.is_zero() {
+        return Err(PyException::value_error("zero step for randrange()"));
+    }
+    let width = &stop - &start;
+    let range = if step.sign() == Sign::Minus {
+        ((-&width) + (-&step) - BigInt::from(1)) / (-&step)
+    } else {
+        (width + &step - BigInt::from(1)) / &step
+    };
+    if range <= BigInt::zero() {
         return Err(PyException::value_error("empty range for randrange()"));
     }
-    let idx = (simple_random() * range as f64) as i64;
-    Ok(PyObject::int(start + idx * step))
+    let idx = if let Some(range_i64) = range.to_i64() {
+        BigInt::from((simple_random() * range_i64 as f64) as i64)
+    } else {
+        let bits = range.bits().min(63) as u32;
+        let mask = if bits == 0 {
+            0
+        } else {
+            u64::MAX >> (64 - bits)
+        };
+        BigInt::from(random_u64() & mask) % &range
+    };
+    let value = start + idx * step;
+    Ok(bigint_to_object(value))
 }

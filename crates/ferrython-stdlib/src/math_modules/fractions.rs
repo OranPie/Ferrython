@@ -5,6 +5,7 @@ use ferrython_core::object::{
     check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
+use ferrython_core::types::{float_as_integer_ratio, py_hash_rational, PY_HASH_INF};
 use indexmap::IndexMap;
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
@@ -44,38 +45,111 @@ pub fn create_fractions_module() -> PyObjectRef {
         if !f.is_finite() {
             return None;
         }
-        if f == 0.0 {
-            return Some((BigInt::zero(), BigInt::one()));
-        }
-        let bits = f.to_bits();
-        let negative = (bits >> 63) != 0;
-        let raw_exp = ((bits >> 52) & 0x7ff) as i32;
-        let frac = bits & 0x000f_ffff_ffff_ffff;
-        let (mantissa, exp) = if raw_exp == 0 {
-            (frac, -1074)
-        } else {
-            ((1u64 << 52) | frac, raw_exp - 1075)
-        };
-        let mut numer = BigInt::from(mantissa);
-        let mut denom = BigInt::one();
-        if exp >= 0 {
-            numer <<= exp as usize;
-        } else {
-            denom <<= (-exp) as usize;
-        }
-        if negative {
-            numer = -numer;
-        }
-        let g = numer.abs().gcd(&denom);
-        Some((numer / &g, denom / g))
+        Some(float_as_integer_ratio(f))
     }
 
     fn get_frac_cmp_parts(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
         if let Some(parts) = get_frac_bigint_parts(obj) {
             return Some(parts);
         }
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            let attrs = inst.attrs.read();
+            if attrs.contains_key("__decimal__") {
+                let s = attrs.get("_value").and_then(|v| v.as_str())?;
+                return decimal_string_ratio(s);
+            }
+        }
         if let PyObjectPayload::Float(f) = &obj.payload {
+            if f.is_infinite() {
+                return Some((
+                    if f.is_sign_negative() {
+                        -BigInt::one()
+                    } else {
+                        BigInt::one()
+                    },
+                    BigInt::zero(),
+                ));
+            }
             return float_to_bigint_fraction(*f);
+        }
+        if let PyObjectPayload::Complex { real, imag } = &obj.payload {
+            if *imag == 0.0 && real.is_finite() {
+                return Some(float_as_integer_ratio(*real));
+            }
+        }
+        None
+    }
+
+    fn decimal_string_ratio(s: &str) -> Option<(BigInt, BigInt)> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("nan") {
+            return None;
+        }
+        if s.eq_ignore_ascii_case("infinity") || s.eq_ignore_ascii_case("+infinity") {
+            return Some((BigInt::one(), BigInt::zero()));
+        }
+        if s.eq_ignore_ascii_case("-infinity") {
+            return Some((-BigInt::one(), BigInt::zero()));
+        }
+        let (negative, body) = if let Some(rest) = s.strip_prefix('-') {
+            (true, rest)
+        } else if let Some(rest) = s.strip_prefix('+') {
+            (false, rest)
+        } else {
+            (false, s)
+        };
+        let (mantissa, exp) =
+            if let Some((m, e)) = body.split_once('e').or_else(|| body.split_once('E')) {
+                (m, e.parse::<i64>().ok()?)
+            } else {
+                (body, 0)
+            };
+        let mut digits = String::new();
+        let mut scale = 0i64;
+        if let Some((int_part, frac_part)) = mantissa.split_once('.') {
+            digits.push_str(int_part);
+            digits.push_str(frac_part);
+            scale = frac_part.len() as i64;
+        } else {
+            digits.push_str(mantissa);
+        }
+        if digits.is_empty() || digits.chars().all(|c| c == '0') {
+            return Some((BigInt::zero(), BigInt::one()));
+        }
+        let mut numerator = digits.parse::<BigInt>().ok()?;
+        if negative {
+            numerator = -numerator;
+        }
+        let power = scale - exp;
+        if power.abs() > 10_000 {
+            return None;
+        }
+        if power >= 0 {
+            Some((numerator, BigInt::from(10u8).pow(power as u32)))
+        } else {
+            Some((
+                numerator * BigInt::from(10u8).pow((-power) as u32),
+                BigInt::one(),
+            ))
+        }
+    }
+
+    fn decimal_extreme_sign(obj: &PyObjectRef) -> Option<bool> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            let attrs = inst.attrs.read();
+            if attrs.contains_key("__decimal__") {
+                let s = attrs.get("_value").and_then(|v| v.as_str())?;
+                let check = s.trim().trim_start_matches('+').trim_start_matches('-');
+                if check
+                    .split_once('e')
+                    .or_else(|| check.split_once('E'))
+                    .and_then(|(_, e)| e.parse::<i64>().ok())
+                    .map(|exp| exp.abs() > 10_000)
+                    .unwrap_or(false)
+                {
+                    return Some(s.trim().starts_with('-'));
+                }
+            }
         }
         None
     }
@@ -321,6 +395,12 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
+        if let Some(neg) = decimal_extreme_sign(&args[0]) {
+            return Ok(PyObject::bool_val(neg));
+        }
+        if let Some(neg) = decimal_extreme_sign(&args[1]) {
+            return Ok(PyObject::bool_val(!neg));
+        }
         let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
         let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd < bn * ad))
@@ -329,6 +409,12 @@ pub fn create_fractions_module() -> PyObjectRef {
     fn frac_le(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
+        }
+        if let Some(neg) = decimal_extreme_sign(&args[0]) {
+            return Ok(PyObject::bool_val(neg));
+        }
+        if let Some(neg) = decimal_extreme_sign(&args[1]) {
+            return Ok(PyObject::bool_val(!neg));
         }
         let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
         let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
@@ -339,6 +425,12 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
+        if let Some(neg) = decimal_extreme_sign(&args[0]) {
+            return Ok(PyObject::bool_val(!neg));
+        }
+        if let Some(neg) = decimal_extreme_sign(&args[1]) {
+            return Ok(PyObject::bool_val(neg));
+        }
         let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
         let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd > bn * ad))
@@ -348,14 +440,20 @@ pub fn create_fractions_module() -> PyObjectRef {
         if args.len() < 2 {
             return Ok(PyObject::bool_val(false));
         }
+        if let Some(neg) = decimal_extreme_sign(&args[0]) {
+            return Ok(PyObject::bool_val(!neg));
+        }
+        if let Some(neg) = decimal_extreme_sign(&args[1]) {
+            return Ok(PyObject::bool_val(neg));
+        }
         let (an, ad) = get_frac_cmp_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
         let (bn, bd) = get_frac_cmp_parts(&args[1]).unwrap_or((BigInt::zero(), BigInt::one()));
         Ok(PyObject::bool_val(an * bd >= bn * ad))
     }
 
     fn frac_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
-        Ok(PyObject::int(n.wrapping_mul(31).wrapping_add(d)))
+        let (n, d) = get_frac_bigint_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
+        Ok(PyObject::int(py_hash_rational(&n, &d)))
     }
 
     fn frac_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -531,8 +629,8 @@ pub fn create_fractions_module() -> PyObjectRef {
             return Err(PyException::type_error("from_float requires 1 argument"));
         }
         let f = args[0].to_float()?;
-        let (n, d) = float_to_fraction(f);
-        Ok(make_frac_instance(n, d))
+        let (n, d) = float_as_integer_ratio(f);
+        Ok(make_frac_bigint_instance(n, d))
     });
     let fraction_from_decimal = make_builtin(|args| {
         if args.is_empty() {
@@ -654,35 +752,10 @@ fn float_to_fraction(f: f64) -> (i64, i64) {
         return (0, 1);
     }
     if f.is_infinite() || f.is_nan() {
-        return (0, 1);
+        return (0, PY_HASH_INF);
     }
-    // Exact IEEE 754 decomposition matching CPython's float.as_integer_ratio()
-    let bits = f.to_bits();
-    let sign: i64 = if (bits >> 63) != 0 { -1 } else { 1 };
-    let raw_exp = ((bits >> 52) & 0x7FF) as i64;
-    let mantissa = (bits & 0x000F_FFFF_FFFF_FFFF) as i64;
-
-    let (mut numer, exp) = if raw_exp == 0 {
-        (mantissa, -1074i64) // subnormal
-    } else {
-        ((1i64 << 52) | mantissa, raw_exp - 1075)
-    };
-
-    // Remove trailing zero bits to simplify
-    if numer != 0 {
-        let tz = numer.trailing_zeros();
-        numer >>= tz;
-        // exp += tz as i64; (already accounted for since we shift numer)
-        let adjusted_exp = exp + tz as i64;
-        if adjusted_exp >= 0 {
-            let shift = adjusted_exp.min(62) as u32;
-            return (sign * numer.checked_shl(shift).unwrap_or(numer), 1);
-        } else {
-            let shift = (-adjusted_exp).min(62) as u32;
-            return (sign * numer, 1i64.checked_shl(shift).unwrap_or(i64::MAX));
-        }
-    }
-    (0, 1)
+    let (n, d) = float_as_integer_ratio(f);
+    (n.to_i64().unwrap_or(0), d.to_i64().unwrap_or(i64::MAX))
 }
 
 fn fraction_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

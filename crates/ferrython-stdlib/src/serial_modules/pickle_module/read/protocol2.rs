@@ -288,14 +288,12 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
             }
             b'a' => {
                 // APPEND
-                let item = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: APPEND expects value",
-                        ))
-                    }
-                };
+                let item = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: APPEND expects value")
+                    })
+                    .and_then(pkl_stack_item_value)?;
                 if let Some(PklStackItem::Value(list_obj)) = stack.last() {
                     if let PyObjectPayload::List(ref list_items) = list_obj.payload {
                         list_items.write().push(item);

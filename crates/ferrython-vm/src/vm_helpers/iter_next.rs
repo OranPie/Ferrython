@@ -3,7 +3,8 @@ use crate::builtins::advance_deque_iter;
 use crate::VirtualMachine;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::{
-    py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint, range_next_i64,
+    dict_storage_version, py_int_from_bigint, range_iter_item_bigint, range_iter_len_bigint,
+    range_next_i64,
 };
 use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, WeakKeyIterKind,
@@ -113,6 +114,28 @@ impl VirtualMachine {
                     Ok(None)
                 }
             }
+            PyObjectPayload::DictValueIter(data) => {
+                let idx = data.index.get();
+                if idx == usize::MAX {
+                    return Ok(None);
+                }
+                let map = data.source.read();
+                if map.len() != data.expected_len
+                    || dict_storage_version(&data.source) != data.expected_version
+                {
+                    return Err(PyException::runtime_error(
+                        "dictionary changed size during iteration",
+                    ));
+                }
+                if idx < map.len() {
+                    let value = map.get_index(idx).map(|(_, v)| v.clone());
+                    data.index.set(idx + 1);
+                    Ok(value)
+                } else {
+                    data.index.set(usize::MAX);
+                    Ok(None)
+                }
+            }
             PyObjectPayload::WeakValueIter(data) => loop {
                 let idx = data.index.get();
                 if idx >= data.entries.len() {
@@ -186,6 +209,7 @@ impl VirtualMachine {
                     | PyObjectPayload::MappingProxy(cell)
                     | PyObjectPayload::DictKeys { map: cell, .. } => {
                         let map = unsafe { &*cell.data_ptr() };
+                        // RefIter over mappings is a compatibility path for older pickles.
                         if idx < map.len() {
                             let v = map.get_index(idx).unwrap().0.to_object();
                             index.set(idx + 1);

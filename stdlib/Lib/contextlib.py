@@ -150,6 +150,20 @@ class ExitStack:
 
     def __exit__(_self, *exc_details):
         received_exc = exc_details[0] is not None
+
+        import sys
+        frame_exc = sys.exc_info()[1]
+
+        def _fix_exception_context(new_exc, old_exc):
+            while True:
+                exc_context = new_exc.__context__
+                if exc_context is None or exc_context is old_exc:
+                    return
+                if exc_context is frame_exc:
+                    break
+                new_exc = exc_context
+            new_exc.__context__ = old_exc
+
         suppressed_exc = False
         pending_raise = False
 
@@ -161,12 +175,18 @@ class ExitStack:
                     pending_raise = False
                     exc_details = (None, None, None)
             except Exception:
-                import sys
-                exc_details = sys.exc_info()
+                new_exc_details = sys.exc_info()
+                _fix_exception_context(new_exc_details[1], exc_details[1])
+                exc_details = new_exc_details
                 pending_raise = True
 
         if pending_raise:
-            raise exc_details[1]
+            try:
+                fixed_ctx = exc_details[1].__context__
+                raise exc_details[1]
+            except BaseException:
+                exc_details[1].__context__ = fixed_ctx
+                raise
         return received_exc and suppressed_exc
 
     def enter_context(_self, cm):

@@ -13,6 +13,8 @@ pub(super) fn builtin_type_attr(
     match name {
         "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
         "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+        "__itemsize__" => Some(PyObject::int(8)),
+        "__basicsize__" => Some(PyObject::int(0)),
         "__dict__" => {
             // Return a mappingproxy with common type descriptors
             let mut map = new_fx_hashkey_map();
@@ -332,7 +334,6 @@ pub(super) fn builtin_type_attr(
                         "__complex__",
                         "__round__",
                         "__reversed__",
-                        "__missing__",
                         "__del__",
                         "__copy__",
                         "__deepcopy__",
@@ -357,7 +358,6 @@ pub(super) fn builtin_type_attr(
                         "__iter__",
                         "__next__",
                         "__reversed__",
-                        "__missing__",
                     ]
                     .into_iter()
                     .collect()

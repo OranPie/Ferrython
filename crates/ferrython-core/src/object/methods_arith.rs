@@ -22,12 +22,18 @@ fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyFlatMap> {
     match &obj.payload {
         PyObjectPayload::DictKeys { map: m, .. } => {
             let r = m.read();
-            Some(r.keys().map(|k| (k.clone(), k.to_object())).collect())
+            Some(
+                r.keys()
+                    .filter(|k| !is_hidden_dict_key(k))
+                    .map(|k| (k.clone(), k.to_object()))
+                    .collect(),
+            )
         }
         PyObjectPayload::DictItems { map: m, .. } => {
             let r = m.read();
             Some(
                 r.iter()
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(k, v)| {
                         let tuple_obj = PyObject::tuple(vec![k.to_object(), v.clone()]);
                         let tuple_key = HashableKey::Tuple(Box::new(vec![

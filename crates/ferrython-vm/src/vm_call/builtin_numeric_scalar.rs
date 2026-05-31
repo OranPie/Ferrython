@@ -2,6 +2,7 @@ use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::types::float_as_integer_ratio;
 
 use crate::VirtualMachine;
 
@@ -14,6 +15,26 @@ impl VirtualMachine {
         match name {
             "int" => {
                 if args.len() == 1 {
+                    if let PyObjectPayload::Float(f) = &args[0].payload {
+                        if f.is_nan() {
+                            return Err(PyException::value_error(
+                                "cannot convert float NaN to integer",
+                            ));
+                        }
+                        if f.is_infinite() {
+                            return Err(PyException::overflow_error(
+                                "cannot convert float infinity to integer",
+                            ));
+                        }
+                        let truncated = f.trunc();
+                        if truncated >= -9_007_199_254_740_992.0
+                            && truncated <= 9_007_199_254_740_992.0
+                        {
+                            return Ok(Some(PyObject::int(truncated as i64)));
+                        }
+                        let (n, d) = float_as_integer_ratio(truncated);
+                        return Ok(Some(PyObject::big_int(n / d)));
+                    }
                     if let PyObjectPayload::Instance(inst) = &args[0].payload {
                         if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
                             if matches!(&val.payload, PyObjectPayload::Int(_)) {

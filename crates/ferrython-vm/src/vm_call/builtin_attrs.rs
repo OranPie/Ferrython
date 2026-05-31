@@ -27,8 +27,7 @@ impl VirtualMachine {
         if args.len() < 2 || args.len() > 3 {
             return Err(PyException::type_error("getattr expected 2 or 3 arguments"));
         }
-        let attr_name = args[1]
-            .as_str()
+        let attr_name = ferrython_core::object::string_key_name(&args[1])
             .ok_or_else(|| PyException::type_error("getattr(): attribute name must be string"))?;
         let target = match &args[0].payload {
             PyObjectPayload::Instance(inst)
@@ -44,10 +43,12 @@ impl VirtualMachine {
         } else {
             args[0].clone()
         };
-        if attr_name == "__isabstractmethod__" && ferrython_core::object::is_property_like(&obj) {
+        if attr_name.as_str() == "__isabstractmethod__"
+            && ferrython_core::object::is_property_like(&obj)
+        {
             return self.property_isabstractmethod(&obj);
         }
-        match obj.get_attr(attr_name) {
+        match obj.get_attr(attr_name.as_str()) {
             Some(v) => {
                 if ferrython_core::object::is_property_like(&v) {
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
@@ -67,7 +68,7 @@ impl VirtualMachine {
                         if matches!(&getter.payload, PyObjectPayload::None) {
                             return Err(PyException::attribute_error(format!(
                                 "unreadable attribute '{}'",
-                                attr_name
+                                attr_name.as_str()
                             )));
                         }
                         let getter = crate::builtins::unwrap_abstract_fget(&getter);
@@ -75,7 +76,7 @@ impl VirtualMachine {
                     }
                     return Err(PyException::attribute_error(format!(
                         "unreadable attribute '{}'",
-                        attr_name
+                        attr_name.as_str()
                     )));
                 }
                 if has_descriptor_get(&v) {
@@ -99,7 +100,7 @@ impl VirtualMachine {
             None => {
                 if let PyObjectPayload::Instance(_) = &obj.payload {
                     if let Some(ga) = obj.get_attr("__getattr__") {
-                        let name_arg = PyObject::str_val(CompactString::from(attr_name));
+                        let name_arg = PyObject::str_val(attr_name.clone());
                         return self.call_object(ga, vec![name_arg]);
                     }
                 }
@@ -109,7 +110,7 @@ impl VirtualMachine {
                 Err(PyException::attribute_error(format!(
                     "'{}' object has no attribute '{}'",
                     args[0].type_name(),
-                    attr_name
+                    attr_name.as_str()
                 )))
             }
         }

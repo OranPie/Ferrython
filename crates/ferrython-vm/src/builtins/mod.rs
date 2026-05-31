@@ -34,7 +34,7 @@ pub(crate) use type_methods::partial_cmp_for_sort;
 // Direct type-method dispatchers — bypasses call_method's __sizeof__ check + type re-match
 pub(crate) use string_methods::call_str_method;
 pub(crate) use type_methods::{
-    call_dict_method, call_list_method, call_set_method, call_tuple_method,
+    call_dict_method, call_frozenset_method, call_list_method, call_set_method, call_tuple_method,
 };
 
 // ── Builtin registry ──
@@ -366,7 +366,9 @@ pub fn call_method(
         PyObjectPayload::Range(rd) => call_range_method(receiver, rd, method, args),
         PyObjectPayload::Slice(sd) => call_slice_method(receiver, sd, method, args),
         PyObjectPayload::Set(m) => call_set_method(m, method, args),
-        PyObjectPayload::FrozenSet(m) => call_frozenset_method(m, method, args),
+        PyObjectPayload::FrozenSet(m) => {
+            call_frozenset_method(Some(receiver.clone()), m, method, args)
+        }
         PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
         PyObjectPayload::ByteArray(b) => call_bytearray_method(receiver, b, method, args),
         PyObjectPayload::Complex { real, imag } => {

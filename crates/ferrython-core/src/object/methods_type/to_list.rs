@@ -177,9 +177,9 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             }
         }
         PyObjectPayload::InstanceDict(attrs) => {
-            let read = attrs.read();
-            guard_eager_allocation(read.len(), "__dict__ -> list")?;
-            Ok(read.keys().map(|k| PyObject::str_val(k.clone())).collect())
+            let map = instance_dict_as_hashkey_map(attrs);
+            guard_eager_allocation(map.len(), "__dict__ -> list")?;
+            Ok(map.keys().map(|k| k.to_object()).collect())
         }
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
             guard_eager_allocation(b.len(), "bytes -> list")?;
@@ -277,9 +277,12 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     source,
                     index,
                     expected_len,
+                    expected_version,
                 } => {
                     let map = source.read();
-                    if map.len() != *expected_len {
+                    if map.len() != *expected_len
+                        || dict_storage_version(source) != *expected_version
+                    {
                         return Err(PyException::runtime_error(
                             "dictionary changed size during iteration",
                         ));
@@ -294,6 +297,38 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                         .map(|(key, _)| key.to_object())
                         .collect();
                     *index = map.len();
+                    Ok(result)
+                }
+                IteratorData::SetRefs {
+                    source,
+                    index,
+                    expected_len,
+                } => {
+                    let map = source.read();
+                    if map.len() != *expected_len {
+                        return Err(PyException::runtime_error(
+                            "Set changed size during iteration",
+                        ));
+                    }
+                    guard_eager_allocation(
+                        map.len().saturating_sub(*index),
+                        "set iterator -> list",
+                    )?;
+                    let result = map
+                        .iter()
+                        .skip(*index)
+                        .map(|(_, value)| value.clone())
+                        .collect();
+                    *index = map.len();
+                    Ok(result)
+                }
+                IteratorData::FrozenSetItems { items, index } => {
+                    guard_eager_allocation(
+                        items.len().saturating_sub(*index),
+                        "set iterator -> list",
+                    )?;
+                    let result = items[*index..].to_vec();
+                    *index = items.len();
                     Ok(result)
                 }
                 IteratorData::Enumerate { .. }
@@ -340,6 +375,31 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             }
             guard_eager_allocation(data.items.len() - idx, "iterator -> list")?;
             let result = data.items[idx..].to_vec();
+            data.index.set(usize::MAX);
+            Ok(result)
+        }
+        PyObjectPayload::DictValueIter(data) => {
+            let idx = data.index.get();
+            if idx == usize::MAX {
+                return Ok(vec![]);
+            }
+            let map = data.source.read();
+            if map.len() != data.expected_len
+                || dict_storage_version(&data.source) != data.expected_version
+            {
+                return Err(PyException::runtime_error(
+                    "dictionary changed size during iteration",
+                ));
+            }
+            guard_eager_allocation(
+                map.len().saturating_sub(idx),
+                "dict values iterator -> list",
+            )?;
+            let result = map
+                .iter()
+                .skip(idx)
+                .map(|(_, value)| value.clone())
+                .collect();
             data.index.set(usize::MAX);
             Ok(result)
         }

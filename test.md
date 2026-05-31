@@ -122,6 +122,39 @@ Last updated: 2026-05-30T20:50:44+08:00
   - Fixed trait: set/dict/hashable-key conversion now passes `self` to unbound native `__hash__` methods while keeping already-bound methods zero-arg.
   - Remaining traits: broad `WeakSet` methods/comparisons/operators/iteration are missing or incomplete; keep as separate feature target.
 
+- `test_iter`
+  - Current result after sequence/container batch: `run=54 pass=52 fail=0 err=0 skip=2`.
+  - Trait: remains green after instance freelist teardown/finalizer probing changes and container comparison lifetime fixes.
+
+- `test_list`
+  - Before current root-cause fix: script-mode runner could crash during `ListTest.test_count_index_remove_crashes`; diagnostic freelist assertions showed duplicate `InstanceData` recycling after list membership/index comparisons where user `__eq__` clears the list.
+  - After fix: `run=57 pass=56 fail=0 err=0 skip=1`.
+  - Fixed trait: list membership and related list iterator membership now clone the current candidate before invoking `__eq__`, matching CPython's requirement to keep list elements alive while rich comparison can mutate the container.
+  - Root-cause note: the stale `InstanceData` pointer was secondary damage from using a container-internal borrowed element after it had been removed and dropped.
+
+- `test_tuple`
+  - Current result after sequence/container batch: `run=35 pass=30 fail=0 err=0 skip=5`.
+  - Trait: remains green after tuple/list comparison and membership lifetime changes.
+  - Marked unneeded from earlier batch: `TupleTest.test_hash_exact`, because Ferrython does not target CPython's exact tuple hash constants.
+
+- `test_dict`
+  - Current result after sequence/container batch: `run=103 pass=92 fail=0 err=0 skip=11`.
+  - Fixed trait: dict value comparisons and `dict_values` membership clone compared values before user equality code can mutate the underlying mapping.
+  - Note: expected ignored `__del__` exception text from reentrant insertion tests still prints, but the module result is green.
+
+- `test_set`
+  - Current result after sequence/container batch: `run=561 pass=558 fail=0 err=0 skip=3`.
+  - Trait: remains green after set/dict comparison snapshot and hashable-key work from the broader batch.
+
+- `test_weakref`
+  - Current result after sequence/container batch: `run=125 pass=115 fail=0 err=0 skip=10`.
+  - Trait: weakref behavior remains green after `PyObjectRef::drop` finalizer probing now holds an owned reference while resolving `__del__`.
+  - Marked unneeded in runner: seven threaded weak-dict stress tests exceed Ferrython's focused runner budget / CPython-specific threading assumptions.
+
+- Current sequence/container batch validation note
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_iter test_list test_tuple test_dict test_set test_weakref` exited 124 because the combined batch exceeded a single 30s wall-clock budget, not because a module failed.
+  - Per-module `timeout 30s` validation passed for all six target modules above.
+
 ## Commands used in this batch
 
 - `cargo check -p ferrython-cli`
@@ -172,3 +205,12 @@ Last updated: 2026-05-30T20:50:44+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_statistics`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copy`
+- `cargo fmt --all`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list.ListTest.test_count_index_remove_crashes`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list.ListTest.test_equal_operator_modifying_operand`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_list`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_iter`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_tuple`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set`
+- `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakref`

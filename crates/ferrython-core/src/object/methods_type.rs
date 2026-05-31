@@ -46,6 +46,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::Module(_) => "module",
         PyObjectPayload::RangeIter(..) => "range_iterator",
         PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::RefIter { .. } => "list_iterator",
@@ -84,6 +85,9 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 IteratorData::DictEntries { .. } => "dict_itemiterator",
                 IteratorData::DictKeys { .. } | IteratorData::DictKeyRefs { .. } => {
                     "dict_keyiterator"
+                }
+                IteratorData::SetRefs { .. } | IteratorData::FrozenSetItems { .. } => {
+                    "set_iterator"
                 }
                 IteratorData::SeqIter { .. } => "iterator",
             }
@@ -441,25 +445,31 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             slice_part_repr(&sd.step)
         ),
         PyObjectPayload::Set(m) => {
+            let ptr = PyObjectRef::as_ptr(obj) as usize;
+            if !repr_enter(ptr) {
+                return "set(...)".into();
+            }
             let m = m.read();
-            if m.is_empty() {
+            let result = if m.is_empty() {
                 "set()".into()
             } else {
-                let ptr = PyObjectRef::as_ptr(obj) as usize;
-                if !repr_enter(ptr) {
-                    return "set(...)".into();
-                }
-                let result = format_set_flat("{", "}", &m);
-                repr_leave(ptr);
-                result
-            }
+                format_set_flat("{", "}", &m)
+            };
+            repr_leave(ptr);
+            result
         }
         PyObjectPayload::FrozenSet(m) => {
-            if m.is_empty() {
+            let ptr = PyObjectRef::as_ptr(obj) as usize;
+            if !repr_enter(ptr) {
+                return "frozenset(...)".into();
+            }
+            let result = if m.is_empty() {
                 "frozenset()".into()
             } else {
                 format!("frozenset({})", format_set("{", "}", m))
-            }
+            };
+            repr_leave(ptr);
+            result
         }
         PyObjectPayload::Dict(m) => {
             let ptr = PyObjectRef::as_ptr(obj) as usize;
@@ -475,12 +485,8 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             format!("mappingproxy({})", inner)
         }
         PyObjectPayload::InstanceDict(attrs) => {
-            let attrs = attrs.read();
-            let mut parts = Vec::new();
-            for (k, v) in attrs.iter() {
-                parts.push(format!("'{}': {}", k, v.repr()));
-            }
-            format!("{{{}}}", parts.join(", "))
+            let map = instance_dict_as_hashkey_map(attrs);
+            format_dict(&map)
         }
         PyObjectPayload::Ellipsis => "Ellipsis".into(),
         PyObjectPayload::NotImplemented => "NotImplemented".into(),
@@ -701,6 +707,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
         }
         PyObjectPayload::Iterator(_) => "<iterator>".into(),
         PyObjectPayload::VecIter(_)
+        | PyObjectPayload::DictValueIter(_)
         | PyObjectPayload::WeakValueIter(_)
         | PyObjectPayload::WeakKeyIter(_)
         | PyObjectPayload::DequeIter(_)
@@ -928,6 +935,33 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
         PyObjectPayload::Instance(inst) => {
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                if matches!(
+                    &bv.payload,
+                    PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
+                ) {
+                    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        cd.name.to_string()
+                    } else {
+                        obj.type_name().to_string()
+                    };
+                    let ptr = PyObjectRef::as_ptr(obj) as usize;
+                    if !repr_enter(ptr) {
+                        return format!("{}(...)", class_name);
+                    }
+                    let inner = bv.repr();
+                    repr_leave(ptr);
+                    let body = match &bv.payload {
+                        PyObjectPayload::Set(_) => {
+                            inner.strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                        }
+                        PyObjectPayload::FrozenSet(_) => inner
+                            .strip_prefix("frozenset({")
+                            .and_then(|s| s.strip_suffix("})")),
+                        _ => None,
+                    }
+                    .unwrap_or(inner.as_str());
+                    return format!("{}({{{}}})", class_name, body);
+                }
                 return bv.repr();
             }
             if inst.attrs.read().contains_key("__deque__") {
@@ -1038,7 +1072,19 @@ pub(super) fn py_to_int(obj: &PyObjectRef) -> PyResult<i64> {
             .to_i64()
             .ok_or_else(|| PyException::overflow_error("int too large")),
         PyObjectPayload::Bool(b) => Ok(if *b { 1 } else { 0 }),
-        PyObjectPayload::Float(f) => Ok(*f as i64),
+        PyObjectPayload::Float(f) => {
+            if f.is_nan() {
+                return Err(PyException::value_error(
+                    "cannot convert float NaN to integer",
+                ));
+            }
+            if f.is_infinite() {
+                return Err(PyException::overflow_error(
+                    "cannot convert float infinity to integer",
+                ));
+            }
+            Ok(f.trunc() as i64)
+        }
         PyObjectPayload::Str(s) => s
             .trim()
             .parse::<i64>()
