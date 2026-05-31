@@ -1,6 +1,47 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-30T20:50:44+08:00
+Last updated: 2026-05-31T12:25:08+08:00
+
+## 性能优化进度
+
+- 2026-05-31 hash container / method fast-path 性能批次：
+  - 新增 `tests/benchmarks/bench_complex_ops.py`，覆盖更接近真实负载的复杂场景：动态字符串 key dict、嵌套 list/dict、int dict update、custom `__hash__`/`__eq__` key、set churn、对象方法/属性、迭代器流水线、字符串 split/replace/join 和 `setdefault` record indexing。
+  - 实测确认当前主要热点不是最近单点兼容修复，而是 hash 容器、字符串处理、对象方法/属性和 Python dunder call overhead；最大差距仍在 custom key dict/set，后续需要单独优化 dunder dispatch/cache。
+  - VM builtin method fast path 补齐 `dict.get(key, default)`、simple-key `dict.setdefault(key, default)` 和 simple-key `set.discard(x)`，并把 bool simple hash key 归一成 int key，保持和 `to_hashable_key()` 的 bool/int 语义一致。
+  - `dict.setdefault` fast path 曾暴露 `test_dict.DictTest.test_setdefault_atomic` 回归；已收窄到 str/int/bool simple key，custom key 回退原 `IndexMap::entry` 实现，保留 atomic 语义。
+  - 试验过 `str.split`/`str.replace`/`str.join` VM 快路径，但单独重跑后确认是负收益（例如 `bench_suite.py` 的 `str_split` 变慢），已撤回；字符串优化后续应在现有 `string_methods.rs` fast ops 内部做，而不是在 VM method dispatcher 层重复实现。
+  - 复杂基准关键 before/after（release Ferrython，best-of-3）：
+    - `int_dict update+miss/hit`: `0.0349s` -> `0.0242s`
+    - `int_set add/discard/membership`: `0.0380s` -> `0.0354s`
+    - `custom_set eq/hash membership`: `0.0490s` -> `0.0453s`
+    - `record indexing with setdefault`: `0.0125s` -> `0.0117s`
+    - `custom_key_dict eq/hash lookup`: `0.0390s` -> `0.0374s`
+  - 最终 release 绿色门：
+    - `test_iter`: `run=54 pass=52 fail=0 err=0 skip=2` (`56ms`)
+    - `test_list`: `run=57 pass=56 fail=0 err=0 skip=1` (`162ms`)
+    - `test_tuple`: `run=35 pass=30 fail=0 err=0 skip=5` (`147ms`)
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11` (`167ms`)
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3` (`5799ms`)
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10` (`603ms`)
+    - `test_string`: `run=36 pass=36 fail=0 err=0 skip=0` (`46ms`)
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - `python3 tests/benchmarks/bench_complex_ops.py`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_complex_ops.py`
+    - `timeout 60s target/release/ferrython tests/benchmarks/bench_suite.py`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_arch_probe.py`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict test_set test_iter test_string`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userstring test_iter test_string`（只保留既有 `test_userstring` lone-surrogate encode 2 失败，无新增失败）
+    - per-module release `timeout 30s target/release/ferrython tools/run_cpython_tests.py -q test_iter test_list test_tuple test_dict test_set test_weakref test_string`
+
+### 性能后续计划
+
+1. 继续单独攻 custom key dict/set：减少 `HashableKey::Custom` 每次动态解析 `__hash__`/`__eq__` 的成本，优先评估 class dunder lookup cache 或 direct simple function call path。
+2. 优化 `test_set` 的长耗时：当前 release 仍约 `5.8s`，主要需要看 set operation/intersection/update 路径和 CPython test 内部大集合场景。
+3. 字符串优化转入 `string_methods.rs`/`fast_ops.rs` 内部，避免在 VM method dispatcher 重建 split/join/replace 逻辑。
+4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
 

@@ -1,8 +1,45 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-30T20:50:44+08:00
+Last updated: 2026-05-31T12:25:08+08:00
 
 ## Current batch
+
+- Performance batch: complex benchmark expansion and hash-container fast paths
+  - Added `tests/benchmarks/bench_complex_ops.py` to cover realistic mixed workloads that the existing micro/probe suites did not stress: dynamic string-key dicts, nested collection churn, int dict updates, custom `__hash__`/`__eq__` keys, set add/discard/membership churn, object method/attribute churn, iterator pipelines, string processing, and `setdefault`-based record indexing.
+  - CPython baseline for the new complex suite completed successfully; Ferrython release baseline highlighted custom dict/set keys, int dict/set churn, strings, and object method/attribute churn as the largest easy-to-see gaps.
+  - Implemented safe VM fast-method improvements for:
+    - `dict.get(key, default)`
+    - `dict.setdefault(key, default)` only for simple str/int/bool keys
+    - `set.discard(x)` only for simple str/int/bool keys
+    - bool fast hash keys normalized to int-style keys, matching normal `to_hashable_key()` behavior.
+  - Regression found and fixed during the batch:
+    - Broad `dict.setdefault` fast path failed `test_dict.DictTest.test_setdefault_atomic` (`2 != 1`) because pre-lookup plus insert broke custom-key atomic entry semantics.
+    - Final implementation falls back to the original method for custom keys and keeps only simple-key fast path.
+  - Rejected optimization:
+    - VM-level `str.split`/`str.replace`/`str.join` fast paths were tested and reverted after isolated benchmark runs showed negative results. Keep future string optimization inside `string_methods.rs`/`fast_ops.rs`.
+  - New complex benchmark final Ferrython release values:
+    - `dynamic_str_dict insert+lookup`: `0.0114s`
+    - `nested_collection build+probe`: `0.0163s`
+    - `int_dict update+miss/hit`: `0.0242s` (baseline observed `0.0349s`)
+    - `custom_key_dict eq/hash lookup`: `0.0374s` (baseline observed `0.0390s`)
+    - `int_set add/discard/membership`: `0.0354s` (baseline observed `0.0380s`)
+    - `custom_set eq/hash membership`: `0.0453s` (baseline observed `0.0490s`)
+    - `object method+attr churn`: `0.0102s`
+    - `iterator map/filter/zip pipeline`: `0.0138s`
+    - `string split/replace/join/slice`: `0.0248s`
+    - `record indexing with setdefault`: `0.0117s` (baseline observed `0.0125s`)
+  - Final green release gates:
+    - `test_iter`: `run=54 pass=52 fail=0 err=0 skip=2`, `56ms`
+    - `test_list`: `run=57 pass=56 fail=0 err=0 skip=1`, `162ms`
+    - `test_tuple`: `run=35 pass=30 fail=0 err=0 skip=5`, `147ms`
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`, `167ms`
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`, `5799ms`
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`, `603ms`
+    - `test_string`: `run=36 pass=36 fail=0 err=0 skip=0`, `46ms`
+  - Remaining performance characteristics:
+    - `test_set` remains the slowest green gate at about `5.8s`.
+    - `bench_arch_probe.py` still points to set add/lookup, str hash/split/slice, dict insert int, recursive/multi-arg calls, and deep refcount churn as high-value future optimization targets.
+    - Custom key dict/set workloads need a deeper dunder dispatch/cache optimization rather than more method-surface fast paths.
 
 - `test_with`
   - Before this batch: `run=49 pass=47 fail=2 err=0 skip=0`.

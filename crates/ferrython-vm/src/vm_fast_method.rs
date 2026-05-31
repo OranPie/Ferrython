@@ -5,8 +5,10 @@ use crate::vm::VirtualMachine;
 use crate::vm_helpers::{is_list_sort_active, mark_list_mutated};
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::helpers::mark_dict_storage_mutated;
 use ferrython_core::object::{
-    FxHashKeyMap, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    FxHashKeyFlatMap, FxHashKeyMap, IteratorData, PyCell, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{
     take_pending_eq_error, BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt,
@@ -428,6 +430,22 @@ fn try_builtin_method_1(frame: &mut Frame, base_idx: usize, name: &str) -> FastM
                 call_direct_method(&receiver, "add", &[item])
             }
         }
+        ("discard", PyObjectPayload::Set(_)) => {
+            let item = pop_stack(frame);
+            let receiver = pop_stack(frame);
+            drop(pop_stack(frame));
+            let PyObjectPayload::Set(set) = &receiver.payload else {
+                unreachable!()
+            };
+            if let Some(key) = simple_hashable_key(&item) {
+                match set_discard_simple(set, &key) {
+                    Ok(()) => FastMethodResult::HandledNone,
+                    Err(err) => FastMethodResult::Error(err),
+                }
+            } else {
+                call_direct_method(&receiver, "discard", &[item])
+            }
+        }
         ("startswith", PyObjectPayload::Str(_)) | ("endswith", PyObjectPayload::Str(_)) => {
             let arg = pop_stack(frame);
             let receiver = pop_stack(frame);
@@ -460,7 +478,23 @@ fn try_builtin_method_2(frame: &mut Frame, _base_idx: usize, name: &str) -> Fast
     let a0 = pop_stack(frame);
     let receiver = pop_stack(frame);
     drop(pop_stack(frame));
-    call_direct_method(&receiver, name, &[a0, a1])
+    match (name, &receiver.payload) {
+        ("get", PyObjectPayload::Dict(map)) => match dict_get_or(map, &a0, a1) {
+            Ok(value) => FastMethodResult::Handled(value),
+            Err(err) => FastMethodResult::Error(err),
+        },
+        ("setdefault", PyObjectPayload::Dict(map)) => {
+            if let Some(key) = simple_hashable_key(&a0) {
+                match dict_setdefault_simple(map, key, a1) {
+                    Ok(value) => FastMethodResult::Handled(value),
+                    Err(err) => FastMethodResult::Error(err),
+                }
+            } else {
+                call_direct_method(&receiver, name, &[a0, a1])
+            }
+        }
+        _ => call_direct_method(&receiver, name, &[a0, a1]),
+    }
 }
 
 #[inline(always)]
@@ -508,10 +542,7 @@ fn pop_list_receiver(frame: &mut Frame) -> PyResult<()> {
 }
 
 #[inline(always)]
-fn dict_get(
-    map: &ferrython_core::object::PyCell<FxHashKeyMap>,
-    key: &PyObjectRef,
-) -> PyResult<PyObjectRef> {
+fn dict_lookup(map: &PyCell<FxHashKeyMap>, key: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
     let entries = unsafe { &*map.data_ptr() };
     let found = match &key.payload {
         PyObjectPayload::Str(s) => {
@@ -540,7 +571,46 @@ fn dict_get(
             found
         }
     };
-    Ok(found.unwrap_or_else(PyObject::none))
+    Ok(found)
+}
+
+#[inline(always)]
+fn dict_get(map: &PyCell<FxHashKeyMap>, key: &PyObjectRef) -> PyResult<PyObjectRef> {
+    Ok(dict_lookup(map, key)?.unwrap_or_else(PyObject::none))
+}
+
+#[inline(always)]
+fn dict_get_or(
+    map: &PyCell<FxHashKeyMap>,
+    key: &PyObjectRef,
+    default: PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    Ok(dict_lookup(map, key)?.unwrap_or(default))
+}
+
+#[inline(always)]
+fn dict_setdefault_simple(
+    map: &Rc<PyCell<FxHashKeyMap>>,
+    hash_key: HashableKey,
+    default: PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    let mut entries = map.write();
+    clear_key_compare_error();
+    if let Some(existing) = entries.get(&hash_key).cloned() {
+        finish_key_compare()?;
+        return Ok(existing);
+    }
+    finish_key_compare()?;
+    entries.insert(hash_key, default.clone());
+    mark_dict_storage_mutated(map);
+    Ok(default)
+}
+
+#[inline(always)]
+fn set_discard_simple(set: &PyCell<FxHashKeyFlatMap>, key: &HashableKey) -> PyResult<()> {
+    clear_key_compare_error();
+    unsafe { &mut *set.data_ptr() }.remove(key);
+    finish_key_compare()
 }
 
 #[inline(always)]
@@ -548,7 +618,7 @@ fn simple_hashable_key(obj: &PyObjectRef) -> Option<HashableKey> {
     match &obj.payload {
         PyObjectPayload::Str(s) => Some(HashableKey::str_key(s.to_compact_string())),
         PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
-        PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
+        PyObjectPayload::Bool(b) => Some(HashableKey::Int(PyInt::Small(*b as i64))),
         _ => None,
     }
 }
