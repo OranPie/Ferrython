@@ -3,7 +3,10 @@
 use crate::frame::ScopeKind;
 use crate::VirtualMachine;
 use compact_str::CompactString;
-use ferrython_ast::{Module as AstModule, Statement, StatementKind};
+use ferrython_ast::{
+    CompareOperator, Constant, Expression, ExpressionKind, Module as AstModule, Statement,
+    StatementKind,
+};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -24,15 +27,6 @@ fn validate_single_input(module: &AstModule, filename: &str) -> PyResult<()> {
         return Err(build_syntax_exception(
             ExceptionKind::SyntaxError,
             "multiple statements found while compiling a single statement",
-            filename,
-            first_line as i64,
-            first.location.column as i64 + 1,
-        ));
-    }
-    if is_single_line_compound_statement(first) {
-        return Err(build_syntax_exception(
-            ExceptionKind::SyntaxError,
-            "invalid syntax",
             filename,
             first_line as i64,
             first.location.column as i64 + 1,
@@ -108,6 +102,38 @@ fn warn_invalid_escape(vm: &mut VirtualMachine, filename: &str, escape: char) ->
     }
 }
 
+fn warn_identity_literal(vm: &mut VirtualMachine, filename: &str) -> PyResult<()> {
+    let warnings = vm.import_module_simple("warnings", 0)?;
+    let warn = warnings.get_attr("warn_explicit").ok_or_else(|| {
+        PyException::attribute_error("module 'warnings' has no attribute 'warn_explicit'")
+    })?;
+    let category = warnings.get_attr("SyntaxWarning").ok_or_else(|| {
+        PyException::attribute_error("module 'warnings' has no attribute 'SyntaxWarning'")
+    })?;
+    let result = vm.call_object(
+        warn,
+        vec![
+            PyObject::str_val(CompactString::from(
+                "\"is\" with a literal. Did you mean \"==\"?",
+            )),
+            category,
+            PyObject::str_val(CompactString::from(filename)),
+            PyObject::int(1),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind == ExceptionKind::RuntimeError => Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            "\"is\" with a literal. Did you mean \"==\"?",
+            filename,
+            1,
+            1,
+        )),
+        Err(err) => Err(err),
+    }
+}
+
 fn parse_with_compile_warnings(
     vm: &mut VirtualMachine,
     source: &str,
@@ -124,7 +150,255 @@ fn parse_with_compile_warnings(
     } else {
         ferrython_parser::parse(source, filename)
     };
-    parsed.map_err(|e| parse_error_to_syntax_exc(filename, e))
+    let module = parsed.map_err(|e| parse_error_to_syntax_exc(filename, e))?;
+    if module_has_identity_literal(&module) {
+        warn_identity_literal(vm, filename)?;
+    }
+    Ok(module)
+}
+
+fn module_has_identity_literal(module: &AstModule) -> bool {
+    match module {
+        AstModule::Module { body, .. } | AstModule::Interactive { body } => {
+            body.iter().any(stmt_has_identity_literal)
+        }
+        AstModule::Expression { body } => expr_has_identity_literal(body),
+    }
+}
+
+fn stmt_has_identity_literal(stmt: &Statement) -> bool {
+    match &stmt.node {
+        StatementKind::Expr { value } => expr_has_identity_literal(value),
+        StatementKind::Assign { targets, value, .. } => {
+            targets.iter().any(expr_has_identity_literal) || expr_has_identity_literal(value)
+        }
+        StatementKind::AnnAssign {
+            target,
+            annotation,
+            value,
+            ..
+        } => {
+            expr_has_identity_literal(target)
+                || expr_has_identity_literal(annotation)
+                || value
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+        }
+        StatementKind::AugAssign { target, value, .. } => {
+            expr_has_identity_literal(target) || expr_has_identity_literal(value)
+        }
+        StatementKind::Return { value } => value
+            .as_ref()
+            .map(|expr| expr_has_identity_literal(expr))
+            .unwrap_or(false),
+        StatementKind::If { test, body, orelse } | StatementKind::While { test, body, orelse } => {
+            expr_has_identity_literal(test)
+                || body.iter().any(stmt_has_identity_literal)
+                || orelse.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::For {
+            target,
+            iter,
+            body,
+            orelse,
+            ..
+        } => {
+            expr_has_identity_literal(target)
+                || expr_has_identity_literal(iter)
+                || body.iter().any(stmt_has_identity_literal)
+                || orelse.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::With { items, body, .. } => {
+            items.iter().any(|item| {
+                expr_has_identity_literal(&item.context_expr)
+                    || item
+                        .optional_vars
+                        .as_ref()
+                        .map(|expr| expr_has_identity_literal(expr))
+                        .unwrap_or(false)
+            }) || body.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+        } => {
+            body.iter().any(stmt_has_identity_literal)
+                || handlers.iter().any(|handler| {
+                    handler
+                        .typ
+                        .as_ref()
+                        .map(|expr| expr_has_identity_literal(expr))
+                        .unwrap_or(false)
+                        || handler.body.iter().any(stmt_has_identity_literal)
+                })
+                || orelse.iter().any(stmt_has_identity_literal)
+                || finalbody.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::FunctionDef {
+            body,
+            decorator_list,
+            returns,
+            ..
+        } => {
+            decorator_list.iter().any(expr_has_identity_literal)
+                || returns
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+                || body.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::ClassDef {
+            bases,
+            keywords,
+            body,
+            decorator_list,
+            ..
+        } => {
+            bases.iter().any(expr_has_identity_literal)
+                || keywords
+                    .iter()
+                    .any(|kw| expr_has_identity_literal(&kw.value))
+                || decorator_list.iter().any(expr_has_identity_literal)
+                || body.iter().any(stmt_has_identity_literal)
+        }
+        StatementKind::Raise { exc, cause } => {
+            exc.as_ref()
+                .map(|expr| expr_has_identity_literal(expr))
+                .unwrap_or(false)
+                || cause
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+        }
+        StatementKind::Assert { test, msg } => {
+            expr_has_identity_literal(test)
+                || msg
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn expr_has_identity_literal(expr: &Expression) -> bool {
+    match &expr.node {
+        ExpressionKind::Compare {
+            left,
+            ops,
+            comparators,
+        } => {
+            let mut previous = left.as_ref();
+            for (op, comparator) in ops.iter().zip(comparators.iter()) {
+                if matches!(op, CompareOperator::Is | CompareOperator::IsNot)
+                    && (is_warning_literal(previous) || is_warning_literal(comparator))
+                {
+                    return true;
+                }
+                previous = comparator;
+            }
+            expr_has_identity_literal(left) || comparators.iter().any(expr_has_identity_literal)
+        }
+        ExpressionKind::BoolOp { values, .. } => values.iter().any(expr_has_identity_literal),
+        ExpressionKind::BinOp { left, right, .. } => {
+            expr_has_identity_literal(left) || expr_has_identity_literal(right)
+        }
+        ExpressionKind::UnaryOp { operand, .. } => expr_has_identity_literal(operand),
+        ExpressionKind::Lambda { body, .. } => expr_has_identity_literal(body),
+        ExpressionKind::IfExp { test, body, orelse } => {
+            expr_has_identity_literal(test)
+                || expr_has_identity_literal(body)
+                || expr_has_identity_literal(orelse)
+        }
+        ExpressionKind::Dict { keys, values } => {
+            keys.iter().flatten().any(expr_has_identity_literal)
+                || values.iter().any(expr_has_identity_literal)
+        }
+        ExpressionKind::Set { elts }
+        | ExpressionKind::List { elts, .. }
+        | ExpressionKind::Tuple { elts, .. } => elts.iter().any(expr_has_identity_literal),
+        ExpressionKind::ListComp { elt, generators }
+        | ExpressionKind::SetComp { elt, generators }
+        | ExpressionKind::GeneratorExp { elt, generators } => {
+            expr_has_identity_literal(elt)
+                || generators.iter().any(|gen| {
+                    expr_has_identity_literal(&gen.target)
+                        || expr_has_identity_literal(&gen.iter)
+                        || gen.ifs.iter().any(expr_has_identity_literal)
+                })
+        }
+        ExpressionKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            expr_has_identity_literal(key)
+                || expr_has_identity_literal(value)
+                || generators.iter().any(|gen| {
+                    expr_has_identity_literal(&gen.target)
+                        || expr_has_identity_literal(&gen.iter)
+                        || gen.ifs.iter().any(expr_has_identity_literal)
+                })
+        }
+        ExpressionKind::Await { value }
+        | ExpressionKind::Yield { value: Some(value) }
+        | ExpressionKind::YieldFrom { value } => expr_has_identity_literal(value),
+        ExpressionKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_has_identity_literal(func)
+                || args.iter().any(expr_has_identity_literal)
+                || keywords
+                    .iter()
+                    .any(|kw| expr_has_identity_literal(&kw.value))
+        }
+        ExpressionKind::FormattedValue {
+            value, format_spec, ..
+        } => {
+            expr_has_identity_literal(value)
+                || format_spec
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+        }
+        ExpressionKind::JoinedStr { values } => values.iter().any(expr_has_identity_literal),
+        ExpressionKind::Attribute { value, .. }
+        | ExpressionKind::Subscript { value, .. }
+        | ExpressionKind::Starred { value, .. } => expr_has_identity_literal(value),
+        ExpressionKind::Slice { lower, upper, step } => {
+            lower
+                .as_ref()
+                .map(|expr| expr_has_identity_literal(expr))
+                .unwrap_or(false)
+                || upper
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+                || step
+                    .as_ref()
+                    .map(|expr| expr_has_identity_literal(expr))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn is_warning_literal(expr: &Expression) -> bool {
+    matches!(
+        &expr.node,
+        ExpressionKind::Constant {
+            value: Constant::Int(_)
+                | Constant::Float(_)
+                | Constant::Complex { .. }
+                | Constant::Str(_)
+                | Constant::Bytes(_)
+        }
+    )
 }
 
 fn first_deprecated_escape(source: &str) -> Option<char> {
@@ -383,27 +657,6 @@ fn decode_iso_8859_15_byte(byte: u8) -> char {
         0xBD => '\u{0153}',
         0xBE => '\u{0178}',
         _ => char::from(byte),
-    }
-}
-
-fn is_single_line_compound_statement(stmt: &Statement) -> bool {
-    match &stmt.node {
-        StatementKind::FunctionDef { body, .. }
-        | StatementKind::ClassDef { body, .. }
-        | StatementKind::For { body, .. }
-        | StatementKind::While { body, .. }
-        | StatementKind::If { body, .. }
-        | StatementKind::With { body, .. } => {
-            let Some(child) = body.first() else {
-                return false;
-            };
-            child.location.line == stmt.location.line
-        }
-        StatementKind::Try { body, .. } => body
-            .first()
-            .map(|child| child.location.line == stmt.location.line)
-            .unwrap_or(false),
-        _ => false,
     }
 }
 

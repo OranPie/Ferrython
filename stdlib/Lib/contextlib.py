@@ -268,6 +268,8 @@ class AbstractContextManager:
 
 def _check_methods(C, *methods):
     for method in methods:
+        if method in C.__dict__ and C.__dict__[method] is None:
+            return False
         for B in C.__mro__:
             if method in B.__dict__:
                 if B.__dict__[method] is None:

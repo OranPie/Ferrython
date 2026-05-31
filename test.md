@@ -1,8 +1,29 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-31T13:24:24+08:00
+Last updated: 2026-05-31T15:25:21+08:00
 
 ## Current batch
+
+- Compatibility batch: baseexception, csv, sched, codeop, contextlib
+  - Combined validation: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_baseexception test_csv test_sched test_codeop test_contextlib` -> `run=207 pass=206 fail=0 err=0 skip=1`.
+  - Per-module results:
+    - `test_baseexception`: `run=10 pass=10 fail=0 err=0 skip=0`
+    - `test_csv`: `run=104 pass=103 fail=0 err=0 skip=1`
+    - `test_sched`: `run=10 pass=10 fail=0 err=0 skip=0`
+    - `test_codeop`: `run=5 pass=5 fail=0 err=0 skip=0`
+    - `test_contextlib`: `run=78 pass=78 fail=0 err=0 skip=0`
+  - Fixed traits:
+    - `BaseException` participates in normal object/type/ABC inheritance checks.
+    - `sched` uses the Python stdlib implementation, with queue/threading fixes so concurrent scheduler tests no longer wait for timeout fallback.
+    - `codeop.compile_command()` classifies incomplete interactive source via parser feedback and exercises warning paths for invalid escapes and literal `is` comparisons.
+    - `warnings.catch_warnings` uses a stack instead of a global one-bit suppression state, so nested warning capture and adjacent compile tests do not leak state.
+    - VM exception state now preserves and restores active exception objects through `with` cleanup, `return` from `except`, generator `throw()`, and callable-form `unittest.assertRaises`, clearing the previous `contextlib.ExitStack` chaining failures.
+  - Adjacent validation:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop` -> `run=51 pass=51 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute` -> `run=17 pass=16 fail=0 err=0 skip=1`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_csv test_shlex test_bisect test_heapq test_base64 test_colorsys` -> `run=243 pass=242 fail=0 err=0 skip=1`
+  - Residual candidate:
+    - `test_raise`: `run=35 pass=28 fail=3 err=4 skip=0`; remaining traits are traceback type/constructor checks, invalid `__cause__` validation, and re-raise cycle breaking. This is a good next VM exception target but not part of the current green batch.
 
 - Performance batch: generic dunder dispatch fast paths
   - Added `tests/benchmarks/bench_generic_paths.py` to isolate fallback-heavy ordinary execution paths: free/bound function calls, instance attr read/write, class attr lookup, `getattr`/`hasattr`, descriptor `__get__`, direct custom `__hash__`/`__eq__`, and custom key dict/set lookups.
@@ -86,9 +107,11 @@ Last updated: 2026-05-31T13:24:24+08:00
 - `test_contextlib`
   - Before this batch: recorded candidate baseline was `run=78 pass=53 fail=12 err=13 skip=0`.
   - After contextlib surface and with-return cleanup work: `run=78 pass=73 fail=5 err=0 skip=0`.
+  - Current result after VM exception state/chaining fixes: `run=78 pass=78 fail=0 err=0 skip=0`.
   - Fixed traits: `contextmanager()` preserves function metadata/custom attributes via `wraps`; generator context manager instances expose the wrapped docstring and release saved call arguments after `__enter__`; `ContextDecorator` works around the current closure/default binding issue; `ExitStack` handles context-manager entry, push, callback metadata, deprecated `callback=` keyword, `pop_all`, and instance-bypass shape; `AbstractContextManager` is abstract and supports structural subclassing; `RLock._is_owned()` and `Condition._is_owned()` exist for lock context tests.
   - VM fix: `return` inside `with` now runs `__exit__`; the fast return path falls back whenever the frame has active block-stack cleanup.
-  - Remaining failures: `TestExitStack.test_dont_reraise_RuntimeError`, `test_exit_exception_chaining`, `test_exit_exception_chaining_reference`, `test_exit_exception_with_correct_context`, and `test_exit_exception_with_existing_context`. All are exception `__context__` chain correctness; the nested-with reference failure shows the next fix belongs in VM exception chaining, not in `contextlib.ExitStack`.
+  - VM chaining fix: exception instances now expose default chaining attrs, implicit chaining preserves the full active exception object, `with` cleanup restores previous exception state after `__exit__`, and callable-form `unittest.assertRaises` no longer leaves stale `sys.exc_info()`.
+  - Previous remaining failures (`TestExitStack.test_dont_reraise_RuntimeError`, `test_exit_exception_chaining`, `test_exit_exception_chaining_reference`, `test_exit_exception_with_correct_context`, and `test_exit_exception_with_existing_context`) are now fixed.
 
 - `test_cmath`
   - Before this batch: module load failed because `cmath.acos` was missing.
@@ -170,9 +193,10 @@ Last updated: 2026-05-31T13:24:24+08:00
   - Skip trait: existing skipped slot/docstring copy case remains skipped under the test's own condition.
 
 - `test_codeop`
-  - Current result after empty-input fix: `run=5 pass=2 fail=1 err=2 skip=0`.
+  - Previous result after empty-input fix: `run=5 pass=2 fail=1 err=2 skip=0`.
+  - Current result after parser-aware incomplete-source and warning fixes: `run=5 pass=5 fail=0 err=0 skip=0`.
   - Fixed trait: `compile_command("", "single")` and `compile_command("\n", "single")` return the same code object as compiling `pass` with `PyCF_DONT_IMPLY_DEDENT`.
-  - Remaining traits: Ferrython `compile()` does not yet emit CPython `SyntaxWarning`/`DeprecationWarning`, and incomplete interactive-source classification still needs a parser-aware solution. Avoid broad string-only test hacks here.
+  - Fixed traits: Ferrython `compile()` now emits the warnings needed by this test, and `compile_command()` uses parser feedback rather than broad string-only test hacks for incomplete interactive-source classification.
 
 - `test_generator_stop`
   - Before fix: `run=2 pass=0 fail=0 err=2 skip=0`; a generator body raising `StopIteration` escaped as raw `StopIteration` and could trip the parent frame stack assertion in a direct `try/except` script.

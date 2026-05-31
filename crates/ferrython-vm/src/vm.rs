@@ -704,13 +704,17 @@ impl VirtualMachine {
                 }
                 // Inline RaiseVarargs(1) for the common case: raise ExceptionInstance
                 Opcode::RaiseVarargs if instr.arg == 1 => {
-                    match crate::vm_fast_call::try_fast_raise_varargs_one(frame) {
-                        crate::vm_fast_call::FastExceptionFlowResult::Error(err) => Err(err),
-                        crate::vm_fast_call::FastExceptionFlowResult::PoppedFinallyNone => {
-                            unreachable!()
-                        }
-                        crate::vm_fast_call::FastExceptionFlowResult::Fallback => {
-                            self.exec_exception_ops(instr)
+                    if self.active_exception.is_some() {
+                        self.exec_exception_ops(instr)
+                    } else {
+                        match crate::vm_fast_call::try_fast_raise_varargs_one(frame) {
+                            crate::vm_fast_call::FastExceptionFlowResult::Error(err) => Err(err),
+                            crate::vm_fast_call::FastExceptionFlowResult::PoppedFinallyNone => {
+                                unreachable!()
+                            }
+                            crate::vm_fast_call::FastExceptionFlowResult::Fallback => {
+                                self.exec_exception_ops(instr)
+                            }
                         }
                     }
                 }
@@ -1780,10 +1784,9 @@ impl VirtualMachine {
                     // Implicit chaining: link to active exception (only when present)
                     if exc.context.is_none() {
                         if let Some(ref active) = self.active_exception {
-                            exc.context = Some(Box::new(PyException::new(
-                                active.kind,
-                                active.message.clone(),
-                            )));
+                            if !Self::same_exception_object(&exc, active) {
+                                exc.context = Some(Box::new(active.clone()));
+                            }
                         }
                     }
                     // Iterative exception unwind: try current frame, then parents
@@ -1853,13 +1856,26 @@ impl VirtualMachine {
                                     PyObject::bool_val(true),
                                 );
                             }
+                            let existing_context = Self::stored_exc_attr(&exc_value, "__context__");
                             if let Some(ctx) = &exc.context {
                                 let ctx_obj = if let Some(corig) = &ctx.original {
                                     corig.clone()
                                 } else {
                                     PyObject::exception_instance(ctx.kind, ctx.message.clone())
                                 };
-                                Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
+                                if let Some(existing) = existing_context.as_ref() {
+                                    if !PyObjectRef::ptr_eq(existing, &ctx_obj) {
+                                        // Python code such as contextlib.ExitStack may have
+                                        // already repaired the visible exception chain before
+                                        // re-raising the same object. Preserve that explicit
+                                        // object-level chain instead of restoring the VM's stale
+                                        // active-exception snapshot.
+                                    } else {
+                                        Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
+                                    }
+                                } else {
+                                    Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
+                                }
                             }
                             // Build traceback object and attach to exception value
                             let tb_obj = if !exc.traceback.is_empty() {

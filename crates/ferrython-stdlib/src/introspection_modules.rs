@@ -10,7 +10,6 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 mod ast;
 pub(crate) use ast::ast_empty_fields_node_names;

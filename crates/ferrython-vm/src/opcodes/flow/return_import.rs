@@ -12,14 +12,12 @@ use ferrython_core::object::{
 
 // ── Group 11: Return + Import ────────────────────────────────────────
 impl VirtualMachine {
-    fn unwind_for_return(
-        frame: &mut crate::frame::Frame,
-        value: PyObjectRef,
-    ) -> Option<PyObjectRef> {
-        frame.pending_jump = None;
-        while let Some(block) = frame.block_stack.pop() {
+    fn unwind_for_return(&mut self, value: PyObjectRef) -> Option<PyObjectRef> {
+        self.vm_frame().pending_jump = None;
+        while let Some(block) = self.vm_frame().block_stack.pop() {
             match block.kind() {
                 BlockKind::Finally | BlockKind::With => {
+                    let frame = self.vm_frame();
                     while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
@@ -28,7 +26,15 @@ impl VirtualMachine {
                     frame.ip = block.handler();
                     return None;
                 }
+                BlockKind::ExceptHandler => {
+                    let frame = self.vm_frame();
+                    while frame.stack.len() > block.stack_level() {
+                        frame.pop();
+                    }
+                    self.restore_previous_exception();
+                }
                 _ => {
+                    let frame = self.vm_frame();
                     while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
@@ -46,7 +52,7 @@ impl VirtualMachine {
             Opcode::ReturnValue => {
                 let frame = self.vm_frame();
                 let value = frame.pop();
-                if let Some(value) = Self::unwind_for_return(frame, value) {
+                if let Some(value) = self.unwind_for_return(value) {
                     return Ok(Some(value));
                 }
             }
@@ -70,14 +76,14 @@ impl VirtualMachine {
                         )))
                     }
                 };
-                if let Some(val) = Self::unwind_for_return(frame, val) {
+                if let Some(val) = self.unwind_for_return(val) {
                     return Ok(Some(val));
                 }
             }
             Opcode::LoadConstReturnValue => {
                 let frame = self.vm_frame();
                 let val = frame.constant_cache[instr.arg as usize].clone();
-                if let Some(val) = Self::unwind_for_return(frame, val) {
+                if let Some(val) = self.unwind_for_return(val) {
                     return Ok(Some(val));
                 }
             }

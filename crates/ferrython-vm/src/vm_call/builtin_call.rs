@@ -4,6 +4,7 @@ use ferrython_core::object::{
     DequeIterData, IteratorData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     SyncUsize,
 };
+use indexmap::IndexMap;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -85,6 +86,9 @@ impl VirtualMachine {
         ) {
             return self.call_collection_builtin(name.as_str(), args);
         }
+        if name.as_str() == "module" {
+            return self.call_module_type(args);
+        }
         if matches!(name.as_str(), "any" | "all" | "isinstance" | "issubclass") {
             return self.call_predicate_builtin(name.as_str(), args);
         }
@@ -149,6 +153,30 @@ impl VirtualMachine {
             _ => {}
         }
         self.call_static_builtin(name.as_str(), &args)
+    }
+
+    fn call_module_type(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "module() missing required argument 'name'",
+            ));
+        }
+        if args.len() > 2 {
+            return Err(PyException::type_error(format!(
+                "module() takes at most 2 arguments ({} given)",
+                args.len()
+            )));
+        }
+        let name = args[0].py_to_string();
+        let mut attrs = IndexMap::new();
+        attrs.insert(
+            CompactString::from("__doc__"),
+            args.get(1).cloned().unwrap_or_else(PyObject::none),
+        );
+        Ok(PyObject::module_with_attrs(
+            CompactString::from(name),
+            attrs,
+        ))
     }
 
     fn call_static_builtin(&mut self, name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

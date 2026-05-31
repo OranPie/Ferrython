@@ -122,7 +122,9 @@ fn type_bases(obj: &PyObjectRef, depth: usize) -> PyResult<Option<Vec<PyObjectRe
         }
         PyObjectPayload::ExceptionType(kind) => {
             let parent = match kind {
-                ExceptionKind::BaseException => None,
+                ExceptionKind::BaseException => {
+                    Some(PyObject::builtin_type(CompactString::from("object")))
+                }
                 ExceptionKind::Exception => {
                     Some(PyObject::exception_type(ExceptionKind::BaseException))
                 }
@@ -532,7 +534,6 @@ fn abc_required_methods(abc_name: &str) -> &'static [&'static str] {
         "AsyncIterable" => &["__aiter__"],
         "AsyncIterator" => &["__aiter__", "__anext__"],
         "AsyncGenerator" => &["__aiter__", "__anext__", "asend", "athrow"],
-        "AbstractContextManager" => &["__enter__", "__exit__"],
         _ => &[],
     }
 }

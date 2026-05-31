@@ -447,30 +447,17 @@ class TestCase:
 
     def assertRaises(self, exc_type, callable_obj=None, *args, **kwargs):
         if callable_obj is not None:
-            try:
+            with self.assertRaises(exc_type):
                 callable_obj(*args, **kwargs)
-            except exc_type:
-                return
-            except BaseException as e:
-                self._fail("%s raised instead of %s" % (
-                    type(e).__name__, _exc_name(exc_type)))
-            self._fail("%s not raised" % _exc_name(exc_type))
+            return
         return _AssertRaisesContext(self, exc_type)
 
     def assertRaisesRegex(self, exc_type, expected_regex, callable_obj=None, *args, **kwargs):
         """Assert that a regex matches the string representation of the raised exception."""
         if callable_obj is not None:
-            import re
-            try:
+            with self.assertRaisesRegex(exc_type, expected_regex):
                 callable_obj(*args, **kwargs)
-            except exc_type as e:
-                if not re.search(expected_regex, str(e)):
-                    self._fail('"%s" does not match "%s"' % (expected_regex, str(e)))
-                return
-            except BaseException as e:
-                self._fail("%s raised instead of %s" % (
-                    type(e).__name__, _exc_name(exc_type)))
-            self._fail("%s not raised" % _exc_name(exc_type))
+            return
         return _AssertRaisesRegexContext(self, exc_type, expected_regex)
 
     def assertWarns(self, warning_type, callable_obj=None, *args, **kwargs):

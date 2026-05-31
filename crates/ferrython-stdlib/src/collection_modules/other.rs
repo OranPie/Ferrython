@@ -48,6 +48,40 @@ pub fn create_queue_module() -> PyObjectRef {
     )
 }
 
+fn queue_block_timeout(args: &[PyObjectRef], default_block: bool) -> (bool, Option<u64>) {
+    let mut block = default_block;
+    let mut timeout_ms = None;
+    let mut positional_end = args.len();
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            positional_end -= 1;
+            let read = map.read();
+            let block_key =
+                ferrython_core::types::HashableKey::str_key(CompactString::from("block"));
+            if let Some(value) = read.get(&block_key) {
+                block = value.is_truthy();
+            }
+            let timeout_key =
+                ferrython_core::types::HashableKey::str_key(CompactString::from("timeout"));
+            if let Some(value) = read.get(&timeout_key) {
+                if !matches!(&value.payload, PyObjectPayload::None) {
+                    timeout_ms = value.to_float().ok().map(|t| (t.max(0.0) * 1000.0) as u64);
+                }
+            }
+        }
+    }
+    if positional_end > 0 {
+        block = args[0].is_truthy();
+    }
+    if positional_end > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        timeout_ms = args[1]
+            .to_float()
+            .ok()
+            .map(|t| (t.max(0.0) * 1000.0) as u64);
+    }
+    (block, timeout_ms)
+}
+
 fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Extract maxsize from positional args or kwargs dict
     let maxsize = if !args.is_empty() {
@@ -143,21 +177,11 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
         w.insert(
             CompactString::from("get"),
             PyObject::native_closure("get", move |args: &[PyObjectRef]| {
-                // Parse block and timeout from kwargs-style positional args
-                let block = if args.len() > 0 {
-                    args[0].is_truthy()
-                } else {
-                    true
-                };
-                let timeout_ms: Option<u64> = if args.len() > 1 {
-                    args[1].to_float().ok().map(|t| (t * 1000.0) as u64)
-                } else {
-                    None
-                };
+                let (block, timeout_ms) = queue_block_timeout(args, true);
 
-                if block && timeout_ms.is_some() {
-                    let deadline = std::time::Instant::now()
-                        + std::time::Duration::from_millis(timeout_ms.unwrap());
+                if block {
+                    let deadline = timeout_ms
+                        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
                     loop {
                         {
                             let mut v = it2.write();
@@ -169,7 +193,10 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
                                 };
                             }
                         }
-                        if std::time::Instant::now() >= deadline {
+                        if deadline
+                            .map(|limit| std::time::Instant::now() >= limit)
+                            .unwrap_or(false)
+                        {
                             return Err(PyException::new(
                                 ExceptionKind::RuntimeError,
                                 "queue.Empty",

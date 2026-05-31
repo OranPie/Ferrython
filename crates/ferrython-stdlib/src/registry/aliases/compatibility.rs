@@ -8,7 +8,6 @@ pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
         "_builtins" => Some(misc_modules::create_builtins_module()),
         "atexit" => Some(sys_modules::create_atexit_module()),
         "site" => Some(sys_modules::create_site_module()),
-        "sched" => Some(sys_modules::create_sched_module()),
         "errno" => Some(sys_modules::create_errno_module()),
         _ => None,
     }

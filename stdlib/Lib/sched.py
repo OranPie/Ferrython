@@ -69,7 +69,7 @@ class scheduler:
     
     def cancel(self, event):
         """Remove an event from the queue."""
-        self._queue = [(k, e) for k, e in self._queue if e is not event]
+        self._queue[:] = [(k, e) for k, e in self._queue if e is not event]
         heapq.heapify(self._queue)
     
     def empty(self):

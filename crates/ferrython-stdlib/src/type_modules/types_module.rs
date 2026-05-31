@@ -56,20 +56,7 @@ pub fn create_types_module() -> PyObjectRef {
             ),
             (
                 "ModuleType",
-                make_builtin(|args| {
-                    check_args_min("ModuleType", args, 1)?;
-                    let name = args[0].py_to_string();
-                    let mut module_attrs = IndexMap::new();
-                    if args.len() > 1 {
-                        module_attrs.insert(CompactString::from("__doc__"), args[1].clone());
-                    } else {
-                        module_attrs.insert(CompactString::from("__doc__"), PyObject::none());
-                    }
-                    Ok(PyObject::module_with_attrs(
-                        CompactString::from(name.as_str()),
-                        module_attrs,
-                    ))
-                }),
+                PyObject::builtin_type(CompactString::from("module")),
             ),
             (
                 "GeneratorType",

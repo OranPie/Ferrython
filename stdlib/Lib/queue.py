@@ -5,6 +5,7 @@ implementations backed by lists and heapq.
 """
 
 import heapq
+import time
 
 
 class Empty(Exception):
@@ -34,15 +35,33 @@ class Queue:
     def full(self):
         return 0 < self.maxsize <= len(self._queue)
 
-    def put(self, item, block=True, timeout=None):
-        if self.full():
+    def put(self, item, block=True, timeout=None, **kwds):
+        if "block" in kwds:
+            block = kwds["block"]
+        if "timeout" in kwds:
+            timeout = kwds["timeout"]
+        if self.full() and not block:
             raise Full("Queue is full")
+        endtime = None if timeout is None else time.monotonic() + timeout
+        while self.full():
+            if timeout is not None and time.monotonic() >= endtime:
+                raise Full("Queue is full")
+            time.sleep(0.001)
         self._queue.append(item)
         self._unfinished += 1
 
-    def get(self, block=True, timeout=None):
-        if self.empty():
+    def get(self, block=True, timeout=None, **kwds):
+        if "block" in kwds:
+            block = kwds["block"]
+        if "timeout" in kwds:
+            timeout = kwds["timeout"]
+        if self.empty() and not block:
             raise Empty("Queue is empty")
+        endtime = None if timeout is None else time.monotonic() + timeout
+        while self.empty():
+            if timeout is not None and time.monotonic() >= endtime:
+                raise Empty("Queue is empty")
+            time.sleep(0.001)
         self._unfinished -= 1
         return self._queue.pop(0)
 
@@ -64,9 +83,18 @@ class Queue:
 class LifoQueue(Queue):
     """LIFO (stack) queue."""
 
-    def get(self, block=True, timeout=None):
-        if self.empty():
+    def get(self, block=True, timeout=None, **kwds):
+        if "block" in kwds:
+            block = kwds["block"]
+        if "timeout" in kwds:
+            timeout = kwds["timeout"]
+        if self.empty() and not block:
             raise Empty("Queue is empty")
+        endtime = None if timeout is None else time.monotonic() + timeout
+        while self.empty():
+            if timeout is not None and time.monotonic() >= endtime:
+                raise Empty("Queue is empty")
+            time.sleep(0.001)
         self._unfinished -= 1
         return self._queue.pop()
 
@@ -74,14 +102,24 @@ class LifoQueue(Queue):
 class PriorityQueue(Queue):
     """Priority queue backed by a heap."""
 
-    def put(self, item, block=True, timeout=None):
-        if self.full():
-            raise Full("Queue is full")
-        heapq.heappush(self._queue, item)
-        self._unfinished += 1
+    def put(self, item, block=True, timeout=None, **kwds):
+        if "block" in kwds:
+            block = kwds["block"]
+        if "timeout" in kwds:
+            timeout = kwds["timeout"]
+        return super().put(item, block, timeout)
 
-    def get(self, block=True, timeout=None):
-        if self.empty():
+    def get(self, block=True, timeout=None, **kwds):
+        if "block" in kwds:
+            block = kwds["block"]
+        if "timeout" in kwds:
+            timeout = kwds["timeout"]
+        if self.empty() and not block:
             raise Empty("Queue is empty")
+        endtime = None if timeout is None else time.monotonic() + timeout
+        while self.empty():
+            if timeout is not None and time.monotonic() >= endtime:
+                raise Empty("Queue is empty")
+            time.sleep(0.001)
         self._unfinished -= 1
         return heapq.heappop(self._queue)

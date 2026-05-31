@@ -267,6 +267,11 @@ impl VirtualMachine {
             let mut active = PyException::new(kind, msg);
             if let Some(ref orig) = original_value {
                 active.original = Some(orig.clone());
+                active.kind = match &orig.payload {
+                    PyObjectPayload::Instance(inst) => Self::find_exception_kind(&inst.class),
+                    PyObjectPayload::ExceptionInstance(ei) => ei.kind,
+                    _ => active.kind,
+                };
             }
             self.enter_exception_handler(active);
             let frame_ref = self.call_stack.last_mut().unwrap();
@@ -288,12 +293,16 @@ impl VirtualMachine {
                     self.call_stack.set_len(cs_len - 1);
                 }
                 gen.set_frame_ptr(buf as *mut u8);
+                drop(gen);
+                self.restore_previous_exception();
                 result
             } else {
                 gen.finished = true;
                 gen.clear_frame();
                 let frame = self.call_stack.pop().unwrap();
                 frame.recycle(&mut self.frame_pool);
+                drop(gen);
+                self.restore_previous_exception();
                 if let Err(e) = result {
                     return Err(Self::wrap_generator_stop_iteration(e));
                 }
@@ -313,6 +322,8 @@ impl VirtualMachine {
             let mut gen = gen_arc.write();
             gen.finished = true;
             gen.clear_frame();
+            drop(gen);
+            self.restore_previous_exception();
             match exc_result {
                 Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
                 Ok(value) => Ok(value),

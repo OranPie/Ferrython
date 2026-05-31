@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-31T13:24:24+08:00
+Last updated: 2026-05-31T15:25:21+08:00
 
 ## 性能优化进度
 
@@ -77,6 +77,22 @@ Last updated: 2026-05-31T13:24:24+08:00
 
 ## CPython 兼容修复进度
 
+- 2026-05-31 baseexception / csv / sched / codeop / contextlib 兼容批次：
+  - `BaseException` 的 ABC/type 继承面补齐为 object subclass，`test_baseexception` 维持全绿。
+  - `sched` 改回 Python 标准库实现并修正 `queue` / `threading` 行为，消除并发 scheduler 测试中 `queue.get(timeout=10)` 的等待型慢失败；`test_sched` 从约 10s 的 timeout-driven 失败提升为快速全绿。
+  - `codeop.py` 改为 parser-aware incomplete-source 分类，并通过 compile warning path 覆盖 invalid escape 与 literal `is` warning；`warnings.catch_warnings` 改为 stack 状态，避免全局开关污染相邻测试。
+  - `types.ModuleType` 与 `compile()`/warning 支撑路径补齐后，`test_codeop` 与相邻 `test_dynamicclassattribute` 同跑保持绿色。
+  - VM exception state/chaining 通用修复：异常实例默认暴露 `__context__` / `__cause__` / `__traceback__` / `__suppress_context__`；implicit chaining 保存完整 active exception object；`with` cleanup、`return` from `except`、generator `throw()` 和 `unittest.assertRaises(callable)` 路径恢复异常状态，避免 stale `sys.exc_info()` 与错误自链。
+  - `contextlib.ExitStack` 之前剩余的 5 个 exception chaining failure 已清零；这是 VM 层修复，不是测试特判。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_baseexception test_csv test_sched test_codeop test_contextlib` -> `run=207 pass=206 fail=0 err=0 skip=1`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop` -> `run=51 pass=51 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_codeop test_dynamicclassattribute` -> `run=17 pass=16 fail=0 err=0 skip=1`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_csv test_shlex test_bisect test_heapq test_base64 test_colorsys` -> `run=243 pass=242 fail=0 err=0 skip=1`
+  - 残留观察：`test_raise` 已改善但仍非本批绿色目标，当前 `run=35 pass=28 fail=3 err=4 skip=0`，剩余集中在 traceback constructor/type checks、invalid `__cause__` 和 re-raise cycle breaking。
+
 - 已推进 `test_with` 全绿并顺手大幅补齐 `contextlib` 表面行为：
   - `contextlib._GeneratorContextManager.__exit__` 补齐 PEP 479 后 `RuntimeError.__cause__ is value` 的 StopIteration 身份判断，避免 `with` body 内主动抛出的 StopIteration 被 contextmanager 错误吞掉。
   - `_GeneratorContextManager` 现在复制被装饰函数 docstring，`contextmanager()` 使用 `functools.wraps()` 保留 `__name__`、`__doc__` 和自定义属性，并在 `__enter__()` 后释放保存的 positional/keyword 参数引用。
@@ -90,8 +106,8 @@ Last updated: 2026-05-31T13:24:24+08:00
   - `cargo build -p ferrython-cli --bin ferrython`
   - `git diff --check`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop` -> `run=51 pass=51 fail=0 err=0 skip=0`
-  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib` -> `run=78 pass=73 fail=5 err=0 skip=0`
-  - 剩余 5 个 `test_contextlib` 失败均集中在 exception `__context__` 链；其中 nested `with` reference test 也失败，说明下一步应修 VM exception chaining，而不是继续在 `ExitStack` 层补丁。
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib` -> 中间态 `run=78 pass=73 fail=5 err=0 skip=0`
+  - 这 5 个 `test_contextlib` exception `__context__` 链失败已在 2026-05-31 VM exception state/chaining 批次修复；当前结果见上方本日兼容批次。
 
 - 已推进 `cmath` 兼容修复并顺手修正 core complex abs：
   - `cmath` 补齐 CPython 3.8 常用函数表：`acos`/`acosh`/`asin`/`asinh`/`atan`/`atanh`、`sinh`/`cosh`/`tanh`、`log10` 和 `isclose`。

@@ -163,6 +163,31 @@ pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
 pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     match &obj.payload {
         PyObjectPayload::Instance(inst) => {
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if cd.is_exception_subclass {
+                    match name {
+                        "__context__" | "__cause__" | "__traceback__" => {
+                            return Some(
+                                inst.attrs
+                                    .read()
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or_else(PyObject::none),
+                            );
+                        }
+                        "__suppress_context__" => {
+                            return Some(
+                                inst.attrs
+                                    .read()
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or_else(|| PyObject::bool_val(false)),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
             if is_property_subclass_class(&inst.class) {
                 match name {
                     "__doc__" => {

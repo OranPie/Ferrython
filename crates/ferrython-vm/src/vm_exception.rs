@@ -100,6 +100,23 @@ impl VirtualMachine {
         }
     }
 
+    pub(crate) fn stored_exc_attr(exc_value: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        match &exc_value.payload {
+            PyObjectPayload::Instance(inst) => inst.attrs.read().get(name).cloned(),
+            PyObjectPayload::ExceptionInstance(ei) => ei
+                .get_attrs()
+                .and_then(|attrs| attrs.read().get(name).cloned()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn same_exception_object(a: &PyException, b: &PyException) -> bool {
+        match (&a.original, &b.original) {
+            (Some(left), Some(right)) => PyObjectRef::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+
     /// Find an exception handler on the block stack. Returns handler IP if found.
     pub(crate) fn unwind_except(&mut self) -> Option<usize> {
         loop {
