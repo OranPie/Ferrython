@@ -326,3 +326,31 @@ Last updated: 2026-05-31T19:30:54+08:00
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set`
 - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakref`
+
+## 2026-05-31 repr/classinfo/containment batch
+
+- `test_userdict`
+  - Result after batch: `run=25 pass=25 fail=0 err=0 skip=0`.
+  - Fixed trait: deeply nested `UserDict` repr now raises `RecursionError`; recursive self references still render `{...}`.
+
+- `test_contains`
+  - Result after batch: `run=4 pass=4 fail=0 err=0 skip=0`.
+  - Fixed trait: sequence membership compares each candidate once (`candidate == needle`) against a snapshot, so mutation during `__eq__` no longer double-runs side effects.
+
+- `test_pprint`
+  - Result after batch: `run=30 pass=4 fail=25 err=1 skip=0`.
+  - Improvement: no longer load-errors on `DottedPrettyPrinter`; remaining failures are real pretty-printer feature gaps: line wrapping, compact mode, sort/layout, ChainMap/Counter/defaultdict/OrderedDict/User* display, subclass `PrettyPrinter` methods.
+
+- `test_userlist`
+  - Result after batch: `run=51 pass=34 fail=12 err=5 skip=0`, improved from `pass=32 fail=14 err=5`.
+  - Fixed/improved traits: recursive/deep repr behavior improved through shared repr guard and native repr dispatch. Remaining failures are UserList API completeness: arithmetic/reflected arithmetic, slicing result type, bounds errors, mutator argument validation, iterator/extended-slice support.
+
+- Neighbor green check
+  - `test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`: `run=91 pass=91 fail=0 err=0 skip=0`.
+
+- Commands used in this batch
+  - `cargo fmt --all`
+  - `timeout 180s cargo build -p ferrython-cli --bin ferrython`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userdict test_contains test_pprint`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`

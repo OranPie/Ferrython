@@ -48,8 +48,13 @@ impl VirtualMachine {
             return Ok(PyObject::str_val(CompactString::from("")));
         }
         ferrython_core::object::helpers::repr_reset_overflow();
-        self.vm_repr(&args[0])
-            .map(|s| PyObject::str_val(CompactString::from(s)))
+        let text = self.vm_repr(&args[0])?;
+        if ferrython_core::object::helpers::repr_depth_exceeded() {
+            return Err(PyException::recursion_error(
+                "maximum recursion depth exceeded while getting the repr of an object",
+            ));
+        }
+        Ok(PyObject::str_val(CompactString::from(text)))
     }
 
     fn call_mappingproxy_builtin(&self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {

@@ -45,10 +45,7 @@ fn element_matches(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
     if PyObjectRef::ptr_eq(a, b) {
         return Ok(true);
     }
-    if a.compare(b, CompareOp::Eq)?.is_truthy() {
-        return Ok(true);
-    }
-    Ok(b.compare(a, CompareOp::Eq)?.is_truthy())
+    Ok(a.compare(b, CompareOp::Eq)?.is_truthy())
 }
 
 fn set_membership_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
@@ -590,20 +587,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
 pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<bool> {
     match &obj.payload {
         PyObjectPayload::List(v) => {
-            let mut index = 0;
-            loop {
-                let candidate = {
-                    let items = v.read();
-                    if index >= items.len() {
-                        return Ok(false);
-                    }
-                    items[index].clone()
-                };
+            let items = v.read().clone();
+            for candidate in items {
                 if element_matches(&candidate, item)? {
                     return Ok(true);
                 }
-                index += 1;
             }
+            Ok(false)
         }
         PyObjectPayload::Tuple(v) => {
             for x in v.iter() {

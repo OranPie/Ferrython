@@ -1885,6 +1885,24 @@ Last updated: 2026-05-31T19:30:54+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_weakref`
 
+- 2026-05-31 repr / classinfo / containment 兼容批次：
+  - `issubclass()` 现在会继续遍历 Python class 的 base，即使 base 是 Ferrython native class-like object；修复 `test_pprint` 从 loader 阶段 `issubclass() arg 1 must be a class` 直接失败的问题，现在可以加载并执行到真实 `pprint` 格式化差异。
+  - list membership / `list.remove` 的元素比较改为 CPython 风格的单向 `candidate == needle`，并在 membership 路径对 list 元素做 snapshot，避免用户 `__eq__` 在比较期间删除元素导致同一个 side effect 被触发两次；`test_contains` 当前全绿。
+  - repr recursion guard 抽出统一 limit；`repr()` 的 VM builtin 会把 repr overflow flag 转成 `RecursionError`；`UserDict.__repr__` 深层嵌套和递归占位都走同一 guard。
+  - core `py_repr` 支持 bound native-function `__repr__`，让 native `UserDict.__repr__` 等方法在非 VM repr fallback 中也能被调用。
+  - 本批结果：
+    - `test_userdict`: `run=25 pass=25 fail=0 err=0 skip=0`
+    - `test_contains`: `run=4 pass=4 fail=0 err=0 skip=0`
+    - `test_pprint`: 从 load error 进展为 `run=30 pass=4 fail=25 err=1 skip=0`；剩余是 broad pretty-formatting/layout/User* display gaps。
+    - `test_userlist`: 从 `run=51 pass=32 fail=14 err=5 skip=0` 改善到 `run=51 pass=34 fail=12 err=5 skip=0`；剩余为 UserList arithmetic/slicing/bounds/mutator API 缺口。
+    - 邻近稳定模块 `test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`: `run=91 pass=91 fail=0 err=0 skip=0`。
+  - 验证：
+    - `cargo fmt --all`
+    - `timeout 180s cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userdict test_contains test_pprint`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

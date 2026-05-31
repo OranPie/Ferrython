@@ -46,10 +46,7 @@ fn sequence_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<b
     if PyObjectRef::ptr_eq(item, target) {
         return Ok(true);
     }
-    if item.compare(target, CompareOp::Eq)?.is_truthy() {
-        return Ok(true);
-    }
-    Ok(target.compare(item, CompareOp::Eq)?.is_truthy())
+    Ok(item.compare(target, CompareOp::Eq)?.is_truthy())
 }
 
 fn sequence_index_bound(arg: Option<&PyObjectRef>, len: usize, default: usize) -> PyResult<usize> {

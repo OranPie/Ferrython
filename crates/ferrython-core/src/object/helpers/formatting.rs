@@ -1,7 +1,9 @@
 //! Range, slice, and Python formatting helpers.
 
 use super::super::payload::*;
-use super::{index_to_i128_unbounded, is_hidden_dict_key};
+use super::{
+    index_to_i128_unbounded, is_hidden_dict_key, repr_depth_exceeded, repr_enter, repr_leave,
+};
 use crate::error::{PyException, PyResult};
 use crate::object::methods::PyObjectMethods;
 use compact_str::CompactString;
@@ -1070,7 +1072,27 @@ pub(in crate::object) fn format_collection(
     close: &str,
     items: &[PyObjectRef],
 ) -> String {
-    let inner: Vec<String> = items.iter().map(|i| i.repr()).collect();
+    let inner: Vec<String> = items
+        .iter()
+        .map(|item| {
+            let ptr = PyObjectRef::as_ptr(item) as usize;
+            if !repr_enter(ptr) {
+                if repr_depth_exceeded() {
+                    return String::new();
+                }
+                return match &item.payload {
+                    PyObjectPayload::List(_) => "[...]".to_string(),
+                    PyObjectPayload::Tuple(_) => "(...)".to_string(),
+                    PyObjectPayload::Dict(_) => "{...}".to_string(),
+                    PyObjectPayload::Set(_) => "set(...)".to_string(),
+                    PyObjectPayload::FrozenSet(_) => "frozenset(...)".to_string(),
+                    _ => "...".to_string(),
+                };
+            }
+            repr_leave(ptr);
+            item.repr()
+        })
+        .collect();
     format!("{}{}{}", open, inner.join(", "), close)
 }
 

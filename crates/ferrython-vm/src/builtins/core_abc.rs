@@ -165,18 +165,32 @@ fn is_subclass_result(sub: &PyObjectRef, sup: &PyObjectRef, depth: usize) -> PyR
         (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
             return Ok(a == b || is_exception_subclass(a, b));
         }
-        (PyObjectPayload::Class(_), PyObjectPayload::Class(_))
-        | (PyObjectPayload::Class(_), PyObjectPayload::ExceptionType(_))
-        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::BuiltinType(_))
-        | (PyObjectPayload::Class(_), PyObjectPayload::BuiltinType(_))
-        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::Class(_)) => {
-            if let (PyObjectPayload::Class(_), PyObjectPayload::Class(_)) =
-                (&sub.payload, &sup.payload)
-            {
-                if class_abc_virtual_match(sub, sup) {
+        (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(_)) => {
+            if class_abc_virtual_match(sub, sup) {
+                return Ok(true);
+            }
+            if class_blocks_structural_abc(sub, sup) {
+                return Ok(false);
+            }
+            if check_subclass(sub, sup) {
+                return Ok(true);
+            }
+            for base in &sub_cd.bases {
+                if PyObjectRef::ptr_eq(base, sup) {
+                    return Ok(true);
+                }
+                if type_bases(base, depth + 1)?.is_some()
+                    && is_subclass_result(base, sup, depth + 1)?
+                {
                     return Ok(true);
                 }
             }
+            return Ok(false);
+        }
+        (PyObjectPayload::Class(_), PyObjectPayload::ExceptionType(_))
+        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::BuiltinType(_))
+        | (PyObjectPayload::Class(_), PyObjectPayload::BuiltinType(_))
+        | (PyObjectPayload::BuiltinType(_), PyObjectPayload::Class(_)) => {
             if class_blocks_structural_abc(sub, sup) {
                 return Ok(false);
             }

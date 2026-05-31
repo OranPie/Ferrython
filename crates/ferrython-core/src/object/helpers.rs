@@ -346,6 +346,8 @@ thread_local! {
     static REPR_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+const DEFAULT_REPR_RECURSION_LIMIT: usize = 1000;
+
 const DEFAULT_MAX_EAGER_ALLOCATION_ITEMS: usize = 8 * 1024 * 1024;
 static MAX_EAGER_ALLOCATION_ITEMS: OnceLock<usize> = OnceLock::new();
 
@@ -393,7 +395,7 @@ pub fn repr_enter(ptr: usize) -> bool {
     }
     REPR_DEPTH.with(|depth| {
         let next = depth.get().saturating_add(1);
-        if next > 1000 {
+        if next > DEFAULT_REPR_RECURSION_LIMIT {
             REPR_OVERFLOW.with(|flag| flag.set(true));
             return false;
         }
@@ -417,6 +419,10 @@ pub fn repr_depth_exceeded() -> bool {
 
 pub fn repr_reset_overflow() {
     REPR_OVERFLOW.with(|flag| flag.set(false));
+}
+
+pub fn repr_recursion_limit() -> usize {
+    DEFAULT_REPR_RECURSION_LIMIT
 }
 
 pub fn guard_eager_allocation(requested: usize, context: &str) -> PyResult<()> {

@@ -89,6 +89,11 @@ fn userdict_value_repr(value: &PyObjectRef, depth: usize) -> PyResult<String> {
             if let PyObjectPayload::Dict(map) = &data.payload {
                 let ptr = PyObjectRef::as_ptr(value) as usize;
                 if !repr_enter(ptr) {
+                    if ferrython_core::object::helpers::repr_depth_exceeded() {
+                        return Err(PyException::recursion_error(
+                            "maximum recursion depth exceeded while getting the repr of an object",
+                        ));
+                    }
                     return Ok("{...}".to_string());
                 }
                 let result = userdict_format_map(&map.read(), depth + 1);
@@ -112,7 +117,7 @@ fn userdict_value_repr(value: &PyObjectRef, depth: usize) -> PyResult<String> {
 }
 
 fn userdict_format_map(map: &FxHashKeyMap, depth: usize) -> PyResult<String> {
-    if depth > crate::get_recursion_limit() as usize {
+    if depth > ferrython_core::object::repr_recursion_limit() {
         return Err(PyException::recursion_error(
             "maximum recursion depth exceeded while getting the repr of an object",
         ));
@@ -133,6 +138,11 @@ fn userdict_repr(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Dict(map) = &data.payload {
         let ptr = PyObjectRef::as_ptr(obj) as usize;
         if !repr_enter(ptr) {
+            if ferrython_core::object::helpers::repr_depth_exceeded() {
+                return Err(PyException::recursion_error(
+                    "maximum recursion depth exceeded while getting the repr of an object",
+                ));
+            }
             return Ok(PyObject::str_val(CompactString::from("{...}")));
         }
         let result = userdict_format_map(&map.read(), 0);

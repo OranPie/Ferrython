@@ -1016,13 +1016,19 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                             return result.py_to_string();
                         }
                     }
-                    PyObjectPayload::BoundMethod { method, receiver } => {
-                        if let PyObjectPayload::NativeClosure(nc) = &method.payload {
+                    PyObjectPayload::BoundMethod { method, receiver } => match &method.payload {
+                        PyObjectPayload::NativeClosure(nc) => {
                             if let Ok(result) = (nc.func)(&[receiver.clone()]) {
                                 return result.py_to_string();
                             }
                         }
-                    }
+                        PyObjectPayload::NativeFunction(nf) => {
+                            if let Ok(result) = (nf.func)(&[receiver.clone()]) {
+                                return result.py_to_string();
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
