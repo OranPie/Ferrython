@@ -283,6 +283,14 @@ impl VirtualMachine {
                     }
                     return Ok(None);
                 }
+                if let Some(result) =
+                    vm.call_plain_instance_dunder(obj, inst, method_name, vec![other.clone()])?
+                {
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
+                    }
+                    return Ok(None);
+                }
                 if let Some(method) = lookup_in_class_mro(&inst.class, method_name) {
                     let bound = vm.bind_method(obj, method);
                     let result = vm.call_object(bound, vec![other.clone()])?;

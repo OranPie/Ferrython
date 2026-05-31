@@ -15,6 +15,16 @@ impl VirtualMachine {
         let vm_ptr = self as *mut VirtualMachine;
         ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
             let vm = unsafe { &mut *vm_ptr };
+            if let PyObjectPayload::Instance(inst) = &a.payload {
+                if let Some(result) =
+                    vm.call_plain_instance_dunder(a, inst, "__eq__", vec![b.clone()])?
+                {
+                    if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(None);
+                    }
+                    return Ok(Some(result.is_truthy()));
+                }
+            }
             if let Some(eq_method) = a.get_attr("__eq__") {
                 let result = vm.call_object(eq_method, vec![b.clone()])?;
                 if matches!(&result.payload, PyObjectPayload::NotImplemented) {
@@ -39,6 +49,13 @@ impl VirtualMachine {
                             return Ok(Some(hasher.finish() as i64));
                         }
                     }
+                }
+            }
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(result) =
+                    vm.call_plain_instance_dunder(obj, inst, "__hash__", Vec::new())?
+                {
+                    return Ok(Some(result.as_int().unwrap_or(0)));
                 }
             }
             if let Some(hash_method) = obj.get_attr("__hash__") {
@@ -166,6 +183,62 @@ impl VirtualMachine {
             }),
             _ => class_val,
         }
+    }
+
+    fn lookup_plain_class_dunder(inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
+        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+            if let Some(class_val) = cd.namespace.read().get(name).cloned() {
+                return Some(class_val);
+            }
+            for base in &cd.mro {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    if let Some(class_val) = bcd.namespace.read().get(name).cloned() {
+                        return Some(class_val);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn call_plain_instance_dunder(
+        &mut self,
+        obj: &PyObjectRef,
+        inst: &InstanceData,
+        name: &str,
+        args: Vec<PyObjectRef>,
+    ) -> PyResult<Option<PyObjectRef>> {
+        let Some(method) = Self::lookup_plain_class_dunder(inst, name) else {
+            return Ok(None);
+        };
+        if !matches!(
+            &method.payload,
+            PyObjectPayload::Function(_)
+                | PyObjectPayload::NativeFunction(_)
+                | PyObjectPayload::NativeClosure(_)
+        ) {
+            return Ok(None);
+        }
+        if matches!(&method.payload, PyObjectPayload::Function(_)) {
+            return match args.len() {
+                0 => self
+                    .call_object_one_arg_fast_or_fallback(method, obj.clone())
+                    .map(Some),
+                1 => self
+                    .call_object_two_arg_fast_or_fallback(method, obj.clone(), args[0].clone())
+                    .map(Some),
+                _ => {
+                    let mut call_args = Vec::with_capacity(args.len() + 1);
+                    call_args.push(obj.clone());
+                    call_args.extend(args);
+                    self.call_object(method, call_args).map(Some)
+                }
+            };
+        }
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(obj.clone());
+        call_args.extend(args);
+        self.call_object(method, call_args).map(Some)
     }
 
     /// Invoke __get__ on a descriptor to get the actual callable.

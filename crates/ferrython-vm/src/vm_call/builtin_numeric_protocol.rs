@@ -65,7 +65,12 @@ impl VirtualMachine {
             }
             "hash" => {
                 if args.len() == 1 {
-                    if let PyObjectPayload::Instance(_) = &args[0].payload {
+                    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                        if let Some(result) =
+                            self.call_plain_instance_dunder(&args[0], inst, "__hash__", Vec::new())?
+                        {
+                            return Ok(Some(result));
+                        }
                         if let Some(method) = Self::resolve_instance_dunder(&args[0], "__hash__") {
                             let ca =
                                 if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {

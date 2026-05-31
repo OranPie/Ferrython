@@ -1,8 +1,40 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-31T12:25:08+08:00
+Last updated: 2026-05-31T13:24:24+08:00
 
 ## 性能优化进度
+
+- 2026-05-31 generic dunder dispatch 性能批次：
+  - 新增 `tests/benchmarks/bench_generic_paths.py`，覆盖普通代码里容易落入泛化慢路径的场景：free/bound function call、实例属性读写、class attr lookup、`getattr`/`hasattr`、descriptor `__get__`、直接 `__hash__`/`__eq__`、custom key dict/set lookup。
+  - `HashableKey` 的 custom `__hash__`/`__eq__` dispatch 现在先尝试 plain class dunder direct call：只对 class/MRO 上的 raw `Function`、`NativeFunction`、`NativeClosure` 生效，descriptor、staticmethod/classmethod、实例属性 dunder 和复杂 lookup 继续回退旧 `get_attr`/BoundMethod 路径。
+  - 新增 `call_object_two_arg_fast_or_fallback()`，复用已有 borrowed frame 和 simple function inline 机制，让 `__eq__(self, other)` 这类两参 Python function 避免 BoundMethod 分配与通用 call path；`__hash__(self)` 复用既有一参 fast helper。
+  - VM-aware `hash(obj)` 和比较 opcode 的 instance dunder 调用也接入同一 plain-dunder fast path，因此直接 `hash(custom_obj)` 与 `obj == other` 不再只依赖容器 key 路径受益。
+  - 语义保护：未使用 `lookup_in_class_mro()` 的 method cache 作为 plain dunder 快路，因为基类 dunder 被运行时改写时子类缓存不会递归失效；最终实现直接扫描 class namespace/MRO，动态改写 smoke 保持 CPython 风格结果。
+  - generic 基准关键 before/after（release Ferrython，best-of-3；before 为本批改动前观测）：
+    - `custom __hash__ dispatch`: `0.1625s` -> `0.1340s`
+    - `custom __eq__ dispatch`: `0.2257s` -> `0.1996s`
+    - `custom dict lookup`: `0.2484s` -> `0.1980s`
+    - `custom set lookup`: `0.2405s` -> `0.1971s`
+  - complex 相邻基准继续受益（release Ferrython）：
+    - `custom_key_dict eq/hash lookup`: `0.0374s` -> `0.0302s`
+    - `custom_set eq/hash membership`: `0.0453s` -> `0.0373s`
+  - 最终 release 绿色门：
+    - `test_iter`: `run=54 pass=52 fail=0 err=0 skip=2`
+    - `test_list`: `run=57 pass=56 fail=0 err=0 skip=1`
+    - `test_tuple`: `run=35 pass=30 fail=0 err=0 skip=5`
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`
+    - `test_string`: `run=36 pass=36 fail=0 err=0 skip=0`
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_generic_paths.py`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_complex_ops.py`
+    - dynamic class/base `__hash__`/`__eq__` rewrite smoke on `target/debug/ferrython` and `target/release/ferrython`
+    - per-module release `timeout 30s target/release/ferrython tools/run_cpython_tests.py -q test_iter test_list test_tuple test_dict test_set test_weakref test_string`
 
 - 2026-05-31 hash container / method fast-path 性能批次：
   - 新增 `tests/benchmarks/bench_complex_ops.py`，覆盖更接近真实负载的复杂场景：动态字符串 key dict、嵌套 list/dict、int dict update、custom `__hash__`/`__eq__` key、set churn、对象方法/属性、迭代器流水线、字符串 split/replace/join 和 `setdefault` record indexing。
@@ -38,7 +70,7 @@ Last updated: 2026-05-31T12:25:08+08:00
 
 ### 性能后续计划
 
-1. 继续单独攻 custom key dict/set：减少 `HashableKey::Custom` 每次动态解析 `__hash__`/`__eq__` 的成本，优先评估 class dunder lookup cache 或 direct simple function call path。
+1. 继续优化 custom key dict/set：plain dunder direct call 已落地，下一步可评估不破坏动态 class mutation 语义的 type-version/cache 机制，避免每次 lookup 都扫描 class/MRO。
 2. 优化 `test_set` 的长耗时：当前 release 仍约 `5.8s`，主要需要看 set operation/intersection/update 路径和 CPython test 内部大集合场景。
 3. 字符串优化转入 `string_methods.rs`/`fast_ops.rs` 内部，避免在 VM method dispatcher 重建 split/join/replace 逻辑。
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。

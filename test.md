@@ -1,8 +1,44 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-31T12:25:08+08:00
+Last updated: 2026-05-31T13:24:24+08:00
 
 ## Current batch
+
+- Performance batch: generic dunder dispatch fast paths
+  - Added `tests/benchmarks/bench_generic_paths.py` to isolate fallback-heavy ordinary execution paths: free/bound function calls, instance attr read/write, class attr lookup, `getattr`/`hasattr`, descriptor `__get__`, direct custom `__hash__`/`__eq__`, and custom key dict/set lookups.
+  - Implemented plain class dunder fast calls for raw class/MRO `Function`, `NativeFunction`, and `NativeClosure` values in:
+    - `HashableKey` custom `__hash__`/`__eq__` dispatch for dict/set keys.
+    - VM-aware builtin `hash(obj)`.
+    - comparison opcode instance dunder calls such as `obj == other`.
+  - Added `call_object_two_arg_fast_or_fallback()` for simple Python functions with exactly two args, no defaults, no kw defaults, and no closure. This reuses the borrowed-frame/simple-inline path used by one-arg calls and falls back under trace/profile or any non-simple function shape.
+  - Safety boundary:
+    - descriptors, staticmethod/classmethod, instance-level dunders, deque special handling, and complex `get_attr` behavior still use the old path.
+    - A cached `lookup_in_class_mro()` version was tested then rejected because base-class dunder mutation could leave a subclass method cache stale. The final fast lookup scans class namespace/MRO directly and preserves dynamic rewrite behavior.
+  - Generic benchmark final Ferrython release values:
+    - `free function call 0/1/2 args`: `0.0084s`
+    - `bound method call 0/1/2 args`: `0.0131s`
+    - `instance attr read/write`: `0.0141s`
+    - `class attr lookup`: `0.0068s`
+    - `getattr/hasattr mixed`: `0.0086s`
+    - `descriptor __get__`: `0.0287s`
+    - `custom __hash__ dispatch`: `0.1340s` (baseline observed `0.1625s`)
+    - `custom __eq__ dispatch`: `0.1996s` (baseline observed `0.2257s`)
+    - `custom dict lookup`: `0.1980s` (baseline observed `0.2484s`)
+    - `custom set lookup`: `0.1971s` (baseline observed `0.2405s`)
+  - Adjacent complex benchmark final values:
+    - `custom_key_dict eq/hash lookup`: `0.0302s` (previous batch final `0.0374s`)
+    - `custom_set eq/hash membership`: `0.0373s` (previous batch final `0.0453s`)
+  - Semantic smokes:
+    - `A.__hash__` rewritten after instance creation is reflected by `hash(a)`.
+    - Base-class `A.__hash__` and `C.__eq__` rewritten after subclass instance creation are reflected by `hash(B())` and `D() == D()`.
+  - Final green release gates:
+    - `test_iter`: `run=54 pass=52 fail=0 err=0 skip=2`
+    - `test_list`: `run=57 pass=56 fail=0 err=0 skip=1`
+    - `test_tuple`: `run=35 pass=30 fail=0 err=0 skip=5`
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`
+    - `test_string`: `run=36 pass=36 fail=0 err=0 skip=0`
 
 - Performance batch: complex benchmark expansion and hash-container fast paths
   - Added `tests/benchmarks/bench_complex_ops.py` to cover realistic mixed workloads that the existing micro/probe suites did not stress: dynamic string-key dicts, nested collection churn, int dict updates, custom `__hash__`/`__eq__` keys, set add/discard/membership churn, object method/attribute churn, iterator pipelines, string processing, and `setdefault`-based record indexing.
