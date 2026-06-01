@@ -93,6 +93,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                             .write()
                             .insert(CompactString::from("__abc_registered__"), cls_ref.clone());
                     }
+                    super::abc::bump_abc_cache_token();
                     Ok(subclass)
                 },
             );

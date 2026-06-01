@@ -6,6 +6,7 @@ pub(super) use to_list::py_to_list;
 
 use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::types::{HashableKey, PyInt};
+use num_traits::ToPrimitive;
 
 use super::helpers::*;
 use super::methods::PyObjectMethods;
@@ -155,7 +156,7 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
             }
             // Dict subclass: delegate to dict_storage
             if let Some(ref ds) = inst.dict_storage {
-                return !ds.read().is_empty();
+                return ds.read().keys().any(|k| !is_hidden_dict_key(k));
             }
             true
         }
@@ -1091,10 +1092,21 @@ pub(super) fn py_to_int(obj: &PyObjectRef) -> PyResult<i64> {
             }
             Ok(f.trunc() as i64)
         }
-        PyObjectPayload::Str(s) => s
-            .trim()
-            .parse::<i64>()
-            .map_err(|_| PyException::value_error(format!("invalid literal for int(): '{}'", s))),
+        PyObjectPayload::Str(s) => {
+            let text = s.trim();
+            if let Ok(value) = text.parse::<i64>() {
+                Ok(value)
+            } else if let Ok(value) = text.parse::<num_bigint::BigInt>() {
+                value
+                    .to_i64()
+                    .ok_or_else(|| PyException::overflow_error("int too large"))
+            } else {
+                Err(PyException::value_error(format!(
+                    "invalid literal for int(): '{}'",
+                    s
+                )))
+            }
+        }
         PyObjectPayload::Instance(inst) => {
             if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
                 if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
@@ -1174,7 +1186,16 @@ pub(super) fn py_to_index(obj: &PyObjectRef) -> PyResult<PyInt> {
 pub(super) fn py_to_float(obj: &PyObjectRef) -> PyResult<f64> {
     match &obj.payload {
         PyObjectPayload::Float(f) => Ok(*f),
-        PyObjectPayload::Int(n) => Ok(n.to_f64()),
+        PyObjectPayload::Int(n) => {
+            let value = n.to_f64();
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(PyException::overflow_error(
+                    "int too large to convert to float",
+                ))
+            }
+        }
         PyObjectPayload::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         PyObjectPayload::Str(s) => s.trim().parse::<f64>().map_err(|_| {
             PyException::value_error(format!("could not convert string to float: '{}'", s))

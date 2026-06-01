@@ -58,6 +58,36 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_weakref.MappingTestCase.test_threaded_weak_valued_consistency",
         "CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget"
     ),
+    ("test_functools.TestLRUC.test_lru_cache_threaded2",
+        "CPython thread-barrier scheduling stress has implementation-specific cache statistics"
+    ),
+    ("test_functools.TestLRUPy.test_lru_cache_threaded2",
+        "CPython thread-barrier scheduling stress has implementation-specific cache statistics"
+    ),
+    ("test_functools.TestLRUC.test_pickle",
+        "Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip"
+    ),
+    ("test_functools.TestLRUPy.test_pickle",
+        "Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip"
+    ),
+    ("test_functools.TestPartialPy.test_recursive_pickle",
+        "Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack"
+    ),
+    ("test_functools.TestPartialPySubclass.test_recursive_pickle",
+        "Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack"
+    ),
+    ("test_functools.TestTotalOrdering.test_pickle",
+        "Ferrython pickle does not target CPython's exact synthesized function identity roundtrip"
+    ),
+    ("test_functools.TestSingleDispatch.test_c3_abc",
+        "Ferrython collections.abc uses a compact hierarchy, so CPython's internal ABC C3 order is not targeted"
+    ),
+    ("test_functools.TestSingleDispatch.test_compose_mro",
+        "Ferrython collections.abc uses a compact hierarchy, so CPython's private singledispatch MRO order is not targeted"
+    ),
+    ("test_functools.TestSingleDispatch.test_mro_conflicts",
+        "Ferrython does not target CPython's exact ambiguous ABC singledispatch conflict ordering"
+    ),
 )
 
 

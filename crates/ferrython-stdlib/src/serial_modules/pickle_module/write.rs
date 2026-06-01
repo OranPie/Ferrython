@@ -224,6 +224,80 @@ fn class_override_method(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     }))
 }
 
+struct PartialPickleState {
+    func: PyObjectRef,
+    args: PyObjectRef,
+    keywords: PyObjectRef,
+    namespace: PyObjectRef,
+}
+
+fn functools_partial_pickle_state(
+    obj: &PyObjectRef,
+    inst: &ferrython_core::object::InstanceData,
+) -> Option<PartialPickleState> {
+    let PyObjectPayload::Class(cd) = &inst.class.payload else {
+        return None;
+    };
+    if cd.name.as_str() != "partial" && !cd.mro.iter().any(|base| {
+        matches!(&base.payload, PyObjectPayload::Class(base_cd) if base_cd.name.as_str() == "partial")
+    }) {
+        return None;
+    }
+    Some(PartialPickleState {
+        func: obj.get_attr("func")?,
+        args: obj
+            .get_attr("args")
+            .unwrap_or_else(|| PyObject::tuple(vec![])),
+        keywords: obj.get_attr("keywords").unwrap_or_else(PyObject::none),
+        namespace: obj.get_attr("__dict__").unwrap_or_else(PyObject::none),
+    })
+}
+
+fn pickle_serialize_partial_p0(
+    state: &PartialPickleState,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    pickle_serialize_function_global_p0("functools", "partial", buf);
+    buf.extend_from_slice(b"(");
+    pickle_serialize_p0(&state.func, buf, memo)?;
+    buf.extend_from_slice(b"tR");
+    pickle_serialize_p0(
+        &PyObject::tuple(vec![
+            state.func.clone(),
+            state.args.clone(),
+            state.keywords.clone(),
+            state.namespace.clone(),
+        ]),
+        buf,
+        memo,
+    )?;
+    buf.push(b'b');
+    Ok(())
+}
+
+fn pickle_serialize_partial_p2(
+    state: &PartialPickleState,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    pickle_serialize_function_global_p2("functools", "partial", buf);
+    pickle_serialize_p2(&PyObject::tuple(vec![state.func.clone()]), buf, memo)?;
+    buf.push(b'R');
+    pickle_serialize_p2(
+        &PyObject::tuple(vec![
+            state.func.clone(),
+            state.args.clone(),
+            state.keywords.clone(),
+            state.namespace.clone(),
+        ]),
+        buf,
+        memo,
+    )?;
+    buf.push(b'b');
+    Ok(())
+}
+
 fn deque_pickle_items(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
     if let Some(method) = class_override_method(obj, "__iter__") {
         let iter = ferrython_core::object::call_callable(&method, &[])?;
@@ -344,6 +418,21 @@ pub(super) fn pickle_serialize_p0(
                 buf.push(b's');
             }
         }
+        PyObjectPayload::InstanceDict(map) => {
+            let map = map.read();
+            buf.extend_from_slice(b"(dp");
+            let id = **memo;
+            **memo += 1;
+            if let Some(key) = pickle_identity_key(obj) {
+                memo.seen.insert(key, id);
+            }
+            buf.extend_from_slice(format!("{}\n", id).as_bytes());
+            for (k, v) in map.iter() {
+                pickle_serialize_p0(&PyObject::str_val(k.clone()), buf, memo)?;
+                pickle_serialize_p0(v, buf, memo)?;
+                buf.push(b's');
+            }
+        }
         PyObjectPayload::MappingProxy(map) => {
             let map = map.read();
             buf.extend_from_slice(b"(dp");
@@ -389,6 +478,10 @@ pub(super) fn pickle_serialize_p0(
         PyObjectPayload::Instance(inst) => {
             if inst.attrs.read().contains_key("__csv_dialect__") {
                 return Err(PyException::type_error("cannot pickle 'Dialect' instances"));
+            }
+            if let Some(partial_state) = functools_partial_pickle_state(obj, inst) {
+                pickle_serialize_partial_p0(&partial_state, buf, memo)?;
+                return Ok(());
             }
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
@@ -1035,6 +1128,19 @@ pub(super) fn pickle_serialize_p2(
                 buf.push(b'u');
             }
         }
+        PyObjectPayload::InstanceDict(map) => {
+            let map = map.read();
+            buf.push(b'}');
+            p2_emit_put_obj(obj, buf, memo);
+            if !map.is_empty() {
+                buf.push(b'(');
+                for (k, v) in map.iter() {
+                    pickle_serialize_p2(&PyObject::str_val(k.clone()), buf, memo)?;
+                    pickle_serialize_p2(v, buf, memo)?;
+                }
+                buf.push(b'u');
+            }
+        }
         PyObjectPayload::MappingProxy(map) => {
             let map = map.read();
             buf.push(b'}');
@@ -1082,6 +1188,10 @@ pub(super) fn pickle_serialize_p2(
         PyObjectPayload::Instance(inst) => {
             if inst.attrs.read().contains_key("__csv_dialect__") {
                 return Err(PyException::type_error("cannot pickle 'Dialect' instances"));
+            }
+            if let Some(partial_state) = functools_partial_pickle_state(obj, inst) {
+                pickle_serialize_partial_p2(&partial_state, buf, memo)?;
+                return Ok(());
             }
             if let Some((factory, items)) = defaultdict_pickle_parts(inst) {
                 pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;

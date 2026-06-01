@@ -106,6 +106,15 @@ impl VirtualMachine {
                     }
                 }
             }
+            "pow" => {
+                if args.len() == 2 {
+                    if let Some(result) =
+                        self.try_binary_dunder(&args[0], &args[1], "__pow__", Some("__rpow__"))?
+                    {
+                        return Ok(Some(result));
+                    }
+                }
+            }
             "bin" | "oct" | "hex" => {
                 if args.len() == 1 {
                     if let PyObjectPayload::Instance(_) = &args[0].payload {

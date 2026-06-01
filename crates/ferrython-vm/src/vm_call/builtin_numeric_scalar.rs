@@ -77,7 +77,13 @@ impl VirtualMachine {
                                 return Ok(Some(val));
                             }
                             if let PyObjectPayload::Int(n) = &val.payload {
-                                return Ok(Some(PyObject::float(n.to_f64())));
+                                let value = n.to_f64();
+                                if value.is_finite() {
+                                    return Ok(Some(PyObject::float(value)));
+                                }
+                                return Err(PyException::overflow_error(
+                                    "int too large to convert to float",
+                                ));
                             }
                         }
                         if let Some(method) = Self::resolve_instance_dunder(&args[0], "__float__") {

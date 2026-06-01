@@ -4,6 +4,39 @@ use ferrython_core::types::PyInt;
 use num_bigint::{BigInt, Sign};
 use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
 
+fn bigint_to_scaled_f64(n: &BigInt, d: &BigInt) -> PyResult<f64> {
+    if d.is_zero() {
+        return Err(PyException::zero_division_error("division by zero"));
+    }
+    if let (Some(nf), Some(df)) = (n.to_f64(), d.to_f64()) {
+        if nf.is_finite() && df.is_finite() {
+            return Ok(nf / df);
+        }
+    }
+    let n_bits = n.bits() as i64;
+    let d_bits = d.bits() as i64;
+    let n_shift = (n_bits - 1020).max(0) as usize;
+    let d_shift = (d_bits - 1020).max(0) as usize;
+    let ns = if n_shift > 0 { n >> n_shift } else { n.clone() };
+    let ds = if d_shift > 0 { d >> d_shift } else { d.clone() };
+    let nf = ns
+        .to_f64()
+        .ok_or_else(|| PyException::overflow_error("int too large to convert to float"))?;
+    let df = ds
+        .to_f64()
+        .ok_or_else(|| PyException::overflow_error("int too large to convert to float"))?;
+    Ok((nf / df) * 2f64.powi((n_shift as i32) - (d_shift as i32)))
+}
+
+fn object_to_bigint(obj: &PyObjectRef) -> Option<BigInt> {
+    match &obj.payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => Some(BigInt::from(*n)),
+        PyObjectPayload::Int(PyInt::Big(n)) => Some(n.as_ref().clone()),
+        PyObjectPayload::Bool(b) => Some(BigInt::from(if *b { 1 } else { 0 })),
+        _ => None,
+    }
+}
+
 pub(super) fn math_number_to_float(obj: &PyObjectRef) -> PyResult<f64> {
     match &obj.payload {
         PyObjectPayload::Float(f) => Ok(*f),
@@ -59,6 +92,9 @@ pub(super) fn math_number_to_float(obj: &PyObjectRef) -> PyResult<f64> {
                 }
                 if attrs.contains_key("__fraction__") {
                     if let (Some(n), Some(d)) = (attrs.get("numerator"), attrs.get("denominator")) {
+                        if let (Some(n), Some(d)) = (object_to_bigint(n), object_to_bigint(d)) {
+                            return bigint_to_scaled_f64(&n, &d);
+                        }
                         return Ok(math_number_to_float(n)? / math_number_to_float(d)?);
                     }
                 }

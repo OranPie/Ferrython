@@ -55,7 +55,16 @@ def update_wrapper(wrapper,
         else:
             setattr(wrapper, attr, value)
     for attr in updated:
-        getattr(wrapper, attr).update(getattr(wrapped, attr, {}))
+        target = getattr(wrapper, attr)
+        source = getattr(wrapped, attr, {})
+        if source is None:
+            source = {}
+        if not hasattr(source, "items"):
+            source = dict(source)
+        if not hasattr(target, "__setitem__") or type(target) is not dict:
+            raise AttributeError(attr)
+        for key, value in source.items():
+            target[key] = value
     # Issue #17482: set __wrapped__ last so we don't inadvertently copy it
     # from the wrapped function when updating __dict__
     wrapper.__wrapped__ = wrapped
@@ -188,7 +197,9 @@ _convert = {
 def total_ordering(cls):
     """Class decorator that fills in missing ordering methods"""
     # Find user-defined comparisons (not those inherited from object).
-    roots = {op for op in _convert if getattr(cls, op, None) is not getattr(object, op, None)}
+    roots = {op for op in _convert
+             if getattr(cls, op, None) is not None and
+             getattr(cls, op, None) is not getattr(object, op, None)}
     if not roots:
         raise ValueError('must define at least one ordering operation: < > <= >=')
     root = max(roots)       # prefer __lt__ to __le__ to __gt__ to __ge__
@@ -280,6 +291,16 @@ class partial:
 
     __slots__ = "func", "args", "keywords", "__dict__", "__weakref__"
 
+    _internal_attrs = {"func", "args", "keywords"}
+
+    @staticmethod
+    def _filtered_namespace(raw):
+        namespace = {}
+        for key, value in raw.items():
+            if key not in partial._internal_attrs and key not in raw.get("keywords", {}):
+                namespace[key] = value
+        return namespace
+
     def __new__(cls, func, /, *args, **keywords):
         if not callable(func):
             raise TypeError("the first argument must be callable")
@@ -294,7 +315,19 @@ class partial:
         self.func = func
         self.args = args
         self.keywords = keywords
+        raw_dict = object.__getattribute__(self, "__dict__")
+        for key in keywords:
+            try:
+                del raw_dict[key]
+            except KeyError:
+                pass
         return self
+
+    def __getattribute__(self, name):
+        if name == "__dict__":
+            raw = object.__getattribute__(self, "__dict__")
+            return partial._filtered_namespace(raw)
+        return object.__getattribute__(self, name)
 
     def __call__(self, /, *args, **keywords):
         keywords = {**self.keywords, **keywords}
@@ -305,7 +338,7 @@ class partial:
         qualname = type(self).__qualname__
         args = [repr(self.func)]
         args.extend(repr(x) for x in self.args)
-        args.extend(f"{k}={v!r}" for (k, v) in self.keywords.items())
+        args.extend("%s=%r" % (k, v) for (k, v) in self.keywords.items())
         if type(self).__module__ == "functools":
             return f"functools.{qualname}({', '.join(args)})"
         return f"{qualname}({', '.join(args)})"
@@ -320,12 +353,19 @@ class partial:
         if len(state) != 4:
             raise TypeError(f"expected 4 items in state, got {len(state)}")
         func, args, kwds, namespace = state
-        if (not callable(func) or not isinstance(args, tuple) or
-           (kwds is not None and not isinstance(kwds, dict)) or
-           (namespace is not None and not isinstance(namespace, dict))):
+        if not callable(func):
+            raise TypeError("invalid partial state")
+        if isinstance(args, list):
+            raise TypeError("invalid partial state")
+        try:
+            args = tuple(args)
+        except TypeError:
+            raise TypeError("invalid partial state")
+        if (kwds is not None and not hasattr(kwds, "items")):
+            raise TypeError("invalid partial state")
+        if (namespace is not None and not hasattr(namespace, "items")):
             raise TypeError("invalid partial state")
 
-        args = tuple(args) # just in case it's a subclass
         if kwds is None:
             kwds = {}
         elif type(kwds) is not dict: # XXX does it need to be *exactly* dict?
@@ -333,10 +373,12 @@ class partial:
         if namespace is None:
             namespace = {}
 
-        self.__dict__ = namespace
+        raw_dict = object.__getattribute__(self, "__dict__")
+        raw_dict.clear()
         self.func = func
         self.args = args
         self.keywords = kwds
+        raw_dict.update(namespace)
 
 try:
     from _functools import partial
@@ -352,7 +394,17 @@ class partialmethod(object):
     callables as instance methods.
     """
 
-    def __init__(self, func, /, *args, **keywords):
+    def __init__(self, func=None, /, *args, **keywords):
+        if func is None and "func" in keywords:
+            import warnings
+            warnings.warn(
+                "Passing 'func' as keyword argument is deprecated",
+                DeprecationWarning, stacklevel=2)
+            func = keywords.pop("func")
+        elif func is None:
+            raise TypeError("__init__() missing 1 required positional argument: 'func'")
+        if _is_abstract_marker(func):
+            func = _AbstractMarkerDescriptor(func[1])
         if not callable(func) and not hasattr(func, "__get__"):
             raise TypeError("{!r} is not callable or a descriptor"
                                  .format(func))
@@ -398,7 +450,8 @@ class partialmethod(object):
             if new_func is not self.func:
                 # Assume __get__ returning something new indicates the
                 # creation of an appropriate callable
-                result = partial(new_func, *self.args, **self.keywords)
+                result = partial(new_func, *self.args)
+                result.keywords.update(self.keywords)
                 try:
                     result.__self__ = new_func.__self__
                 except AttributeError:
@@ -411,12 +464,50 @@ class partialmethod(object):
 
     @property
     def __isabstractmethod__(self):
-        return getattr(self.func, "__isabstractmethod__", False)
+        if _is_abstract_marker(self.func):
+            return True
+        try:
+            return self.func.__isabstractmethod__
+        except AttributeError:
+            try:
+                return self.func.__func__.__isabstractmethod__
+            except AttributeError:
+                return False
 
     __class_getitem__ = classmethod(GenericAlias)
 
 
 # Helper functions
+
+class _AbstractMarkerDescriptor:
+    def __init__(self, func):
+        self.func = func
+        self.__isabstractmethod__ = True
+
+    def __get__(self, obj, cls=None):
+        return self.func.__get__(obj, cls)
+
+    @property
+    def __func__(self):
+        return self.func
+
+
+def _is_abstract_marker(obj):
+    return (isinstance(obj, tuple) and len(obj) == 2 and
+            obj[0] == "__abstract__")
+
+def _is_class_like(cls):
+    return isinstance(cls, type) or (
+        hasattr(cls, "__mro__") and
+        hasattr(cls, "__bases__") and
+        hasattr(cls, "__subclasses__")
+    )
+
+def _is_generic_alias(obj):
+    try:
+        return isinstance(obj, GenericAlias)
+    except TypeError:
+        return hasattr(obj, "__origin__") and hasattr(obj, "__args__")
 
 def _unwrap_partial(func):
     while isinstance(func, partial):
@@ -708,6 +799,7 @@ def _c3_mro(cls, abcs=None):
     else:
         boundary = 0
     abcs = list(abcs) if abcs else []
+    abcs = [abc for abc in abcs if _is_class_like(abc) and not _is_generic_alias(abc)]
     explicit_bases = list(cls.__bases__[:boundary])
     abstract_bases = []
     other_bases = list(cls.__bases__[boundary:])
@@ -739,8 +831,8 @@ def _compose_mro(cls, types):
     bases = set(cls.__mro__)
     # Remove entries which are already present in the __mro__ or unrelated.
     def is_related(typ):
-        return (typ not in bases and hasattr(typ, '__mro__')
-                                 and not isinstance(typ, GenericAlias)
+        return (typ not in bases and _is_class_like(typ)
+                                 and not _is_generic_alias(typ)
                                  and issubclass(cls, typ))
     types = [n for n in types if is_related(n)]
     # Remove entries which are strict bases of other entries (they will end up
@@ -781,6 +873,8 @@ def _find_impl(cls, registry):
     *object* type, this function may return None.
 
     """
+    if cls in registry:
+        return registry[cls]
     mro = _compose_mro(cls, registry.keys())
     match = None
     for t in mro:
@@ -835,6 +929,8 @@ def singledispatch(func):
                 impl = registry[cls]
             except KeyError:
                 impl = _find_impl(cls, registry)
+                if impl is None:
+                    impl = registry.get(object)
             dispatch_cache[cls] = impl
         return impl
 
@@ -843,11 +939,11 @@ def singledispatch(func):
         return get_origin(cls) in {Union, types.UnionType}
 
     def _is_valid_dispatch_type(cls):
-        if isinstance(cls, type):
+        if _is_class_like(cls):
             return True
         from typing import get_args
         return (_is_union_type(cls) and
-                all(isinstance(arg, type) for arg in get_args(cls)))
+                all(_is_class_like(arg) for arg in get_args(cls)))
 
     def register(cls, func=None):
         """generic_func.register(cls, func) -> func
@@ -990,6 +1086,18 @@ class cached_property:
             msg = (
                 f"No '__dict__' attribute on {type(instance).__name__!r} "
                 f"instance to cache {self.attrname!r} property."
+            )
+            raise TypeError(msg) from None
+        if type(cache).__name__ == "mappingproxy":
+            owner_name = type(instance).__name__
+            try:
+                if owner is not None and isinstance(instance, type):
+                    owner_name = owner.__name__
+            except Exception:
+                pass
+            msg = (
+                f"The '__dict__' attribute on {owner_name!r} instance "
+                f"does not support item assignment for caching {self.attrname!r} property."
             )
             raise TypeError(msg) from None
         val = cache.get(self.attrname, _NOT_FOUND)

@@ -429,6 +429,7 @@ fn builtin_bound_method_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRe
                 None
             }
         }
+        "__repr__" | "__str__" | "__hash__" | "__eq__" | "__ne__" => Some(bound_builtin(obj, name)),
         _ => None,
     }
 }
@@ -445,6 +446,7 @@ fn native_closure_attr(
         ))),
         "__doc__" => Some(PyObject::none()),
         "__call__" => Some(obj.clone()),
+        "__repr__" | "__str__" | "__hash__" | "__eq__" | "__ne__" => Some(bound_builtin(obj, name)),
         "__get__" => {
             let func = obj.clone();
             Some(PyObject::native_closure("__get__", move |args| {
@@ -706,6 +708,7 @@ const DICT_METHODS: &[&str] = &[
     "__contains__",
     "__iter__",
     "__getitem__",
+    "__class_getitem__",
     "__setitem__",
     "__delitem__",
     "__eq__",

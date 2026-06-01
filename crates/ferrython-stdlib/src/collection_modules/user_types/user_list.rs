@@ -1,4 +1,15 @@
 use super::*;
+use ferrython_core::types::PyInt;
+use num_traits::Signed;
+use std::rc::Rc;
+
+fn saturated_index(obj: &PyObjectRef) -> PyResult<i64> {
+    Ok(match obj.to_index()? {
+        PyInt::Small(n) => n,
+        PyInt::Big(n) if n.is_negative() => i64::MIN,
+        PyInt::Big(_) => i64::MAX,
+    })
+}
 
 fn slice_bounds(
     len: i64,
@@ -6,7 +17,7 @@ fn slice_bounds(
     stop: &Option<PyObjectRef>,
     step: &Option<PyObjectRef>,
 ) -> PyResult<(i64, i64, i64)> {
-    let step_val = step.as_ref().map(|v| v.to_int()).transpose()?.unwrap_or(1);
+    let step_val = step.as_ref().map(saturated_index).transpose()?.unwrap_or(1);
     if step_val == 0 {
         return Err(PyException::value_error("slice step cannot be zero"));
     }
@@ -14,21 +25,23 @@ fn slice_bounds(
     let stop_default = if step_val > 0 { len } else { -len - 1 };
     let start_val = start
         .as_ref()
-        .map(|v| v.to_int())
+        .map(saturated_index)
         .transpose()?
         .unwrap_or(start_default);
     let stop_val = stop
         .as_ref()
-        .map(|v| v.to_int())
+        .map(saturated_index)
         .transpose()?
         .unwrap_or(stop_default);
     let start_idx = if start_val < 0 {
-        (len + start_val).max(if step_val > 0 { 0 } else { -1 })
+        len.saturating_add(start_val)
+            .max(if step_val > 0 { 0 } else { -1 })
     } else {
         start_val.min(len)
     };
     let stop_idx = if stop_val < 0 {
-        (len + stop_val).max(if step_val > 0 { 0 } else { -1 })
+        len.saturating_add(stop_val)
+            .max(if step_val > 0 { 0 } else { -1 })
     } else {
         stop_val.min(len)
     };
@@ -57,14 +70,20 @@ fn userlist_set_slice(
             if i >= 0 && i < len {
                 indices.push(i as usize);
             }
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
         }
     } else {
         while i > stop {
             if i >= 0 && i < len {
                 indices.push(i as usize);
             }
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
         }
     }
     if indices.len() != new_items.len() {
@@ -99,14 +118,20 @@ fn userlist_delete_slice(
             if i >= 0 && i < len {
                 indices.push(i as usize);
             }
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
         }
     } else {
         while i > stop {
             if i >= 0 && i < len {
                 indices.push(i as usize);
             }
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
         }
     }
     indices.sort_unstable_by(|a, b| b.cmp(a));
@@ -114,6 +139,58 @@ fn userlist_delete_slice(
         items.remove(idx);
     }
     Ok(())
+}
+
+fn userlist_class(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        Ok(inst.class.clone())
+    } else {
+        Err(PyException::type_error(
+            "UserList method requires an instance",
+        ))
+    }
+}
+
+fn build_userlist_from_items(
+    owner_class: PyObjectRef,
+    items: Vec<PyObjectRef>,
+) -> PyResult<PyObjectRef> {
+    let data = PyObject::list(items);
+    let inst = PyObject::instance(owner_class);
+    if let PyObjectPayload::Instance(ref dst_inst) = inst.payload {
+        dst_inst
+            .attrs
+            .write()
+            .insert(CompactString::from("data"), data.clone());
+        install_list_methods(&dst_inst.attrs, &data, dst_inst.class.clone());
+    }
+    Ok(inst)
+}
+
+fn is_kwargs_dict(obj: &PyObjectRef) -> bool {
+    let PyObjectPayload::Dict(map) = &obj.payload else {
+        return false;
+    };
+    map.read().keys().any(|key| match key {
+        ferrython_core::types::HashableKey::Str(s) => matches!(s.as_str(), "key" | "reverse"),
+        _ => false,
+    })
+}
+
+fn kwarg_value(kwargs: Option<&PyObjectRef>, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Dict(map) = &kwargs?.payload else {
+        return None;
+    };
+    map.read()
+        .get(&HashableKey::str_key(CompactString::from(name)))
+        .cloned()
+}
+
+fn userlist_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<bool> {
+    if PyObjectRef::ptr_eq(item, target) {
+        return Ok(true);
+    }
+    Ok(item.compare(target, CompareOp::Eq)?.is_truthy())
 }
 
 fn build_userlist_copy(
@@ -194,6 +271,10 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
                 return Err(PyException::type_error("expected index"));
             }
             let data = get_user_data(&args[0], "data")?;
+            if let PyObjectPayload::Slice(_) = &args[1].payload {
+                let sliced = data.get_item(&args[1])?;
+                return build_userlist_from_items(userlist_class(&args[0])?, sliced.to_list()?);
+            }
             data.get_item(&args[1])
         }),
     );
@@ -209,21 +290,25 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
                     userlist_set_slice(&mut l.write(), sd, &args[2])?;
                     return Ok(PyObject::none());
                 }
-                let idx = args[1].to_int()? as i64;
+                let idx = args[1]
+                    .to_index()
+                    .map_err(|_| PyException::type_error("list indices must be integers or slices"))
+                    .and_then(|index| {
+                        Ok(match index {
+                            PyInt::Small(n) => n,
+                            PyInt::Big(n) if n.is_negative() => i64::MIN,
+                            PyInt::Big(_) => i64::MAX,
+                        })
+                    })?;
                 let mut w = l.write();
                 let len = w.len() as i64;
-                let i = if idx < 0 {
-                    (len + idx).max(0) as usize
-                } else {
-                    idx as usize
-                };
-                if i < w.len() {
-                    w[i] = args[2].clone();
-                } else {
+                let i = if idx < 0 { len + idx } else { idx };
+                if i < 0 || i >= len {
                     return Err(PyException::index_error(
                         "list assignment index out of range",
                     ));
                 }
+                w[i as usize] = args[2].clone();
             }
             Ok(PyObject::none())
         }),
@@ -244,10 +329,12 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
             let data = get_user_data(&args[0], "data")?;
             if let PyObjectPayload::List(l) = &data.payload {
                 let target = &args[1];
-                Ok(PyObject::bool_val(l.read().iter().any(|x| {
-                    x.compare(target, CompareOp::Eq)
-                        .map_or(false, |v| v.is_truthy())
-                })))
+                for item in l.read().iter() {
+                    if userlist_item_matches(item, target)? {
+                        return Ok(PyObject::bool_val(true));
+                    }
+                }
+                Ok(PyObject::bool_val(false))
             } else {
                 Ok(PyObject::bool_val(false))
             }
@@ -263,8 +350,16 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
     ns.insert(
         CompactString::from("__iter__"),
         native_method("UserList", "__iter__", |args| {
-            let data = get_user_data(&args[0], "data")?;
-            data.get_iter()
+            if args.is_empty() {
+                return Err(PyException::type_error("__iter__ requires self"));
+            }
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(ferrython_core::object::IteratorData::SeqIter {
+                    obj: args[0].clone(),
+                    index: 0,
+                    exhausted: false,
+                }),
+            ))))
         }),
     );
     ns.insert(
@@ -279,21 +374,26 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
                     userlist_delete_slice(&mut l.write(), sd)?;
                     return Ok(PyObject::none());
                 }
-                let idx = args[1].to_int()? as i64;
+                let idx = args[1]
+                    .to_index()
+                    .map_err(|_| PyException::type_error("list indices must be integers or slices"))
+                    .and_then(|index| {
+                        Ok(match index {
+                            PyInt::Small(n) => n,
+                            PyInt::Big(n) if n.is_negative() => i64::MIN,
+                            PyInt::Big(_) => i64::MAX,
+                        })
+                    })?;
                 let mut w = l.write();
                 let len = w.len() as i64;
-                let i = if idx < 0 {
-                    (len + idx).max(0) as usize
-                } else {
-                    idx as usize
-                };
-                if i < w.len() {
-                    w.remove(i);
-                    Ok(PyObject::none())
-                } else {
+                let i = if idx < 0 { len + idx } else { idx };
+                if i < 0 || i >= len {
                     Err(PyException::index_error(
                         "list assignment index out of range",
                     ))
+                } else {
+                    w.remove(i as usize);
+                    Ok(PyObject::none())
                 }
             } else {
                 Err(PyException::type_error("expected list data"))
@@ -314,7 +414,19 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
             };
             let mut items = data.to_list()?;
             items.extend(other.to_list()?);
-            Ok(PyObject::list(items))
+            build_userlist_from_items(userlist_class(&args[0])?, items)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__radd__"),
+        native_method("UserList", "__radd__", |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("expected other"));
+            }
+            let mut items = args[1].to_list()?;
+            let data = get_user_data(&args[0], "data")?;
+            items.extend(data.to_list()?);
+            build_userlist_from_items(userlist_class(&args[0])?, items)
         }),
     );
     ns.insert(
@@ -348,7 +460,42 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
             for _ in 0..n {
                 result.extend(items.iter().cloned());
             }
-            Ok(PyObject::list(result))
+            build_userlist_from_items(userlist_class(&args[0])?, result)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__rmul__"),
+        native_method("UserList", "__rmul__", |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("expected int"));
+            }
+            let data = get_user_data(&args[0], "data")?;
+            let n = args[1].to_int()?.max(0) as usize;
+            let items = data.to_list()?;
+            let mut result = Vec::with_capacity(items.len() * n);
+            for _ in 0..n {
+                result.extend(items.iter().cloned());
+            }
+            build_userlist_from_items(userlist_class(&args[0])?, result)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__imul__"),
+        native_method("UserList", "__imul__", |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("expected int"));
+            }
+            let n = args[1].to_int()?.max(0) as usize;
+            let data = get_user_data(&args[0], "data")?;
+            if let PyObjectPayload::List(l) = &data.payload {
+                let original = l.read().clone();
+                let mut result = Vec::with_capacity(original.len() * n);
+                for _ in 0..n {
+                    result.extend(original.iter().cloned());
+                }
+                *l.write() = result;
+            }
+            Ok(args[0].clone())
         }),
     );
     ns.insert(
@@ -434,11 +581,16 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
             if args.len() < 2 {
                 return Err(PyException::type_error("insert() requires 2 arguments"));
             }
-            let idx = args[0].to_int()? as usize;
+            let idx = args[0].to_int()? as i64;
             if let PyObjectPayload::List(items) = &l.payload {
                 let mut w = items.write();
-                let idx = idx.min(w.len());
-                w.insert(idx, args[1].clone());
+                let len = w.len() as i64;
+                let idx = if idx < 0 {
+                    (len + idx).max(0)
+                } else {
+                    idx.min(len)
+                };
+                w.insert(idx as usize, args[1].clone());
             }
             Ok(PyObject::none())
         }),
@@ -448,6 +600,9 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
         CompactString::from("pop"),
         PyObject::native_closure("pop", move |args| {
             if let PyObjectPayload::List(items) = &l.payload {
+                if args.len() > 1 {
+                    return Err(PyException::type_error("pop expected at most 1 argument"));
+                }
                 let mut w = items.write();
                 if w.is_empty() {
                     return Err(PyException::index_error("pop from empty list"));
@@ -455,19 +610,15 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
                 let idx = if !args.is_empty() {
                     let i = args[0].to_int()? as i64;
                     let len = w.len() as i64;
-                    (if i < 0 {
-                        (len + i).max(0)
-                    } else {
-                        i.min(len - 1)
-                    }) as usize
+                    let resolved = if i < 0 { len + i } else { i };
+                    if resolved < 0 || resolved >= len {
+                        return Err(PyException::index_error("pop index out of range"));
+                    }
+                    resolved as usize
                 } else {
                     w.len() - 1
                 };
-                if idx < w.len() {
-                    Ok(w.remove(idx))
-                } else {
-                    Err(PyException::index_error("pop index out of range"))
-                }
+                Ok(w.remove(idx))
             } else {
                 Err(PyException::type_error("not a list"))
             }
@@ -483,15 +634,16 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
             if let PyObjectPayload::List(items) = &l.payload {
                 let mut w = items.write();
                 let target = &args[0];
-                if let Some(pos) = w.iter().position(|x| {
-                    x.compare(target, CompareOp::Eq)
-                        .map_or(false, |v| v.is_truthy())
-                }) {
-                    w.remove(pos);
-                    Ok(PyObject::none())
-                } else {
-                    Err(PyException::value_error("list.remove(x): x not in list"))
+                let snapshot = w.clone();
+                for (pos, item) in snapshot.iter().enumerate() {
+                    if userlist_item_matches(item, target)? {
+                        if pos < w.len() {
+                            w.remove(pos);
+                        }
+                        return Ok(PyObject::none());
+                    }
                 }
+                Err(PyException::value_error("list.remove(x): x not in list"))
             } else {
                 Err(PyException::type_error("not a list"))
             }
@@ -500,7 +652,10 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
     let l = data.clone();
     attrs.write().insert(
         CompactString::from("clear"),
-        PyObject::native_closure("clear", move |_| {
+        PyObject::native_closure("clear", move |args| {
+            if !args.is_empty() {
+                return Err(PyException::type_error("clear expected no arguments"));
+            }
             if let PyObjectPayload::List(items) = &l.payload {
                 items.write().clear();
             }
@@ -510,7 +665,10 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
     let l = data.clone();
     attrs.write().insert(
         CompactString::from("reverse"),
-        PyObject::native_closure("reverse", move |_| {
+        PyObject::native_closure("reverse", move |args| {
+            if !args.is_empty() {
+                return Err(PyException::type_error("reverse expected no arguments"));
+            }
             if let PyObjectPayload::List(items) = &l.payload {
                 items.write().reverse();
             }
@@ -526,14 +684,12 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
             }
             let target = &args[0];
             if let PyObjectPayload::List(items) = &l.payload {
-                let count = items
-                    .read()
-                    .iter()
-                    .filter(|x| {
-                        x.compare(target, CompareOp::Eq)
-                            .map_or(false, |v| v.is_truthy())
-                    })
-                    .count();
+                let mut count = 0usize;
+                for item in items.read().iter() {
+                    if userlist_item_matches(item, target)? {
+                        count += 1;
+                    }
+                }
                 Ok(PyObject::int(count as i64))
             } else {
                 Ok(PyObject::int(0))
@@ -549,13 +705,33 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
             }
             let target = &args[0];
             if let PyObjectPayload::List(items) = &l.payload {
-                let r = items.read();
-                for (i, x) in r.iter().enumerate() {
-                    if x.compare(target, CompareOp::Eq)
-                        .map_or(false, |v| v.is_truthy())
-                    {
+                let len = items.read().len() as i64;
+                let normalize = |idx: usize, default: i64| -> PyResult<i64> {
+                    if args.len() <= idx {
+                        return Ok(default);
+                    }
+                    let raw = saturated_index(&args[idx])?;
+                    Ok(if raw < 0 {
+                        (len + raw).max(0)
+                    } else {
+                        raw.min(len)
+                    })
+                };
+                let start = normalize(1, 0)? as usize;
+                let stop = normalize(2, len)? as usize;
+                let mut i = start;
+                while i < stop {
+                    let x = {
+                        let r = items.read();
+                        if i >= r.len() {
+                            break;
+                        }
+                        r[i].clone()
+                    };
+                    if userlist_item_matches(&x, target)? {
                         return Ok(PyObject::int(i as i64));
                     }
+                    i += 1;
                 }
             }
             Err(PyException::value_error("x not in list"))
@@ -564,12 +740,39 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
     let l = data.clone();
     attrs.write().insert(
         CompactString::from("sort"),
-        PyObject::native_closure("sort", move |_| {
+        PyObject::native_closure("sort", move |args| {
+            let pos_len = if args.last().is_some_and(is_kwargs_dict) {
+                args.len() - 1
+            } else {
+                args.len()
+            };
+            if pos_len > 0 {
+                return Err(PyException::type_error(
+                    "sort expected no positional arguments",
+                ));
+            }
             if let PyObjectPayload::List(items) = &l.payload {
-                let mut w = items.write();
-                let mut sorted: Vec<_> = w.drain(..).collect();
-                sorted.sort_by(|a, b| {
-                    a.compare(b, CompareOp::Lt)
+                let kwargs = args.last().filter(|arg| is_kwargs_dict(arg));
+                let key_fn = kwarg_value(kwargs, "key")
+                    .filter(|value| !matches!(value.payload, PyObjectPayload::None));
+                let reverse = kwarg_value(kwargs, "reverse")
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(false);
+                let original = items.read().clone();
+                let mut sorted = original.clone();
+                let mut decorated = Vec::with_capacity(sorted.len());
+                if let Some(key) = key_fn {
+                    for item in sorted.into_iter() {
+                        decorated.push((call_callable(&key, &[item.clone()])?, item));
+                    }
+                } else {
+                    decorated = sorted
+                        .into_iter()
+                        .map(|item| (item.clone(), item))
+                        .collect();
+                }
+                decorated.sort_by(|a, b| {
+                    a.0.compare(&b.0, CompareOp::Lt)
                         .map_or(std::cmp::Ordering::Equal, |v| {
                             if v.is_truthy() {
                                 std::cmp::Ordering::Less
@@ -578,6 +781,19 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
                             }
                         })
                 });
+                sorted = decorated.into_iter().map(|(_, item)| item).collect();
+                if reverse {
+                    sorted.reverse();
+                }
+                let mut w = items.write();
+                if w.len() != original.len()
+                    || w.iter()
+                        .zip(original.iter())
+                        .any(|(left, right)| !PyObjectRef::ptr_eq(left, right))
+                {
+                    *w = original;
+                    return Err(PyException::value_error("list modified during sort"));
+                }
                 *w = sorted;
             }
             Ok(PyObject::none())
@@ -587,7 +803,10 @@ fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef, owner_class
         let attrs = attrs.clone();
         let data = data.clone();
         let owner_class = owner_class.clone();
-        PyObject::native_closure("copy", move |_| {
+        PyObject::native_closure("copy", move |args| {
+            if !args.is_empty() {
+                return Err(PyException::type_error("copy expected no arguments"));
+            }
             build_userlist_copy(&data, owner_class.clone(), &attrs)
         })
     });

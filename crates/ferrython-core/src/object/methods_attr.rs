@@ -421,6 +421,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(cls_override) = inst.attrs.read().get("__class__") {
                     return Some(cls_override.clone());
                 }
+                if let Some(cls_attr) = lookup_in_class_mro(&inst.class, "__class__") {
+                    if !matches!(&cls_attr.payload, PyObjectPayload::BuiltinType(_)) {
+                        return Some(wrap_class_attr_for_instance(obj, inst, name, cls_attr));
+                    }
+                }
                 return Some(inst.class.clone());
             }
             if name == "__dict__" {

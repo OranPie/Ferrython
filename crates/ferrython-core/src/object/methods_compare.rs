@@ -87,6 +87,87 @@ fn compare_ordering(ordering: std::cmp::Ordering, op: CompareOp) -> bool {
     }
 }
 
+fn numeric_fraction_cmp_parts(
+    obj: &PyObjectRef,
+) -> Option<(num_bigint::BigInt, num_bigint::BigInt)> {
+    use crate::types::{float_as_integer_ratio, PyInt};
+    use num_bigint::BigInt;
+    use num_traits::{One, Zero};
+
+    match &obj.payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => Some((BigInt::from(*n), BigInt::one())),
+        PyObjectPayload::Int(PyInt::Big(n)) => Some((n.as_ref().clone(), BigInt::one())),
+        PyObjectPayload::Bool(b) => Some((BigInt::from(if *b { 1 } else { 0 }), BigInt::one())),
+        PyObjectPayload::Float(f) if f.is_nan() => None,
+        PyObjectPayload::Float(f) if f.is_infinite() => Some((
+            BigInt::from(if f.is_sign_negative() { -1 } else { 1 }),
+            BigInt::zero(),
+        )),
+        PyObjectPayload::Float(f) => Some(float_as_integer_ratio(*f)),
+        PyObjectPayload::Instance(inst) => {
+            let attrs = inst.attrs.read();
+            let to_bigint = |value: &PyObjectRef| match &value.payload {
+                PyObjectPayload::Int(PyInt::Small(n)) => Some(BigInt::from(*n)),
+                PyObjectPayload::Int(PyInt::Big(n)) => Some(n.as_ref().clone()),
+                PyObjectPayload::Bool(b) => Some(BigInt::from(if *b { 1 } else { 0 })),
+                _ => None,
+            };
+            let n = attrs.get("numerator").and_then(to_bigint)?;
+            let d = attrs.get("denominator").and_then(to_bigint)?;
+            Some((n, d))
+        }
+        _ => None,
+    }
+}
+
+fn compare_numeric_fraction_like(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    op: CompareOp,
+) -> Option<PyObjectRef> {
+    use num_traits::Zero;
+
+    if matches!(&a.payload, PyObjectPayload::Float(f) if f.is_nan())
+        && numeric_fraction_cmp_parts(b).is_some()
+    {
+        return Some(PyObject::bool_val(false));
+    }
+    if matches!(&b.payload, PyObjectPayload::Float(f) if f.is_nan())
+        && numeric_fraction_cmp_parts(a).is_some()
+    {
+        return Some(PyObject::bool_val(false));
+    }
+
+    let (an, ad) = numeric_fraction_cmp_parts(a)?;
+    let (bn, bd) = numeric_fraction_cmp_parts(b)?;
+    if ad.is_zero() || bd.is_zero() {
+        let result = match (ad.is_zero(), bd.is_zero(), an.sign(), bn.sign()) {
+            (true, true, a_sign, b_sign) => compare_ordering(a_sign.cmp(&b_sign), op),
+            (true, false, sign, _) => compare_ordering(
+                if sign == num_bigint::Sign::Minus {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                },
+                op,
+            ),
+            (false, true, _, sign) => compare_ordering(
+                if sign == num_bigint::Sign::Minus {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                },
+                op,
+            ),
+            _ => unreachable!(),
+        };
+        return Some(PyObject::bool_val(result));
+    }
+    let left = an * bd;
+    let right = bn * ad;
+    Some(PyObject::bool_val(compare_ordering(left.cmp(&right), op)))
+}
+
 fn compare_op_symbol(op: CompareOp) -> &'static str {
     match op {
         CompareOp::Lt => "<",
@@ -562,6 +643,14 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         return Err(set_order_type_error(a, b, op));
     }
     // Unwrap builtin subclass instances for comparison
+    if matches!(
+        op,
+        CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge
+    ) {
+        if let Some(result) = compare_numeric_fraction_like(a, b, op) {
+            return Ok(result);
+        }
+    }
     if !matches!(op, CompareOp::Eq | CompareOp::Ne)
         || (!instance_defines_eq_or_ne(a) && !instance_defines_eq_or_ne(b))
     {

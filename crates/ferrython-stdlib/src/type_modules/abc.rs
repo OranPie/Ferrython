@@ -1,5 +1,19 @@
 use super::*;
 
+thread_local! {
+    static ABC_CACHE_TOKEN: PyCell<i64> = PyCell::new(0);
+}
+
+pub(crate) fn bump_abc_cache_token() {
+    ABC_CACHE_TOKEN.with(|token| {
+        *token.write() += 1;
+    });
+}
+
+fn current_abc_cache_token() -> i64 {
+    ABC_CACHE_TOKEN.with(|token| *token.read())
+}
+
 pub fn create_abc_module() -> PyObjectRef {
     // ABC base class with __abstractmethods__ marker
     let abc_class = PyObject::class(CompactString::from("ABC"), vec![], IndexMap::new());
@@ -48,6 +62,7 @@ pub fn create_abc_module() -> PyObjectRef {
                     .write()
                     .insert(CompactString::from("__abc_registered__"), cls.clone());
             }
+            bump_abc_cache_token();
             Ok(subclass.clone())
         });
         ns.insert(CompactString::from("register"), register_fn);
@@ -60,6 +75,25 @@ pub fn create_abc_module() -> PyObjectRef {
             ));
         }
         let func = args[0].clone();
+        match &func.payload {
+            PyObjectPayload::Function(f) => {
+                f.attrs.write().insert(
+                    CompactString::from("__isabstractmethod__"),
+                    PyObject::bool_val(true),
+                );
+                return Ok(func);
+            }
+            PyObjectPayload::ClassMethod(inner) | PyObjectPayload::StaticMethod(inner) => {
+                if let PyObjectPayload::Function(f) = &inner.payload {
+                    f.attrs.write().insert(
+                        CompactString::from("__isabstractmethod__"),
+                        PyObject::bool_val(true),
+                    );
+                }
+                return Ok(func);
+            }
+            _ => {}
+        }
         if matches!(&func.payload, PyObjectPayload::Instance(inst)
             if ferrython_core::object::is_property_subclass_class(&inst.class))
         {
@@ -71,12 +105,7 @@ pub fn create_abc_module() -> PyObjectRef {
             }
             return Ok(func);
         }
-        // Return a marker tuple: ("__abstract__", func)
-        let marker = PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("__abstract__")),
-            func,
-        ]);
-        Ok(marker)
+        Ok(func)
     });
 
     let abcmeta_cls = {
@@ -106,6 +135,7 @@ pub fn create_abc_module() -> PyObjectRef {
                         map.write().insert(key, PyObject::bool_val(true));
                     }
                 }
+                bump_abc_cache_token();
                 Ok(subclass.clone())
             }),
         );
@@ -142,10 +172,9 @@ pub fn create_abc_module() -> PyObjectRef {
         }
     });
 
-    let cache_token: Rc<PyCell<i64>> = Rc::new(PyCell::new(0));
     let get_cache_token_fn =
         PyObject::native_closure("abc.get_cache_token", move |_args: &[PyObjectRef]| {
-            Ok(PyObject::int(*cache_token.read()))
+            Ok(PyObject::int(current_abc_cache_token()))
         });
 
     make_module(

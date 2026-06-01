@@ -4,7 +4,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{float_as_integer_ratio, HashableKey};
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
 mod combinatorics;
@@ -131,7 +131,19 @@ pub fn create_math_module() -> PyObjectRef {
 
 fn math_trunc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.trunc", args, 1)?;
-    Ok(PyObject::int(args[0].to_float()?.trunc() as i64))
+    let value = args[0].to_float()?;
+    if value.is_nan() {
+        return Err(PyException::value_error(
+            "cannot convert float NaN to integer",
+        ));
+    }
+    if value.is_infinite() {
+        return Err(PyException::overflow_error(
+            "cannot convert float infinity to integer",
+        ));
+    }
+    let (numerator, denominator) = float_as_integer_ratio(value.trunc());
+    Ok(PyObject::big_int(numerator / denominator))
 }
 fn math_copysign(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.copysign", args, 2)?;

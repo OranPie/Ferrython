@@ -161,6 +161,22 @@ impl VirtualMachine {
         if let Some(unwrapped_b) = self.unwrap_weak_proxy_for_arithmetic(b)? {
             return self.try_inplace_dunder(a, &unwrapped_b, idunder, dunder);
         }
+        let rdunder = match dunder {
+            "__add__" => Some("__radd__"),
+            "__sub__" => Some("__rsub__"),
+            "__mul__" => Some("__rmul__"),
+            "__truediv__" => Some("__rtruediv__"),
+            "__floordiv__" => Some("__rfloordiv__"),
+            "__mod__" => Some("__rmod__"),
+            "__pow__" => Some("__rpow__"),
+            "__lshift__" => Some("__rlshift__"),
+            "__rshift__" => Some("__rrshift__"),
+            "__and__" => Some("__rand__"),
+            "__or__" => Some("__ror__"),
+            "__xor__" => Some("__rxor__"),
+            "__matmul__" => Some("__rmatmul__"),
+            _ => None,
+        };
         if let PyObjectPayload::Instance(inst) = &a.payload {
             if inst.attrs.read().contains_key("__deque__") {
                 if let Some(method) = a.get_attr(idunder).or_else(|| a.get_attr(dunder)) {
@@ -250,6 +266,11 @@ impl VirtualMachine {
                         .insert(intern_or_new("__builtin_value__"), result);
                     return Ok(Some(a.clone()));
                 }
+            }
+        }
+        if let Some(rd) = rdunder {
+            if let Some(result) = self.try_binary_dunder(a, b, dunder, Some(rd))? {
+                return Ok(Some(result));
             }
         }
         Ok(None)

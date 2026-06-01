@@ -271,7 +271,21 @@ pub fn create_typing_module() -> PyObjectRef {
                 }
                 let obj = &args[0];
                 if let Some(ann) = obj.get_attr("__annotations__") {
-                    Ok(ann)
+                    if let PyObjectPayload::Dict(map) = &ann.payload {
+                        let mut resolved = IndexMap::new();
+                        for (key, value) in map.read().iter() {
+                            let value = if let PyObjectPayload::Str(s) = &value.payload {
+                                resolve_string_annotation(s.as_str())
+                                    .unwrap_or_else(|| value.clone())
+                            } else {
+                                value.clone()
+                            };
+                            resolved.insert(key.clone(), value);
+                        }
+                        Ok(PyObject::dict(resolved))
+                    } else {
+                        Ok(ann)
+                    }
                 } else {
                     Ok(PyObject::dict(IndexMap::new()))
                 }
@@ -834,4 +848,20 @@ pub fn create_typing_module() -> PyObjectRef {
     attrs.push(("Sentinel", sentinel_cls));
 
     make_module("typing", attrs)
+}
+
+fn resolve_string_annotation(name: &str) -> Option<PyObjectRef> {
+    if let Some(attr) = name.strip_prefix("collections.abc.") {
+        return crate::type_modules::create_collections_abc_module().get_attr(attr);
+    }
+    if let Some(attr) = name.strip_prefix("typing.") {
+        return create_typing_module().get_attr(attr);
+    }
+    match name {
+        "int" | "str" | "bytes" | "bytearray" | "list" | "tuple" | "dict" | "set" | "frozenset"
+        | "bool" | "float" | "complex" | "object" | "type" => {
+            Some(PyObject::builtin_type(CompactString::from(name)))
+        }
+        _ => None,
+    }
 }

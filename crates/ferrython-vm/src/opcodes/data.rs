@@ -142,6 +142,26 @@ impl VirtualMachine {
         &mut self,
         instr: Instruction,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        let preloaded_classderef_enclosing =
+            if matches!(instr.op, Opcode::LoadClassderef) && self.call_stack.len() >= 2 {
+                let frame = self.call_stack.last().unwrap();
+                let idx = instr.arg as usize;
+                let n_cell = frame.code.cellvars.len();
+                let is_class_cell = idx < n_cell
+                    && frame
+                        .code
+                        .cellvars
+                        .get(idx)
+                        .map(|name| name.as_str() == "__class__")
+                        .unwrap_or(false);
+                if is_class_cell {
+                    Self::enclosing_class_cell_value_from_stack(&self.call_stack)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
         let mut del_target: Option<PyObjectRef> = None;
         {
             let frame = self.vm_frame();
@@ -320,6 +340,7 @@ impl VirtualMachine {
                     } else {
                         frame.code.freevars[idx - n_cell].clone()
                     };
+                    let enclosing_class = preloaded_classderef_enclosing.clone();
                     // Check local_names first (class namespace)
                     if let Some(v) = frame.local_names_get(name.as_str()) {
                         frame.push(v);
@@ -331,6 +352,10 @@ impl VirtualMachine {
                                 frame.push(v);
                             }
                             None => {
+                                if let Some(v) = enclosing_class {
+                                    frame.push(v);
+                                    return Ok(None);
+                                }
                                 return Err(PyException::name_error(format!(
                                 "free variable '{}' referenced before assignment in enclosing scope", name
                             )));
@@ -506,6 +531,28 @@ impl VirtualMachine {
         self.drain_pending_finalizers();
         Ok(None)
     }
+
+    fn enclosing_class_cell_value_from_stack(stack: &[crate::frame::Frame]) -> Option<PyObjectRef> {
+        if stack.len() < 2 {
+            return None;
+        }
+        let enclosing = &stack[stack.len() - 2];
+        let n_cell = enclosing.code.cellvars.len();
+        for (i, name) in enclosing.code.cellvars.iter().enumerate() {
+            if name.as_str() == "__class__" {
+                return enclosing.cells.get(i).and_then(|cell| cell.read().clone());
+            }
+        }
+        for (i, name) in enclosing.code.freevars.iter().enumerate() {
+            if name.as_str() == "__class__" {
+                return enclosing
+                    .cells
+                    .get(n_cell + i)
+                    .and_then(|cell| cell.read().clone());
+            }
+        }
+        None
+    }
 }
 
 // ── Group 3: Attribute operations ────────────────────────────────────
@@ -680,6 +727,60 @@ impl VirtualMachine {
         }
         match obj.get_attr(name) {
             Some(v) => {
+                if let PyObjectPayload::Class(cd) = &obj.payload {
+                    if let Some(raw) = cd.namespace.read().get(name.as_str()).cloned() {
+                        if has_descriptor_get(&raw) {
+                            let get_method = raw.get_attr("__get__").unwrap();
+                            let get_method_bound = if matches!(
+                                &get_method.payload,
+                                PyObjectPayload::BoundMethod { .. }
+                            ) {
+                                get_method
+                            } else {
+                                PyObjectRef::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: raw.clone(),
+                                        method: get_method,
+                                    },
+                                })
+                            };
+                            let result = self.call_object(
+                                get_method_bound,
+                                vec![PyObject::none(), obj.clone()],
+                            )?;
+                            self.vm_push(result);
+                            return Ok(None);
+                        }
+                    }
+                    if let Some(meta) = &cd.metaclass {
+                        if let PyObjectPayload::Class(mcd) = &meta.payload {
+                            if let Some(raw) = mcd.namespace.read().get(name.as_str()).cloned() {
+                                if has_descriptor_get(&raw) {
+                                    let get_method = raw.get_attr("__get__").unwrap();
+                                    let get_method_bound = if matches!(
+                                        &get_method.payload,
+                                        PyObjectPayload::BoundMethod { .. }
+                                    ) {
+                                        get_method
+                                    } else {
+                                        PyObjectRef::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: raw.clone(),
+                                                method: get_method,
+                                            },
+                                        })
+                                    };
+                                    let result = self.call_object(
+                                        get_method_bound,
+                                        vec![obj.clone(), meta.clone()],
+                                    )?;
+                                    self.vm_push(result);
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                    }
+                }
                 if ferrython_core::object::is_property_like(&v) {
                     // On class-level access (e.g. MyClass.prop), return the property
                     // object itself — don't invoke pd.fget.

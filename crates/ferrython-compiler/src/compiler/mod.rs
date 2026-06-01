@@ -266,6 +266,14 @@ impl Compiler {
         }
     }
 
+    pub(super) fn is_explicit_global(&self, name: &str) -> bool {
+        if let Some(sym) = self.current_unit().scope.lookup(name) {
+            sym.scope == SymbolScope::Global && sym.is_explicit_global_or_nonlocal
+        } else {
+            false
+        }
+    }
+
     /// Find fast-local index for a name, adding it to varnames if needed.
     pub(super) fn varname_index(&mut self, name: &str) -> u32 {
         let varnames = &self.current_unit().code.varnames;
@@ -302,17 +310,41 @@ impl Compiler {
         idx
     }
 
+    pub(super) fn free_deref_index(&mut self, name: &str) -> Option<u32> {
+        let code = &self.current_unit().code;
+        let offset = code.cellvars.len();
+        for (i, v) in code.freevars.iter().enumerate() {
+            if v.as_str() == name {
+                return Some((offset + i) as u32);
+            }
+        }
+        None
+    }
+
     /// Emit the correct LOAD instruction for a name.
     pub(super) fn load_name(&mut self, name: &str) {
         let name = self.mangle_name(name);
         let name = name.as_ref();
         // Cell/free variables use LoadDeref in ANY scope (function, class, comprehension)
         // BUT in class scope, free vars use LoadClassderef (checks locals first)
-        if self.is_cell(name) || self.is_free(name) {
-            let idx = self.deref_index(name);
-            if self.current_unit().class_name.is_some() && self.is_free(name) {
+        if self.current_unit().class_name.is_some() && self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::LoadGlobal, idx);
+        } else if self.current_unit().class_name.is_some() && name == "__class__" {
+            if let Some(idx) = self.free_deref_index(name) {
                 self.emit_arg(Opcode::LoadClassderef, idx);
             } else {
+                let idx = self.add_name(name);
+                self.emit_arg(Opcode::LoadName, idx);
+            }
+        } else if self.is_cell(name) || self.is_free(name) {
+            if self.current_unit().class_name.is_some() && self.is_free(name) {
+                let idx = self
+                    .free_deref_index(name)
+                    .unwrap_or_else(|| self.deref_index(name));
+                self.emit_arg(Opcode::LoadClassderef, idx);
+            } else {
+                let idx = self.deref_index(name);
                 self.emit_arg(Opcode::LoadDeref, idx);
             }
         } else if self.is_function_scope() {
@@ -336,8 +368,24 @@ impl Compiler {
     pub(super) fn store_name(&mut self, name: &str) {
         let name = self.mangle_name(name);
         let name = name.as_ref();
-        // Cell/free variables use StoreDeref in ANY scope
-        if self.is_cell(name) || self.is_free(name) {
+        // In class bodies, assignments always update the class namespace.  A
+        // hidden __class__ cell may still exist for methods using super(), but
+        // explicit `__class__ = value` must not overwrite that cell.
+        if self.current_unit().class_name.is_some() && self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::StoreGlobal, idx);
+        } else if self.current_unit().class_name.is_some()
+            && self.is_cell(name)
+            && !self.is_free(name)
+        {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::StoreName, idx);
+        } else if self.current_unit().class_name.is_some() && self.is_free(name) {
+            let idx = self
+                .free_deref_index(name)
+                .unwrap_or_else(|| self.deref_index(name));
+            self.emit_arg(Opcode::StoreDeref, idx);
+        } else if self.is_cell(name) || self.is_free(name) {
             let idx = self.deref_index(name);
             self.emit_arg(Opcode::StoreDeref, idx);
         } else if self.is_function_scope() {
@@ -358,7 +406,24 @@ impl Compiler {
     pub(super) fn delete_name(&mut self, name: &str) {
         let name = self.mangle_name(name);
         let name = name.as_ref();
-        if self.is_function_scope() {
+        if self.current_unit().class_name.is_some() && self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::DeleteGlobal, idx);
+        } else if self.current_unit().class_name.is_some()
+            && self.is_cell(name)
+            && !self.is_free(name)
+        {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::DeleteName, idx);
+        } else if self.current_unit().class_name.is_some() && self.is_free(name) {
+            let idx = self
+                .free_deref_index(name)
+                .unwrap_or_else(|| self.deref_index(name));
+            self.emit_arg(Opcode::DeleteDeref, idx);
+        } else if self.is_cell(name) || self.is_free(name) {
+            let idx = self.deref_index(name);
+            self.emit_arg(Opcode::DeleteDeref, idx);
+        } else if self.is_function_scope() {
             if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::DeleteGlobal, idx);

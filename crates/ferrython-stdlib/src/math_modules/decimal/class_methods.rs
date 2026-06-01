@@ -573,9 +573,9 @@ pub(super) fn add_extended_decimal_methods(
                 .map(|(m, _)| m)
                 .unwrap_or(check);
             let parts: Vec<&str> = mantissa.splitn(2, '.').collect();
-            let valid = parts
-                .iter()
-                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            let has_digits = parts.iter().any(|p| p.chars().any(|c| c.is_ascii_digit()));
+            let valid = has_digits
+                && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
                 && check
                     .split_once('e')
                     .or_else(|| check.split_once('E'))

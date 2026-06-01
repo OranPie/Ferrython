@@ -399,6 +399,11 @@ fn fast_instance_attr_value(
             }
         }
         if !generic_load_attr && name.as_str() == "__class__" {
+            if let Some(class_attr) = lookup_in_class_mro(&inst.class, "__class__") {
+                if !matches!(&class_attr.payload, PyObjectPayload::BuiltinType(_)) {
+                    return None;
+                }
+            }
             return Some(inst.class.clone());
         }
         let attrs = unsafe { &*inst.attrs.data_ptr() };
@@ -410,6 +415,11 @@ fn fast_instance_attr_value(
         }
         let _ = attrs;
         if generic_load_attr && name.as_str() == "__class__" {
+            if let Some(class_attr) = lookup_in_class_mro(&inst.class, "__class__") {
+                if !matches!(&class_attr.payload, PyObjectPayload::BuiltinType(_)) {
+                    return None;
+                }
+            }
             return Some(inst.class.clone());
         }
         if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0 {
@@ -442,7 +452,7 @@ fn attr_value_can_load_from_instance(
 fn fast_class_attr_value(
     cd: &ferrython_core::object::ClassData,
     name: &str,
-    generic_load_attr: bool,
+    _generic_load_attr: bool,
 ) -> Option<PyObjectRef> {
     let vtable = unsafe { &*cd.method_vtable.data_ptr() };
     if vtable.is_empty() {
@@ -464,7 +474,7 @@ fn fast_class_attr_value(
         {
             None
         }
-        _ if generic_load_attr && has_descriptor_get(class_value) => None,
+        _ if has_descriptor_get(class_value) => None,
         _ => Some(class_value.clone()),
     }
 }

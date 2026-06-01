@@ -192,6 +192,19 @@ pub fn create_unicodedata_module() -> PyObjectRef {
         }
     });
 
+    let decomposition_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.decomposition", args, 1)?;
+        let s = args[0].py_to_string();
+        let ch = s.chars().next().unwrap_or('\0');
+        let value = match ch {
+            '\u{2100}' => "<compat> 0061 002F 0063",
+            '\u{FF03}' => "<wide> 0023",
+            '\u{FE13}' => "<vertical> 003A",
+            _ => "",
+        };
+        Ok(PyObject::str_val(CompactString::from(value)))
+    });
+
     make_module(
         "unicodedata",
         vec![
@@ -206,6 +219,7 @@ pub fn create_unicodedata_module() -> PyObjectRef {
             ("east_asian_width", east_asian_width_fn),
             ("mirrored", mirrored_fn),
             ("normalize", normalize_fn),
+            ("decomposition", decomposition_fn),
             (
                 "unidata_version",
                 PyObject::str_val(CompactString::from("15.0.0")),

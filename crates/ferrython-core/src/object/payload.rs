@@ -427,7 +427,11 @@ impl Drop for PyObjectRef {
                     }
                 }
             }
-            let new_strong = (*p).strong.get() - 1;
+            let current_strong = (*p).strong.get();
+            if current_strong == IMMORTAL_REFCOUNT || current_strong == 0 {
+                return;
+            }
+            let new_strong = current_strong - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
                 let entries = WEAKREF_OBJECTS

@@ -29,6 +29,17 @@ fn code_objects_equal(a: &CodeObject, b: &CodeObject) -> bool {
         && a.max_stack_size == b.max_stack_size
 }
 
+fn builtin_bound_receivers_equal(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::BuiltinType(left), PyObjectPayload::BuiltinType(right)) => left == right,
+        (PyObjectPayload::Class(left), PyObjectPayload::Class(right)) => {
+            left.name == right.name && PyObjectRef::ptr_eq(a, b)
+        }
+        (PyObjectPayload::Module(left), PyObjectPayload::Module(right)) => left.name == right.name,
+        _ => PyObjectRef::ptr_eq(a, b),
+    }
+}
+
 fn code_constant_values_equal(a: &[ConstantValue], b: &[ConstantValue]) -> bool {
     a.len() == b.len()
         && a.iter()
@@ -310,15 +321,18 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             }
         }
         (PyObjectPayload::Instance(_), PyObjectPayload::Float(_))
-        | (PyObjectPayload::Float(_), PyObjectPayload::Instance(_))
         | (PyObjectPayload::Instance(_), PyObjectPayload::Int(_))
+        | (PyObjectPayload::Instance(_), PyObjectPayload::Bool(_)) => {
+            let left = object_rational_parts(a)?;
+            let right = object_rational_parts(b)?;
+            compare_rational_parts(left, right)
+        }
+        (PyObjectPayload::Float(_), PyObjectPayload::Instance(_))
         | (PyObjectPayload::Int(_), PyObjectPayload::Instance(_))
-        | (PyObjectPayload::Instance(_), PyObjectPayload::Bool(_))
         | (PyObjectPayload::Bool(_), PyObjectPayload::Instance(_)) => {
-            match (object_rational_parts(a), object_rational_parts(b)) {
-                (Some(left), Some(right)) => compare_rational_parts(left, right),
-                _ => None,
-            }
+            let left = object_rational_parts(a)?;
+            let right = object_rational_parts(b)?;
+            compare_rational_parts(left, right)
         }
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read();
@@ -375,6 +389,15 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         }
         (PyObjectPayload::NativeClosure(a), PyObjectPayload::NativeClosure(b)) => {
             if a.name == b.name {
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                None
+            }
+        }
+        (PyObjectPayload::BuiltinBoundMethod(a), PyObjectPayload::BuiltinBoundMethod(b)) => {
+            if a.method_name == b.method_name
+                && builtin_bound_receivers_equal(&a.receiver, &b.receiver)
+            {
                 Some(std::cmp::Ordering::Equal)
             } else {
                 None

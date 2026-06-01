@@ -24,6 +24,9 @@ impl VirtualMachine {
                     }
                     return Ok(Some(result.is_truthy()));
                 }
+                if let Some(result) = Self::compare_builtin_value_subclass(a, inst, b)? {
+                    return Ok(Some(result));
+                }
             }
             if let Some(eq_method) = a.get_attr("__eq__") {
                 let result = vm.call_object(eq_method, vec![b.clone()])?;
@@ -136,6 +139,63 @@ impl VirtualMachine {
             }
         }
         false
+    }
+
+    fn compare_builtin_value_subclass(
+        _left: &PyObjectRef,
+        left_inst: &InstanceData,
+        right: &PyObjectRef,
+    ) -> PyResult<Option<bool>> {
+        let Some(left_value) = left_inst.attrs.read().get("__builtin_value__").cloned() else {
+            return Ok(None);
+        };
+        let right_value = if let PyObjectPayload::Instance(right_inst) = &right.payload {
+            right_inst
+                .attrs
+                .read()
+                .get("__builtin_value__")
+                .cloned()
+                .unwrap_or_else(|| right.clone())
+        } else {
+            right.clone()
+        };
+        match (&left_value.payload, &right_value.payload) {
+            (PyObjectPayload::List(left_items), PyObjectPayload::List(right_items)) => {
+                let left_items = left_items.read();
+                let right_items = right_items.read();
+                if left_items.len() != right_items.len() {
+                    return Ok(Some(false));
+                }
+                Ok(Some(left_items.iter().zip(right_items.iter()).all(
+                    |(a, b)| {
+                        a.compare(b, ferrython_core::object::CompareOp::Eq)
+                            .map_or(false, |v| v.is_truthy())
+                    },
+                )))
+            }
+            (PyObjectPayload::Tuple(left_items), PyObjectPayload::Tuple(right_items)) => {
+                if left_items.len() != right_items.len() {
+                    return Ok(Some(false));
+                }
+                Ok(Some(left_items.iter().zip(right_items.iter()).all(
+                    |(a, b)| {
+                        a.compare(b, ferrython_core::object::CompareOp::Eq)
+                            .map_or(false, |v| v.is_truthy())
+                    },
+                )))
+            }
+            _ => {
+                if std::mem::discriminant(&left_value.payload)
+                    == std::mem::discriminant(&right_value.payload)
+                {
+                    let result =
+                        left_value.compare(&right_value, ferrython_core::object::CompareOp::Eq)?;
+                    Ok(Some(result.is_truthy()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 
     pub(crate) fn ensure_iterator_result(

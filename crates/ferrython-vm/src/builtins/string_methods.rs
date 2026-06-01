@@ -1192,12 +1192,32 @@ pub(crate) fn call_str_method(
                             }
                             field.push(c);
                         }
+                        let (field, conversion) = if let Some((name, conv)) = field.split_once('!')
+                        {
+                            (name.to_string(), Some(conv.to_string()))
+                        } else {
+                            (field, None)
+                        };
                         // Look up field in mapping (dict subscript, not attribute)
+                        let mut append_formatted = |val: &PyObjectRef| -> PyResult<()> {
+                            match conversion.as_deref() {
+                                Some("r") => result.push_str(&val.repr()),
+                                Some("s") | None => result.push_str(&val.py_to_string()),
+                                Some("a") => result.push_str(&val.repr()),
+                                Some(other) => {
+                                    return Err(PyException::value_error(format!(
+                                        "Unknown conversion specifier {}",
+                                        other
+                                    )));
+                                }
+                            }
+                            Ok(())
+                        };
                         if let PyObjectPayload::Dict(m) = &mapping.payload {
-                            let key = HashableKey::str_key(CompactString::from(&field));
+                            let key = HashableKey::str_key(CompactString::from(field.as_str()));
                             let guard = m.read();
                             if let Some(val) = guard.get(&key) {
-                                result.push_str(&val.py_to_string());
+                                append_formatted(val)?;
                             } else {
                                 // Support defaultdict: check for __defaultdict_factory__
                                 let factory_key = HashableKey::str_key(CompactString::from(
@@ -1211,7 +1231,7 @@ pub(crate) fn call_str_method(
                                         _ => return Err(PyException::key_error(field)),
                                     };
                                     m.write().insert(key, val.clone());
-                                    result.push_str(&val.py_to_string());
+                                    append_formatted(&val)?;
                                 } else {
                                     return Err(PyException::key_error(field));
                                 }
@@ -1244,9 +1264,9 @@ pub(crate) fn call_str_method(
                                 None
                             };
                             if let Some(val) = resolved {
-                                result.push_str(&val.py_to_string());
+                                append_formatted(&val)?;
                             } else if let Some(val) = mapping.get_attr(&field) {
-                                result.push_str(&val.py_to_string());
+                                append_formatted(&val)?;
                             } else {
                                 return Err(PyException::key_error(field));
                             }

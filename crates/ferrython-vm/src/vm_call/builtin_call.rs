@@ -98,9 +98,6 @@ impl VirtualMachine {
         if matches!(name.as_str(), "sum" | "sorted" | "min" | "max") {
             return self.call_computation_builtin(name.as_str(), args);
         }
-        if matches!(name.as_str(), "getattr" | "setattr" | "delattr") {
-            return self.call_attr_builtin(name.as_str(), args);
-        }
         if matches!(name.as_str(), "globals" | "locals" | "vars" | "dir") {
             return self.call_scope_builtin(name.as_str(), args);
         }
@@ -128,6 +125,7 @@ impl VirtualMachine {
                 | "abs"
                 | "divmod"
                 | "hash"
+                | "pow"
                 | "bin"
                 | "oct"
                 | "hex"
@@ -142,6 +140,9 @@ impl VirtualMachine {
         }
         // VM-aware builtins that need to call user-defined methods
         match name.as_str() {
+            "getattr" | "setattr" | "delattr" => {
+                return self.call_attr_builtin(name.as_str(), args);
+            }
             "print" => {
                 return self.vm_print(&args, None, None, None, false);
             }

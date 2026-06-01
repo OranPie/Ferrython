@@ -36,6 +36,137 @@ fn collect_next_iterator(iter_obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
     Ok(result)
 }
 
+fn collect_seq_iterator(
+    obj: &PyObjectRef,
+    index: &mut i64,
+    exhausted: &mut bool,
+) -> PyResult<Vec<PyObjectRef>> {
+    if *exhausted {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    loop {
+        match obj.get_item(&PyObject::int(*index)) {
+            Ok(value) => {
+                guarded_push(&mut result, value, "sequence iterator -> list")?;
+                *index = (*index).saturating_add(1);
+            }
+            Err(err)
+                if err.kind == ExceptionKind::IndexError
+                    || err.kind == ExceptionKind::StopIteration =>
+            {
+                *exhausted = true;
+                break;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(result)
+}
+
+fn next_static_iterator(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    match &iter_obj.payload {
+        PyObjectPayload::Iterator(iter_data) => {
+            let mut data = iter_data.write();
+            match &mut *data {
+                IteratorData::List { items, index } | IteratorData::Tuple { items, index } => {
+                    if *index >= items.len() {
+                        Ok(None)
+                    } else {
+                        let value = items[*index].clone();
+                        *index += 1;
+                        Ok(Some(value))
+                    }
+                }
+                IteratorData::Range {
+                    current,
+                    stop,
+                    step,
+                } => {
+                    if let Some((value, next)) = range_next_i64(*current, *stop, *step) {
+                        *current = next;
+                        Ok(Some(PyObject::int(value)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                IteratorData::Str { chars, index } => {
+                    if *index >= chars.len() {
+                        Ok(None)
+                    } else {
+                        let value =
+                            PyObject::str_val(CompactString::from(chars[*index].to_string()));
+                        *index += 1;
+                        Ok(Some(value))
+                    }
+                }
+                IteratorData::Count { current, step } => {
+                    let value = *current;
+                    *current = (*current).saturating_add(*step);
+                    Ok(Some(PyObject::int(value)))
+                }
+                _ => Err(PyException::type_error(
+                    "lazy iterator requires VM to collect",
+                )),
+            }
+        }
+        PyObjectPayload::RangeIter(ri) => {
+            if let Some((value, next)) = range_next_i64(ri.current.get(), ri.stop, ri.step) {
+                ri.current.set(next);
+                Ok(Some(PyObject::int(value)))
+            } else {
+                Ok(None)
+            }
+        }
+        PyObjectPayload::VecIter(data) => {
+            let idx = data.index.get();
+            if idx >= data.items.len() {
+                Ok(None)
+            } else {
+                data.index.set(idx + 1);
+                Ok(Some(data.items[idx].clone()))
+            }
+        }
+        PyObjectPayload::RefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX {
+                return Ok(None);
+            }
+            let value = match &source.payload {
+                PyObjectPayload::List(items) => items.read().get(idx).cloned(),
+                PyObjectPayload::Tuple(items) => items.get(idx).cloned(),
+                _ => None,
+            };
+            if value.is_some() {
+                index.set(idx + 1);
+            } else {
+                index.set(usize::MAX);
+            }
+            Ok(value)
+        }
+        PyObjectPayload::RevRefIter { source, index } => {
+            let idx = index.get();
+            if idx == usize::MAX {
+                return Ok(None);
+            }
+            let value = match &source.payload {
+                PyObjectPayload::List(items) => items.read().get(idx).cloned(),
+                PyObjectPayload::Tuple(items) => items.get(idx).cloned(),
+                _ => None,
+            };
+            if idx == 0 || value.is_none() {
+                index.set(usize::MAX);
+            } else {
+                index.set(idx - 1);
+            }
+            Ok(value)
+        }
+        _ => Err(PyException::type_error(
+            "lazy iterator requires VM to collect",
+        )),
+    }
+}
+
 fn collect_instance_iterable(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
     if let Some(iter_method) = obj.get_attr("__iter__") {
         let iter = ensure_iterator_for_to_list(obj, call_callable(&iter_method, &[])?)?;
@@ -331,9 +462,58 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     *index = items.len();
                     Ok(result)
                 }
-                IteratorData::Enumerate { .. }
-                | IteratorData::Zip { .. }
-                | IteratorData::ZipLongest { .. }
+                IteratorData::Enumerate {
+                    source,
+                    index,
+                    cached_tuple: _,
+                } => {
+                    let mut result = Vec::new();
+                    loop {
+                        match next_static_iterator(source)? {
+                            Some(value) => {
+                                let pair = PyObject::tuple(vec![PyObject::int(*index), value]);
+                                *index = index.saturating_add(1);
+                                guarded_push(&mut result, pair, "enumerate iterator -> list")?;
+                            }
+                            None => return Ok(result),
+                        }
+                    }
+                }
+                IteratorData::Zip {
+                    sources,
+                    strict,
+                    cached_tuple: _,
+                    items_buf: _,
+                } => {
+                    let srcs = sources.clone();
+                    let is_strict = *strict;
+                    drop(data);
+                    let mut result = Vec::new();
+                    loop {
+                        let mut items = Vec::with_capacity(srcs.len());
+                        let mut exhausted = 0usize;
+                        for source in &srcs {
+                            match next_static_iterator(source)? {
+                                Some(value) => items.push(value),
+                                None => exhausted += 1,
+                            }
+                        }
+                        if exhausted == 0 {
+                            guarded_push(
+                                &mut result,
+                                PyObject::tuple(items),
+                                "zip iterator -> list",
+                            )?;
+                        } else if exhausted == srcs.len() || !is_strict {
+                            return Ok(result);
+                        } else {
+                            return Err(PyException::value_error(
+                                "zip() has arguments with different lengths",
+                            ));
+                        }
+                    }
+                }
+                IteratorData::ZipLongest { .. }
                 | IteratorData::Islice { .. }
                 | IteratorData::MapOne { .. }
                 | IteratorData::Map { .. }
@@ -346,13 +526,17 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 | IteratorData::Cycle { .. }
                 | IteratorData::Repeat { .. }
                 | IteratorData::Chain { .. }
-                | IteratorData::SeqIter { .. }
                 | IteratorData::Starmap { .. }
                 | IteratorData::Tee { .. }
                 | IteratorData::HeldIter { .. }
                 | IteratorData::DictEntries { .. } => Err(PyException::type_error(
                     "lazy iterator requires VM to collect",
                 )),
+                IteratorData::SeqIter {
+                    obj,
+                    index,
+                    exhausted,
+                } => collect_seq_iterator(obj, index, exhausted),
             }
         }
         PyObjectPayload::RangeIter(ri) => {

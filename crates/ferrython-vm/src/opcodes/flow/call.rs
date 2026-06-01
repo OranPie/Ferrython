@@ -402,6 +402,58 @@ impl VirtualMachine {
                 }
 
                 // Full path: handles __getattribute__, special instances, etc.
+                if let PyObjectPayload::Class(cd) = &obj.payload {
+                    if let Some(raw) = cd.namespace.read().get(name.as_str()).cloned() {
+                        if has_descriptor_get(&raw) {
+                            let get_fn = raw.get_attr("__get__").unwrap();
+                            let get_bound =
+                                if matches!(&get_fn.payload, PyObjectPayload::BoundMethod { .. }) {
+                                    get_fn
+                                } else {
+                                    PyObjectRef::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: raw.clone(),
+                                            method: get_fn,
+                                        },
+                                    })
+                                };
+                            let result =
+                                self.call_object(get_bound, vec![PyObject::none(), obj.clone()])?;
+                            let frame = self.vm_frame();
+                            frame.push(PyObject::none());
+                            frame.push(result);
+                            return Ok(None);
+                        }
+                    }
+                    if let Some(meta) = &cd.metaclass {
+                        if let PyObjectPayload::Class(mcd) = &meta.payload {
+                            if let Some(raw) = mcd.namespace.read().get(name.as_str()).cloned() {
+                                if has_descriptor_get(&raw) {
+                                    let get_fn = raw.get_attr("__get__").unwrap();
+                                    let get_bound = if matches!(
+                                        &get_fn.payload,
+                                        PyObjectPayload::BoundMethod { .. }
+                                    ) {
+                                        get_fn
+                                    } else {
+                                        PyObjectRef::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: raw.clone(),
+                                                method: get_fn,
+                                            },
+                                        })
+                                    };
+                                    let result = self
+                                        .call_object(get_bound, vec![obj.clone(), meta.clone()])?;
+                                    let frame = self.vm_frame();
+                                    frame.push(PyObject::none());
+                                    frame.push(result);
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                    }
+                }
                 match obj.get_attr(&name) {
                     Some(method) => {
                         if matches!(&obj.payload, PyObjectPayload::Module(_))

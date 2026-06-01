@@ -46,6 +46,7 @@ use stdio::make_stdio_object;
 pub use sysconfig::create_sysconfig_module;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
+static SWITCH_INTERVAL_MICROS: AtomicI64 = AtomicI64::new(5000);
 const INT_MAX_STR_DIGITS_THRESHOLD: i64 = 640;
 
 /// Fast atomic flags indicating whether trace/profile functions are installed.
@@ -379,6 +380,8 @@ pub fn create_sys_module() -> PyObjectRef {
         ("__stderr__", make_stdio_object("<stderr>", "w", 2)),
         ("getrecursionlimit", make_builtin(sys_getrecursionlimit)),
         ("setrecursionlimit", make_builtin(sys_setrecursionlimit)),
+        ("getswitchinterval", make_builtin(sys_getswitchinterval)),
+        ("setswitchinterval", make_builtin(sys_setswitchinterval)),
         ("get_int_max_str_digits", make_builtin(sys_get_int_max_str_digits)),
         ("set_int_max_str_digits", make_builtin(sys_set_int_max_str_digits)),
         ("exit", make_builtin(sys_exit)),
@@ -655,6 +658,23 @@ fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::value_error("recursion limit must be positive"));
     }
     RECURSION_LIMIT.store(limit, Ordering::Relaxed);
+    Ok(PyObject::none())
+}
+fn sys_getswitchinterval(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::float(
+        SWITCH_INTERVAL_MICROS.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+    ))
+}
+fn sys_setswitchinterval(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.setswitchinterval", args, 1)?;
+    let interval = args[0].to_float()?;
+    if interval <= 0.0 {
+        return Err(PyException::value_error(
+            "switch interval must be strictly positive",
+        ));
+    }
+    let micros = (interval * 1_000_000.0).round().max(1.0) as i64;
+    SWITCH_INTERVAL_MICROS.store(micros, Ordering::Relaxed);
     Ok(PyObject::none())
 }
 fn sys_get_int_max_str_digits(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -1,8 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
-    make_builtin, make_module, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    call_callable, make_builtin, make_module, new_fx_hashkey_map, FxHashKeyMap, PyCell, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -18,7 +18,26 @@ use std::rc::Rc;
 /// The __call__ closure reads from the instance's attrs dict at call time
 /// via a shared Rc<PyCell<IndexMap>> reference to the instance data.
 fn build_mock_instance(name: &str, kwargs: &FxHashKeyMap) -> PyObjectRef {
-    let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    let mut class_namespace = IndexMap::new();
+    class_namespace.insert(
+        CompactString::from("__mul__"),
+        PyObject::native_closure("Mock.__mul__", |args: &[PyObjectRef]| {
+            call_mock_magic(args, "__mul__", 1)
+        }),
+    );
+    class_namespace.insert(
+        CompactString::from("__rmul__"),
+        PyObject::native_closure("Mock.__rmul__", |args: &[PyObjectRef]| {
+            call_mock_magic(args, "__rmul__", 1)
+        }),
+    );
+    class_namespace.insert(
+        CompactString::from("__hash__"),
+        PyObject::native_closure("Mock.__hash__", |args: &[PyObjectRef]| {
+            call_mock_magic(args, "__hash__", 0)
+        }),
+    );
+    let cls = PyObject::class(CompactString::from(name), vec![], class_namespace);
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -298,6 +317,23 @@ fn build_mock_instance(name: &str, kwargs: &FxHashKeyMap) -> PyObjectRef {
         }
     }
     inst
+}
+
+fn call_mock_magic(
+    args: &[PyObjectRef],
+    method_name: &str,
+    expected_operands: usize,
+) -> ferrython_core::error::PyResult<PyObjectRef> {
+    if args.len() < 1 + expected_operands {
+        return Ok(PyObject::not_implemented());
+    }
+    let PyObjectPayload::Instance(inst) = &args[0].payload else {
+        return Ok(PyObject::not_implemented());
+    };
+    let Some(method) = inst.attrs.read().get(method_name).cloned() else {
+        return Ok(PyObject::not_implemented());
+    };
+    call_callable(&method, &args[1..1 + expected_operands])
 }
 
 /// Extract kwargs dict from trailing argument (VM passes kwargs as last Dict arg)

@@ -49,10 +49,21 @@ struct ParsedUrl {
 }
 
 fn parse_url_string(url: &str) -> ParsedUrl {
-    let (scheme, rest) = if let Some(idx) = url.find("://") {
-        (url[..idx].to_string(), &url[idx + 3..])
+    let cleaned = strip_url_controls(url);
+    let url = cleaned.as_str();
+    let (scheme, rest) = split_url_scheme(url);
+
+    let (netloc, rest) = if let Some(rest) = rest.strip_prefix("//") {
+        if rest.starts_with('/') {
+            (String::new(), rest)
+        } else {
+            let split_at = rest
+                .find(|c| matches!(c, '/' | '?' | '#'))
+                .unwrap_or(rest.len());
+            (rest[..split_at].to_string(), &rest[split_at..])
+        }
     } else {
-        (String::new(), url)
+        (String::new(), rest)
     };
 
     let (rest2, fragment) = if let Some(idx) = rest.find('#') {
@@ -67,19 +78,19 @@ fn parse_url_string(url: &str) -> ParsedUrl {
         (rest2, String::new())
     };
 
-    let (host_port, path) = if let Some(idx) = rest3.find('/') {
-        (&rest3[..idx], rest3[idx..].to_string())
+    let path = if netloc.is_empty() {
+        rest3.to_string()
+    } else if rest3.is_empty() {
+        String::new()
     } else {
-        (rest3, "/".to_string())
+        rest3.to_string()
     };
 
-    let netloc = host_port.to_string();
-
     // Extract userinfo (username:password@)
-    let (userinfo, host_part) = if let Some(idx) = host_port.rfind('@') {
-        (&host_port[..idx], &host_port[idx + 1..])
+    let (userinfo, host_part) = if let Some(idx) = netloc.rfind('@') {
+        (&netloc[..idx], &netloc[idx + 1..])
     } else {
-        ("", host_port)
+        ("", netloc.as_str())
     };
 
     let (username, password) = if !userinfo.is_empty() {
@@ -92,21 +103,35 @@ fn parse_url_string(url: &str) -> ParsedUrl {
         (String::new(), String::new())
     };
 
-    let (host, port) = if let Some(idx) = host_part.rfind(':') {
-        let port_str = &host_part[idx + 1..];
-        if let Ok(p) = port_str.parse::<u16>() {
-            (host_part[..idx].to_string(), p)
+    let (host, port) = if let Some(stripped) = host_part.strip_prefix('[') {
+        if let Some(end) = stripped.find(']') {
+            let host = stripped[..end].to_string();
+            let rest = &stripped[end + 1..];
+            if let Some(port_str) = rest.strip_prefix(':') {
+                if let Ok(p) = port_str.parse::<u16>() {
+                    (host, p)
+                } else {
+                    (host, default_port(&scheme))
+                }
+            } else {
+                (host, default_port(&scheme))
+            }
         } else {
-            (
-                host_part.to_string(),
-                if scheme == "https" { 443 } else { 80 },
-            )
+            (host_part.to_string(), default_port(&scheme))
+        }
+    } else if let Some(idx) = host_part.rfind(':') {
+        let port_str = &host_part[idx + 1..];
+        if !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(p) = port_str.parse::<u16>() {
+                (host_part[..idx].to_string(), p)
+            } else {
+                (host_part[..idx].to_string(), default_port(&scheme))
+            }
+        } else {
+            (host_part.to_string(), default_port(&scheme))
         }
     } else {
-        (
-            host_part.to_string(),
-            if scheme == "https" { 443 } else { 80 },
-        )
+        (host_part.to_string(), default_port(&scheme))
     };
 
     ParsedUrl {
@@ -122,6 +147,42 @@ fn parse_url_string(url: &str) -> ParsedUrl {
     }
 }
 
+fn default_port(scheme: &str) -> u16 {
+    if scheme == "https" {
+        443
+    } else {
+        80
+    }
+}
+
+fn strip_url_controls(url: &str) -> String {
+    url.trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(*c, '\t' | '\n' | '\r'))
+        .collect()
+}
+
+fn split_url_scheme(url: &str) -> (String, &str) {
+    if let Some(idx) = url.find(':') {
+        let candidate = &url[..idx];
+        if is_url_scheme(candidate) {
+            if candidate.eq_ignore_ascii_case("path")
+                && url[idx + 1..].chars().all(|c| c.is_ascii_digit())
+            {
+                return (String::new(), url);
+            }
+            return (candidate.to_ascii_lowercase(), &url[idx + 1..]);
+        }
+    }
+    (String::new(), url)
+}
+
+fn is_url_scheme(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
 #[allow(dead_code)]
 fn percent_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -130,23 +191,6 @@ fn percent_encode(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 result.push(b as char);
             }
-            _ => {
-                result.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    result
-}
-
-/// Like percent_encode but encodes spaces as '+' (application/x-www-form-urlencoded).
-fn quote_plus_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(b as char);
-            }
-            b' ' => result.push('+'),
             _ => {
                 result.push_str(&format!("%{:02X}", b));
             }

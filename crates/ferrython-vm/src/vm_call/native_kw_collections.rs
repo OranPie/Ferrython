@@ -104,6 +104,14 @@ impl VirtualMachine {
             return (nf_data.func)(&all).map(Some);
         }
 
+        if nf_data.name.as_str() == "UserList.__init__" && pos_args.len() > 1 {
+            let mut all = Vec::with_capacity(pos_args.len());
+            all.push(pos_args[0].clone());
+            all.push(PyObject::list(self.collect_iterable(&pos_args[1])?));
+            all.extend_from_slice(&pos_args[2..]);
+            return (nf_data.func)(&all).map(Some);
+        }
+
         if nf_data.name.as_str() == "WeakValueDictionary"
             || nf_data.name.as_str() == "WeakKeyDictionary"
         {

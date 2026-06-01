@@ -50,6 +50,32 @@ impl VirtualMachine {
         }
         match obj.get_attr(attr_name.as_str()) {
             Some(v) => {
+                let class_descriptor = match &obj.payload {
+                    PyObjectPayload::Instance(inst) => {
+                        lookup_in_class_mro(&inst.class, attr_name.as_str())
+                    }
+                    _ => None,
+                };
+                if let Some(descriptor) = class_descriptor {
+                    if ferrython_core::object::is_property_like(&descriptor) {
+                        if let Some(getter) =
+                            ferrython_core::object::property_field(&descriptor, "fget")
+                        {
+                            if matches!(&getter.payload, PyObjectPayload::None) {
+                                return Err(PyException::attribute_error(format!(
+                                    "unreadable attribute '{}'",
+                                    attr_name.as_str()
+                                )));
+                            }
+                            let getter = crate::builtins::unwrap_abstract_fget(&getter);
+                            return self.call_object(getter, vec![obj.clone()]);
+                        }
+                        return Err(PyException::attribute_error(format!(
+                            "unreadable attribute '{}'",
+                            attr_name.as_str()
+                        )));
+                    }
+                }
                 if ferrython_core::object::is_property_like(&v) {
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                         if ferrython_core::object::is_dynamic_class_attribute(&v) {

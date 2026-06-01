@@ -1903,6 +1903,28 @@ Last updated: 2026-05-31T19:30:54+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`
 
+- 2026-06-01 functools / UserList / super / URL parse / pprint / fractions 兼容批次：
+  - 本批 6 个目标测试合并 30s 通过：`test_functools test_userlist test_super test_urlparse test_pprint test_fractions` 当前 `run=368 pass=357 fail=0 err=0 skip=11`。
+  - `test_functools` 从 broad functools 缺口推进到 `run=168 pass=157 fail=0 err=0 skip=11`；剩余 11 个为 CPython-specific pickle/thread scheduling/ABC MRO ordering 跳过项。
+  - 其他 5 个目标模块合并通过：`test_super test_urlparse test_userlist test_fractions test_pprint` 当前 `run=200 pass=200 fail=0 err=0 skip=0`。
+  - 通用修复：
+    - nested function `__qualname__` 补齐 `<locals>`，function repr 保持 CPython 3.8 测试期望的 `<function qualname>` 形式。
+    - `mappingproxy(dict)` 改为 live read-only view，不再在构造时复制 dict；修复 `functools.singledispatch.registry` 注册后不可见的问题。
+    - class/metaclass 调用路径识别 native `type.__new__` 为默认构造器，避免普通实例化误调 `type.__new__` 三参协议。
+    - 异常子类 simple-class fast path 保留 positional `args`，使 `SkipTest(reason)` 等异常实例化可正常携带参数。
+    - rich comparison 不再把 `NotImplemented` 当作可用比较结果，并限制 enum value fallback 只作用于真实 enum member。
+    - `len(class_obj)` 支持自定义 metaclass `__len__`，覆盖 singledispatch false-metaclass 行为。
+    - native `unittest.mock.Mock` 补齐 magic proxy 调用路径，覆盖 `__hash__`/`__mul__`/`__rmul__` 一类缓存测试用法。
+    - `singledispatch._find_impl()` 增加 exact class 快速路径，dispatch 在 `_find_impl()` 无匹配时回退 object handler。
+  - 功能补全覆盖此前同批已有修改：UserList arithmetic/slicing/mutator API、super/classcell 路径、URL parse 细节、pprint 布局、fractions/numbers 数值协议、partial/pickle/descriptor 等 functools 相邻功能。
+  - 验证：
+    - `cargo check -p ferrython-core`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_super test_urlparse test_userlist test_fractions test_pprint`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_userlist test_super test_urlparse test_pprint test_fractions`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

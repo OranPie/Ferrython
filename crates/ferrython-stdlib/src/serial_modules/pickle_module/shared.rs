@@ -4,6 +4,7 @@ use ferrython_core::object::{
     ExceptionInstanceData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
+use indexmap::IndexMap;
 
 pub(super) fn hashable_key_to_pyobj(k: &HashableKey) -> PyObjectRef {
     match k {
@@ -92,6 +93,39 @@ pub(super) fn exception_pickle_state(ei: &ExceptionInstanceData) -> Option<PyObj
 }
 
 pub(super) fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResult<()> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if matches!(&inst.class.payload, PyObjectPayload::Class(cd)
+            if cd.name.as_str() == "partial"
+                || cd.mro.iter().any(|base| matches!(&base.payload, PyObjectPayload::Class(base_cd)
+                    if base_cd.name.as_str() == "partial")))
+        {
+            if let PyObjectPayload::Tuple(items) = &state.payload {
+                if items.len() == 4 {
+                    let mut attrs = inst.attrs.write();
+                    attrs.clear();
+                    attrs.insert(CompactString::from("func"), items[0].clone());
+                    attrs.insert(CompactString::from("args"), items[1].clone());
+                    attrs.insert(
+                        CompactString::from("keywords"),
+                        if matches!(items[2].payload, PyObjectPayload::None) {
+                            PyObject::dict(IndexMap::new())
+                        } else {
+                            items[2].clone()
+                        },
+                    );
+                    if let PyObjectPayload::Dict(namespace) = &items[3].payload {
+                        for (key, value) in namespace.read().iter() {
+                            if let HashableKey::Str(name) = key {
+                                attrs.insert(name.to_compact_string(), value.clone());
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let PyObjectPayload::Dict(map) = &state.payload else {
         return Ok(());
     };

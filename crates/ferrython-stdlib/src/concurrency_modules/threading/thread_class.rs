@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{spawn_python_thread, PyException};
+use ferrython_core::error::PyException;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -155,8 +155,9 @@ pub(super) fn create_thread_class() -> PyObjectRef {
                             return Ok(PyObject::none());
                         }
                         _ => {
-                            // Python targets use a lightweight VM on a real OS thread. This keeps
-                            // blocking calls such as Condition.wait() from stalling the starter.
+                            // Ferrython objects are still VM-thread-local. Running Python bytecode
+                            // over shared PyObject graphs on OS threads can corrupt shared maps, so
+                            // queue Python targets back onto the owning VM.
                             let is_daemon = inst
                                 .attrs
                                 .read()
@@ -165,28 +166,7 @@ pub(super) fn create_thread_class() -> PyObjectRef {
                                 .or_else(|| inst.attrs.read().get("_daemon").cloned())
                                 .map(|v| v.is_truthy())
                                 .unwrap_or(false);
-                            if let Some(handle) =
-                                spawn_python_thread(target.clone(), call_args.clone())
-                            {
-                                if !is_daemon {
-                                    let join_handle =
-                                        std::sync::Arc::new(std::sync::Mutex::new(Some(handle)));
-                                    let alive_attrs = inst.attrs.clone();
-                                    inst.attrs.write().insert(
-                                        CompactString::from("_join_handle"),
-                                        PyObject::native_closure("_join_handle", move |_| {
-                                            if let Some(h) = join_handle.lock().unwrap().take() {
-                                                let _ = h.join();
-                                            }
-                                            alive_attrs.write().insert(
-                                                CompactString::from("_alive"),
-                                                PyObject::bool_val(false),
-                                            );
-                                            Ok(PyObject::none())
-                                        }),
-                                    );
-                                }
-                            } else if !is_daemon {
+                            if !is_daemon {
                                 ferrython_core::error::request_vm_call(target, call_args);
                             }
                         }

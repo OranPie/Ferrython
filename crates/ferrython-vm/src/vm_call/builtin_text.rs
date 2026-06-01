@@ -61,14 +61,14 @@ impl VirtualMachine {
         if args.len() == 1 {
             let src = &args[0];
             let map = match &src.payload {
-                PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => m.read().clone(),
+                PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => m.clone(),
                 PyObjectPayload::InstanceDict(attrs) => {
                     let rd = attrs.read();
                     let mut m = new_fx_hashkey_map();
                     for (k, v) in rd.iter() {
                         m.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
-                    m
+                    Rc::new(PyCell::new(m))
                 }
                 _ => {
                     return Err(PyException::type_error(
@@ -76,9 +76,7 @@ impl VirtualMachine {
                     ));
                 }
             };
-            return Ok(PyObject::wrap(PyObjectPayload::MappingProxy(Rc::new(
-                PyCell::new(map),
-            ))));
+            return Ok(PyObject::wrap(PyObjectPayload::MappingProxy(map)));
         }
         if args.is_empty() {
             return Err(PyException::type_error(

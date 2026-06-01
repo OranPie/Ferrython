@@ -48,6 +48,15 @@ pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> PyResult<Option<i64>> + 'stat
     });
 }
 
+fn builtin_method_receiver_key(receiver: &PyObjectRef) -> String {
+    match &receiver.payload {
+        crate::object::PyObjectPayload::BuiltinType(name) => format!("type:{}", name),
+        crate::object::PyObjectPayload::Class(cd) => format!("class:{}", cd.name),
+        crate::object::PyObjectPayload::Module(m) => format!("module:{}", m.name),
+        _ => format!("object:{}", PyObjectRef::as_ptr(receiver) as usize),
+    }
+}
+
 /// Call the installed __eq__ dispatch, if any.
 fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
     EQ_DISPATCH.with(|cell| {
@@ -626,14 +635,25 @@ impl HashableKey {
                 }
             }
             // Functions/methods are hashable by identity in CPython
-            PyObjectPayload::Function(_)
-            | PyObjectPayload::NativeFunction(_)
-            | PyObjectPayload::NativeClosure(_)
-            | PyObjectPayload::BuiltinFunction(_)
-            | PyObjectPayload::BoundMethod { .. }
-            | PyObjectPayload::BuiltinBoundMethod(_) => {
+            PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
+            }
+            PyObjectPayload::NativeFunction(nf) => Ok(HashableKey::str_key(CompactString::from(
+                format!("<native-function:{}>", nf.name),
+            ))),
+            PyObjectPayload::NativeClosure(nc) => Ok(HashableKey::str_key(CompactString::from(
+                format!("<native-closure:{}>", nc.name),
+            ))),
+            PyObjectPayload::BuiltinFunction(name) => Ok(HashableKey::str_key(
+                CompactString::from(format!("<builtin-function:{}>", name)),
+            )),
+            PyObjectPayload::BuiltinBoundMethod(bbm) => {
+                Ok(HashableKey::str_key(CompactString::from(format!(
+                    "<builtin-bound-method:{}:{}>",
+                    builtin_method_receiver_key(&bbm.receiver),
+                    bbm.method_name
+                ))))
             }
             // Class objects: hash by identity (each class definition is unique)
             PyObjectPayload::Class(_) => {

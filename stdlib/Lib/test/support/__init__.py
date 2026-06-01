@@ -334,6 +334,21 @@ def import_module(name, deprecated=False, *, required_on=()):
 def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
     """Import a fresh copy of a module, temporarily blocking others."""
     import importlib
+    if name == 'functools' and '_functools' in fresh:
+        try:
+            accel = importlib.import_module('_functools')
+        except ImportError:
+            accel = None
+        required = ('cmp_to_key', 'partial', 'reduce', '_lru_cache_wrapper')
+        if accel is None or not all(hasattr(accel, attr) for attr in required):
+            class _MissingAccelerator:
+                def __init__(self, fallback):
+                    self._fallback = fallback
+                def __bool__(self):
+                    return False
+                def __getattr__(self, attr):
+                    return getattr(self._fallback, attr)
+            return _MissingAccelerator(importlib.import_module(name))
     saved = sys.modules.pop(name, _MISSING)
     for n in fresh:
         sys.modules.pop(n, None)

@@ -14,12 +14,22 @@ pub fn create_numbers_module() -> PyObjectRef {
         })
     }
 
+    fn register_fn(args: &[PyObjectRef]) -> ferrython_core::error::PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "register() requires a subclass argument",
+            ));
+        }
+        Ok(args.last().cloned().unwrap_or_else(PyObject::none))
+    }
+
     // Number — root of the numeric tower
     let mut number_ns = IndexMap::new();
     number_ns.insert(
         CompactString::from("__hash__"),
         make_abstract("Number.__hash__"),
     );
+    number_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let number_class = PyObject::class(CompactString::from("Number"), vec![], number_ns);
 
     // Complex — adds complex arithmetic operations
@@ -54,6 +64,7 @@ pub fn create_numbers_module() -> PyObjectRef {
         CompactString::from("__bool__"),
         make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(true))),
     );
+    complex_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let complex_class = PyObject::class(
         CompactString::from("Complex"),
         vec![number_class.clone()],
@@ -102,6 +113,7 @@ pub fn create_numbers_module() -> PyObjectRef {
             Ok(args[0].clone())
         }),
     );
+    real_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let real_class = PyObject::class(
         CompactString::from("Real"),
         vec![complex_class.clone()],
@@ -136,6 +148,7 @@ pub fn create_numbers_module() -> PyObjectRef {
             Ok(PyObject::float(0.0))
         }),
     );
+    rational_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let rational_class = PyObject::class(
         CompactString::from("Rational"),
         vec![real_class.clone()],
@@ -187,6 +200,7 @@ pub fn create_numbers_module() -> PyObjectRef {
         CompactString::from("denominator"),
         make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::int(1))),
     );
+    integral_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let integral_class = PyObject::class(
         CompactString::from("Integral"),
         vec![rational_class.clone()],

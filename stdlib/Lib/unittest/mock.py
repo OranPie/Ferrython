@@ -195,6 +195,18 @@ class Mock:
     def __repr__(self):
         name = self._mock_name or 'id=%d' % id(self)
         return "<Mock name='%s'>" % name
+
+    def _call_mock_magic(self, name, *args):
+        method = self.__dict__.get(name)
+        if method is None:
+            return NotImplemented
+        return method(*args)
+
+    def __mul__(self, other):
+        return self._call_mock_magic('__mul__', other)
+
+    def __rmul__(self, other):
+        return self._call_mock_magic('__rmul__', other)
     
     def assert_called(self):
         if not self.called:

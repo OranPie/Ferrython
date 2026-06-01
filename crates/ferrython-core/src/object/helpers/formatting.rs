@@ -1097,7 +1097,8 @@ pub(in crate::object) fn format_collection(
 }
 
 pub(in crate::object) fn format_set(open: &str, close: &str, map: &FxHashKeyMap) -> String {
-    let inner: Vec<String> = map.values().map(|v| v.repr()).collect();
+    let mut inner: Vec<String> = map.values().map(|v| v.repr()).collect();
+    inner.sort();
     format!("{}{}{}", open, inner.join(", "), close)
 }
 
@@ -1106,7 +1107,8 @@ pub(in crate::object) fn format_set_flat(
     close: &str,
     map: &FxHashKeyFlatMap,
 ) -> String {
-    let inner: Vec<String> = map.values().map(|v| v.repr()).collect();
+    let mut inner: Vec<String> = map.values().map(|v| v.repr()).collect();
+    inner.sort();
     format!("{}{}{}", open, inner.join(", "), close)
 }
 

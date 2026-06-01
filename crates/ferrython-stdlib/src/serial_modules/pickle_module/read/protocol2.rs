@@ -311,22 +311,18 @@ pub(super) fn pickle_loads_p2(data: &[u8]) -> PyResult<PyObjectRef> {
             }
             b's' => {
                 // SETITEM
-                let val = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: SETITEM expects value",
-                        ))
-                    }
-                };
-                let key = match stack.pop() {
-                    Some(PklStackItem::Value(v)) => v,
-                    _ => {
-                        return Err(PyException::runtime_error(
-                            "UnpicklingError: SETITEM expects key",
-                        ))
-                    }
-                };
+                let val = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: SETITEM expects value")
+                    })
+                    .and_then(pkl_stack_item_value)?;
+                let key = stack
+                    .pop()
+                    .ok_or_else(|| {
+                        PyException::runtime_error("UnpicklingError: SETITEM expects key")
+                    })
+                    .and_then(pkl_stack_item_value)?;
                 if let Some(PklStackItem::Value(dict_obj)) = stack.last() {
                     if let PyObjectPayload::Dict(ref dict_map) = dict_obj.payload {
                         if let Ok(hk) = HashableKey::from_object(&key) {

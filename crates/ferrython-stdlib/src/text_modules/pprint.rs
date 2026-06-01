@@ -182,8 +182,11 @@ fn pprint_is_readable_impl(obj: &PyObjectRef, seen: &mut Vec<usize>) -> bool {
         | PyObjectPayload::Bool(_)
         | PyObjectPayload::Int(_)
         | PyObjectPayload::Float(_)
+        | PyObjectPayload::Complex { .. }
         | PyObjectPayload::Str(_)
-        | PyObjectPayload::Bytes(_) => true,
+        | PyObjectPayload::Bytes(_)
+        | PyObjectPayload::ByteArray(_)
+        | PyObjectPayload::Ellipsis => true,
         PyObjectPayload::List(items) => {
             seen.push(id);
             let r = items.read();
@@ -295,6 +298,7 @@ fn pprint_saferepr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub fn create_pprint_module() -> PyObjectRef {
+    let pretty_printer = make_pretty_printer_class();
     make_module(
         "pprint",
         vec![
@@ -383,87 +387,140 @@ pub fn create_pprint_module() -> PyObjectRef {
                     Ok(PyObject::str_val(CompactString::from(text)))
                 }),
             ),
-            (
-                "PrettyPrinter",
-                PyObject::native_closure("PrettyPrinter", |args: &[PyObjectRef]| {
-                    // Parse keyword args: indent=1, width=80, depth=None, stream=None
-                    let mut indent = 1usize;
-                    let mut width = 80usize;
-                    let mut depth: Option<usize> = None;
-                    if let Some(last) = args.last() {
-                        if let PyObjectPayload::Dict(kw) = &last.payload {
-                            let r = kw.read();
-                            if let Some(v) =
-                                r.get(&HashableKey::str_key(CompactString::from("indent")))
-                            {
-                                indent = v.as_int().unwrap_or(1) as usize;
-                            }
-                            if let Some(v) =
-                                r.get(&HashableKey::str_key(CompactString::from("width")))
-                            {
-                                width = v.as_int().unwrap_or(80) as usize;
-                            }
-                            if let Some(v) =
-                                r.get(&HashableKey::str_key(CompactString::from("depth")))
-                            {
-                                depth = v.as_int().map(|d| d as usize);
-                            }
-                        }
-                    }
-                    let cls = PyObject::class(
-                        CompactString::from("PrettyPrinter"),
-                        vec![],
-                        IndexMap::new(),
-                    );
-                    let inst = PyObject::instance(cls);
-                    if let PyObjectPayload::Instance(ref d) = inst.payload {
-                        let mut attrs = d.attrs.write();
-                        attrs.insert(CompactString::from("_indent"), PyObject::int(indent as i64));
-                        attrs.insert(CompactString::from("_width"), PyObject::int(width as i64));
-                        let pp_indent = indent;
-                        let pp_width = width;
-                        let pp_depth = depth;
-                        attrs.insert(
-                            CompactString::from("pprint"),
-                            PyObject::native_closure("pprint", move |args: &[PyObjectRef]| {
-                                if args.is_empty() {
-                                    return Ok(PyObject::none());
-                                }
-                                let text =
-                                    pformat_value(&args[0], pp_indent, pp_width, pp_depth, 0);
-                                println!("{}", text);
-                                Ok(PyObject::none())
-                            }),
-                        );
-                        let pf_indent = indent;
-                        let pf_width = width;
-                        let pf_depth = depth;
-                        attrs.insert(
-                            CompactString::from("pformat"),
-                            PyObject::native_closure("pformat", move |args: &[PyObjectRef]| {
-                                if args.is_empty() {
-                                    return Ok(PyObject::str_val(CompactString::from("")));
-                                }
-                                let text =
-                                    pformat_value(&args[0], pf_indent, pf_width, pf_depth, 0);
-                                Ok(PyObject::str_val(CompactString::from(text)))
-                            }),
-                        );
-                        attrs.insert(
-                            CompactString::from("isreadable"),
-                            make_builtin(pprint_isreadable),
-                        );
-                        attrs.insert(
-                            CompactString::from("isrecursive"),
-                            make_builtin(pprint_isrecursive),
-                        );
-                    }
-                    Ok(inst)
-                }),
-            ),
+            ("PrettyPrinter", pretty_printer),
             ("isreadable", make_builtin(pprint_isreadable)),
             ("isrecursive", make_builtin(pprint_isrecursive)),
             ("saferepr", make_builtin(pprint_saferepr)),
         ],
     )
+}
+
+fn make_pretty_printer_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(
+        CompactString::from("__init__"),
+        make_builtin(pretty_printer_init),
+    );
+    ns.insert(
+        CompactString::from("pformat"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Ok(PyObject::str_val(CompactString::from("")));
+            }
+            let (indent, width, depth) = pretty_printer_settings(&args[0]);
+            Ok(PyObject::str_val(CompactString::from(pformat_value(
+                &args[1], indent, width, depth, 0,
+            ))))
+        }),
+    );
+    ns.insert(
+        CompactString::from("pprint"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Ok(PyObject::none());
+            }
+            let (indent, width, depth) = pretty_printer_settings(&args[0]);
+            println!("{}", pformat_value(&args[1], indent, width, depth, 0));
+            Ok(PyObject::none())
+        }),
+    );
+    ns.insert(
+        CompactString::from("isreadable"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Ok(PyObject::bool_val(true));
+            }
+            pprint_isreadable(&args[1..])
+        }),
+    );
+    ns.insert(
+        CompactString::from("isrecursive"),
+        make_builtin(|args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Ok(PyObject::bool_val(false));
+            }
+            pprint_isrecursive(&args[1..])
+        }),
+    );
+    PyObject::class(CompactString::from("PrettyPrinter"), vec![], ns)
+}
+
+fn pretty_printer_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "PrettyPrinter.__init__ requires self",
+        ));
+    }
+    let has_kwargs = args
+        .last()
+        .is_some_and(|obj| matches!(&obj.payload, PyObjectPayload::Dict(_)));
+    let pos_len = if has_kwargs {
+        args.len() - 1
+    } else {
+        args.len()
+    };
+    if pos_len > 5 {
+        return Err(PyException::type_error(
+            "PrettyPrinter() takes at most 4 arguments",
+        ));
+    }
+    let mut indent = args.get(1).and_then(|v| v.as_int()).unwrap_or(1);
+    let mut width = args.get(2).and_then(|v| v.as_int()).unwrap_or(80);
+    let mut depth = args.get(3).and_then(|v| v.as_int());
+    if has_kwargs {
+        if let PyObjectPayload::Dict(kw) = &args.last().unwrap().payload {
+            let r = kw.read();
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("indent"))) {
+                indent = v.as_int().unwrap_or(indent);
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("width"))) {
+                width = v.as_int().unwrap_or(width);
+            }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("depth"))) {
+                depth = v.as_int();
+            }
+        }
+    }
+    if indent < 0 {
+        return Err(PyException::value_error("indent must be >= 0"));
+    }
+    if width <= 0 {
+        return Err(PyException::value_error("width must be > 0"));
+    }
+    if depth.is_some_and(|d| d <= 0) {
+        return Err(PyException::value_error("depth must be > 0"));
+    }
+    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        let mut attrs = inst.attrs.write();
+        attrs.insert(CompactString::from("_indent"), PyObject::int(indent));
+        attrs.insert(CompactString::from("_width"), PyObject::int(width));
+        attrs.insert(
+            CompactString::from("_depth"),
+            depth.map(PyObject::int).unwrap_or_else(PyObject::none),
+        );
+    }
+    Ok(PyObject::none())
+}
+
+fn pretty_printer_settings(obj: &PyObjectRef) -> (usize, usize, Option<usize>) {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        let attrs = inst.attrs.read();
+        let indent = attrs
+            .get("_indent")
+            .and_then(|v| v.as_int())
+            .unwrap_or(1)
+            .max(0) as usize;
+        let width = attrs
+            .get("_width")
+            .and_then(|v| v.as_int())
+            .unwrap_or(80)
+            .max(1) as usize;
+        let depth = attrs
+            .get("_depth")
+            .and_then(|v| v.as_int())
+            .map(|d| d.max(1) as usize);
+        (indent, width, depth)
+    } else {
+        (1, 80, None)
+    }
 }

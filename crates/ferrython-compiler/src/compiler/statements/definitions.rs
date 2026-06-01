@@ -9,6 +9,287 @@ use super::super::{CompileUnit, Compiler, Result};
 use crate::symbol_table::Scope;
 
 impl Compiler {
+    fn ensure_name(list: &mut Vec<CompactString>, name: &str) {
+        if !list.iter().any(|item| item.as_str() == name) {
+            list.push(CompactString::from(name));
+        }
+    }
+
+    fn ensure_enclosing_class_cell(&mut self, name: &str) -> bool {
+        let Some(class_idx) = self
+            .unit_stack
+            .iter()
+            .rposition(|unit| unit.class_name.is_some())
+        else {
+            return false;
+        };
+        Self::ensure_name(&mut self.unit_stack[class_idx].code.cellvars, name);
+        for idx in class_idx + 1..self.unit_stack.len() {
+            Self::ensure_name(&mut self.unit_stack[idx].code.freevars, name);
+            self.unit_stack[idx].code.flags |= CodeFlags::NESTED;
+        }
+        true
+    }
+
+    fn class_body_reads_class(body: &[Statement]) -> bool {
+        body.iter().any(Self::statement_reads_class)
+    }
+
+    fn statement_reads_class(stmt: &Statement) -> bool {
+        match &stmt.node {
+            StatementKind::FunctionDef {
+                decorator_list,
+                returns,
+                args,
+                ..
+            } => {
+                decorator_list.iter().any(Self::expression_reads_class)
+                    || returns
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+                    || Self::arguments_read_class(args)
+            }
+            StatementKind::ClassDef {
+                bases,
+                keywords,
+                decorator_list,
+                ..
+            } => {
+                bases.iter().any(Self::expression_reads_class)
+                    || keywords
+                        .iter()
+                        .any(|kw| Self::expression_reads_class(&kw.value))
+                    || decorator_list.iter().any(Self::expression_reads_class)
+            }
+            StatementKind::Return { value } => value
+                .as_ref()
+                .map(|expr| Self::expression_reads_class(expr))
+                .unwrap_or(false),
+            StatementKind::Delete { targets } => targets.iter().any(Self::expression_reads_class),
+            StatementKind::Assign { targets, value, .. } => {
+                Self::expression_reads_class(value)
+                    || targets.iter().any(Self::expression_reads_class)
+            }
+            StatementKind::AugAssign { target, value, .. } => {
+                Self::expression_reads_class(target) || Self::expression_reads_class(value)
+            }
+            StatementKind::AnnAssign {
+                target,
+                annotation,
+                value,
+                ..
+            } => {
+                Self::expression_reads_class(target)
+                    || Self::expression_reads_class(annotation)
+                    || value
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+            }
+            StatementKind::For {
+                target,
+                iter,
+                body,
+                orelse,
+                ..
+            } => {
+                Self::expression_reads_class(target)
+                    || Self::expression_reads_class(iter)
+                    || body.iter().any(Self::statement_reads_class)
+                    || orelse.iter().any(Self::statement_reads_class)
+            }
+            StatementKind::While { test, body, orelse } => {
+                Self::expression_reads_class(test)
+                    || body.iter().any(Self::statement_reads_class)
+                    || orelse.iter().any(Self::statement_reads_class)
+            }
+            StatementKind::If { test, body, orelse } => {
+                Self::expression_reads_class(test)
+                    || body.iter().any(Self::statement_reads_class)
+                    || orelse.iter().any(Self::statement_reads_class)
+            }
+            StatementKind::With { items, body, .. } => {
+                items.iter().any(|item| {
+                    Self::expression_reads_class(&item.context_expr)
+                        || item
+                            .optional_vars
+                            .as_ref()
+                            .map(|expr| Self::expression_reads_class(expr))
+                            .unwrap_or(false)
+                }) || body.iter().any(Self::statement_reads_class)
+            }
+            StatementKind::Raise { exc, cause } => {
+                exc.as_ref()
+                    .map(|expr| Self::expression_reads_class(expr))
+                    .unwrap_or(false)
+                    || cause
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+            }
+            StatementKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                body.iter().any(Self::statement_reads_class)
+                    || handlers.iter().any(|handler| {
+                        handler
+                            .typ
+                            .as_ref()
+                            .map(|expr| Self::expression_reads_class(expr))
+                            .unwrap_or(false)
+                            || handler.body.iter().any(Self::statement_reads_class)
+                    })
+                    || orelse.iter().any(Self::statement_reads_class)
+                    || finalbody.iter().any(Self::statement_reads_class)
+            }
+            StatementKind::Assert { test, msg } => {
+                Self::expression_reads_class(test)
+                    || msg
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+            }
+            StatementKind::Expr { value } => Self::expression_reads_class(value),
+            StatementKind::Match { subject, cases } => {
+                Self::expression_reads_class(subject)
+                    || cases.iter().any(|case| {
+                        case.guard
+                            .as_ref()
+                            .map(Self::expression_reads_class)
+                            .unwrap_or(false)
+                            || case.body.iter().any(Self::statement_reads_class)
+                    })
+            }
+            StatementKind::Import { .. }
+            | StatementKind::ImportFrom { .. }
+            | StatementKind::Global { .. }
+            | StatementKind::Nonlocal { .. }
+            | StatementKind::Pass
+            | StatementKind::Break
+            | StatementKind::Continue => false,
+        }
+    }
+
+    fn arguments_read_class(args: &Arguments) -> bool {
+        args.defaults.iter().any(Self::expression_reads_class)
+            || args
+                .kw_defaults
+                .iter()
+                .flatten()
+                .any(Self::expression_reads_class)
+            || args
+                .posonlyargs
+                .iter()
+                .chain(args.args.iter())
+                .chain(args.kwonlyargs.iter())
+                .chain(args.vararg.iter())
+                .chain(args.kwarg.iter())
+                .any(|arg| {
+                    arg.annotation
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+                })
+    }
+
+    fn expression_reads_class(expr: &Expression) -> bool {
+        match &expr.node {
+            ExpressionKind::Name { id, ctx } => {
+                id.as_str() == "__class__" && matches!(ctx, ExprContext::Load)
+            }
+            ExpressionKind::BoolOp { values, .. } => {
+                values.iter().any(Self::expression_reads_class)
+            }
+            ExpressionKind::NamedExpr { target, value } => {
+                Self::expression_reads_class(target) || Self::expression_reads_class(value)
+            }
+            ExpressionKind::BinOp { left, right, .. } => {
+                Self::expression_reads_class(left) || Self::expression_reads_class(right)
+            }
+            ExpressionKind::UnaryOp { operand, .. } => Self::expression_reads_class(operand),
+            ExpressionKind::Lambda { args, .. } => Self::arguments_read_class(args),
+            ExpressionKind::IfExp { test, body, orelse } => {
+                Self::expression_reads_class(test)
+                    || Self::expression_reads_class(body)
+                    || Self::expression_reads_class(orelse)
+            }
+            ExpressionKind::Dict { keys, values } => {
+                keys.iter().flatten().any(Self::expression_reads_class)
+                    || values.iter().any(Self::expression_reads_class)
+            }
+            ExpressionKind::Set { elts }
+            | ExpressionKind::List { elts, .. }
+            | ExpressionKind::Tuple { elts, .. } => elts.iter().any(Self::expression_reads_class),
+            ExpressionKind::ListComp { generators, .. }
+            | ExpressionKind::SetComp { generators, .. }
+            | ExpressionKind::GeneratorExp { generators, .. } => generators
+                .first()
+                .map(|gen| Self::expression_reads_class(&gen.iter))
+                .unwrap_or(false),
+            ExpressionKind::DictComp { generators, .. } => generators
+                .first()
+                .map(|gen| Self::expression_reads_class(&gen.iter))
+                .unwrap_or(false),
+            ExpressionKind::Await { value }
+            | ExpressionKind::YieldFrom { value }
+            | ExpressionKind::Starred { value, .. } => Self::expression_reads_class(value),
+            ExpressionKind::Yield { value } => value
+                .as_ref()
+                .map(|expr| Self::expression_reads_class(expr))
+                .unwrap_or(false),
+            ExpressionKind::Compare {
+                left, comparators, ..
+            } => {
+                Self::expression_reads_class(left)
+                    || comparators.iter().any(Self::expression_reads_class)
+            }
+            ExpressionKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                Self::expression_reads_class(func)
+                    || args.iter().any(Self::expression_reads_class)
+                    || keywords
+                        .iter()
+                        .any(|kw| Self::expression_reads_class(&kw.value))
+            }
+            ExpressionKind::FormattedValue {
+                value, format_spec, ..
+            } => {
+                Self::expression_reads_class(value)
+                    || format_spec
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+            }
+            ExpressionKind::JoinedStr { values } => values.iter().any(Self::expression_reads_class),
+            ExpressionKind::Attribute { value, .. } => Self::expression_reads_class(value),
+            ExpressionKind::Subscript { value, slice, .. } => {
+                Self::expression_reads_class(value) || Self::expression_reads_class(slice)
+            }
+            ExpressionKind::Slice { lower, upper, step } => {
+                lower
+                    .as_ref()
+                    .map(|expr| Self::expression_reads_class(expr))
+                    .unwrap_or(false)
+                    || upper
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+                    || step
+                        .as_ref()
+                        .map(|expr| Self::expression_reads_class(expr))
+                        .unwrap_or(false)
+            }
+            ExpressionKind::Constant { .. } => false,
+        }
+    }
+
     // ── function definition ─────────────────────────────────────────
 
     pub(super) fn compile_function_def(
@@ -58,6 +339,8 @@ impl Compiler {
         let qualname_prefix = &self.current_unit().qualname_prefix;
         let qualname = if qualname_prefix.is_empty() {
             name.to_string()
+        } else if self.current_unit().is_function && !qualname_prefix.ends_with(".<locals>") {
+            format!("{}.<locals>.{}", qualname_prefix, name)
         } else {
             format!("{}.{}", qualname_prefix, name)
         };
@@ -311,6 +594,10 @@ impl Compiler {
         let mut class_unit =
             CompileUnit::new(name, &self.filename, child_scope, false, qualname.clone());
         class_unit.code.flags = CodeFlags::empty();
+        if Self::class_body_reads_class(body) && self.ensure_enclosing_class_cell("__class__") {
+            Self::ensure_name(&mut class_unit.code.freevars, "__class__");
+            class_unit.code.flags |= CodeFlags::NESTED;
+        }
         // The class body function takes __locals__ as implicit first arg
         class_unit.code.arg_count = 0;
         class_unit.class_name = Some(name.to_string());

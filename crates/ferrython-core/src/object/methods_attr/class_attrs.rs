@@ -54,6 +54,21 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
         }
         return Some(PyObject::str_val(cd.name.clone()));
     }
+    // Check own namespace first, then bases
+    if let Some(v) = cd.namespace.read().get(name).cloned() {
+        match &v.payload {
+            PyObjectPayload::StaticMethod(func) => return Some(func.clone()),
+            PyObjectPayload::ClassMethod(func) => {
+                return Some(PyObjectRef::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method: func.clone(),
+                    },
+                }));
+            }
+            _ => return Some(v),
+        }
+    }
     if name == "__subclasses__" {
         let subs = cd.subclasses.clone();
         return Some(PyObject::native_closure("__subclasses__", move |_args| {
@@ -79,21 +94,6 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
                     method,
                 },
             }));
-        }
-    }
-    // Check own namespace first, then bases
-    if let Some(v) = cd.namespace.read().get(name).cloned() {
-        match &v.payload {
-            PyObjectPayload::StaticMethod(func) => return Some(func.clone()),
-            PyObjectPayload::ClassMethod(func) => {
-                return Some(PyObjectRef::new(PyObject {
-                    payload: PyObjectPayload::BoundMethod {
-                        receiver: obj.clone(),
-                        method: func.clone(),
-                    },
-                }));
-            }
-            _ => return Some(v),
         }
     }
     // Walk the computed MRO (C3 linearization) for correct diamond resolution

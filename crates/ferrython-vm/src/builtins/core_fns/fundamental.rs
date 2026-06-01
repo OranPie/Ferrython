@@ -4,6 +4,7 @@ use ferrython_core::object::{
     check_args, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{float_as_integer_ratio, HashableKey};
+use num_bigint::BigInt;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -70,14 +71,20 @@ pub(crate) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         } else {
             s
         };
-        let val = i64::from_str_radix(s, base).map_err(|_| {
+        let val = BigInt::parse_bytes(s.as_bytes(), base).ok_or_else(|| {
             PyException::value_error(format!(
                 "invalid literal for int() with base {}: '{}'",
                 base,
                 args[0].as_str().unwrap()
             ))
         })?;
-        return Ok(PyObject::int(val));
+        return Ok(PyObject::big_int(val));
+    }
+    if let Some(text) = args[0].as_str() {
+        let value = text.trim().parse::<BigInt>().map_err(|_| {
+            PyException::value_error(format!("invalid literal for int(): '{}'", text))
+        })?;
+        return Ok(PyObject::big_int(value));
     }
     if let PyObjectPayload::Float(f) = &args[0].payload {
         if f.is_nan() {
@@ -242,6 +249,16 @@ fn builtin_type_create(
         }
         _ => return Err(PyException::type_error("type() argument 3 must be dict")),
     };
+    let class_cell = namespace.get("__classcell__").cloned();
+    if let Some(cell) = &class_cell {
+        if !matches!(&cell.payload, PyObjectPayload::Cell(_)) {
+            return Err(PyException::type_error(
+                "__classcell__ must be a nonlocal cell",
+            ));
+        }
+    }
+    let mut namespace = namespace;
+    namespace.shift_remove("__classcell__");
     let mut mro = Vec::new();
     for base in &bases {
         if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object") {
@@ -255,7 +272,7 @@ fn builtin_type_create(
             }
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(
+    let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(
         ferrython_core::object::ClassData::new(
             CompactString::from(name),
             bases,
@@ -263,5 +280,11 @@ fn builtin_type_create(
             mro,
             None,
         ),
-    ))))
+    )));
+    if let Some(cell_obj) = class_cell {
+        if let PyObjectPayload::Cell(cell) = &cell_obj.payload {
+            *cell.write() = Some(cls.clone());
+        }
+    }
+    Ok(cls)
 }

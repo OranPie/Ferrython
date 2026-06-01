@@ -157,6 +157,11 @@ pub fn create_operator_module() -> PyObjectRef {
                 "pow",
                 make_builtin(|args| {
                     check_args("pow", args, 2)?;
+                    if let Some(result) =
+                        call_binary_dunder(&args[0], &args[1], "__pow__", Some("__rpow__"))?
+                    {
+                        return Ok(result);
+                    }
                     let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_))
                         || matches!(&args[1].payload, PyObjectPayload::Float(_));
                     if !either_float {

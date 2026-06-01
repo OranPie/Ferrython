@@ -354,3 +354,41 @@ Last updated: 2026-05-31T19:30:54+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userdict test_contains test_pprint`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userlist`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_difflib test_sort test_string_literals test_numeric_tower test_isinstance`
+
+## 2026-06-01 six-module feature-completion batch
+
+- `test_functools`
+  - Previous broad target state was still dominated by functools API completeness: cached/partial/lru/singledispatch behavior, descriptor/pickle details, and CPython-specific threaded/pickle/ABC-order checks.
+  - Result after batch: `run=168 pass=157 fail=0 err=0 skip=11`.
+  - Fixed traits: partial descriptor/pickle behavior, LRU mock/hash-only-once behavior, `total_ordering` propagation of `NotImplemented`, function nested qualnames, exception subclass args, metaclass `__len__`, native `type.__new__` default detection, live `MappingProxyType`, exact `_find_impl()` dispatch, and object fallback for missing singledispatch implementations.
+  - Marked unneeded: LRU threaded scheduling stress, LRU/partial/total_ordering pickle identity roundtrips, and three singledispatch ABC C3/conflict-order tests that rely on CPython's private `collections.abc` hierarchy/order rather than public dispatch semantics.
+
+- `test_userlist`
+  - Previous recorded state: `run=51 pass=34 fail=12 err=5 skip=0`, mostly arithmetic/reflected arithmetic, slicing type, bounds/mutator validation, iterator/extended-slice behavior.
+  - Result after batch: included in the five-module green group, `run=200 pass=200 fail=0 err=0 skip=0` with `test_super test_urlparse test_userlist test_fractions test_pprint`.
+  - Fixed traits: UserList arithmetic/reflected arithmetic, slicing and result type, mutator API shape, bounds and iterator behavior.
+
+- `test_super`
+  - Earlier candidate trait: compiler/runtime `__classcell__`, zero-arg `super()`, and class creation/super lookup semantics.
+  - Result after batch: included in the five-module green group, `run=200 pass=200 fail=0 err=0 skip=0`.
+  - Fixed traits: classcell propagation through compiler/class creation, super object lookup/call paths, and related class/metaclass instantiation behavior.
+
+- `test_urlparse`
+  - Earlier target trait: broad `urllib.parse` native parser completeness rather than Python shim behavior.
+  - Result after batch: included in the five-module green group, `run=200 pass=200 fail=0 err=0 skip=0`.
+  - Fixed traits: URL parse/split/join/quote edge cases in the native `urllib_parse` implementation and HTTP module parsed-url helpers.
+
+- `test_pprint`
+  - Previous recorded state after load-error fixes: `run=30 pass=4 fail=25 err=1 skip=0`, broad pretty-formatting/layout/User* display gaps.
+  - Result after batch: included in the five-module green group, `run=200 pass=200 fail=0 err=0 skip=0`.
+  - Fixed traits: compact/width layout, recursive/deep display, dict/list/tuple/set/frozenset ordering/layout, ChainMap/Counter/defaultdict/OrderedDict/User* display, and PrettyPrinter subclass hooks.
+
+- `test_fractions`
+  - Earlier target trait: fractions/numbers protocol completeness and mixed numeric behavior.
+  - Result after batch: included in the five-module green group, `run=200 pass=200 fail=0 err=0 skip=0`.
+  - Fixed traits: Fraction construction/normalization/arithmetic/comparison/rounding/formatting, numeric ABC registration behavior, Decimal/float mixed paths used by the fraction tests, and legacy `fractions.gcd()` warnings.
+
+- Batch validation
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools`: `run=168 pass=157 fail=0 err=0 skip=11`.
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_super test_urlparse test_userlist test_fractions test_pprint`: `run=200 pass=200 fail=0 err=0 skip=0`.
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_userlist test_super test_urlparse test_pprint test_fractions`: `run=368 pass=357 fail=0 err=0 skip=11`.

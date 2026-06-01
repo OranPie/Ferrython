@@ -28,6 +28,11 @@ fn is_weak_ref_instance(obj: &PyObjectRef) -> bool {
         if inst.attrs.read().contains_key("__weakref_ref__"))
 }
 
+fn is_enum_member_instance(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(inst)
+        if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_"))
+}
+
 fn builtin_value_compare_operands(
     a: &PyObjectRef,
     b: &PyObjectRef,
@@ -592,7 +597,11 @@ impl VirtualMachine {
                 }
             }
             // IntEnum/enum value-based comparison fallback
-            if !is_weak_ref_instance(&a) && !is_weak_ref_instance(&b) {
+            if !is_weak_ref_instance(&a)
+                && !is_weak_ref_instance(&b)
+                && is_enum_member_instance(&a)
+                && is_enum_member_instance(&b)
+            {
                 if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) =
                     (&a.payload, &b.payload)
                 {
@@ -624,10 +633,20 @@ impl VirtualMachine {
             }
             // IntEnum vs plain int/float comparison
             if !is_weak_ref_instance(&a) && !is_weak_ref_instance(&b) {
-                let (enum_val, other) = if let PyObjectPayload::Instance(inst) = &a.payload {
-                    (inst.attrs.read().get("value").cloned(), Some(&b))
-                } else if let PyObjectPayload::Instance(inst) = &b.payload {
-                    (inst.attrs.read().get("value").cloned(), Some(&a))
+                let (enum_val, other) = if is_enum_member_instance(&a) {
+                    match &a.payload {
+                        PyObjectPayload::Instance(inst) => {
+                            (inst.attrs.read().get("value").cloned(), Some(&b))
+                        }
+                        _ => (None, None),
+                    }
+                } else if is_enum_member_instance(&b) {
+                    match &b.payload {
+                        PyObjectPayload::Instance(inst) => {
+                            (inst.attrs.read().get("value").cloned(), Some(&a))
+                        }
+                        _ => (None, None),
+                    }
                 } else {
                     (None, None)
                 };
@@ -671,6 +690,19 @@ impl VirtualMachine {
                 && (matches!(&a.payload, PyObjectPayload::Instance(_))
                     || matches!(&b.payload, PyObjectPayload::Instance(_)))
             {
+                let cmp_op = match cmp {
+                    0 => CompareOp::Lt,
+                    1 => CompareOp::Le,
+                    4 => CompareOp::Gt,
+                    5 => CompareOp::Ge,
+                    _ => unreachable!(),
+                };
+                if let Ok(result) = a.compare(&b, cmp_op) {
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
                 return Err(PyException::type_error(format!(
                     "'{}' not supported between instances of '{}' and '{}'",
                     match cmp {

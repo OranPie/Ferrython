@@ -142,7 +142,35 @@ pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     let obj = target.as_ref().unwrap_or(&args[0]);
     match obj.get_attr(name.as_str()) {
-        Some(v) => Ok(v),
+        Some(v) => {
+            let descriptor = match &obj.payload {
+                PyObjectPayload::Instance(inst) => {
+                    ferrython_core::object::lookup_in_class_mro(&inst.class, name.as_str())
+                }
+                _ => None,
+            };
+            if let Some(descriptor) = descriptor {
+                if ferrython_core::object::is_property_like(&descriptor) {
+                    if let Some(getter) =
+                        ferrython_core::object::property_field(&descriptor, "fget")
+                    {
+                        if matches!(&getter.payload, PyObjectPayload::None) {
+                            return Err(PyException::attribute_error(format!(
+                                "unreadable attribute '{}'",
+                                name
+                            )));
+                        }
+                        let getter = unwrap_abstract_fget(&getter);
+                        return call_callable(&getter, &[obj.clone()]);
+                    }
+                    return Err(PyException::attribute_error(format!(
+                        "unreadable attribute '{}'",
+                        name
+                    )));
+                }
+            }
+            Ok(v)
+        }
         None => {
             if args.len() > 2 {
                 Ok(args[2].clone())

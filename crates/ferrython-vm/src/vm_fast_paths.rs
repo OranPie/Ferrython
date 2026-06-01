@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::object::{
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    is_hidden_dict_key, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{float_as_integer_ratio, PyInt};
@@ -215,7 +215,10 @@ fn fast_len_value(arg: &PyObjectRef) -> Option<i64> {
         PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }.len() as i64),
         PyObjectPayload::Tuple(v) => Some(v.len() as i64),
         PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
-        PyObjectPayload::Dict(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
+        PyObjectPayload::Dict(m) => {
+            let map = unsafe { &*m.data_ptr() };
+            Some(map.keys().filter(|k| !is_hidden_dict_key(k)).count() as i64)
+        }
         PyObjectPayload::Set(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
         _ => None,
@@ -592,6 +595,11 @@ pub(crate) fn try_fast_callfunction_builtin(
                 return None;
             }
             let attr = obj.get_attr(name.as_str())?;
+            if matches!(&obj.payload, PyObjectPayload::Instance(_))
+                && ferrython_core::object::is_property_like(&attr)
+            {
+                return None;
+            }
             if matches!(&obj.payload, PyObjectPayload::Class(_))
                 && ferrython_core::object::is_dynamic_class_attribute(&attr)
             {

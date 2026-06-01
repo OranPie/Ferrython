@@ -19,6 +19,19 @@ impl VirtualMachine {
             if cd.is_simple_class.get()
                 && kwargs.is_empty()
                 && !cd.has_custom_new.get()
+                && ferrython_core::object::lookup_in_class_mro(cls, "__new__")
+                    .map(|new| match &new.payload {
+                        PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "__new__",
+                        PyObjectPayload::BuiltinBoundMethod(bbm) => {
+                            bbm.method_name.as_str() == "__new__"
+                                && matches!(
+                                    &bbm.receiver.payload,
+                                    PyObjectPayload::BuiltinType(name) if name.as_str() == "object"
+                                )
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(true)
                 && !cd.is_dict_subclass
                 && !cd.has_descriptors
                 && cd.builtin_base_name.is_none()
@@ -137,11 +150,6 @@ impl VirtualMachine {
                             ));
                         }
                     }
-                } else if !pos_args.is_empty() {
-                    return Err(PyException::type_error(format!(
-                        "{}() takes no arguments",
-                        cd.name
-                    )));
                 } else if cd.is_exception_subclass {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
                         let mut attrs = inst.attrs.write();
@@ -155,6 +163,11 @@ impl VirtualMachine {
                             );
                         }
                     }
+                } else if !pos_args.is_empty() {
+                    return Err(PyException::type_error(format!(
+                        "{}() takes no arguments",
+                        cd.name
+                    )));
                 }
                 return Ok(Some(instance));
             }

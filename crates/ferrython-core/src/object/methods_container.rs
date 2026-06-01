@@ -81,6 +81,10 @@ fn set_membership_key(obj: &PyObjectRef) -> PyResult<HashableKey> {
     }
 }
 
+fn visible_dict_storage_len(map: &FxHashKeyMap) -> usize {
+    map.keys().filter(|k| !is_hidden_dict_key(k)).count()
+}
+
 fn chainmap_builtin_value(inst: &InstanceData) -> PyResult<Option<PyObjectRef>> {
     if !inst.attrs.read().contains_key("__chainmap__") {
         return Ok(None);
@@ -162,6 +166,9 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     return py_len(&tup);
                 }
             }
+            if let Some(ref ds) = inst.dict_storage {
+                return Ok(visible_dict_storage_len(&ds.read()));
+            }
             if let Some(method) = instance_special_method(obj, "__len__") {
                 let method = method?;
                 if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
@@ -173,9 +180,6 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             }
             if let Some(bv) = chainmap_builtin_value(inst)? {
                 return py_len(&bv);
-            }
-            if let Some(ref ds) = inst.dict_storage {
-                return Ok(ds.read().len());
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -206,10 +210,24 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 found
             };
             if let Some(len_method) = len_fn {
-                if let PyObjectPayload::NativeFunction(nf) = &len_method.payload {
-                    let result = (nf.func)(&[obj.clone()])?;
-                    if let Some(n) = result.as_int() {
-                        return Ok(n as usize);
+                let result = call_callable(&len_method, &[obj.clone()])?;
+                if let Some(n) = result.as_int() {
+                    return Ok(n as usize);
+                }
+            }
+            if let Some(meta) = &cd.metaclass {
+                if let PyObjectPayload::Class(meta_cd) = &meta.payload {
+                    if let Some(len_method) = meta_cd.namespace.read().get("__len__").cloned() {
+                        let bound = PyObjectRef::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: len_method,
+                            },
+                        });
+                        let result = call_callable(&bound, &[])?;
+                        if let Some(n) = result.as_int() {
+                            return Ok(n as usize);
+                        }
                     }
                 }
             }
@@ -916,6 +934,17 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 expected_version: dict_storage_version(map),
             }))),
         )),
+        PyObjectPayload::InstanceDict(attrs) => {
+            let map = Rc::new(PyCell::new(instance_dict_as_hashkey_map(attrs)));
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                PyCell::new(IteratorData::DictKeyRefs {
+                    source: map.clone(),
+                    index: 0,
+                    expected_len: map.read().len(),
+                    expected_version: dict_storage_version(&map),
+                }),
+            ))))
+        }
         PyObjectPayload::Set(m) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
             PyCell::new(IteratorData::SetRefs {
                 source: m.clone(),

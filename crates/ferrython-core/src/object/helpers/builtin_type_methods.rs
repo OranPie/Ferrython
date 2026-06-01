@@ -9,8 +9,31 @@ use super::{
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::object::ClassData;
-use crate::types::HashableKey;
+use crate::types::{float_as_integer_ratio, HashableKey};
 use compact_str::CompactString;
+use std::cell::RefCell;
+
+thread_local! {
+    static BUILTIN_TYPE_METHOD_CACHE: RefCell<rustc_hash::FxHashMap<(String, String), PyObjectRef>> =
+        RefCell::new(rustc_hash::FxHashMap::default());
+}
+
+fn cached_builtin_type_method(
+    type_name: &str,
+    method_name: &str,
+    make: impl FnOnce() -> PyObjectRef,
+) -> PyObjectRef {
+    let key = (type_name.to_string(), method_name.to_string());
+    BUILTIN_TYPE_METHOD_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(obj) = cache.get(&key) {
+            return obj.clone();
+        }
+        let obj = make();
+        cache.insert(key, obj.clone());
+        obj
+    })
+}
 
 /// Resolve known built-in type methods that can be defined without VM access.
 /// This is used by super() resolution when a base is a BuiltinType.
@@ -46,11 +69,12 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
         ("type", "__new__") => Some(PyObject::native_function("type.__new__", |args| {
             // type.__new__(mcs, name, bases, dict) or type(name, bases, dict)
             if args.len() == 4 {
+                let mcs = &args[0];
                 let name = args[1].as_str().ok_or_else(|| {
                     PyException::type_error("type.__new__ argument 2 must be str")
                 })?;
                 let bases = args[2].to_list()?;
-                let namespace = match &args[3].payload {
+                let (mut namespace, class_cell) = match &args[3].payload {
                     PyObjectPayload::Dict(m) => {
                         let r = m.read();
                         let mut ns = FxAttrMap::default();
@@ -61,7 +85,8 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                             };
                             ns.insert(key_str, v.clone());
                         }
-                        ns
+                        let class_cell = ns.get("__classcell__").cloned();
+                        (ns, class_cell)
                     }
                     _ => {
                         return Err(PyException::type_error(
@@ -69,6 +94,14 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         ))
                     }
                 };
+                if let Some(cell) = &class_cell {
+                    if !matches!(&cell.payload, PyObjectPayload::Cell(_)) {
+                        return Err(PyException::type_error(
+                            "__classcell__ must be a nonlocal cell",
+                        ));
+                    }
+                }
+                namespace.shift_remove("__classcell__");
                 let mut mro = Vec::new();
                 for base in &bases {
                     if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object")
@@ -83,16 +116,32 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         }
                     }
                 }
-                Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(
-                    ClassData::new(CompactString::from(name), bases, namespace, mro, None),
-                ))))
+                let is_plain_type =
+                    matches!(&mcs.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "type");
+                let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+                    CompactString::from(name),
+                    bases,
+                    namespace,
+                    mro,
+                    if is_plain_type {
+                        None
+                    } else {
+                        Some(mcs.clone())
+                    },
+                ))));
+                if let Some(cell_obj) = class_cell {
+                    if let PyObjectPayload::Cell(cell) = &cell_obj.payload {
+                        *cell.write() = Some(cls.clone());
+                    }
+                }
+                Ok(cls)
             } else if args.len() == 3 {
                 // type(name, bases, dict) — no mcs
                 let name = args[0]
                     .as_str()
                     .ok_or_else(|| PyException::type_error("type() argument 1 must be str"))?;
                 let bases = args[1].to_list()?;
-                let namespace = match &args[2].payload {
+                let (mut namespace, class_cell) = match &args[2].payload {
                     PyObjectPayload::Dict(m) => {
                         let r = m.read();
                         let mut ns = FxAttrMap::default();
@@ -103,10 +152,19 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                             };
                             ns.insert(key_str, v.clone());
                         }
-                        ns
+                        let class_cell = ns.get("__classcell__").cloned();
+                        (ns, class_cell)
                     }
                     _ => return Err(PyException::type_error("type() argument 3 must be dict")),
                 };
+                if let Some(cell) = &class_cell {
+                    if !matches!(&cell.payload, PyObjectPayload::Cell(_)) {
+                        return Err(PyException::type_error(
+                            "__classcell__ must be a nonlocal cell",
+                        ));
+                    }
+                }
+                namespace.shift_remove("__classcell__");
                 let mut mro = Vec::new();
                 for base in &bases {
                     if !matches!(&base.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "object")
@@ -121,13 +179,50 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         }
                     }
                 }
-                Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(
-                    ClassData::new(CompactString::from(name), bases, namespace, mro, None),
-                ))))
+                let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+                    CompactString::from(name),
+                    bases,
+                    namespace,
+                    mro,
+                    None,
+                ))));
+                if let Some(cell_obj) = class_cell {
+                    if let PyObjectPayload::Cell(cell) = &cell_obj.payload {
+                        *cell.write() = Some(cls.clone());
+                    }
+                }
+                Ok(cls)
             } else {
                 Err(PyException::type_error(
                     "type.__new__ requires 3 or 4 arguments",
                 ))
+            }
+        })),
+        ("type", "mro") => Some(PyObject::native_function("type.mro", |args| {
+            let Some(cls) = args.first() else {
+                return Err(PyException::type_error(
+                    "unbound method type.mro() needs an argument",
+                ));
+            };
+            match &cls.payload {
+                PyObjectPayload::Class(cd) => {
+                    let mut mro_list = vec![cls.clone()];
+                    mro_list.extend(cd.mro.iter().cloned());
+                    Ok(PyObject::list(mro_list))
+                }
+                PyObjectPayload::BuiltinType(n) => {
+                    let mut mro_list = vec![cls.clone()];
+                    if n.as_str() == "bool" {
+                        mro_list.push(PyObject::builtin_type(CompactString::from("int")));
+                    }
+                    if n.as_str() != "object" {
+                        mro_list.push(PyObject::builtin_type(CompactString::from("object")));
+                    }
+                    Ok(PyObject::list(mro_list))
+                }
+                _ => Err(PyException::type_error(
+                    "descriptor 'mro' requires a type object",
+                )),
             }
         })),
         // tuple.__new__(cls, iterable) — create tuple subclass instance with __builtin_value__
@@ -206,13 +301,50 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                     ));
                 }
             }
-            let value = if args.len() > 1 { args[1].to_int()? } else { 0 };
+            let value = if args.len() > 1 {
+                match &args[1].payload {
+                    PyObjectPayload::Int(value) => value.to_object(),
+                    PyObjectPayload::Bool(value) => PyObject::int(if *value { 1 } else { 0 }),
+                    PyObjectPayload::Str(value) => {
+                        let text = value.trim();
+                        match text.parse::<i64>() {
+                            Ok(value) => PyObject::int(value),
+                            Err(_) => {
+                                let value = text.parse::<num_bigint::BigInt>().map_err(|_| {
+                                    PyException::value_error(format!(
+                                        "invalid literal for int(): '{}'",
+                                        value
+                                    ))
+                                })?;
+                                PyObject::big_int(value)
+                            }
+                        }
+                    }
+                    PyObjectPayload::Float(value) => {
+                        if value.is_nan() {
+                            return Err(PyException::value_error(
+                                "cannot convert float NaN to integer",
+                            ));
+                        }
+                        if value.is_infinite() {
+                            return Err(PyException::overflow_error(
+                                "cannot convert float infinity to integer",
+                            ));
+                        }
+                        let (numerator, denominator) = float_as_integer_ratio(value.trunc());
+                        PyObject::big_int(numerator / denominator)
+                    }
+                    _ => PyObject::int(args[1].to_int()?),
+                }
+            } else {
+                PyObject::int(0)
+            };
             let inst = PyObject::instance(cls.clone());
             if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                 inst_data
                     .attrs
                     .write()
-                    .insert(intern_or_new("__builtin_value__"), PyObject::int(value));
+                    .insert(intern_or_new("__builtin_value__"), value);
             }
             Ok(inst)
         })),
@@ -445,6 +577,30 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
         ("dict", "items") => Some(PyObject::native_function("dict.items", |args| {
             dict_storage_view(args, "items", "dict.items")
         })),
+        ("dict", "copy") => Some(PyObject::native_function("dict.copy", |args| {
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "dict.copy() takes exactly one argument",
+                ));
+            }
+            match &args[0].payload {
+                PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+                    Ok(PyObject::dict(map.read().clone()))
+                }
+                PyObjectPayload::Instance(inst) => {
+                    if let Some(ref ds) = inst.dict_storage {
+                        Ok(PyObject::dict(ds.read().clone()))
+                    } else {
+                        Err(PyException::type_error(
+                            "dict.copy requires a dict instance",
+                        ))
+                    }
+                }
+                _ => Err(PyException::type_error(
+                    "dict.copy requires a dict instance",
+                )),
+            }
+        })),
         // dict.__getitem__(self, key) — access dict_storage on dict subclass
         ("dict", "__getitem__") => Some(PyObject::native_function("dict.__getitem__", |args| {
             if args.len() != 2 {
@@ -630,19 +786,25 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(PyObject::bool_val(args[0].contains(&args[1])?))
         })),
-        (_, "__repr__") => Some(PyObject::native_function("__repr__", |args| {
-            if args.len() != 1 {
-                return Err(PyException::type_error("__repr__ takes 1 argument"));
-            }
-            Ok(PyObject::str_val(CompactString::from(args[0].repr())))
+        (type_name, "__repr__") => Some(cached_builtin_type_method(type_name, "__repr__", || {
+            let fn_name = format!("{type_name}.__repr__");
+            PyObject::native_closure(&fn_name, |args| {
+                if args.len() != 1 {
+                    return Err(PyException::type_error("__repr__ takes 1 argument"));
+                }
+                Ok(PyObject::str_val(CompactString::from(args[0].repr())))
+            })
         })),
-        (_, "__str__") => Some(PyObject::native_function("__str__", |args| {
-            if args.len() != 1 {
-                return Err(PyException::type_error("__str__ takes 1 argument"));
-            }
-            Ok(PyObject::str_val(CompactString::from(
-                args[0].py_to_string(),
-            )))
+        (type_name, "__str__") => Some(cached_builtin_type_method(type_name, "__str__", || {
+            let fn_name = format!("{type_name}.__str__");
+            PyObject::native_closure(&fn_name, |args| {
+                if args.len() != 1 {
+                    return Err(PyException::type_error("__str__ takes 1 argument"));
+                }
+                Ok(PyObject::str_val(CompactString::from(
+                    args[0].py_to_string(),
+                )))
+            })
         })),
         (_, "__hash__") => Some(PyObject::native_function("__hash__", |args| {
             if args.len() != 1 {

@@ -406,15 +406,24 @@ impl VirtualMachine {
                 }
                 PyObject::dict(map)
             };
+            let expected_class_cell = Self::class_cell_object(class_cell_info.as_ref());
+            if let Some(cell_obj) = expected_class_cell.clone() {
+                Self::dict_set_str(&ns_dict, "__classcell__", cell_obj);
+            }
             let name_obj = PyObject::str_val(class_name.clone());
             let bases_tuple = PyObject::tuple(bases_list.clone());
 
             // Try calling metaclass.__new__(mcs, name, bases, namespace)
             let own_new = if let PyObjectPayload::Class(cd) = &meta.payload {
-                cd.namespace.read().get("__new__").cloned()
+                cd.namespace
+                    .read()
+                    .get("__new__")
+                    .filter(|method| matches!(&method.payload, PyObjectPayload::Function(_)))
+                    .cloned()
             } else {
                 None
             };
+            let used_custom_new = own_new.is_some();
             let cls = if let Some(new_method) = own_new {
                 // User-defined __new__ on the metaclass
                 let new_fn = match &new_method.payload {
@@ -467,13 +476,22 @@ impl VirtualMachine {
                 }
             } else {
                 // No __new__ — create class directly (like type.__new__)
-                PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
-                    class_name.clone(),
-                    bases_list.clone(),
-                    namespace,
-                    mro,
-                    Some(meta.clone()),
-                ))))
+                let preliminary_cls =
+                    PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+                        class_name.clone(),
+                        bases_list.clone(),
+                        namespace,
+                        mro,
+                        Some(meta.clone()),
+                    ))));
+                if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                    Self::patch_class_cell(cellvar_names, cells, &preliminary_cls);
+                }
+                let cls = self.apply_metaclass_mro(preliminary_cls, &meta)?;
+                if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                    Self::patch_class_cell(cellvar_names, cells, &cls);
+                }
+                cls
             };
 
             // Ensure metaclass is set on the returned class
@@ -494,7 +512,10 @@ impl VirtualMachine {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init,
                     };
-                    self.call_object(init_fn, vec![cls.clone(), name_obj, bases_tuple, ns_dict])?;
+                    self.call_object(
+                        init_fn,
+                        vec![cls.clone(), name_obj, bases_tuple, ns_dict.clone()],
+                    )?;
                 }
             }
             // __init_subclass__ handling
@@ -532,13 +553,20 @@ impl VirtualMachine {
                     }
                 }
             }
+            // Populate __class__ cell (PEP 3135)
+            if matches!(&cls.payload, PyObjectPayload::Class(_)) {
+                if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                    if used_custom_new {
+                        Self::validate_propagated_class_cell(
+                            &ns_dict,
+                            expected_class_cell.as_ref(),
+                        )?;
+                    }
+                    Self::validate_class_cell(cellvar_names, cells, &cls)?;
+                }
+            }
             // Call __set_name__ on descriptors in the class namespace (PEP 487)
             self.call_set_name_on_descriptors(&cls)?;
-
-            // Populate __class__ cell (PEP 3135)
-            if let Some((ref cellvar_names, ref cells)) = class_cell_info {
-                Self::patch_class_cell(cellvar_names, cells, &cls);
-            }
             // Register as subclass of each base
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 for base in &cd.bases {
@@ -629,6 +657,11 @@ impl VirtualMachine {
                     }
                 }
             }
+            // Populate __class__ cell (PEP 3135)
+            if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                Self::patch_class_cell(cellvar_names, cells, &cls);
+                Self::validate_class_cell(cellvar_names, cells, &cls)?;
+            }
             // Call __set_name__ on descriptors in the class namespace (PEP 487)
             self.call_set_name_on_descriptors(&cls)?;
 
@@ -637,11 +670,6 @@ impl VirtualMachine {
 
             // Enum metaclass behavior
             self.process_enum_class(&cls, &bases)?;
-
-            // Populate __class__ cell (PEP 3135)
-            if let Some((ref cellvar_names, ref cells)) = class_cell_info {
-                Self::patch_class_cell(cellvar_names, cells, &cls);
-            }
             // Register as subclass of each base
             for base in &bases {
                 if let PyObjectPayload::Class(bcd) = &base.payload {
@@ -665,22 +693,142 @@ impl VirtualMachine {
         }
     }
 
+    fn class_cell_object(info: Option<&(Vec<CompactString>, Vec<CellRef>)>) -> Option<PyObjectRef> {
+        let (cellvar_names, cells) = info?;
+        for (i, name) in cellvar_names.iter().enumerate() {
+            if name.as_str() == "__class__" {
+                return cells.get(i).map(|cell| PyObject::cell(cell.clone()));
+            }
+        }
+        None
+    }
+
+    fn dict_set_str(dict_obj: &PyObjectRef, name: &str, value: PyObjectRef) {
+        match &dict_obj.payload {
+            PyObjectPayload::Dict(map) => {
+                map.write()
+                    .insert(HashableKey::str_key(CompactString::from(name)), value);
+            }
+            PyObjectPayload::Instance(inst) => {
+                if let Some(ref ds) = inst.dict_storage {
+                    ds.write()
+                        .insert(HashableKey::str_key(CompactString::from(name)), value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dict_get_str(dict_obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        match &dict_obj.payload {
+            PyObjectPayload::Dict(map) => map
+                .read()
+                .get(&HashableKey::str_key(CompactString::from(name)))
+                .cloned(),
+            PyObjectPayload::Instance(inst) => inst.dict_storage.as_ref().and_then(|ds| {
+                ds.read()
+                    .get(&HashableKey::str_key(CompactString::from(name)))
+                    .cloned()
+            }),
+            _ => None,
+        }
+    }
+
+    fn validate_propagated_class_cell(
+        namespace: &PyObjectRef,
+        expected: Option<&PyObjectRef>,
+    ) -> PyResult<()> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let Some(actual) = Self::dict_get_str(namespace, "__classcell__") else {
+            return Err(PyException::runtime_error(
+                "__class__ not set defining class; was __classcell__ propagated?",
+            ));
+        };
+        match (&actual.payload, &expected.payload) {
+            (PyObjectPayload::Cell(actual_cell), PyObjectPayload::Cell(expected_cell))
+                if Rc::ptr_eq(actual_cell, expected_cell) =>
+            {
+                Ok(())
+            }
+            (PyObjectPayload::Cell(_), PyObjectPayload::Cell(_)) => {
+                Err(PyException::type_error("__class__ set to wrong class"))
+            }
+            _ => Err(PyException::type_error(
+                "__classcell__ must be a nonlocal cell",
+            )),
+        }
+    }
+
+    fn validate_class_cell(
+        cellvar_names: &[CompactString],
+        cells: &[CellRef],
+        cls: &PyObjectRef,
+    ) -> PyResult<()> {
+        for (i, name) in cellvar_names.iter().enumerate() {
+            if name.as_str() == "__class__" {
+                let Some(cell) = cells.get(i) else {
+                    return Err(PyException::runtime_error(
+                        "__class__ not set defining class; was __classcell__ propagated?",
+                    ));
+                };
+                let value = cell.read().as_ref().cloned();
+                match value {
+                    Some(value) if PyObjectRef::ptr_eq(&value, cls) => return Ok(()),
+                    Some(_) => return Err(PyException::type_error("__class__ set to wrong class")),
+                    None => {
+                        return Err(PyException::runtime_error(
+                            "__class__ not set defining class; was __classcell__ propagated?",
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_metaclass_mro(
+        &mut self,
+        cls: PyObjectRef,
+        meta: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let Some(mro_method) = meta.get_attr("mro") else {
+            return Ok(cls);
+        };
+        let result = self.call_object(mro_method, vec![cls.clone()])?;
+        let mut mro_items = result.to_list()?;
+        if mro_items
+            .first()
+            .map(|item| PyObjectRef::ptr_eq(item, &cls))
+            .unwrap_or(false)
+        {
+            mro_items.remove(0);
+        }
+        if !matches!(&cls.payload, PyObjectPayload::Class(_)) {
+            return Ok(cls);
+        }
+        // Class creation is still single-threaded here.  Update the just-created
+        // class in place so any code run from metaclass.mro() observes the same
+        // object that will be returned by __build_class__.
+        unsafe {
+            let obj = &mut *(PyObjectRef::as_ptr(&cls) as *mut PyObject);
+            if let PyObjectPayload::Class(cd) = &mut obj.payload {
+                cd.mro = mro_items;
+                cd.method_cache.write().clear();
+                cd.rebuild_vtable();
+            }
+        }
+        Ok(cls)
+    }
+
     /// Call __set_name__ on descriptors in the class namespace (PEP 487).
     fn call_set_name_on_descriptors(&mut self, cls: &PyObjectRef) -> PyResult<()> {
         if let PyObjectPayload::Class(cd) = &cls.payload {
-            // Quick scan: skip snapshot if no Instance values exist in namespace
-            let has_instances = {
-                let ns = cd.namespace.read();
-                ns.values()
-                    .any(|v| matches!(&v.payload, PyObjectPayload::Instance(_)))
-            };
-            if !has_instances {
-                return Ok(());
-            }
             let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
                 let ns = cd.namespace.read();
                 ns.iter()
-                    .filter(|(_, v)| matches!(&v.payload, PyObjectPayload::Instance(_)))
+                    .filter(|(_, v)| v.get_attr("__set_name__").is_some())
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
             };
@@ -700,7 +848,14 @@ impl VirtualMachine {
                         })
                     };
                     let name_arg = PyObject::str_val(attr_name.clone());
-                    self.call_object(bound, vec![cls.clone(), name_arg])?;
+                    if let Err(err) = self.call_object(bound, vec![cls.clone(), name_arg]) {
+                        let mut wrapped = PyException::runtime_error(format!(
+                            "Error calling __set_name__ on '{}'",
+                            attr_name
+                        ));
+                        wrapped.context = Some(Box::new(err));
+                        return Err(wrapped);
+                    }
                 }
             }
         }

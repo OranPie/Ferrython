@@ -8,7 +8,6 @@ pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
         "fnmatch" => Some(text_modules::create_fnmatch_module()),
         "html" => Some(text_modules::create_html_module()),
         "shlex" => Some(text_modules::create_shlex_module()),
-        "pprint" => Some(text_modules::create_pprint_module()),
         _ => None,
     }
 }

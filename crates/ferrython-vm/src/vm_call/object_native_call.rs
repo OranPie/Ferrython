@@ -35,6 +35,13 @@ impl VirtualMachine {
             let resolved = self.resolve_deque_constructor_args(&args, &[])?;
             return (nf_data.func)(&resolved);
         }
+        if nf_data.name.as_str() == "UserList.__init__" && args.len() > 1 {
+            let mut resolved = Vec::with_capacity(args.len());
+            resolved.push(args[0].clone());
+            resolved.push(PyObject::list(self.collect_iterable(&args[1])?));
+            resolved.extend_from_slice(&args[2..]);
+            return (nf_data.func)(&resolved);
+        }
         if let Some(result) = self.call_iter_regex_or_path_native_object(nf_data, &args)? {
             return Ok(result);
         }

@@ -204,6 +204,9 @@ pub(super) fn native_function_attr(
         ))),
         "__doc__" => Some(PyObject::none()),
         "__call__" => Some(obj.clone()),
+        "__repr__" | "__str__" | "__hash__" | "__eq__" | "__ne__" => {
+            Some(callable_dunder(obj, name))
+        }
         "__init__" if nf.name.as_str() == "collections.deque" => Some(PyObject::native_function(
             "collections.deque.__init__",
             |args| {
@@ -328,8 +331,23 @@ pub(super) fn builtin_function_attr(
         "__class__" => Some(PyObject::builtin_type(CompactString::from(
             "builtin_function_or_method",
         ))),
-        "__doc__" => Some(PyObject::none()),
+        "__doc__" => {
+            let doc = match fname.as_str() {
+                "max" => "max(iterable, *[, default=obj, key=func]) -> value",
+                "min" => "min(iterable, *[, default=obj, key=func]) -> value",
+                _ => "",
+            };
+            if doc.is_empty() {
+                Some(PyObject::none())
+            } else {
+                Some(PyObject::str_val(CompactString::from(doc)))
+            }
+        }
+        "__annotations__" => Some(PyObject::dict(crate::object::new_fx_hashkey_map())),
         "__call__" => Some(obj.clone()),
+        "__repr__" | "__str__" | "__hash__" | "__eq__" | "__ne__" => {
+            Some(callable_dunder(obj, name))
+        }
         _ => None,
     }
 }
@@ -383,4 +401,13 @@ pub(super) fn bound_method_attr(
         "__func__" => Some(method.clone()),
         _ => method.get_attr(name),
     }
+}
+
+fn callable_dunder(obj: &PyObjectRef, name: &str) -> PyObjectRef {
+    PyObjectRef::new(PyObject {
+        payload: PyObjectPayload::BuiltinBoundMethod(super::super::constructors::alloc_bbm_box(
+            obj.clone(),
+            CompactString::from(name),
+        )),
+    })
 }

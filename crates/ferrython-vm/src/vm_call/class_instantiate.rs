@@ -97,7 +97,8 @@ impl VirtualMachine {
                 PyObjectPayload::NativeFunction(nf)
                     if nf.name.ends_with(".__new__") && matches!(nf.name.as_str(),
                         "tuple.__new__" | "list.__new__" | "str.__new__" | "int.__new__"
-                        | "float.__new__" | "complex.__new__" | "object.__new__")
+                        | "float.__new__" | "complex.__new__" | "object.__new__"
+                        | "type.__new__")
                         || nf.name.as_str() == "__new__"
             );
             if is_builtin_new || is_native_builtin_new {
@@ -194,7 +195,9 @@ impl VirtualMachine {
             return false;
         };
         match &new_method.payload {
-            PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "__new__",
+            PyObjectPayload::NativeFunction(nf) => {
+                matches!(nf.name.as_str(), "__new__" | "type.__new__")
+            }
             PyObjectPayload::BuiltinBoundMethod(bbm) => {
                 bbm.method_name.as_str() == "__new__"
                     && matches!(
@@ -203,7 +206,9 @@ impl VirtualMachine {
                     )
             }
             PyObjectPayload::BoundMethod { method, .. } => match &method.payload {
-                PyObjectPayload::NativeFunction(nf) => nf.name.as_str() == "__new__",
+                PyObjectPayload::NativeFunction(nf) => {
+                    matches!(nf.name.as_str(), "__new__" | "type.__new__")
+                }
                 _ => false,
             },
             _ => false,
