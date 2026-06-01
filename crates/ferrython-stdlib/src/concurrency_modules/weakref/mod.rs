@@ -97,7 +97,7 @@ pub fn create_weakref_module() -> PyObjectRef {
             ),
             // ── WeakSet() ──
             // A set of weak references. Dead entries are auto-pruned.
-            ("WeakSet", make_builtin(mappings::make_weak_set)),
+            ("WeakSet", mappings::make_weak_set_class()),
             // ── finalize(obj, func, *args, **kwargs) ──
             ("finalize", finalize_type),
             // ── getweakrefcount(obj) ──

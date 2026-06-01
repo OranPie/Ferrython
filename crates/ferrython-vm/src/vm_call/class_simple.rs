@@ -16,6 +16,9 @@ impl VirtualMachine {
     ) -> PyResult<Option<PyObjectRef>> {
         // ── FAST PATH: simple class — skip ABC check entirely ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
+            if !cd.is_simple_class.get() {
+                return Ok(None);
+            }
             if cd.is_simple_class.get()
                 && kwargs.is_empty()
                 && !cd.has_custom_new.get()

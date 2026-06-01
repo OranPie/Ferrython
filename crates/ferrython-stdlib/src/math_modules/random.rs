@@ -1,15 +1,16 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args, make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    call_callable, check_args, make_builtin, make_module, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{hash_key_like_python, HashableKey, PyInt};
 use indexmap::IndexMap;
 use num_bigint::{BigInt, Sign};
-use num_traits::{ToPrimitive, Zero};
+use num_traits::{One, ToPrimitive, Zero};
 use std::cell::RefCell;
 
-use super::number::bigint_to_object;
+use super::number::{bigint_to_object, math_number_to_float};
 
 // ── random module ──
 
@@ -64,12 +65,48 @@ pub fn create_random_module() -> PyObjectRef {
                 "triangular",
                 make_builtin(|args| random_triangular_impl(args)),
             ),
+            (
+                "lognormvariate",
+                make_builtin(|args| random_lognormvariate_impl(args)),
+            ),
+            (
+                "paretovariate",
+                make_builtin(|args| random_paretovariate_impl(args)),
+            ),
+            (
+                "weibullvariate",
+                make_builtin(|args| random_weibullvariate_impl(args)),
+            ),
+            (
+                "vonmisesvariate",
+                make_builtin(|args| random_vonmisesvariate_impl(args)),
+            ),
+            (
+                "gammavariate",
+                make_builtin(|args| random_gammavariate_impl(args)),
+            ),
+            (
+                "betavariate",
+                make_builtin(|args| random_betavariate_impl(args)),
+            ),
+            (
+                "_randbelow_without_getrandbits",
+                make_builtin(random_randbelow_without_getrandbits),
+            ),
             ("getrandbits", make_builtin(random_getrandbits)),
             ("getstate", make_builtin(random_getstate)),
             ("setstate", make_builtin(random_setstate)),
             (
                 "Random",
-                make_builtin(|_args| {
+                make_builtin(|args| {
+                    if !args.is_empty() && !matches!(args[0].payload, PyObjectPayload::None) {
+                        random_seed(&args[..1])?;
+                    }
+                    if args.len() > 2 {
+                        return Err(PyException::type_error(
+                            "Random() takes at most 2 arguments",
+                        ));
+                    }
                     let mut attrs = IndexMap::new();
                     attrs.insert(CompactString::from("random"), make_builtin(random_random));
                     attrs.insert(CompactString::from("randint"), make_builtin(random_randint));
@@ -120,6 +157,7 @@ pub fn create_random_module() -> PyObjectRef {
                         CompactString::from("triangular"),
                         make_builtin(|args| random_triangular_impl(args)),
                     );
+                    install_distribution_attrs(&mut attrs);
                     Ok(PyObject::module_with_attrs(
                         CompactString::from("Random"),
                         attrs,
@@ -128,7 +166,12 @@ pub fn create_random_module() -> PyObjectRef {
             ),
             (
                 "SystemRandom",
-                make_builtin(|_args| {
+                make_builtin(|args| {
+                    if args.len() > 2 {
+                        return Err(PyException::type_error(
+                            "SystemRandom() takes at most 2 arguments",
+                        ));
+                    }
                     let mut attrs = IndexMap::new();
                     attrs.insert(CompactString::from("random"), make_builtin(random_random));
                     attrs.insert(CompactString::from("randint"), make_builtin(random_randint));
@@ -167,6 +210,7 @@ pub fn create_random_module() -> PyObjectRef {
                         CompactString::from("triangular"),
                         make_builtin(|args| random_triangular_impl(args)),
                     );
+                    install_distribution_attrs(&mut attrs);
                     attrs.insert(
                         CompactString::from("getrandbits"),
                         make_builtin(random_getrandbits),
@@ -195,6 +239,37 @@ pub fn create_random_module() -> PyObjectRef {
             ),
         ],
     )
+}
+
+fn install_distribution_attrs(attrs: &mut IndexMap<CompactString, PyObjectRef>) {
+    attrs.insert(
+        CompactString::from("lognormvariate"),
+        make_builtin(|args| random_lognormvariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("paretovariate"),
+        make_builtin(|args| random_paretovariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("weibullvariate"),
+        make_builtin(|args| random_weibullvariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("vonmisesvariate"),
+        make_builtin(|args| random_vonmisesvariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("gammavariate"),
+        make_builtin(|args| random_gammavariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("betavariate"),
+        make_builtin(|args| random_betavariate_impl(args)),
+    );
+    attrs.insert(
+        CompactString::from("_randbelow_without_getrandbits"),
+        make_builtin(random_randbelow_without_getrandbits),
+    );
 }
 
 // ── Seeded PRNG (xoshiro256**) for reproducible random sequences ──
@@ -411,6 +486,144 @@ fn random_triangular_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
+fn random_lognormvariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.lognormvariate", args, 2)?;
+    let mu = args[0].to_float()?;
+    let sigma = args[1].to_float()?;
+    Ok(PyObject::float(random_normalvariate_value(mu, sigma).exp()))
+}
+
+fn random_paretovariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.paretovariate", args, 1)?;
+    let alpha = args[0].to_float()?;
+    let u = (1.0 - simple_random()).max(f64::MIN_POSITIVE);
+    Ok(PyObject::float(u.powf(-1.0 / alpha)))
+}
+
+fn random_weibullvariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.weibullvariate", args, 2)?;
+    let alpha = args[0].to_float()?;
+    let beta = args[1].to_float()?;
+    if alpha == 0.0 {
+        return Ok(PyObject::float(0.0));
+    }
+    if beta.is_infinite() {
+        return Ok(PyObject::float(alpha));
+    }
+    let u = (1.0 - simple_random()).max(f64::MIN_POSITIVE);
+    Ok(PyObject::float(alpha * (-u.ln()).powf(1.0 / beta)))
+}
+
+fn random_vonmisesvariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.vonmisesvariate", args, 2)?;
+    let mu = args[0].to_float()?;
+    let kappa = args[1].to_float()?;
+    if kappa.is_infinite() {
+        return Ok(PyObject::float(mu.rem_euclid(std::f64::consts::TAU)));
+    }
+    if kappa <= 1e-6 {
+        return Ok(PyObject::float(
+            (std::f64::consts::TAU * simple_random()).rem_euclid(std::f64::consts::TAU),
+        ));
+    }
+    // Best-Fisher rejection algorithm, matching CPython's broad behavior.
+    let s = 0.5 / kappa;
+    let r = s + (1.0 + s * s).sqrt();
+    loop {
+        let u1 = simple_random();
+        let z = (std::f64::consts::PI * u1).cos();
+        let d = z / (r + z);
+        let u2 = simple_random();
+        if u2 < 1.0 - d * d || u2.ln() <= 1.0 - d {
+            let q = 1.0 / r;
+            let f = (q + z) / (1.0 + q * z);
+            let angle = if simple_random() > 0.5 {
+                mu + f.acos()
+            } else {
+                mu - f.acos()
+            };
+            return Ok(PyObject::float(angle.rem_euclid(std::f64::consts::TAU)));
+        }
+    }
+}
+
+fn random_gammavariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.gammavariate", args, 2)?;
+    let alpha = args[0].to_float()?;
+    let beta = args[1].to_float()?;
+    if alpha <= 0.0 || beta <= 0.0 {
+        return Err(PyException::value_error(
+            "gammavariate: alpha and beta must be > 0.0",
+        ));
+    }
+    if (alpha - 1.0).abs() < f64::EPSILON {
+        return Ok(PyObject::float(
+            -beta * simple_random().max(f64::MIN_POSITIVE).ln(),
+        ));
+    }
+    if alpha > 1.0 {
+        let ainv = (2.0 * alpha - 1.0).sqrt();
+        let bbb = alpha - 4.0f64.ln();
+        let ccc = alpha + ainv;
+        loop {
+            let u1 = simple_random();
+            if !(1e-7..=0.999_999_9).contains(&u1) {
+                continue;
+            }
+            let u2 = 1.0 - simple_random();
+            let v = (u1 / (1.0 - u1)).ln() / ainv;
+            let x = alpha * v.exp();
+            let z = u1 * u1 * u2;
+            let r = bbb + ccc * v - x;
+            if r + 2.504_077_396_776_274 - 4.5 * z >= 0.0 || r >= z.ln() {
+                return Ok(PyObject::float(x * beta));
+            }
+        }
+    }
+
+    let b = (std::f64::consts::E + alpha) / std::f64::consts::E;
+    loop {
+        let u = simple_random();
+        let p = b * u;
+        let x = if p <= 1.0 {
+            p.powf(1.0 / alpha)
+        } else {
+            -((b - p) / alpha).ln()
+        };
+        let u1 = simple_random();
+        if p > 1.0 {
+            if u1 <= x.powf(alpha - 1.0) {
+                return Ok(PyObject::float(x * beta));
+            }
+        } else if u1 <= (-x).exp() {
+            return Ok(PyObject::float(x * beta));
+        }
+    }
+}
+
+fn random_betavariate_impl(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.betavariate", args, 2)?;
+    let alpha = args[0].to_float()?;
+    let beta = args[1].to_float()?;
+    let y = random_gammavariate_value(alpha, 1.0)?;
+    if y == 0.0 {
+        return Ok(PyObject::float(0.0));
+    }
+    let z = random_gammavariate_value(beta, 1.0)?;
+    Ok(PyObject::float(y / (y + z)))
+}
+
+fn random_normalvariate_value(mu: f64, sigma: f64) -> f64 {
+    let u1 = simple_random().max(f64::MIN_POSITIVE);
+    let u2 = simple_random();
+    let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+    mu + sigma * z
+}
+
+fn random_gammavariate_value(alpha: f64, beta: f64) -> PyResult<f64> {
+    Ok(random_gammavariate_impl(&[PyObject::float(alpha), PyObject::float(beta)])?.to_float()?)
+}
+
 fn kwargs_get<'a>(args: &'a [PyObjectRef], name: &str) -> Option<PyObjectRef> {
     let PyObjectPayload::Dict(d) = &args.last()?.payload else {
         return None;
@@ -421,7 +634,10 @@ fn kwargs_get<'a>(args: &'a [PyObjectRef], name: &str) -> Option<PyObjectRef> {
 }
 
 fn visible_sequence(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
-    if matches!(&obj.payload, PyObjectPayload::Dict(_)) {
+    if matches!(
+        &obj.payload,
+        PyObjectPayload::Dict(_) | PyObjectPayload::Set(_)
+    ) {
         return Err(PyException::type_error("Population must be a sequence"));
     }
     obj.to_list()
@@ -474,10 +690,14 @@ fn random_choices_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef
             "Cannot choose from an empty population",
         ));
     }
-    let k = kwargs_get(args, "k")
-        .map(|value| value.to_int())
-        .transpose()?
-        .unwrap_or(1);
+    let k = if let Some(value) = kwargs_get(args, "k") {
+        match &value.payload {
+            PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => value.to_int()?,
+            _ => return Err(PyException::type_error("k must be an integer")),
+        }
+    } else {
+        1
+    };
     if k <= 0 {
         return Ok(PyObject::list(vec![]));
     }
@@ -500,7 +720,7 @@ fn random_choices_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef
             let mut running = 0.0;
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                running += value.to_float()?;
+                running += math_number_to_float(&value)?;
                 out.push(running);
             }
             cumulative = Some(out);
@@ -516,7 +736,7 @@ fn random_choices_impl(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef
         cumulative = Some(
             values
                 .iter()
-                .map(PyObjectMethods::to_float)
+                .map(math_number_to_float)
                 .collect::<PyResult<Vec<_>>>()?,
         );
     }
@@ -594,14 +814,19 @@ fn random_state_word(obj: &PyObjectRef) -> PyResult<u64> {
 
 fn random_getrandbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("random.getrandbits", args, 1)?;
-    let k = args[0].to_int()?;
+    let k = match &args[0].payload {
+        PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => args[0].to_int()?,
+        _ => return Err(PyException::type_error("number of bits must be an integer")),
+    };
     if k < 0 {
         return Err(PyException::value_error(
             "number of bits must be greater than zero",
         ));
     }
     if k == 0 {
-        return Ok(PyObject::int(0));
+        return Err(PyException::value_error(
+            "number of bits must be greater than zero",
+        ));
     }
     let mut value = BigInt::zero();
     let mut remaining = k as usize;
@@ -649,20 +874,57 @@ fn random_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(items[idx.min(items.len() - 1)].clone())
 }
 fn random_shuffle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("random.shuffle", args, 1)?;
+    if args.is_empty() || args.len() > 2 {
+        return Err(PyException::type_error(
+            "random.shuffle() takes 1 or 2 arguments",
+        ));
+    }
     // Fisher-Yates in-place shuffle
-    if let PyObjectPayload::List(list_arc) = &args[0].payload {
-        let mut items = list_arc.write();
-        let n = items.len();
-        for i in (1..n).rev() {
-            let j = (simple_random() * (i + 1) as f64) as usize;
-            let j = j.min(i);
-            items.swap(i, j);
+    let random_func = args
+        .get(1)
+        .filter(|arg| !matches!(&arg.payload, PyObjectPayload::None));
+    let random_index = |upper: usize| -> PyResult<usize> {
+        let value = if let Some(func) = random_func {
+            call_callable(func, &[])?.to_float()?
+        } else {
+            simple_random()
+        };
+        Ok(((value * upper as f64) as usize).min(upper.saturating_sub(1)))
+    };
+    match &args[0].payload {
+        PyObjectPayload::List(list_arc) => {
+            let mut items = list_arc.write();
+            let n = items.len();
+            for i in (1..n).rev() {
+                let j = random_index(i + 1)?;
+                items.swap(i, j);
+            }
+        }
+        PyObjectPayload::ByteArray(bytes) => {
+            let n = bytes.len();
+            for i in (1..n).rev() {
+                let j = random_index(i + 1)?;
+                unsafe {
+                    let vec_ptr = &args[0].payload as *const PyObjectPayload;
+                    if let PyObjectPayload::ByteArray(ref value) = *vec_ptr {
+                        let bytes_ptr = &**value as *const Vec<u8> as *mut Vec<u8>;
+                        (*bytes_ptr).swap(i, j);
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(PyException::type_error(
+                "object does not support item assignment",
+            ))
         }
     }
     Ok(PyObject::none())
 }
 fn random_seed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() > 2 {
+        return Err(PyException::type_error("seed() takes at most 2 arguments"));
+    }
     let seed_val: u64 = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
         // No seed or None → use system time
         std::time::SystemTime::now()
@@ -684,7 +946,23 @@ fn random_seed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
                 h
             }
-            _ => args[0].py_to_string().len() as u64,
+            PyObjectPayload::Bytes(bytes) | PyObjectPayload::ByteArray(bytes) => {
+                let mut h: u64 = 0;
+                for b in bytes.iter() {
+                    h = h.wrapping_mul(31).wrapping_add(*b as u64);
+                }
+                h
+            }
+            PyObjectPayload::Complex { real, imag } => real.to_bits() ^ imag.to_bits().rotate_left(17),
+            PyObjectPayload::Tuple(items) => items.len() as u64,
+            _ => match args[0].to_hashable_key() {
+                Ok(key) => hash_key_like_python(&key) as u64,
+                Err(_) => {
+                    return Err(PyException::type_error(
+                        "The only supported seed types are None, int, float, str, bytes, bytearray, tuple, and hashable objects",
+                    ))
+                }
+            },
         }
     };
     RNG.with(|rng| *rng.borrow_mut() = Xoshiro256::new(seed_val));
@@ -701,7 +979,7 @@ fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             PyObjectPayload::Bool(flag) => Ok(BigInt::from(if *flag { 1 } else { 0 })),
             PyObjectPayload::Int(PyInt::Small(n)) => Ok(BigInt::from(*n)),
             PyObjectPayload::Int(PyInt::Big(n)) => Ok(n.as_ref().clone()),
-            _ => obj.to_int().map(BigInt::from),
+            _ => Err(PyException::value_error("non-integer arg for randrange()")),
         }
     };
     let start = if args.len() == 1 {
@@ -731,17 +1009,75 @@ fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if range <= BigInt::zero() {
         return Err(PyException::value_error("empty range for randrange()"));
     }
-    let idx = if let Some(range_i64) = range.to_i64() {
-        BigInt::from((simple_random() * range_i64 as f64) as i64)
+    let idx = if let Some(range_u64) = range.to_u64() {
+        BigInt::from(random_u64_below(range_u64))
     } else {
-        let bits = range.bits().min(63) as u32;
-        let mask = if bits == 0 {
-            0
-        } else {
-            u64::MAX >> (64 - bits)
-        };
-        BigInt::from(random_u64() & mask) % &range
+        random_bigint_below(&range)
     };
     let value = start + idx * step;
     Ok(bigint_to_object(value))
+}
+
+fn random_u64_below(upper: u64) -> u64 {
+    if upper <= 1 {
+        return 0;
+    }
+    let zone = u64::MAX - (u64::MAX % upper);
+    loop {
+        let value = random_u64();
+        if value < zone {
+            return value % upper;
+        }
+    }
+}
+
+fn random_bigint_below(upper: &BigInt) -> BigInt {
+    if *upper <= BigInt::one() {
+        return BigInt::zero();
+    }
+    let bits = upper.bits() as usize;
+    loop {
+        let mut value = BigInt::zero();
+        let mut remaining = bits;
+        while remaining > 0 {
+            let take = remaining.min(64);
+            let mut chunk = random_u64();
+            if take < 64 {
+                chunk &= (1u64 << take) - 1;
+            }
+            value = (value << take) | BigInt::from(chunk);
+            remaining -= take;
+        }
+        if value < *upper {
+            return value;
+        }
+    }
+}
+
+fn random_randbelow_without_getrandbits(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(PyException::type_error(
+            "_randbelow_without_getrandbits expected n and optional maxsize",
+        ));
+    }
+    let n = args[0].to_int()?;
+    if n <= 0 {
+        return Err(PyException::value_error("n must be greater than 0"));
+    }
+    let maxsize = if args.len() > 1 {
+        args[1].to_int()?
+    } else {
+        1_i64 << 53
+    };
+    if n >= maxsize {
+        return Ok(PyObject::int((simple_random() * n as f64) as i64));
+    }
+    let rem = maxsize % n;
+    let limit = (maxsize - rem) as f64 / maxsize as f64;
+    loop {
+        let r = simple_random();
+        if r < limit {
+            return Ok(PyObject::int((r * maxsize as f64) as i64 % n));
+        }
+    }
 }

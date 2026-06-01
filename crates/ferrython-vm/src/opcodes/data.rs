@@ -730,7 +730,10 @@ impl VirtualMachine {
                 if let PyObjectPayload::Class(cd) = &obj.payload {
                     if let Some(raw) = cd.namespace.read().get(name.as_str()).cloned() {
                         if has_descriptor_get(&raw) {
-                            let get_method = raw.get_attr("__get__").unwrap();
+                            let Some(get_method) = raw.get_attr("__get__") else {
+                                self.vm_push(v);
+                                return Ok(None);
+                            };
                             let get_method_bound = if matches!(
                                 &get_method.payload,
                                 PyObjectPayload::BoundMethod { .. }

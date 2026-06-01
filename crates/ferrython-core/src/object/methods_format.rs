@@ -14,6 +14,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
     if spec.is_empty() {
         return Ok(obj.py_to_string());
     }
+    validate_format_spec_limits(spec)?;
     // Complex formatting: apply spec to real/imag separately then combine.
     if let PyObjectPayload::Complex { real, imag } = &obj.payload {
         return format_complex_with_spec(*real, *imag, spec);
@@ -76,7 +77,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             if clean_spec.is_empty() {
                 return Ok(result);
             }
-            return Ok(apply_numeric_sign(&result, &clean_spec));
+            return apply_numeric_sign(&result, &clean_spec);
         }
         'f' | 'F' => {
             let f = obj.to_float()?;
@@ -95,12 +96,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 if pre_dot.is_empty() {
                     return Ok(result);
                 }
-                return Ok(apply_numeric_sign(&result, pre_dot));
+                return apply_numeric_sign(&result, pre_dot);
             }
             let num_str = format!("{:.6}", f);
             if !inner_spec.is_empty() {
                 let clean: String = inner_spec.chars().filter(|c| *c != ',').collect();
-                return Ok(apply_numeric_sign(&num_str, &clean));
+                return apply_numeric_sign(&num_str, &clean);
             }
             if use_comma {
                 return Ok(add_thousands_separator(&num_str, ','));
@@ -140,12 +141,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             let alt = inner_spec.contains('#');
             let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
             if alt {
-                return Ok(apply_prefixed_format(&digits, "0b", &clean_spec));
+                return apply_prefixed_format(&digits, "0b", &clean_spec);
             }
             if clean_spec.is_empty() {
                 return Ok(digits);
             }
-            return Ok(apply_numeric_sign(&digits, &clean_spec));
+            return apply_numeric_sign(&digits, &clean_spec);
         }
         'o' => {
             let n = obj.to_int()?;
@@ -154,12 +155,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             let alt = inner_spec.contains('#');
             let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
             if alt {
-                return Ok(apply_prefixed_format(&digits, "0o", &clean_spec));
+                return apply_prefixed_format(&digits, "0o", &clean_spec);
             }
             if clean_spec.is_empty() {
                 return Ok(digits);
             }
-            return Ok(apply_numeric_sign(&digits, &clean_spec));
+            return apply_numeric_sign(&digits, &clean_spec);
         }
         'x' => {
             let n = obj.to_int()?;
@@ -168,12 +169,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             let alt = inner_spec.contains('#');
             let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
             if alt {
-                return Ok(apply_prefixed_format(&digits, "0x", &clean_spec));
+                return apply_prefixed_format(&digits, "0x", &clean_spec);
             }
             if clean_spec.is_empty() {
                 return Ok(digits);
             }
-            return Ok(apply_numeric_sign(&digits, &clean_spec));
+            return apply_numeric_sign(&digits, &clean_spec);
         }
         'X' => {
             let n = obj.to_int()?;
@@ -182,12 +183,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             let alt = inner_spec.contains('#');
             let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
             if alt {
-                return Ok(apply_prefixed_format(&digits, "0X", &clean_spec));
+                return apply_prefixed_format(&digits, "0X", &clean_spec);
             }
             if clean_spec.is_empty() {
                 return Ok(digits);
             }
-            return Ok(apply_numeric_sign(&digits, &clean_spec));
+            return apply_numeric_sign(&digits, &clean_spec);
         }
         's' => {
             let s = obj.py_to_string();
@@ -195,7 +196,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             if inner_spec.is_empty() {
                 return Ok(s);
             }
-            return Ok(apply_string_format_spec(&s, inner_spec));
+            return apply_string_format_spec(&s, inner_spec);
         }
         'g' | 'G' => {
             let f = obj.to_float()?;
@@ -261,10 +262,9 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             let is_numeric = obj.as_int().is_some() || obj.to_float().is_ok();
             let s = obj.py_to_string();
             if is_numeric {
-                let formatted = apply_numeric_sign(&s, spec);
-                return Ok(formatted);
+                return apply_numeric_sign(&s, spec);
             }
-            return Ok(apply_string_format_spec(&s, spec));
+            return apply_string_format_spec(&s, spec);
         }
     }
 }
@@ -277,21 +277,22 @@ pub fn format_complex_with_spec_pub(real: f64, imag: f64, spec: &str) -> PyResul
 /// sign prefix, precision, and type chars (f/F/e/E/g/G). If a type char is
 /// present, each component uses that type. Otherwise uses default complex str.
 fn format_complex_with_spec(real: f64, imag: f64, spec: &str) -> PyResult<String> {
-    let bytes = spec.as_bytes();
+    validate_format_spec_limits(spec)?;
+    let chars: Vec<char> = spec.chars().collect();
     // Parse [[fill]align][sign][#][0][width][,_][.precision][type]
     let mut idx = 0usize;
     let mut fill = ' ';
     let mut align: Option<char> = None;
-    if bytes.len() >= 2 {
-        let next = bytes[1] as char;
-        if matches!(next, '<' | '>' | '=' | '^') && bytes[0] as char != '{' {
-            fill = bytes[0] as char;
+    if chars.len() >= 2 {
+        let next = chars[1];
+        if matches!(next, '<' | '>' | '=' | '^') && chars[0] != '{' {
+            fill = chars[0];
             align = Some(next);
             idx = 2;
         }
     }
-    if align.is_none() && !bytes.is_empty() {
-        let c = bytes[0] as char;
+    if align.is_none() && !chars.is_empty() {
+        let c = chars[0];
         if matches!(c, '<' | '>' | '=' | '^') {
             align = Some(c);
             idx = 1;
@@ -302,21 +303,21 @@ fn format_complex_with_spec(real: f64, imag: f64, spec: &str) -> PyResult<String
             "'=' alignment flag is not allowed in complex format specifier",
         ));
     }
-    let sign = if idx < bytes.len() && matches!(bytes[idx] as char, '+' | '-' | ' ') {
-        let s = bytes[idx] as char;
+    let sign = if idx < chars.len() && matches!(chars[idx], '+' | '-' | ' ') {
+        let s = chars[idx];
         idx += 1;
         Some(s)
     } else {
         None
     };
-    let alt = if idx < bytes.len() && bytes[idx] == b'#' {
+    let alt = if idx < chars.len() && chars[idx] == '#' {
         idx += 1;
         true
     } else {
         false
     };
     // Zero padding is not allowed for complex
-    let zero_pad = idx < bytes.len() && bytes[idx] == b'0';
+    let zero_pad = idx < chars.len() && chars[idx] == '0';
     if zero_pad {
         return Err(PyException::value_error(
             "Zero padding is not allowed in complex format specifier",
@@ -324,32 +325,33 @@ fn format_complex_with_spec(real: f64, imag: f64, spec: &str) -> PyResult<String
     }
     // width
     let mut width = 0usize;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-        width = width * 10 + (bytes[idx] - b'0') as usize;
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        width = checked_format_accumulate(width, chars[idx])?;
         idx += 1;
     }
     // grouping
     let mut grouping: Option<char> = None;
-    if idx < bytes.len() && matches!(bytes[idx] as char, ',' | '_') {
-        grouping = Some(bytes[idx] as char);
+    if idx < chars.len() && matches!(chars[idx], ',' | '_') {
+        grouping = Some(chars[idx]);
         idx += 1;
     }
     // precision
     let mut precision: Option<usize> = None;
-    if idx < bytes.len() && bytes[idx] == b'.' {
+    if idx < chars.len() && chars[idx] == '.' {
         idx += 1;
-        let mut p = 0usize;
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-            p = p * 10 + (bytes[idx] - b'0') as usize;
+        let start = idx;
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
             idx += 1;
         }
-        precision = Some(p);
+        precision = if start < idx {
+            Some(parse_format_precision(
+                &chars[start..idx].iter().collect::<String>(),
+            )?)
+        } else {
+            Some(0)
+        };
     }
-    let type_char = if idx < bytes.len() {
-        bytes[idx] as char
-    } else {
-        '\0'
-    };
+    let type_char = if idx < chars.len() { chars[idx] } else { '\0' };
     if matches!(type_char, 'b' | 'c' | 'd' | 'o' | 'x' | 'X' | 'n' | '%') {
         return Err(PyException::value_error(format!(
             "Unknown format code '{}' for object of type 'complex'",

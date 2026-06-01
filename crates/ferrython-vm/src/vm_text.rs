@@ -3,7 +3,22 @@
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    parse_format_usize, py_ascii_repr, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
+
+fn marker_builtin_dunder(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    if inst.attrs.read().contains_key("__deque__") || inst.attrs.read().contains_key("__weakset__")
+    {
+        return obj
+            .get_attr(name)
+            .filter(|method| matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)));
+    }
+    None
+}
 
 fn class_or_mro_defines_method(cls: &PyObjectRef, name: &str) -> bool {
     let PyObjectPayload::Class(cd) = &cls.payload else {
@@ -25,6 +40,18 @@ impl VirtualMachine {
     pub(crate) fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
+                if let Some(str_method) = marker_builtin_dunder(obj, "__str__")
+                    .or_else(|| marker_builtin_dunder(obj, "__repr__"))
+                {
+                    let result = self.call_object(str_method, vec![])?;
+                    if let PyObjectPayload::Str(s) = &result.payload {
+                        return Ok(s.to_string());
+                    }
+                    return Err(PyException::type_error(format!(
+                        "__str__ returned non-string (type {})",
+                        result.type_name()
+                    )));
+                }
                 if let Some(bv) = Self::get_builtin_value(obj) {
                     if matches!(
                         &bv.payload,
@@ -125,6 +152,19 @@ impl VirtualMachine {
         self.vm_repr(val)
     }
 
+    fn validate_format_arg_index(field_name: &str) -> PyResult<Option<usize>> {
+        if !field_name.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(None);
+        }
+        let idx = parse_format_usize(field_name)?;
+        if idx > isize::MAX as usize {
+            return Err(PyException::value_error(
+                "Too many decimal digits in format string",
+            ));
+        }
+        Ok(Some(idx))
+    }
+
     /// Format a single replacement field value with optional conversion and format spec.
     fn vm_format_field(
         &mut self,
@@ -133,17 +173,24 @@ impl VirtualMachine {
         spec: Option<&str>,
     ) -> PyResult<String> {
         match conversion {
-            Some("r") | Some("a") => {
+            Some("a") => {
+                let text = py_ascii_repr(val);
+                Ok(match spec {
+                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s)?,
+                    _ => text,
+                })
+            }
+            Some("r") => {
                 let text = self.vm_format_obj_repr(val)?;
                 Ok(match spec {
-                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s),
+                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s)?,
                     _ => text,
                 })
             }
             Some("s") => {
                 let text = self.vm_format_obj_str(val)?;
                 Ok(match spec {
-                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s),
+                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s)?,
                     _ => text,
                 })
             }
@@ -160,10 +207,7 @@ impl VirtualMachine {
                             }
                         }
                         // Use the core format_value which handles int/float format specs
-                        match val.format_value(s) {
-                            Ok(formatted) => Ok(formatted),
-                            Err(_) => Ok(self.vm_format_obj_str(val)?),
-                        }
+                        val.format_value(s)
                     }
                     _ => self.vm_format_obj_str(val),
                 }
@@ -221,7 +265,7 @@ impl VirtualMachine {
                         let v = args.get(auto_idx).cloned();
                         auto_idx += 1;
                         v
-                    } else if let Ok(idx) = field_name.parse::<usize>() {
+                    } else if let Some(idx) = Self::validate_format_arg_index(field_name)? {
                         args.get(idx).cloned()
                     } else {
                         // Attribute/item access: "obj.attr" or "obj[key]"
@@ -279,7 +323,7 @@ impl VirtualMachine {
                         let v = pos_args.get(auto_idx).cloned();
                         auto_idx += 1;
                         v
-                    } else if let Ok(idx) = field_name.parse::<usize>() {
+                    } else if let Some(idx) = Self::validate_format_arg_index(field_name)? {
                         pos_args.get(idx).cloned()
                     } else {
                         kwargs
@@ -328,7 +372,7 @@ impl VirtualMachine {
                         }
                         ref_name.push(ch);
                     }
-                    if let Ok(idx) = ref_name.parse::<usize>() {
+                    if let Some(idx) = Self::validate_format_arg_index(&ref_name).ok().flatten() {
                         if let Some(v) = pos_args.get(idx) {
                             r.push_str(&v.py_to_string());
                         }
@@ -361,7 +405,7 @@ impl VirtualMachine {
         let base = &field_name[..base_end];
         let rest = &field_name[base_end..];
 
-        let mut current = if let Ok(idx) = base.parse::<usize>() {
+        let mut current = if let Some(idx) = Self::validate_format_arg_index(base).ok().flatten() {
             pos_args.get(idx)?.clone()
         } else if base.is_empty() {
             pos_args.get(auto_idx)?.clone()
@@ -429,6 +473,16 @@ impl VirtualMachine {
     pub(crate) fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
+                if let Some(repr_method) = marker_builtin_dunder(obj, "__repr__") {
+                    let result = self.call_object(repr_method, vec![])?;
+                    if let PyObjectPayload::Str(s) = &result.payload {
+                        return Ok(s.to_string());
+                    }
+                    return Err(PyException::type_error(format!(
+                        "__repr__ returned non-string (type {})",
+                        result.type_name()
+                    )));
+                }
                 // Check for custom __repr__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     // If it's a descriptor (Instance with __get__), invoke __get__
@@ -656,6 +710,7 @@ impl VirtualMachine {
                         }
                     }
                 }
+                parts.sort();
                 ferrython_core::object::repr_leave(ptr);
                 Ok(format!("{{{}}}", parts.join(", ")))
             }
@@ -684,6 +739,7 @@ impl VirtualMachine {
                         }
                     }
                 }
+                parts.sort();
                 ferrython_core::object::repr_leave(ptr);
                 Ok(format!("frozenset({{{}}})", parts.join(", ")))
             }

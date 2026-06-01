@@ -559,8 +559,14 @@ impl VirtualMachine {
                 // str % val → Python printf-style formatting
                 if let PyObjectPayload::Str(fmt_str) = &a.payload {
                     self.vm_string_percent_format(fmt_str, &b)?
-                } else if let PyObjectPayload::Bytes(fmt_bytes) = &a.payload {
-                    self.vm_bytes_percent_format(fmt_bytes, &b)?
+                } else if let PyObjectPayload::Bytes(fmt_bytes)
+                | PyObjectPayload::ByteArray(fmt_bytes) = &a.payload
+                {
+                    self.vm_bytes_percent_format(
+                        fmt_bytes,
+                        &b,
+                        matches!(&a.payload, PyObjectPayload::ByteArray(_)),
+                    )?
                 } else if let Some(r) =
                     self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))?
                 {
@@ -574,8 +580,14 @@ impl VirtualMachine {
                     r
                 } else if let PyObjectPayload::Str(fmt_str) = &a.payload {
                     self.vm_string_percent_format(fmt_str, &b)?
-                } else if let PyObjectPayload::Bytes(fmt_bytes) = &a.payload {
-                    self.vm_bytes_percent_format(fmt_bytes, &b)?
+                } else if let PyObjectPayload::Bytes(fmt_bytes)
+                | PyObjectPayload::ByteArray(fmt_bytes) = &a.payload
+                {
+                    self.vm_bytes_percent_format(
+                        fmt_bytes,
+                        &b,
+                        matches!(&a.payload, PyObjectPayload::ByteArray(_)),
+                    )?
                 } else {
                     with_enum_fallback!(a, b, modulo)
                 }

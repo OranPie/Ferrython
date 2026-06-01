@@ -134,10 +134,7 @@ impl VirtualMachine {
                                     return Ok(None);
                                 }
                             }
-                            match value.format_value(&fmt_spec) {
-                                Ok(s) => s,
-                                Err(_) => value.py_to_string(),
-                            }
+                            value.format_value(&fmt_spec)?
                         } else {
                             if matches!(&value.payload, PyObjectPayload::Instance(_)) {
                                 if let Some(format_method) = value.get_attr("__format__") {
@@ -163,7 +160,7 @@ impl VirtualMachine {
                 };
                 let formatted = if !fmt_spec.is_empty() && conversion != 0 {
                     use ferrython_core::object::apply_string_format_spec;
-                    apply_string_format_spec(&base_str, &fmt_spec)
+                    apply_string_format_spec(&base_str, &fmt_spec)?
                 } else {
                     base_str
                 };

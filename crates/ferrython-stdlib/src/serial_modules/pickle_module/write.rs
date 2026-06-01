@@ -850,7 +850,12 @@ fn pickle_extract_instance(
                 | PyObjectPayload::NativeClosure(_)
                 | PyObjectPayload::Function(_)
                 | PyObjectPayload::Class(_) => continue,
-                PyObjectPayload::List(_) if is_deque && k.as_str() == "_data" => {
+                PyObjectPayload::Deque(_) if is_deque && k.as_str() == "__builtin_value__" => {
+                    continue
+                }
+                PyObjectPayload::List(_) | PyObjectPayload::Deque(_)
+                    if is_deque && k.as_str() == "_data" =>
+                {
                     let items = deque_items.clone().unwrap_or_default();
                     data_pairs.push((k.clone(), PyObject::list(items)));
                 }

@@ -27,5 +27,6 @@ pub use helpers::*;
 pub use methods::*;
 pub use methods_attr::py_has_attr;
 pub use methods_attr_helpers::{has_descriptor_get, is_data_descriptor, lookup_in_class_mro};
+pub use methods_type::py_ascii_repr;
 pub use payload::*;
 pub use str_repr::StrRepr;

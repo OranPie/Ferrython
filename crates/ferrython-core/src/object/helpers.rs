@@ -525,6 +525,9 @@ pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<Co
 /// Otherwise, return the original object unchanged.
 pub fn unwrap_builtin_subclass(obj: &PyObjectRef) -> PyObjectRef {
     if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.read().contains_key("__deque__") {
+            return obj.clone();
+        }
         if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
             return val;
         }
@@ -712,38 +715,38 @@ pub(super) fn int_bitop(
     op_name: &str,
     op: fn(i64, i64) -> i64,
 ) -> PyResult<PyObjectRef> {
-    let ai = a.to_int().map_err(|_| {
-        PyException::type_error(format!(
-            "unsupported operand type(s) for {}: '{}' and '{}'",
-            op_name,
-            a.type_name(),
-            b.type_name()
-        ))
-    })?;
-    let bi = b.to_int().map_err(|_| {
-        PyException::type_error(format!(
-            "unsupported operand type(s) for {}: '{}' and '{}'",
-            op_name,
-            a.type_name(),
-            b.type_name()
-        ))
-    })?;
-    // Guard against shift overflow (UB when shift >= 64)
-    if op_name == "<<" || op_name == ">>" {
-        if bi < 0 {
-            return Err(PyException::value_error(format!("negative shift count")));
+    let int_operand = |obj: &PyObjectRef| -> PyResult<PyInt> {
+        let obj = unwrap_builtin_subclass(obj);
+        match &obj.payload {
+            PyObjectPayload::Int(n) => Ok(n.clone()),
+            PyObjectPayload::Bool(flag) => Ok(PyInt::Small(*flag as i64)),
+            _ => Err(PyException::type_error(format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                op_name,
+                a.type_name(),
+                b.type_name()
+            ))),
         }
-        if bi >= 64 {
-            return if op_name == "<<" {
-                // Python supports arbitrary-precision left shift — for i64 range this overflows
-                Ok(PyObject::int(0)) // all bits shifted out
-            } else {
-                // Right shift by >= 64: sign-extends to 0 or -1
-                Ok(PyObject::int(if ai < 0 { -1 } else { 0 }))
-            };
-        }
+    };
+    let ai = int_operand(a)?;
+    let bi = int_operand(b)?;
+    if let (Some(ai), Some(bi)) = (ai.to_i64(), bi.to_i64()) {
+        return Ok(PyObject::int(op(ai, bi)));
     }
-    Ok(PyObject::int(op(ai, bi)))
+    let result = match op_name {
+        "&" => ai.to_bigint() & bi.to_bigint(),
+        "|" => ai.to_bigint() | bi.to_bigint(),
+        "^" => ai.to_bigint() ^ bi.to_bigint(),
+        _ => {
+            return Err(PyException::type_error(format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                op_name,
+                a.type_name(),
+                b.type_name()
+            )))
+        }
+    };
+    Ok(PyInt::from_bigint(result).to_object())
 }
 
 mod builtin_type_methods;

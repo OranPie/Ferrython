@@ -448,6 +448,12 @@ pub(crate) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if inst.attrs.read().contains_key("__deque__") {
             return Err(PyException::type_error("unhashable type: 'deque'"));
         }
+        if inst.attrs.read().contains_key("__memoryview__") {
+            if let Some(base) = inst.attrs.read().get("obj").cloned() {
+                let key = base.to_hashable_key()?;
+                return Ok(PyObject::int(hash_key_like_python(&key)));
+            }
+        }
         let is_weak_ref_like = {
             let attrs = inst.attrs.read();
             attrs.contains_key("__weakref_ref__") || attrs.contains_key("__weakmethod__")

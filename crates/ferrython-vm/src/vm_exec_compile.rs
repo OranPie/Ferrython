@@ -14,7 +14,25 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use std::rc::Rc;
 
-fn validate_single_input(module: &AstModule, filename: &str) -> PyResult<()> {
+fn validate_single_input(
+    module: &AstModule,
+    filename: &str,
+    source_ends_with_newline: bool,
+) -> PyResult<()> {
+    fn is_compound_statement(stmt: &Statement) -> bool {
+        matches!(
+            &stmt.node,
+            StatementKind::FunctionDef { .. }
+                | StatementKind::ClassDef { .. }
+                | StatementKind::For { .. }
+                | StatementKind::While { .. }
+                | StatementKind::If { .. }
+                | StatementKind::With { .. }
+                | StatementKind::Try { .. }
+                | StatementKind::Match { .. }
+        )
+    }
+
     let body = match module {
         AstModule::Module { body, .. } | AstModule::Interactive { body } => body,
         AstModule::Expression { .. } => return Ok(()),
@@ -30,6 +48,18 @@ fn validate_single_input(module: &AstModule, filename: &str) -> PyResult<()> {
             filename,
             first_line as i64,
             first.location.column as i64 + 1,
+        ));
+    }
+    if is_compound_statement(first)
+        && first.location.end_line == Some(first.location.line)
+        && !source_ends_with_newline
+    {
+        return Err(build_syntax_exception(
+            ExceptionKind::SyntaxError,
+            "invalid syntax",
+            filename,
+            first_line as i64,
+            first.location.column as i64,
         ));
     }
     Ok(())
@@ -1184,13 +1214,14 @@ impl VirtualMachine {
             &filename,
             "compile() arg 1 must be a string, bytes, or AST object",
         )?;
+        let source_ends_with_newline = source.ends_with(['\n', '\r']);
         if only_ast {
             return match mode.as_str() {
                 "eval" => parse_with_compile_warnings(self, &source, &filename, true)
                     .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module)),
                 "single" => {
                     let module = parse_with_compile_warnings(self, &source, &filename, false)?;
-                    validate_single_input(&module, &filename)?;
+                    validate_single_input(&module, &filename, source_ends_with_newline)?;
                     Ok(match module {
                         ferrython_ast::Module::Module { body, .. } => {
                             ferrython_stdlib::module_ast_to_pyobject(
@@ -1220,7 +1251,7 @@ impl VirtualMachine {
         };
         let module = parse_with_compile_warnings(self, &effective_source, &filename, false)?;
         let module = if mode == "single" {
-            validate_single_input(&module, &filename)?;
+            validate_single_input(&module, &filename, source_ends_with_newline)?;
             match module {
                 ferrython_ast::Module::Module { body, .. } => {
                     ferrython_ast::Module::Interactive { body }

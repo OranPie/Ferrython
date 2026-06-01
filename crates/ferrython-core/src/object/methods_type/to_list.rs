@@ -243,6 +243,11 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             guard_eager_allocation(read.len(), "list -> list")?;
             Ok(read.clone())
         }
+        PyObjectPayload::Deque(v) => {
+            let read = v.read();
+            guard_eager_allocation(read.len(), "deque -> list")?;
+            Ok(read.iter().cloned().collect())
+        }
         PyObjectPayload::Tuple(v) => {
             guard_eager_allocation(v.len(), "tuple -> list")?;
             Ok((**v).clone())
@@ -292,6 +297,9 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
         }
         PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__deque__") => {
             if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                if let PyObjectPayload::Deque(items) = &data.payload {
+                    return Ok(items.read().iter().cloned().collect());
+                }
                 if let PyObjectPayload::List(items) = &data.payload {
                     return Ok(items.read().clone());
                 }
@@ -587,6 +595,7 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             data.index.set(usize::MAX);
             Ok(result)
         }
+        PyObjectPayload::Generator(_) => collect_next_iterator(obj),
         PyObjectPayload::DequeIter(_) => Err(PyException::type_error(
             "lazy iterator requires VM to collect",
         )),

@@ -9,7 +9,7 @@ use super::{
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::object::ClassData;
-use crate::types::{float_as_integer_ratio, HashableKey};
+use crate::types::{float_as_integer_ratio, hash_key_like_python, HashableKey};
 use compact_str::CompactString;
 use std::cell::RefCell;
 
@@ -817,12 +817,8 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if let PyObjectPayload::Bool(b) = &value.payload {
                 return Ok(PyObject::int(*b as i64));
             }
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
             let hk = value.to_hashable_key()?;
-            let mut hasher = DefaultHasher::new();
-            hk.hash(&mut hasher);
-            Ok(PyObject::int(hasher.finish() as i64))
+            Ok(PyObject::int(hash_key_like_python(&hk)))
         })),
         (_, "__bool__") => Some(PyObject::native_function("__bool__", |args| {
             if args.len() != 1 {

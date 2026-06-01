@@ -279,14 +279,26 @@ pub(crate) fn try_fast_instance_call(
         return FastCallResult::Fallback;
     }
 
-    let mut new_frame = Frame::new_from_pool(
-        Rc::clone(&pf.code),
-        pf.globals.clone(),
-        builtins.clone(),
-        Rc::clone(&pf.constant_cache),
-        frame_pool,
-    );
-    new_frame.scope_kind = ScopeKind::Function;
+    let mut new_frame = if pf.closure.is_empty() {
+        let mut frame = Frame::new_from_pool(
+            Rc::clone(&pf.code),
+            pf.globals.clone(),
+            builtins.clone(),
+            Rc::clone(&pf.constant_cache),
+            frame_pool,
+        );
+        frame.scope_kind = ScopeKind::Function;
+        frame
+    } else {
+        Frame::new_closure_from_pool(
+            Rc::clone(&pf.code),
+            pf.globals.clone(),
+            builtins.clone(),
+            Rc::clone(&pf.constant_cache),
+            &pf.closure,
+            frame_pool,
+        )
+    };
     let args_start = func_idx + 1;
     unsafe {
         let base = frame.stack.as_ptr();
@@ -296,7 +308,27 @@ pub(crate) fn try_fast_instance_call(
         }
         frame.stack.set_len(func_idx);
     }
+    link_cellvars_from_locals(&mut new_frame);
     FastCallResult::NewFrame(new_frame)
+}
+
+#[inline(always)]
+fn link_cellvars_from_locals(frame: &mut Frame) {
+    if frame.code.cellvars.is_empty() {
+        return;
+    }
+    for (cell_idx, cell_name) in frame.code.cellvars.iter().enumerate() {
+        for (var_idx, var_name) in frame.code.varnames.iter().enumerate() {
+            if cell_name == var_name {
+                if let Some(val) = frame.locals[var_idx].take() {
+                    unsafe {
+                        *frame.cells[cell_idx].data_ptr() = Some(val);
+                    }
+                }
+                break;
+            }
+        }
+    }
 }
 
 #[inline(always)]

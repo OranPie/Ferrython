@@ -50,6 +50,9 @@ impl VirtualMachine {
                     _ => init.clone(),
                 };
                 if let PyObjectPayload::NativeFunction(nf) = &init_fn.payload {
+                    if matches!(nf.name.as_str(), "__init__" | "object.__init__") {
+                        return Ok(());
+                    }
                     if nf.name.as_str() == "__init__"
                         && (!pos_args.is_empty() || !kwargs.is_empty())
                     {

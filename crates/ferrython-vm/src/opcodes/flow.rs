@@ -80,6 +80,10 @@ impl VirtualMachine {
                         self.vm_push(obj.get_iter()?);
                         return Ok(None);
                     }
+                    if inst.attrs.read().contains_key("__deque__") {
+                        self.vm_push(obj.get_iter()?);
+                        return Ok(None);
+                    }
                 }
                 // Class with __iter__ (e.g. Enum classes): call __iter__()
                 if let PyObjectPayload::Class(_) = &obj.payload {

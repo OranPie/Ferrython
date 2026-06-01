@@ -2,11 +2,11 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::helpers::{checked_repeat_len, guard_eager_allocation};
 use ferrython_core::object::{
-    CompareOp, DequeIterData, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    SyncUsize,
+    CompareOp, DequeIterData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, SyncUsize,
 };
 use ferrython_core::types::PyInt;
 use num_traits::Signed;
+use std::collections::VecDeque;
 
 pub(crate) fn call_deque_method(
     receiver: &PyObjectRef,
@@ -20,6 +20,13 @@ pub(crate) fn call_deque_method(
             .get("_data")
             .cloned()
             .unwrap_or_else(|| PyObject::list(vec![]))
+    };
+    let set_data = |items: Vec<PyObjectRef>| -> PyObjectRef {
+        let data = PyObject::deque_storage(items);
+        let mut attrs = inst.attrs.write();
+        attrs.insert(CompactString::from("_data"), data.clone());
+        attrs.insert(CompactString::from("__builtin_value__"), data.clone());
+        data
     };
     let get_maxlen = || -> Option<usize> {
         inst.attrs
@@ -79,8 +86,12 @@ pub(crate) fn call_deque_method(
         if let PyObjectPayload::Instance(other_inst) = &obj.payload {
             if other_inst.attrs.read().contains_key("__deque__") {
                 if let Some(data) = other_inst.attrs.read().get("_data").cloned() {
-                    if let PyObjectPayload::List(list) = &data.payload {
-                        return Ok(list.read().clone());
+                    match &data.payload {
+                        PyObjectPayload::Deque(items) => {
+                            return Ok(items.read().iter().cloned().collect());
+                        }
+                        PyObjectPayload::List(list) => return Ok(list.read().clone()),
+                        _ => {}
                     }
                 }
             }
@@ -97,9 +108,11 @@ pub(crate) fn call_deque_method(
     let build_like_self = |items: Vec<PyObjectRef>| -> PyObjectRef {
         let new_inst = PyObject::instance(inst.class.clone());
         if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
+            let storage = PyObject::deque_storage(items);
             let mut attrs = new_data.attrs.write();
             attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-            attrs.insert(CompactString::from("_data"), PyObject::list(items));
+            attrs.insert(CompactString::from("_data"), storage.clone());
+            attrs.insert(CompactString::from("__builtin_value__"), storage);
             attrs.insert(
                 CompactString::from("__maxlen__"),
                 inst.attrs
@@ -136,20 +149,17 @@ pub(crate) fn call_deque_method(
         Ok(items)
     };
     // Helper: enforce maxlen by trimming from the appropriate end
-    let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
+    let enforce_maxlen_right = |items: &mut VecDeque<PyObjectRef>| {
         if let Some(ml) = get_maxlen() {
-            let mut v = list.write();
-            let excess = v.len().saturating_sub(ml);
-            if excess > 0 {
-                v.drain(0..excess);
+            while items.len() > ml {
+                items.pop_front();
             }
         }
     };
-    let enforce_maxlen_left = |list: &PyCell<Vec<PyObjectRef>>| {
+    let enforce_maxlen_left = |items: &mut VecDeque<PyObjectRef>| {
         if let Some(ml) = get_maxlen() {
-            let mut v = list.write();
-            if v.len() > ml {
-                v.truncate(ml);
+            while items.len() > ml {
+                items.pop_back();
             }
         }
     };
@@ -181,10 +191,7 @@ pub(crate) fn call_deque_method(
                     items = items[items.len() - ml..].to_vec();
                 }
             }
-            let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                *list.write() = items;
-            }
+            set_data(items);
             inst.attrs.write().insert(
                 CompactString::from("__maxlen__"),
                 new_maxlen
@@ -203,14 +210,14 @@ pub(crate) fn call_deque_method(
                 return Ok(PyObject::none());
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                let mut v = items.write();
                 if let Some(ml) = get_maxlen() {
                     if v.len() == ml && ml > 0 {
-                        v.remove(0);
+                        v.pop_front();
                     }
                 }
-                v.push(args[0].clone());
+                v.push_back(args[0].clone());
             }
             Ok(PyObject::none())
         }
@@ -224,42 +231,42 @@ pub(crate) fn call_deque_method(
                 return Ok(PyObject::none());
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                let mut v = items.write();
                 if let Some(ml) = get_maxlen() {
                     if v.len() == ml && ml > 0 {
-                        v.pop();
+                        v.pop_back();
                     }
                 }
-                v.insert(0, args[0].clone());
+                v.push_front(args[0].clone());
             }
             Ok(PyObject::none())
         }
         "pop" => {
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                let mut v = items.write();
                 if v.is_empty() {
                     return Err(PyException::new(
                         ExceptionKind::IndexError,
                         "pop from an empty deque",
                     ));
                 }
-                return Ok(v.pop().unwrap());
+                return Ok(v.pop_back().unwrap());
             }
             Ok(PyObject::none())
         }
         "popleft" => {
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                let mut v = items.write();
                 if v.is_empty() {
                     return Err(PyException::new(
                         ExceptionKind::IndexError,
                         "pop from an empty deque",
                     ));
                 }
-                return Ok(v.remove(0));
+                return Ok(v.pop_front().unwrap());
             }
             Ok(PyObject::none())
         }
@@ -272,19 +279,20 @@ pub(crate) fn call_deque_method(
             // args[0] should be pre-collected items as a List (VM collects iterable before calling)
             let mut items = args[0].to_list()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
+            if let PyObjectPayload::Deque(deque) = &data.payload {
                 if get_maxlen() == Some(0) {
                     return Ok(PyObject::none());
                 }
                 if let Some(ml) = get_maxlen() {
                     if items.len() >= ml {
                         let start = items.len() - ml;
-                        *list.write() = items.split_off(start);
+                        *deque.write() = VecDeque::from(items.split_off(start));
                         return Ok(PyObject::none());
                     }
                 }
-                list.write().extend(items);
-                enforce_maxlen_right(list);
+                let mut v = deque.write();
+                v.extend(items);
+                enforce_maxlen_right(&mut v);
             }
             Ok(PyObject::none())
         }
@@ -296,24 +304,21 @@ pub(crate) fn call_deque_method(
             }
             let items = args[0].to_list()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
+            if let PyObjectPayload::Deque(deque) = &data.payload {
                 if get_maxlen() == Some(0) {
                     return Ok(PyObject::none());
                 }
                 if let Some(ml) = get_maxlen() {
                     if items.len() >= ml {
-                        *list.write() = items.into_iter().rev().take(ml).collect();
+                        *deque.write() = items.into_iter().rev().take(ml).collect();
                         return Ok(PyObject::none());
                     }
                 }
-                let mut v = list.write();
-                if !items.is_empty() {
-                    let mut new_items: Vec<PyObjectRef> = items.into_iter().rev().collect();
-                    new_items.extend(v.iter().cloned());
-                    *v = new_items;
+                let mut v = deque.write();
+                for item in items {
+                    v.push_front(item);
                 }
-                drop(v);
-                enforce_maxlen_left(list);
+                enforce_maxlen_left(&mut v);
             }
             Ok(PyObject::none())
         }
@@ -331,8 +336,8 @@ pub(crate) fn call_deque_method(
                     .map_err(|_| PyException::type_error("an integer is required for rotate"))?
             };
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                let mut v = items.write();
                 let len = v.len() as i64;
                 if len > 0 {
                     let n = ((n % len) + len) % len;
@@ -345,8 +350,8 @@ pub(crate) fn call_deque_method(
         }
         "clear" => {
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                list.write().clear();
+            if let PyObjectPayload::Deque(items) = &data.payload {
+                items.write().clear();
             }
             Ok(PyObject::none())
         }
@@ -362,12 +367,12 @@ pub(crate) fn call_deque_method(
                 ));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let expected_len = list.read().len();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let expected_len = deque.read().len();
                 let mut count = 0usize;
                 for i in 0..expected_len {
                     let item = {
-                        let v = list.read();
+                        let v = deque.read();
                         if v.len() != expected_len {
                             return Err(PyException::runtime_error(
                                 "deque mutated during iteration",
@@ -378,7 +383,7 @@ pub(crate) fn call_deque_method(
                     if deque_item_matches(&item, &args[0])? {
                         count += 1;
                     }
-                    if list.read().len() != expected_len {
+                    if deque.read().len() != expected_len {
                         return Err(PyException::runtime_error("deque mutated during iteration"));
                     }
                 }
@@ -393,8 +398,8 @@ pub(crate) fn call_deque_method(
                 ));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let expected_len = list.read().len();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let expected_len = deque.read().len();
                 let start = args
                     .get(1)
                     .map(|arg| clamp_slice_bound(arg, expected_len, 0))
@@ -407,7 +412,7 @@ pub(crate) fn call_deque_method(
                     .unwrap_or(expected_len);
                 for i in start..stop {
                     let item = {
-                        let v = list.read();
+                        let v = deque.read();
                         if v.len() != expected_len {
                             return Err(PyException::runtime_error(
                                 "deque mutated during iteration",
@@ -418,7 +423,7 @@ pub(crate) fn call_deque_method(
                     if deque_item_matches(&item, &args[0])? {
                         return Ok(PyObject::int(i as i64));
                     }
-                    if list.read().len() != expected_len {
+                    if deque.read().len() != expected_len {
                         return Err(PyException::runtime_error("deque mutated during iteration"));
                     }
                 }
@@ -440,8 +445,8 @@ pub(crate) fn call_deque_method(
             }
             if let Some(ml) = get_maxlen() {
                 let data = get_data();
-                if let PyObjectPayload::List(list) = &data.payload {
-                    if list.read().len() >= ml {
+                if let PyObjectPayload::Deque(deque) = &data.payload {
+                    if deque.read().len() >= ml {
                         return Err(PyException::new(
                             ExceptionKind::IndexError,
                             "deque already at its maximum size",
@@ -451,8 +456,8 @@ pub(crate) fn call_deque_method(
             }
             let idx = args[0].to_int()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let mut v = deque.write();
                 let idx = normalize_insert_index(idx, v.len());
                 v.insert(idx, args[1].clone());
             }
@@ -465,24 +470,24 @@ pub(crate) fn call_deque_method(
                 ));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let expected_len = list.read().len();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let expected_len = deque.read().len();
                 for pos in 0..expected_len {
                     let item = {
-                        let v = list.read();
+                        let v = deque.read();
                         if v.len() != expected_len {
                             return Err(PyException::index_error("deque mutated during iteration"));
                         }
                         v[pos].clone()
                     };
                     if deque_item_matches(&item, &args[0])? {
-                        if list.read().len() != expected_len {
+                        if deque.read().len() != expected_len {
                             return Err(PyException::index_error("deque mutated during iteration"));
                         }
-                        list.write().remove(pos);
+                        deque.write().remove(pos);
                         return Ok(PyObject::none());
                     }
-                    if list.read().len() != expected_len {
+                    if deque.read().len() != expected_len {
                         return Err(PyException::index_error("deque mutated during iteration"));
                     }
                 }
@@ -498,15 +503,17 @@ pub(crate) fn call_deque_method(
                 return Err(PyException::type_error("reverse() takes no arguments"));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                list.write().reverse();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let mut items: Vec<_> = deque.read().iter().cloned().collect();
+                items.reverse();
+                *deque.write() = VecDeque::from(items);
             }
             Ok(PyObject::none())
         }
         "__repr__" | "__str__" => {
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let items: Vec<String> = list.read().iter().map(|item| item.repr()).collect();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let items: Vec<String> = deque.read().iter().map(|item| item.repr()).collect();
                 let joined = items.join(", ");
                 let text = match get_maxlen() {
                     Some(m) => format!("deque([{}], maxlen={})", joined, m),
@@ -526,9 +533,9 @@ pub(crate) fn call_deque_method(
                 return Ok(PyObject::bool_val(false));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
+            if let PyObjectPayload::Deque(deque) = &data.payload {
                 let other = args[0].to_list()?;
-                let items = list.read();
+                let items = deque.read();
                 if items.len() != other.len() {
                     return Ok(PyObject::bool_val(false));
                 }
@@ -561,8 +568,8 @@ pub(crate) fn call_deque_method(
                 return Ok(PyObject::not_implemented());
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let left = list.read().clone();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let left: Vec<_> = deque.read().iter().cloned().collect();
                 let right = args[0].to_list()?;
                 let mut ordering = std::cmp::Ordering::Equal;
                 for (l, r) in left.iter().zip(right.iter()) {
@@ -625,14 +632,12 @@ pub(crate) fn call_deque_method(
                     "__iadd__() takes exactly one argument",
                 ));
             }
-            let mut items = deque_items(&args[0])?;
+            let items = deque_items(&args[0])?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
-                v.append(&mut items);
-            }
-            if let PyObjectPayload::List(list) = &data.payload {
-                enforce_maxlen_right(list);
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let mut v = deque.write();
+                v.extend(items);
+                enforce_maxlen_right(&mut v);
             }
             Ok(PyObject::none())
         }
@@ -647,10 +652,10 @@ pub(crate) fn call_deque_method(
                 None => return Ok(PyObject::not_implemented()),
             };
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let base = list.read().clone();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let base: Vec<_> = deque.read().iter().cloned().collect();
                 let items = repeat_deque_items(&base, n)?;
-                *list.write() = items;
+                *deque.write() = VecDeque::from(items);
             }
             Ok(PyObject::none())
         }
@@ -666,8 +671,8 @@ pub(crate) fn call_deque_method(
         }
         "__len__" => {
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                return Ok(PyObject::int(list.read().len() as i64));
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                return Ok(PyObject::int(deque.read().len() as i64));
             }
             Ok(PyObject::int(0))
         }
@@ -678,11 +683,11 @@ pub(crate) fn call_deque_method(
                 ));
             }
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let expected_len = list.read().len();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let expected_len = deque.read().len();
                 for i in 0..expected_len {
                     let item = {
-                        let v = list.read();
+                        let v = deque.read();
                         if v.len() != expected_len {
                             return Err(PyException::runtime_error(
                                 "deque mutated during iteration",
@@ -693,7 +698,7 @@ pub(crate) fn call_deque_method(
                     if deque_item_matches(&item, &args[0])? {
                         return Ok(PyObject::bool_val(true));
                     }
-                    if list.read().len() != expected_len {
+                    if deque.read().len() != expected_len {
                         return Err(PyException::runtime_error("deque mutated during iteration"));
                     }
                 }
@@ -706,8 +711,8 @@ pub(crate) fn call_deque_method(
             }
             let idx = args[0].to_int()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let v = list.read();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let v = deque.read();
                 let len = v.len() as i64;
                 let actual_idx = if idx < 0 { len + idx } else { idx };
                 if actual_idx < 0 || actual_idx >= len {
@@ -745,8 +750,8 @@ pub(crate) fn call_deque_method(
             }
             let idx = args[0].to_int()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let mut v = deque.write();
                 let actual_idx = normalize_index(idx, v.len())?;
                 v[actual_idx] = args[1].clone();
                 return Ok(PyObject::none());
@@ -764,8 +769,8 @@ pub(crate) fn call_deque_method(
             }
             let idx = args[0].to_int()?;
             let data = get_data();
-            if let PyObjectPayload::List(list) = &data.payload {
-                let mut v = list.write();
+            if let PyObjectPayload::Deque(deque) = &data.payload {
+                let mut v = deque.write();
                 let actual_idx = normalize_index(idx, v.len())?;
                 v.remove(actual_idx);
                 return Ok(PyObject::none());

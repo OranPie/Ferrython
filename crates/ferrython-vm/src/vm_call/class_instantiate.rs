@@ -71,14 +71,20 @@ impl VirtualMachine {
             && Self::class_uses_default_object_new(cls)
             && lookup_in_class_mro(cls, "__init__").is_none();
         if default_object_new {
-            let cls_name = match &cls.payload {
-                PyObjectPayload::Class(cd) => cd.name.as_str(),
-                _ => "object",
-            };
-            return Err(PyException::type_error(format!(
-                "{}() takes no arguments",
-                cls_name
-            )));
+            let has_builtin_base = matches!(
+                &cls.payload,
+                PyObjectPayload::Class(cd) if cd.builtin_base_name.is_some()
+            );
+            if !has_builtin_base {
+                let cls_name = match &cls.payload {
+                    PyObjectPayload::Class(cd) => cd.name.as_str(),
+                    _ => "object",
+                };
+                return Err(PyException::type_error(format!(
+                    "{}() takes no arguments",
+                    cls_name
+                )));
+            }
         }
         if let Some(instance) = self.try_instantiate_enum(cls, &pos_args, &kwargs)? {
             return Ok(instance);

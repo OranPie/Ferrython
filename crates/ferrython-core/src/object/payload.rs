@@ -11,6 +11,7 @@ use compact_str::CompactString;
 use num_bigint::BigInt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::VecDeque;
 use std::fmt;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::NonNull;
@@ -872,6 +873,7 @@ pub enum PyObjectPayload {
     Bytes(Box<Vec<u8>>),
     ByteArray(Box<Vec<u8>>),
     List(Box<PyCell<Vec<PyObjectRef>>>),
+    Deque(Rc<PyCell<VecDeque<PyObjectRef>>>),
     Tuple(Box<Vec<PyObjectRef>>),
     Set(Rc<PyCell<FxHashKeyFlatMap>>),
     FrozenSet(Box<FrozenSetData>),
@@ -1049,6 +1051,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Bytes(b) => write!(f, "Bytes({b:?})"),
             Self::ByteArray(b) => write!(f, "ByteArray({b:?})"),
             Self::List(_) => write!(f, "List(...)"),
+            Self::Deque(d) => write!(f, "Deque(len={})", d.read().len()),
             Self::Tuple(items) => write!(f, "Tuple(len={})", items.len()),
             Self::Set(_) => write!(f, "Set(...)"),
             Self::FrozenSet(_) => write!(f, "FrozenSet(...)"),

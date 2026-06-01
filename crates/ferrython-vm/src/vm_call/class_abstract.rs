@@ -89,7 +89,12 @@ impl VirtualMachine {
                     } else {
                         false
                     };
-                    if is_abstract_marker(val) || is_property_abstract {
+                    let is_callable_abstract = val
+                        .get_attr("__isabstractmethod__")
+                        .map(|flag| self.vm_is_truthy(&flag))
+                        .transpose()?
+                        .unwrap_or(false);
+                    if is_abstract_marker(val) || is_property_abstract || is_callable_abstract {
                         if !class_abstract_names
                             .iter()
                             .any(|existing| existing == name.as_str())

@@ -90,7 +90,7 @@ impl VirtualMachine {
                 Some(frozenset_builtin_value(self, &pos_args[0])?)
             }
             "bytes" | "bytearray" => Some(pos_args[0].clone()),
-            "deque" => Some(PyObject::list(
+            "deque" => Some(PyObject::deque_storage(
                 self.collect_iterable(&pos_args[0]).unwrap_or_default(),
             )),
             _ => None,

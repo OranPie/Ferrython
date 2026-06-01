@@ -190,6 +190,8 @@ def copy(x):
     """Shallow copy operation on arbitrary Python objects."""
     cls = type(x)
 
+    if _is_deque(x):
+        return x.copy()
     if _is_weakref_ref(x):
         return x
     if _is_weak_key_dict(x):
@@ -242,7 +244,12 @@ def deepcopy(x, memo=None):
         return y
 
     cls = type(x)
-    if _is_weakref_ref(x):
+    if _is_deque(x):
+        y = x.copy()
+        memo[d] = y
+        y.clear()
+        y.extend(deepcopy(list(x), memo))
+    elif _is_weakref_ref(x):
         y = x
     elif _is_weak_key_dict(x):
         y = _deepcopy_weak_key_dict(x, memo)
@@ -293,6 +300,10 @@ def _deepcopy_object(x, memo, cls):
 
 def _is_weakref_ref(x):
     return getattr(x, "__weakref_ref__", False)
+
+
+def _is_deque(x):
+    return getattr(x, "__deque__", False)
 
 
 def _is_weak_key_dict(x):

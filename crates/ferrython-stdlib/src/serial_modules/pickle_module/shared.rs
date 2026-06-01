@@ -139,14 +139,33 @@ pub(super) fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResul
             .get(&HashableKey::str_key(CompactString::from("__deque__")))
             .is_some();
         if has_deque_storage || has_deque_marker {
+            let restored_items = map_r
+                .get(&HashableKey::str_key(CompactString::from("_data")))
+                .and_then(|value| value.to_list().ok())
+                .unwrap_or_default();
+            let restored_maxlen = map_r
+                .get(&HashableKey::str_key(CompactString::from("__maxlen__")))
+                .cloned()
+                .unwrap_or_else(PyObject::none);
+            let storage = PyObject::deque_storage(restored_items);
             let mut attrs = inst.attrs.write();
             attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-            attrs
-                .entry(CompactString::from("_data"))
-                .or_insert_with(|| PyObject::list(vec![]));
-            attrs
-                .entry(CompactString::from("__maxlen__"))
-                .or_insert_with(PyObject::none);
+            attrs.insert(CompactString::from("_data"), storage.clone());
+            attrs.insert(CompactString::from("__builtin_value__"), storage);
+            attrs.insert(CompactString::from("__maxlen__"), restored_maxlen);
+            for (key, value) in map_r.iter() {
+                let HashableKey::Str(name) = key else {
+                    continue;
+                };
+                if matches!(
+                    name.as_str(),
+                    "__deque__" | "_data" | "__builtin_value__" | "__maxlen__"
+                ) {
+                    continue;
+                }
+                attrs.insert(name.to_compact_string(), value.clone());
+            }
+            return Ok(());
         }
         if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.name.as_str() == "Counter")
         {

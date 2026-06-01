@@ -255,7 +255,14 @@ impl ClassData {
                 _ => false,
             }
         };
-        let has_own_abstract = namespace.values().any(|val| is_abstract_marker(val));
+        let is_callable_abstract = |val: &PyObjectRef| -> bool {
+            val.get_attr("__isabstractmethod__")
+                .map(|flag| flag.is_truthy())
+                .unwrap_or(false)
+        };
+        let has_own_abstract = namespace
+            .values()
+            .any(|val| is_abstract_marker(val) || is_callable_abstract(val));
         // Simpler: check if any MRO base has unoverridden abstract methods
         let has_abstract = has_own_abstract || {
             let mut found = false;
@@ -269,7 +276,9 @@ impl ClassData {
                         }
                     }
                     for (name, val) in bns.iter() {
-                        if is_abstract_marker(val) && !namespace.contains_key(name.as_str()) {
+                        if (is_abstract_marker(val) || is_callable_abstract(val))
+                            && !namespace.contains_key(name.as_str())
+                        {
                             found = true;
                             break;
                         }

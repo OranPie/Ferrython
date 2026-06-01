@@ -172,7 +172,12 @@ impl VirtualMachine {
                 args.len()
             )));
         }
-        let name = args[0].py_to_string();
+        let Some(name) = args[0].as_str().map(ToOwned::to_owned) else {
+            return Err(PyException::type_error(format!(
+                "module() argument 'name' must be str, not {}",
+                args[0].type_name()
+            )));
+        };
         let mut attrs = IndexMap::new();
         attrs.insert(
             CompactString::from("__doc__"),

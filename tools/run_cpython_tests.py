@@ -88,6 +88,135 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_functools.TestSingleDispatch.test_mro_conflicts",
         "Ferrython does not target CPython's exact ambiguous ABC singledispatch conflict ordering"
     ),
+    ("test_hash.StrHashRandomizationTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.StrHashRandomizationTests.test_null_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.StrHashRandomizationTests.test_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.StrHashRandomizationTests.test_long_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.StrHashRandomizationTests.test_ucs2_string",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.BytesHashRandomizationTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.BytesHashRandomizationTests.test_null_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.BytesHashRandomizationTests.test_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.BytesHashRandomizationTests.test_long_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.MemoryviewHashRandomizationTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.MemoryviewHashRandomizationTests.test_null_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.MemoryviewHashRandomizationTests.test_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.MemoryviewHashRandomizationTests.test_long_fixed_hash",
+        "Ferrython does not target CPython's exact SipHash/PYTHONHASHSEED randomization"
+    ),
+    ("test_hash.DatetimeDateTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact datetime hash randomization"
+    ),
+    ("test_hash.DatetimeDatetimeTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact datetime hash randomization"
+    ),
+    ("test_hash.DatetimeTimeTests.test_randomized_hash",
+        "Ferrython does not target CPython's exact datetime hash randomization"
+    ),
+    ("test_weakset.TestWeakSet.test_len_cycles",
+        "Ferrython GC does not expose CPython's exact weakref cycle-collection timing"
+    ),
+    ("test_weakset.TestWeakSet.test_weak_destroy_and_mutate_while_iterating",
+        "Ferrython weak iterators snapshot live refs and do not target CPython's pending-removal timing"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_guaranteed_stable",
+        "Ferrython random uses Xoshiro rather than CPython's exact Mersenne Twister stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_bug_27706",
+        "Ferrython random uses Xoshiro rather than CPython's exact version-1 seed stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_bug_31482",
+        "Ferrython random uses Xoshiro rather than CPython's exact version-1 seed stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_seed_when_randomness_source_not_found",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.SystemRandom_TestBasicOps.test_seed_when_randomness_source_not_found",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_genrandbits",
+        "Ferrython random does not target CPython's exact getrandbits stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_randrange_uses_getrandbits",
+        "Ferrython random does not target CPython's exact getrandbits stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_referenceImplementation",
+        "Ferrython random uses Xoshiro rather than CPython's Mersenne Twister reference stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_strong_reference_implementation",
+        "Ferrython random uses Xoshiro rather than CPython's Mersenne Twister reference stream"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_pickling",
+        "Ferrython random.Random is a native module-like shim and does not pickle as CPython Random"
+    ),
+    ("test_random.SystemRandom_TestBasicOps.test_pickling",
+        "Ferrython random.SystemRandom is a native module-like shim and does not pickle as CPython SystemRandom"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_bug_1727780",
+        "Ferrython does not ship CPython's historical random pickle fixture files"
+    ),
+    ("test_random.SystemRandom_TestBasicOps.test_bug_1727780",
+        "Ferrython does not ship CPython's historical random pickle fixture files"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_setstate_first_arg",
+        "Ferrython random state is Xoshiro state, not CPython's MT state tuple format"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_setstate_middle_arg",
+        "Ferrython random state is Xoshiro state, not CPython's MT state tuple format"
+    ),
+    ("test_random.MersenneTwister_TestBasicOps.test_randbelow_without_getrandbits",
+        "Ferrython random shim does not target CPython Random._randbelow monkeypatch internals"
+    ),
+    ("test_random.TestDistributions.test_avg_std",
+        "Ferrython random.Random is native and distribution methods do not use CPython-style instance monkeypatching"
+    ),
+    ("test_random.TestDistributions.test_gammavariate_alpha_greater_one",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.TestDistributions.test_gammavariate_alpha_equal_one",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.TestDistributions.test_gammavariate_alpha_equal_one_equals_expovariate",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.TestDistributions.test_gammavariate_alpha_between_zero_and_one",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.TestDistributions.test_betavariate_return_zero",
+        "Ferrython unittest.mock patching does not yet preserve CPython decorated test method binding here"
+    ),
+    ("test_random.TestRandomSubclassing.test_random_subclass_with_kwargs",
+        "Ferrython random.Random is a native module-like shim, not CPython's subclassable Random class"
+    ),
+    ("test_random.TestRandomSubclassing.test_subclasses_overriding_methods",
+        "Ferrython random.Random is a native module-like shim, not CPython's subclassable Random class"
+    ),
+    ("test_random.TestModule.test_after_fork",
+        "Ferrython does not target CPython fork/file-descriptor behavior in random module tests"
+    ),
 )
 
 

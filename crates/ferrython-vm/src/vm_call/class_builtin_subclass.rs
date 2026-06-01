@@ -51,9 +51,7 @@ impl VirtualMachine {
         let PyObjectPayload::Instance(inst_data) = &instance.payload else {
             return Ok(());
         };
-        if inst_data.attrs.read().contains_key("__builtin_value__")
-            || cls.get_attr("__namedtuple__").is_some()
-        {
+        if cls.get_attr("__namedtuple__").is_some() {
             return Ok(());
         }
         let PyObjectPayload::Class(cd) = &cls.payload else {
@@ -65,6 +63,10 @@ impl VirtualMachine {
 
         if base_type.as_str() == "deque" {
             self.ensure_deque_subclass_storage(inst_data, pos_args)?;
+            return Ok(());
+        }
+
+        if inst_data.attrs.read().contains_key("__builtin_value__") {
             return Ok(());
         }
 
@@ -109,9 +111,11 @@ impl VirtualMachine {
                 items = items[items.len() - ml..].to_vec();
             }
         }
+        let storage = PyObject::deque_storage(items);
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(CompactString::from("_data"), storage.clone());
+        attrs.insert(intern_or_new("__builtin_value__"), storage);
         attrs.insert(
             CompactString::from("__maxlen__"),
             maxlen

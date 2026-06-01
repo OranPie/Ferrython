@@ -82,7 +82,10 @@ impl VirtualMachine {
     pub(crate) fn resolve_iterable(&mut self, obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             // dict subclass or namedtuple: use core get_iter
-            if inst.dict_storage.is_some() || inst.class.get_attr("__namedtuple__").is_some() {
+            if inst.dict_storage.is_some()
+                || inst.class.get_attr("__namedtuple__").is_some()
+                || inst.attrs.read().contains_key("__deque__")
+            {
                 return obj.get_iter();
             }
             // Custom __iter__: call it to get the actual iterator

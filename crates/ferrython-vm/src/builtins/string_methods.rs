@@ -1079,16 +1079,13 @@ pub(crate) fn call_str_method(
                                     _ => val.py_to_string(),
                                 };
                                 if let Some(ref spec) = resolved_spec {
-                                    result.push_str(&apply_format_spec_str(&converted, spec));
+                                    result.push_str(&apply_format_spec_str(&converted, spec)?);
                                 } else {
                                     result.push_str(&converted);
                                 }
                             } else if let Some(ref spec) = resolved_spec {
                                 // No conversion — use format_value on the object directly
-                                match val.format_value(spec) {
-                                    Ok(formatted) => result.push_str(&formatted),
-                                    Err(_) => result.push_str(&val.py_to_string()),
-                                }
+                                result.push_str(&val.format_value(spec)?);
                             } else {
                                 result.push_str(&val.py_to_string());
                             }
@@ -1292,7 +1289,7 @@ pub(crate) fn call_str_method(
                 Ok(PyObject::str_val(CompactString::from(s)))
             } else {
                 Ok(PyObject::str_val(CompactString::from(
-                    apply_format_spec_str(s, spec),
+                    apply_format_spec_str(s, spec)?,
                 )))
             }
         }

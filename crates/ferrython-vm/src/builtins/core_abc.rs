@@ -921,7 +921,7 @@ fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
                 .unwrap_or(false);
         match abc_name {
             "Hashable" => {
-                if blocked_hashable {
+                if blocked_hashable || crate::VirtualMachine::class_blocks_hash(cls) {
                     false
                 } else {
                     class_has_abc_method(cls, "__hash__")
@@ -955,6 +955,8 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
         "Hashable" => {
             if abc_hashable_blocked_type(obj.type_name()) {
                 false
+            } else if let PyObjectPayload::Instance(inst) = &obj.payload {
+                !crate::VirtualMachine::class_blocks_hash(&inst.class)
             } else {
                 object_has_abc_method(obj, "__hash__")
             }

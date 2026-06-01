@@ -699,6 +699,9 @@ pub(crate) fn deque_storage(obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
 
 pub(crate) fn deque_storage_len(obj: &PyObjectRef) -> Option<usize> {
     let data = deque_storage(obj).ok().flatten()?;
+    if let PyObjectPayload::Deque(items) = &data.payload {
+        return Some(items.read().len());
+    }
     let PyObjectPayload::List(items) = &data.payload else {
         return None;
     };
@@ -710,29 +713,50 @@ pub(crate) fn advance_deque_iter(data: &DequeIterData) -> PyResult<Option<PyObje
         data.index.set(usize::MAX);
         return Ok(None);
     };
-    let PyObjectPayload::List(items) = &storage.payload else {
-        data.index.set(usize::MAX);
-        return Ok(None);
-    };
     let idx = data.index.get();
     if idx == usize::MAX {
         return Ok(None);
     }
-    let read = items.read();
-    if read.len() != data.expected_len {
-        data.index.set(usize::MAX);
-        return Err(PyException::runtime_error("deque mutated during iteration"));
-    }
-    if idx >= data.expected_len {
-        data.index.set(usize::MAX);
-        return Ok(None);
-    }
-    let pos = if data.reverse {
-        data.expected_len - idx - 1
-    } else {
-        idx
+    let value = match &storage.payload {
+        PyObjectPayload::Deque(items) => {
+            let read = items.read();
+            if read.len() != data.expected_len {
+                data.index.set(usize::MAX);
+                return Err(PyException::runtime_error("deque mutated during iteration"));
+            }
+            if idx >= data.expected_len {
+                data.index.set(usize::MAX);
+                return Ok(None);
+            }
+            let pos = if data.reverse {
+                data.expected_len - idx - 1
+            } else {
+                idx
+            };
+            read[pos].clone()
+        }
+        PyObjectPayload::List(items) => {
+            let read = items.read();
+            if read.len() != data.expected_len {
+                data.index.set(usize::MAX);
+                return Err(PyException::runtime_error("deque mutated during iteration"));
+            }
+            if idx >= data.expected_len {
+                data.index.set(usize::MAX);
+                return Ok(None);
+            }
+            let pos = if data.reverse {
+                data.expected_len - idx - 1
+            } else {
+                idx
+            };
+            read[pos].clone()
+        }
+        _ => {
+            data.index.set(usize::MAX);
+            return Ok(None);
+        }
     };
-    let value = read[pos].clone();
     data.index.set(idx + 1);
     Ok(Some(value))
 }

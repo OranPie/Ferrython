@@ -28,6 +28,11 @@ fn is_weak_ref_instance(obj: &PyObjectRef) -> bool {
         if inst.attrs.read().contains_key("__weakref_ref__"))
 }
 
+fn is_deque_instance(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(inst)
+        if inst.attrs.read().contains_key("__deque__"))
+}
+
 fn is_enum_member_instance(obj: &PyObjectRef) -> bool {
     matches!(&obj.payload, PyObjectPayload::Instance(inst)
         if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_"))
@@ -37,7 +42,11 @@ fn builtin_value_compare_operands(
     a: &PyObjectRef,
     b: &PyObjectRef,
 ) -> Option<(PyObjectRef, PyObjectRef)> {
-    if is_weak_ref_instance(a) || is_weak_ref_instance(b) {
+    if is_weak_ref_instance(a)
+        || is_weak_ref_instance(b)
+        || is_deque_instance(a)
+        || is_deque_instance(b)
+    {
         return None;
     }
     let a_value = match &a.payload {

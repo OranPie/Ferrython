@@ -2,9 +2,10 @@
 
 use super::super::payload::*;
 use super::{
-    index_to_i128_unbounded, is_hidden_dict_key, repr_depth_exceeded, repr_enter, repr_leave,
+    checked_repeat_len, index_to_i128_unbounded, is_hidden_dict_key, repr_depth_exceeded,
+    repr_enter, repr_leave,
 };
-use crate::error::{PyException, PyResult};
+use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::object::methods::PyObjectMethods;
 use compact_str::CompactString;
 use num_bigint::BigInt;
@@ -397,10 +398,11 @@ pub fn format_value_spec(s: &str, spec: &str) -> String {
     } else {
         s.to_string()
     };
-    if width == 0 || display.len() >= width {
+    let display_width = display.chars().count();
+    if width == 0 || display_width >= width {
         return display;
     }
-    let pad = width - display.len();
+    let pad = width - display_width;
     match align {
         '<' => format!(
             "{}{}",
@@ -424,6 +426,80 @@ pub fn format_value_spec(s: &str, spec: &str) -> String {
         }
         _ => display,
     }
+}
+
+pub fn format_value_spec_checked(s: &str, spec: &str) -> PyResult<String> {
+    validate_format_spec_limits(spec)?;
+    Ok(format_value_spec(s, spec))
+}
+
+pub fn checked_format_accumulate(current: usize, digit: char) -> PyResult<usize> {
+    let digit = digit.to_digit(10).unwrap_or(0) as usize;
+    current
+        .checked_mul(10)
+        .and_then(|value| value.checked_add(digit))
+        .ok_or_else(|| PyException::value_error("format specifier is too large"))
+}
+
+pub fn parse_format_usize(digits: &str) -> PyResult<usize> {
+    let mut value = 0usize;
+    for digit in digits.chars() {
+        value = checked_format_accumulate(value, digit)?;
+    }
+    Ok(value)
+}
+
+pub fn parse_format_precision(digits: &str) -> PyResult<usize> {
+    let value = parse_format_usize(digits)?;
+    if value > i32::MAX as usize {
+        return Err(PyException::value_error("precision too big"));
+    }
+    checked_repeat_len(1, value, "format precision").map_err(|err| {
+        if err.kind == ExceptionKind::MemoryError {
+            PyException::value_error("precision too big")
+        } else {
+            err
+        }
+    })?;
+    Ok(value)
+}
+
+pub fn validate_format_spec_limits(spec: &str) -> PyResult<()> {
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '.' {
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if start < i {
+                parse_format_precision(
+                    &spec.chars().skip(start).take(i - start).collect::<String>(),
+                )?;
+            }
+            continue;
+        }
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            let width =
+                parse_format_usize(&spec.chars().skip(start).take(i - start).collect::<String>())?;
+            checked_repeat_len(1, width, "format width").map_err(|err| {
+                if err.kind == ExceptionKind::MemoryError {
+                    PyException::value_error("format specifier is too large")
+                } else {
+                    err
+                }
+            })?;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(())
 }
 
 pub(in crate::object) fn add_thousands_separator(s: &str, sep: char) -> String {
@@ -450,9 +526,9 @@ pub(in crate::object) fn add_thousands_separator(s: &str, sep: char) -> String {
 }
 
 /// Apply sign and alignment to a numeric string. Handles +, -, space signs and width/fill.
-pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
+pub fn apply_numeric_sign(value_str: &str, spec: &str) -> PyResult<String> {
     if spec.is_empty() {
-        return value_str.to_string();
+        return Ok(value_str.to_string());
     }
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
@@ -490,15 +566,17 @@ pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
         .take_while(|c| c.is_ascii_digit())
         .collect();
     i += width_str.len();
-    let width: usize = width_str.parse().unwrap_or(0);
+    let width = parse_format_usize(&width_str)?;
 
     // Parse .precision
     if i < chars.len() && chars[i] == '.' {
         i += 1;
+        let start = i;
         // skip precision digits
         while i < chars.len() && chars[i].is_ascii_digit() {
             i += 1;
         }
+        parse_format_precision(&chars[start..i].iter().collect::<String>())?;
     }
 
     // Apply sign to the numeric value
@@ -520,12 +598,13 @@ pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
 
     let full = format!("{}{}", sign_str, digits);
     if width == 0 || full.len() >= width {
-        return full;
+        return Ok(full);
     }
 
     let pad_len = width - full.len();
+    checked_repeat_len(1, pad_len, "format width")?;
     let actual_align = align.unwrap_or('>');
-    match actual_align {
+    Ok(match actual_align {
         '<' => format!(
             "{}{}",
             full,
@@ -553,13 +632,13 @@ pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
             )
         }
         _ => full,
-    }
+    })
 }
 
 /// Apply formatting to a prefixed number (0x, 0o, 0b). Handles zero-padding between prefix and digits.
-pub fn apply_prefixed_format(digits: &str, prefix: &str, spec: &str) -> String {
+pub fn apply_prefixed_format(digits: &str, prefix: &str, spec: &str) -> PyResult<String> {
     if spec.is_empty() {
-        return format!("{}{}", prefix, digits);
+        return Ok(format!("{}{}", prefix, digits));
     }
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
@@ -590,15 +669,16 @@ pub fn apply_prefixed_format(digits: &str, prefix: &str, spec: &str) -> String {
         .iter()
         .take_while(|c| c.is_ascii_digit())
         .collect();
-    let width: usize = width_str.parse().unwrap_or(0);
+    let width = parse_format_usize(&width_str)?;
 
     let full = format!("{}{}", prefix, digits);
     if width == 0 || full.len() >= width {
-        return full;
+        return Ok(full);
     }
 
     let pad_len = width - full.len();
-    match align.unwrap_or('>') {
+    checked_repeat_len(1, pad_len, "format width")?;
+    Ok(match align.unwrap_or('>') {
         '=' | '>' if fill == '0' => {
             format!(
                 "{}{}{}",
@@ -628,12 +708,12 @@ pub fn apply_prefixed_format(digits: &str, prefix: &str, spec: &str) -> String {
             )
         }
         _ => full,
-    }
+    })
 }
 
-pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
+pub fn apply_string_format_spec(s: &str, spec: &str) -> PyResult<String> {
     if spec.is_empty() {
-        return s.to_string();
+        return Ok(s.to_string());
     }
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
@@ -663,7 +743,7 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
         .iter()
         .take_while(|c| c.is_ascii_digit())
         .collect();
-    let width: usize = width_str.parse().unwrap_or(0);
+    let width = parse_format_usize(&width_str)?;
     i += width_str.len();
     // Parse precision (.N truncates string to N chars)
     let precision: Option<usize> = if i < chars.len() && chars[i] == '.' {
@@ -675,7 +755,7 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
         let _prec_len = prec_str.len(); // advance past precision digits
         i += _prec_len;
         let _ = i; // mark as intentionally used for future spec parsing
-        Some(prec_str.parse().unwrap_or(0))
+        Some(parse_format_precision(&prec_str)?)
     } else {
         None
     };
@@ -693,12 +773,14 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
     } else {
         s
     };
-    if width <= s.len() {
-        return s.to_string();
+    let display_width = s.chars().count();
+    if width <= display_width {
+        return Ok(s.to_string());
     }
-    let pad_len = width - s.len();
+    let pad_len = width - display_width;
+    checked_repeat_len(1, pad_len, "format width")?;
     // Strings default to left-aligned (CPython behavior)
-    match align.unwrap_or('<') {
+    Ok(match align.unwrap_or('<') {
         '<' => format!(
             "{}{}",
             s,
@@ -720,7 +802,7 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
             )
         }
         _ => s.to_string(),
-    }
+    })
 }
 
 /// Resolve slice start/stop/step into actual indices for a sequence of given length.

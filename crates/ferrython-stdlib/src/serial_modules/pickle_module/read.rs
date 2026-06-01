@@ -758,12 +758,10 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     inst.attrs
                         .read()
                         .get("_data")
-                        .and_then(|data| {
-                            if let PyObjectPayload::List(items) = &data.payload {
-                                Some(items.read().len())
-                            } else {
-                                None
-                            }
+                        .and_then(|data| match &data.payload {
+                            PyObjectPayload::Deque(items) => Some(items.read().len()),
+                            PyObjectPayload::List(items) => Some(items.read().len()),
+                            _ => None,
                         })
                         .unwrap_or(0)
                 } else {

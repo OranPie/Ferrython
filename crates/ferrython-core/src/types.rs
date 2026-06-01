@@ -602,6 +602,18 @@ impl HashableKey {
             ))),
             PyObjectPayload::Str(s) => Ok(HashableKey::Str(s.clone())),
             PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
+            PyObjectPayload::Iterator(_)
+            | PyObjectPayload::RangeIter(_)
+            | PyObjectPayload::VecIter(_)
+            | PyObjectPayload::DictValueIter(_)
+            | PyObjectPayload::WeakValueIter(_)
+            | PyObjectPayload::WeakKeyIter(_)
+            | PyObjectPayload::DequeIter(_)
+            | PyObjectPayload::RefIter { .. }
+            | PyObjectPayload::RevRefIter { .. } => {
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                Ok(HashableKey::Identity(ptr, obj.clone()))
+            }
             PyObjectPayload::Tuple(items) => {
                 let mut keys = Vec::with_capacity(items.len());
                 for item in items.iter() {
@@ -778,9 +790,12 @@ pub fn hash_key_like_python(key: &HashableKey) -> i64 {
         HashableKey::Int(n) => py_hash_bigint(&n.to_bigint()),
         HashableKey::Bool(b) => *b as i64,
         HashableKey::Str(s) => {
-            let mut hasher = rustc_hash::FxHasher::default();
+            if s.is_empty() {
+                return 0;
+            }
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
             3u8.hash(&mut hasher);
-            s.hash(&mut hasher);
+            s.as_str().hash(&mut hasher);
             hasher.finish() as i64
         }
         HashableKey::Float(f) => py_hash_float(f.0),
@@ -808,6 +823,9 @@ pub fn hash_key_like_python(key: &HashableKey) -> i64 {
         }
         HashableKey::FrozenSet(items) => items.py_hash(),
         HashableKey::Bytes(b) => {
+            if b.is_empty() {
+                return 0;
+            }
             let mut h: u64 = 5381;
             for x in b.iter() {
                 h = h.wrapping_mul(33).wrapping_add(*x as u64);
@@ -1139,7 +1157,10 @@ impl PartialEq for BorrowedStrKey<'_> {
 impl Eq for BorrowedStrKey<'_> {}
 
 fn hash_borrowed_str_key(value: &str) -> i64 {
-    let mut hasher = rustc_hash::FxHasher::default();
+    if value.is_empty() {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     3u8.hash(&mut hasher);
     value.hash(&mut hasher);
     hasher.finish() as i64

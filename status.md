@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-05-31T19:30:54+08:00
+Last updated: 2026-06-01T21:54:40+08:00
 
 ## 性能优化进度
 
@@ -76,6 +76,61 @@ Last updated: 2026-05-31T19:30:54+08:00
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
+
+- 2026-06-01 format / dict / compile / ABCMeta / weakref subclass batch:
+  - 新增绿色目标：`test_format`、`test_dict`、`test_compile`、`test_binop`、`test_dynamicclassattribute`、`test_weakref`，并保持 `test_set`、`test_super` 绿色。
+  - `%` formatting 通用补齐：
+    - `str`/`bytes`/`bytearray` `%` formatting 支持 `*` width/precision、`%a`、bytes-like `%b/%s/%r/%a/%c`、bytearray result type、unsupported/incomplete format errors、overflow/huge precision guard、integer radix alternate prefix/sign/zero padding，以及 CPython-style `%g/%#g` significant-digit formatting。
+    - format/`str.format` 相邻路径现在传播 oversized format errors；unicode fill width 使用 char count，避免非 ASCII fill 被 byte width 误算。
+  - `repr`/`ascii` 共享化：新增 core `py_ascii_repr`，让 `ascii()` 和格式化 `!a` 使用一致的 non-printable Unicode escaping。
+  - dict values iterator 改为 live iterator，避免 mutation during values iteration 时 snapshot 行为偏离 CPython。
+  - `compile(..., mode="single")` 拒绝单行 compound statement，修复 `test_compile` 相邻语义。
+  - class/metaclass 通用修复：
+    - `ABCMeta`/custom metaclass 创建路径只在 metaclass 显式定义 `mro()` 时调用自定义 MRO hook，默认 `type.mro` 不再把新类 MRO 覆盖成 metaclass 自己的 MRO。
+    - 自定义 `mro(self)` 在新类对象上调用，恢复 `test_super` 的 `__class__` cell/MRO 期望。
+    - `ABCMeta` 子类现在保留真实 base MRO，`test_binop` 的 `B(OperationLogger, metaclass=ABCMeta)` 正确继承 `OperationLogger.__init__`。
+    - DynamicClassAttribute abstract descriptor 继承状态通过修正后的 MRO 保留，`test_dynamicclassattribute` 全绿。
+  - VM instance-call 快路径修复：实例 `__call__` 为 Python function 且带 closure/freevars 时使用 closure frame，并把 cellvars 从 locals 绑定，修复 weakref.ref 子类 `__call__` 里的 zero-arg `super()` 空 `__class__` cell。
+  - weakref/set repr 相邻修复：weak proxy 对 set/frozenset subclass builtin-value 使用 subclass repr，`test_set` 保持绿色。
+  - 验证：
+    - `cargo check -p ferrython-vm`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format test_set test_dict test_compile test_super test_binop test_dynamicclassattribute test_weakref` -> `run=918 pass=886 fail=0 err=0 skip=32`
+    - 单模块新增绿色：
+      - `test_format`: `run=9 pass=7 fail=0 err=0 skip=2`
+      - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`
+      - `test_compile`: `run=75 pass=70 fail=0 err=0 skip=5`
+      - `test_binop`: `run=12 pass=12 fail=0 err=0 skip=0`
+      - `test_dynamicclassattribute`: `run=12 pass=11 fail=0 err=0 skip=1`
+      - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`
+      - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`
+
+- 2026-06-01 CPython 测试保护基线：
+  - 新增 `TEST_BASELINE.md`，记录当前 `target/debug/ferrython` 下模块级通过基线和非基线模块清单。
+  - 扫描方式：对 `tools/run_cpython_tests.py --list` 的每个模块单独执行 `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q <module>`，避免单个 crash/timeout 阻塞其他模块。
+  - 当前保护基线：89 个模块无 fail/error，其中 83 个执行至少一个测试，6 个为当前 load-only/zero-test pass。
+  - `TEST_BASELINE.md` 同时记录 `tools/run_cpython_tests.py` 中 `_FERRYTHON_UNNEEDED_TESTS` 的显式 skip 表和原因；后续新增 skip 需要同步该表。
+  - 后续修复原则：任何 feature fix 都应保持 pass baseline 中的模块不回退；若确需刷新基线，必须写明原因和新扫描结果。
+
+- 2026-06-01 complex / contextlib / copy / deque / property / hash / weakset / random 兼容与 deque 性能批次：
+  - 目标 1-8 已收口：`test_complex`、`test_contextlib`、`test_copy`、`test_deque`、`test_property`、`test_hash`、`test_weakset`、`test_random` 在当前 debug binary 下均无 fail/error。
+  - `copy.deepcopy(deque)` 现在先复制 deque 结构、memoize，再深拷贝元素回填，避免原生 deque 构造器参数形状错误。
+  - 原生 deque pickle 路径会跳过内部 `__builtin_value__` marker，并在 unpickle 时从 `_data` 重建共享 deque storage；deque marker 路径继续保留 `maxlen == 0`、满容量 append/appendleft、大批量 extend/extendleft 和 rotate 的低分配优化。
+  - `WeakSet` 补齐集合运算和 inplace 运算的 class-level special method trampoline，generator 输入可被 `to_list()` 收集，二元集合运算会校验 weakrefable 元素并保留 CPython 测试期待的右侧 live refs。
+  - `Hashable` ABC 结构判定现在尊重 class-level `__hash__ = None` / equality-blocked hashing；CPython exact SipHash/PYTHONHASHSEED/datetime hash-randomization 测试继续窄标记为不适用。
+  - `random` 补齐多项分布 API、`choices()` 的 Fraction/Decimal-style numeric weight 转换、`k`/`getrandbits()`/`randrange()` 参数校验、bytearray shuffle、seed 类型处理和 `ModuleType(name)` str 校验；精确 Mersenne Twister stream、CPython pickle fixture、fork/fd 行为和 unittest.mock decorated method binding 仍标记为 Ferrython 不适用。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-vm`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_contextlib test_copy test_property` -> `run=191 pass=190 fail=0 err=0 skip=1`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_deque` -> `run=79 pass=76 fail=0 err=0 skip=3`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash test_weakset` -> `run=74 pass=56 fail=0 err=0 skip=18`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_random` -> `run=77 pass=52 fail=0 err=0 skip=25`
 
 - 2026-05-31 userstring / keyword-only args / raise / class / collections 兼容批次：
   - `test_userstring` 剩余 lone-surrogate encode 问题已通过共享字符串编码路径补齐，避免在 UserString 层做特判。
@@ -1924,6 +1979,22 @@ Last updated: 2026-05-31T19:30:54+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_super test_urlparse test_userlist test_fractions test_pprint`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_userlist test_super test_urlparse test_pprint test_fractions`
+
+- 2026-06-01 format / class / baseline guard follow-up:
+  - 修复批量基线确认时暴露的回归，保持此前 pass baseline 仍为零失败：
+    - `str` `%` formatting 允许 mapping/list/range/memoryview 等 CPython 接受的“无转换”右值，同时继续对 scalar 右值报 `not all arguments converted`。
+    - `bytes`/`bytearray` `%` formatting 收窄同类边界，恢复 `b"no format" % b"1"` 和 `bytearray(b"no format") % bytearray(b"1")` 的 CPython 错误。
+    - `compile(..., mode="single")` 只拒绝未以换行结束的单行 compound statement，恢复 `codeop.compile_command("if 1: pass\n")`。
+    - deque marker instance 的 `str()` 先走 deque repr，恢复 `weakref.proxy(deque(...))` 的 `str()` 语义。
+  - 新增 `TEST_BASELINE.md`，记录当前 89 个零失败/零错误 CPython 模块、非基线模块和 skip reason table。
+  - 最终基线确认：逐个运行 `TEST_BASELINE.md` Pass Baseline 的 89 个模块，每个模块 30s timeout，结果 `BASELINE_DONE modules=89 failures=0`。
+  - 重点验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format`: `run=9 pass=7 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_calendar test_codeop test_deque`: `run=443 pass=440 fail=0 err=0 skip=3`
+    - Pass baseline full guard: `BASELINE_DONE modules=89 failures=0`
 
 ## 后续修复队列
 

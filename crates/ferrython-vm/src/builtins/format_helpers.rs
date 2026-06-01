@@ -1,6 +1,9 @@
 /// Apply format spec to an already-converted string value.
-pub(crate) fn apply_format_spec_str(s: &str, spec: &str) -> String {
-    ferrython_core::object::format_value_spec(s, spec)
+pub(crate) fn apply_format_spec_str(
+    s: &str,
+    spec: &str,
+) -> ferrython_core::error::PyResult<String> {
+    ferrython_core::object::format_value_spec_checked(s, spec)
 }
 
 pub(crate) fn apply_format_spec_int(n: i64, spec: &str) -> String {

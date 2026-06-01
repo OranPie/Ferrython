@@ -1,8 +1,63 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-05-31T19:30:54+08:00
+Last updated: 2026-06-01T21:54:40+08:00
 
 ## Current batch
+
+- Compatibility batch: format, dict, compile, class/metaclass, weakref subclass
+  - Combined validation:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format test_set test_dict test_compile test_super test_binop test_dynamicclassattribute test_weakref` -> `run=918 pass=886 fail=0 err=0 skip=32`.
+  - New/confirmed per-module green results:
+    - `test_format`: `run=9 pass=7 fail=0 err=0 skip=2`.
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`.
+    - `test_compile`: `run=75 pass=70 fail=0 err=0 skip=5`.
+    - `test_binop`: `run=12 pass=12 fail=0 err=0 skip=0`.
+    - `test_dynamicclassattribute`: `run=12 pass=11 fail=0 err=0 skip=1`.
+    - `test_weakref`: `run=125 pass=115 fail=0 err=0 skip=10`.
+    - `test_set`: `run=561 pass=558 fail=0 err=0 skip=3`.
+    - `test_super`: `run=21 pass=21 fail=0 err=0 skip=0`.
+  - Fixed traits:
+    - printf-style formatting now handles significant-digit `%g/%#g`, `*` width/precision, bytes/bytearray PEP 461 formats, bytearray result preservation, `%a`, incomplete/unsupported format errors, and huge precision/width guards.
+    - `ascii()` and format `!a` share core Unicode escaping via `py_ascii_repr`.
+    - dict values iteration is live rather than a snapshot for mutation-sensitive tests.
+    - `compile(..., mode="single")` rejects one-line compound statements.
+    - ABCMeta/custom metaclass class creation keeps base-class MRO unless the metaclass defines a real custom `mro`; custom `mro(self)` is invoked with the new class as self.
+    - ABCMeta subclasses inherit normal base `__init__`; DynamicClassAttribute abstract descriptors keep inherited abstractness; weakref.ref subclass `__call__` zero-arg `super()` sees the correct `__class__` closure cell.
+  - Regression checks:
+    - `cargo check -p ferrython-vm`.
+    - `cargo check -p ferrython-stdlib`.
+    - `cargo build -p ferrython-cli --bin ferrython`.
+    - `git diff --check`.
+
+- Baseline guard: CPython module pass list
+  - Added `TEST_BASELINE.md` as the current no-regression guard for module-level CPython tests.
+  - Scan command shape: list modules with `target/debug/ferrython tools/run_cpython_tests.py --list`, then run every module independently with `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q <module>`.
+  - Current result: 89 modules have zero failures/errors; 83 of those execute at least one test, while 6 are current load-only/zero-test passes.
+  - The same file records all explicit `_FERRYTHON_UNNEEDED_TESTS` entries and reasons from `tools/run_cpython_tests.py`.
+  - Future feature fixes should keep the pass baseline green; if a baseline entry changes, update `TEST_BASELINE.md` with the new result and reason.
+
+- Compatibility batch: complex, contextlib, copy, deque, property, hash, weakset, random
+  - Combined validation:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_complex test_contextlib test_copy test_property` -> `run=191 pass=190 fail=0 err=0 skip=1`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_deque` -> `run=79 pass=76 fail=0 err=0 skip=3`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hash test_weakset` -> `run=74 pass=56 fail=0 err=0 skip=18`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_random` -> `run=77 pass=52 fail=0 err=0 skip=25`.
+  - Fixed traits:
+    - `copy.deepcopy(collections.deque)` handles native deque storage without calling `deque(iterable)` in the unsupported constructor shape.
+    - Deque pickle/unpickle restores `_data` and `__builtin_value__` as shared deque storage; iterator/recursive/sequence pickle paths remain green.
+    - WeakSet set algebra special methods are visible to operator dispatch, validate weakrefable inputs, and keep the expected live refs for intersection semantics.
+    - Generator inputs can be materialized by `to_list()`, covering `WeakSet(Foo() for ...)`.
+    - Hashable ABC checks treat equality-only classes with blocked hash as unhashable.
+    - `random.choices()` accepts Fraction weights/cum_weights, rejects float `k`, and rejects set populations; `randrange()` rejects non-integer start/stop/step; `getrandbits()` rejects zero/non-int bit counts; `Random(seed)` validates seed through `seed()`.
+    - `random.shuffle()` supports the legacy custom random callable and bytearray targets without the previous bytearray crash.
+    - `types.ModuleType`/`module` construction now rejects non-string names instead of converting arbitrary objects to strings.
+  - Marked unneeded:
+    - Hash exact randomization tests that assert CPython SipHash/PYTHONHASHSEED/datetime hash behavior.
+    - WeakSet GC/weak-iterator timing tests that depend on CPython's exact collection and pending-removal timing.
+    - Random exact Mersenne Twister stream, CPython pickle fixtures, fork/fd behavior, CPython Random subclass/monkeypatch internals, and decorated `unittest.mock.patch` binding cases.
+  - Regression checks:
+    - Direct bytearray shuffle smoke: `random.shuffle(bytearray(...), mock_random)` and `random.Random().shuffle(bytearray(...), mock_random)` both complete and call the mock 10 times.
+    - `cargo fmt --all`, `cargo check -p ferrython-vm`, `cargo check -p ferrython-stdlib`, `cargo build -p ferrython-cli --bin ferrython`, and `git diff --check` all pass with only existing dead-code warnings.
 
 - Compatibility batch: userstring, keywordonlyarg, raise, class, collections
   - Combined validation: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_userstring test_keywordonlyarg test_raise test_class test_collections` -> `run=196 pass=192 fail=0 err=0 skip=4`.
@@ -392,3 +447,20 @@ Last updated: 2026-05-31T19:30:54+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools`: `run=168 pass=157 fail=0 err=0 skip=11`.
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_super test_urlparse test_userlist test_fractions test_pprint`: `run=200 pass=200 fail=0 err=0 skip=0`.
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_userlist test_super test_urlparse test_pprint test_fractions`: `run=368 pass=357 fail=0 err=0 skip=11`.
+
+## 2026-06-01 pass-baseline guard and regression cleanup
+
+- Baseline guard
+  - Added `TEST_BASELINE.md` with 89 zero-failure/zero-error modules, current non-baseline modules, and the explicit skip reason table.
+  - Final full guard reran every module listed in `TEST_BASELINE.md` Pass Baseline independently with a 30s timeout.
+  - Final result: `BASELINE_DONE modules=89 failures=0`.
+
+- Regressions caught and fixed during guard
+  - `test_argparse` / `test_calendar`: string `%` formatting now accepts CPython-compatible mapping/sequence no-conversion right operands, restoring argparse help expansion.
+  - `test_codeop`: `compile(..., "single")` now preserves CPython's newline boundary for one-line compound statements.
+  - `test_deque`: `str(weakref.proxy(deque(...)))` now matches the referent deque string.
+  - `test_format`: bytes/bytearray `%` no-conversion right operand handling was narrowed back to CPython behavior for bytes-like scalars.
+
+- Focused validation
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format`: `run=9 pass=7 fail=0 err=0 skip=2`.
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_calendar test_codeop test_deque`: `run=443 pass=440 fail=0 err=0 skip=3`.

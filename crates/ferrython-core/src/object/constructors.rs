@@ -6,6 +6,7 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
@@ -787,6 +788,13 @@ impl PyObject {
     }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::List(alloc_list_box(items)));
+        track_object(&obj);
+        obj
+    }
+    pub fn deque_storage(items: Vec<PyObjectRef>) -> PyObjectRef {
+        let obj = Self::wrap(PyObjectPayload::Deque(Rc::new(PyCell::new(
+            VecDeque::from(items),
+        ))));
         track_object(&obj);
         obj
     }

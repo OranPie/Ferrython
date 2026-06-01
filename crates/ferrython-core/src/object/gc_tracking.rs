@@ -147,6 +147,7 @@ fn is_gc_payload(payload: &PyObjectPayload) -> bool {
         payload,
         PyObjectPayload::Instance(_)
             | PyObjectPayload::List(_)
+            | PyObjectPayload::Deque(_)
             | PyObjectPayload::Dict(_)
             | PyObjectPayload::MappingProxy(_)
             | PyObjectPayload::Range(_)
@@ -203,6 +204,7 @@ fn gc_intermediate_refs(payload: &PyObjectPayload) -> Vec<PyObjectRef> {
             refs
         }
         PyObjectPayload::List(items) => items.read().iter().cloned().collect(),
+        PyObjectPayload::Deque(items) => items.read().iter().cloned().collect(),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => dict_storage_refs(map),
         PyObjectPayload::Range(rd) => {
             let mut refs = Vec::new();
@@ -436,6 +438,12 @@ fn count_internal_refs(
                 gc_add_pyref(item, ptr_map, internal_refs);
             }
         }
+        PyObjectPayload::Deque(items) => {
+            let items = items.read();
+            for item in items.iter() {
+                gc_add_pyref(item, ptr_map, internal_refs);
+            }
+        }
         _ => {
             for item in gc_intermediate_refs(payload) {
                 gc_add_pyref(&item, ptr_map, internal_refs);
@@ -476,6 +484,15 @@ fn verify_all_refs_in_garbage(
             }
             true
         }
+        PyObjectPayload::Deque(items) => {
+            let items = items.read();
+            for item in items.iter() {
+                if !gc_ref_is_garbage(item, ptr_map, garbage_set) {
+                    return false;
+                }
+            }
+            true
+        }
         _ => {
             for item in gc_intermediate_refs(payload) {
                 if !gc_ref_is_garbage(&item, ptr_map, garbage_set) {
@@ -501,6 +518,9 @@ fn break_cycles(payload: &PyObjectPayload) {
             }
         }
         PyObjectPayload::List(items) => {
+            items.write().clear();
+        }
+        PyObjectPayload::Deque(items) => {
             items.write().clear();
         }
         PyObjectPayload::Dict(map) => {

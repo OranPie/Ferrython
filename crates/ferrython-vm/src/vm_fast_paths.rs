@@ -684,6 +684,7 @@ pub(crate) fn fast_exact_type(arg: &PyObjectRef) -> Option<PyObjectRef> {
         PyObjectPayload::Bytes(_) => Some(PyObject::builtin_type_by_name("bytes")),
         PyObjectPayload::ByteArray(_) => Some(PyObject::builtin_type_by_name("bytearray")),
         PyObjectPayload::List(_) => Some(PyObject::builtin_type_by_name("list")),
+        PyObjectPayload::Deque(_) => Some(PyObject::builtin_type_by_name("deque")),
         PyObjectPayload::Tuple(_) => Some(PyObject::builtin_type_by_name("tuple")),
         PyObjectPayload::Set(_) => Some(PyObject::builtin_type_by_name("set")),
         PyObjectPayload::FrozenSet(_) => Some(PyObject::builtin_type_by_name("frozenset")),

@@ -224,23 +224,9 @@ pub(super) fn builtin_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("ascii", args, 1)?;
-    let repr = args[0].repr();
-    // ascii() takes repr() and escapes non-ASCII characters
-    let escaped: String = repr
-        .chars()
-        .map(|c| {
-            if c.is_ascii() {
-                c.to_string()
-            } else if (c as u32) <= 0xff {
-                format!("\\x{:02x}", c as u32)
-            } else if (c as u32) <= 0xffff {
-                format!("\\u{:04x}", c as u32)
-            } else {
-                format!("\\U{:08x}", c as u32)
-            }
-        })
-        .collect();
-    Ok(PyObject::str_val(CompactString::from(escaped)))
+    Ok(PyObject::str_val(CompactString::from(
+        ferrython_core::object::py_ascii_repr(&args[0]),
+    )))
 }
 
 pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -606,18 +592,8 @@ pub(crate) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         let a_is_complex = matches!(&a.payload, PyObjectPayload::Complex { .. });
         let b_is_complex = matches!(&b.payload, PyObjectPayload::Complex { .. });
-        let af = a.to_float().unwrap_or(0.0);
-        let bf = b.to_float().unwrap_or(0.0);
-        if !a_is_complex && matches!(&a.payload, PyObjectPayload::Int(_)) && af.is_infinite() {
-            return Err(PyException::overflow_error(
-                "int too large to convert to float",
-            ));
-        }
-        if !b_is_complex && matches!(&b.payload, PyObjectPayload::Int(_)) && bf.is_infinite() {
-            return Err(PyException::overflow_error(
-                "int too large to convert to float",
-            ));
-        }
+        let af = if a_is_complex { 0.0 } else { a.to_float()? };
+        let bf = if b_is_complex { 0.0 } else { b.to_float()? };
         let (ar, ai) = match &a.payload {
             PyObjectPayload::Complex { real, imag } => (*real, *imag),
             _ => (af, 0.0),
@@ -630,13 +606,25 @@ pub(crate) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let imag = if a_is_complex { ai + br } else { br };
         return Ok(PyObject::complex(real, imag));
     }
+    let to_complex_float = |v: &PyObjectRef| -> PyResult<f64> {
+        let f = v.to_float().unwrap_or(0.0);
+        if matches!(&v.payload, PyObjectPayload::Int(_)) && f.is_infinite() {
+            Err(PyException::overflow_error(
+                "int too large to convert to float",
+            ))
+        } else {
+            Ok(f)
+        }
+    };
     let real = a0
         .as_ref()
-        .map(|v| v.to_float().unwrap_or(0.0))
+        .map(to_complex_float)
+        .transpose()?
         .unwrap_or(0.0);
     let imag = a1
         .as_ref()
-        .map(|v| v.to_float().unwrap_or(0.0))
+        .map(to_complex_float)
+        .transpose()?
         .unwrap_or(0.0);
     Ok(PyObject::complex(real, imag))
 }

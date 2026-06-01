@@ -793,10 +793,10 @@ impl VirtualMachine {
         cls: PyObjectRef,
         meta: &PyObjectRef,
     ) -> PyResult<PyObjectRef> {
-        let Some(mro_method) = meta.get_attr("mro") else {
+        let Some(mro_method) = Self::custom_metaclass_mro(meta, &cls) else {
             return Ok(cls);
         };
-        let result = self.call_object(mro_method, vec![cls.clone()])?;
+        let result = self.call_object(mro_method, vec![])?;
         let mut mro_items = result.to_list()?;
         if mro_items
             .first()
@@ -820,6 +820,20 @@ impl VirtualMachine {
             }
         }
         Ok(cls)
+    }
+
+    fn custom_metaclass_mro(meta: &PyObjectRef, cls: &PyObjectRef) -> Option<PyObjectRef> {
+        let PyObjectPayload::Class(cd) = &meta.payload else {
+            return None;
+        };
+        cd.namespace.read().get("mro").cloned().map(|method| {
+            PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: cls.clone(),
+                    method,
+                },
+            })
+        })
     }
 
     /// Call __set_name__ on descriptors in the class namespace (PEP 487).

@@ -74,8 +74,10 @@ pub(crate) fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::instance(deque_cls);
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
+        let storage = PyObject::deque_storage(items);
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(CompactString::from("_data"), storage.clone());
+        attrs.insert(CompactString::from("__builtin_value__"), storage);
         attrs.insert(
             CompactString::from("__maxlen__"),
             maxlen

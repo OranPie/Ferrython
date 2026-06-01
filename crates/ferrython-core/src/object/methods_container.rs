@@ -118,6 +118,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
         PyObjectPayload::Str(s) => Ok(s.chars().count()),
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.len()),
         PyObjectPayload::List(v) => Ok(v.read().len()),
+        PyObjectPayload::Deque(v) => Ok(v.read().len()),
         PyObjectPayload::Tuple(v) => Ok(v.len()),
         PyObjectPayload::Set(m) => Ok(m.read().len()),
         PyObjectPayload::FrozenSet(m) => Ok(m.len()),
@@ -409,6 +410,22 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
             Ok(items[actual as usize].clone())
         }
+        PyObjectPayload::Deque(items) => {
+            let items = items.read();
+            let idx = index_to_i64(key).map_err(|e| {
+                if e.kind == crate::error::ExceptionKind::OverflowError {
+                    PyException::index_error(e.message)
+                } else {
+                    PyException::type_error("deque indices must be integers or slices")
+                }
+            })?;
+            let len = items.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("deque index out of range"));
+            }
+            Ok(items[actual as usize].clone())
+        }
         PyObjectPayload::Tuple(items) => {
             let idx = index_to_i64(key).map_err(|e| {
                 if e.kind == crate::error::ExceptionKind::OverflowError {
@@ -606,6 +623,15 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
     match &obj.payload {
         PyObjectPayload::List(v) => {
             let items = v.read().clone();
+            for candidate in items {
+                if element_matches(&candidate, item)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        PyObjectPayload::Deque(v) => {
+            let items: Vec<_> = v.read().iter().cloned().collect();
             for candidate in items {
                 if element_matches(&candidate, item)? {
                     return Ok(true);
@@ -990,6 +1016,12 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     return py_get_iter(&(nc.func)(&[])?);
                 }
             }
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(method) = instance_special_method(obj, "__iter__") {
+                    let method = method?;
+                    return ensure_iterator_result(obj, call_callable(&method, &[])?);
+                }
+            }
             if inst.attrs.read().contains_key("__chainmap__") {
                 if let Some(iter_method) = inst.class.get_attr("__iter__") {
                     let result = match &iter_method.payload {
@@ -1087,13 +1119,14 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             }
         }
         PyObjectPayload::DictValues { map: m, owner } => {
-            let values: Vec<PyObjectRef> = m.read().values().cloned().collect();
-            let iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                IteratorData::List {
-                    items: values,
-                    index: 0,
+            let iter = PyObject::wrap(PyObjectPayload::DictValueIter(Box::new(
+                DictValueIterData {
+                    source: m.clone(),
+                    index: SyncUsize::new(0),
+                    expected_len: m.read().len(),
+                    expected_version: dict_storage_version(m),
                 },
-            ))));
+            )));
             if let Some(owner) = owner.clone() {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                     PyCell::new(IteratorData::HeldIter {

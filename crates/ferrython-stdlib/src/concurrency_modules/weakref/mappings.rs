@@ -5,7 +5,7 @@ mod weak_set;
 mod weak_value_dictionary;
 
 pub(super) use weak_key_dictionary::make_weak_key_dictionary;
-pub(super) use weak_set::make_weak_set;
+pub(super) use weak_set::make_weak_set_class;
 pub(super) use weak_value_dictionary::make_weak_value_dictionary;
 
 fn weak_key_items(storage: &WeakKeyStorage) -> Vec<(PyObjectRef, PyObjectRef)> {

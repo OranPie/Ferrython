@@ -25,6 +25,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
         PyObjectPayload::Bytes(_) => "bytes",
         PyObjectPayload::ByteArray(_) => "bytearray",
         PyObjectPayload::List(_) => "list",
+        PyObjectPayload::Deque(_) => "deque",
         PyObjectPayload::Tuple(_) => "tuple",
         PyObjectPayload::Set(_) => "set",
         PyObjectPayload::FrozenSet(_) => "frozenset",
@@ -128,6 +129,7 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
         PyObjectPayload::Str(s) => !s.is_empty(),
         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => !b.is_empty(),
         PyObjectPayload::List(v) => !v.read().is_empty(),
+        PyObjectPayload::Deque(v) => !v.read().is_empty(),
         PyObjectPayload::Tuple(v) => !v.is_empty(),
         PyObjectPayload::Set(m) => !m.read().is_empty(),
         PyObjectPayload::FrozenSet(m) => !m.is_empty(),
@@ -144,6 +146,9 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
             }
             if inst.attrs.read().contains_key("__deque__") {
                 if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                    if let PyObjectPayload::Deque(items) = &data.payload {
+                        return !items.read().is_empty();
+                    }
                     if let PyObjectPayload::List(items) = &data.payload {
                         return !items.read().is_empty();
                     }
@@ -354,15 +359,17 @@ fn slice_part_repr(part: &Option<PyObjectRef>) -> String {
 fn deque_repr(obj: &PyObjectRef, inst: &InstanceData) -> Option<String> {
     let attrs = inst.attrs.read();
     let data = attrs.get("_data")?;
-    let PyObjectPayload::List(list) = &data.payload else {
-        return Some("deque([])".to_string());
+    let items: Vec<PyObjectRef> = match &data.payload {
+        PyObjectPayload::Deque(items) => items.read().iter().cloned().collect(),
+        PyObjectPayload::List(list) => list.read().clone(),
+        _ => return Some("deque([])".to_string()),
     };
     let ptr = PyObjectRef::as_ptr(obj) as usize;
     if !repr_enter(ptr) {
         return Some("deque([...])".to_string());
     }
-    let items: Vec<String> = list.read().iter().map(|item| item.repr()).collect();
-    let joined = items.join(", ");
+    let item_reprs: Vec<String> = items.iter().map(|item| item.repr()).collect();
+    let joined = item_reprs.join(", ");
     let result = match attrs.get("__maxlen__") {
         Some(maxlen) if !matches!(&maxlen.payload, PyObjectPayload::None) => {
             format!("deque([{}], maxlen={})", joined, maxlen.py_to_string())
@@ -508,6 +515,11 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             format!("<class '{}.{}'>", module, qualname)
         }
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(text) = deque_repr(obj, inst) {
+                    return text;
+                }
+            }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 return bv.py_to_string();
@@ -841,36 +853,65 @@ fn bound_method_repr(receiver: &PyObjectRef, method: &PyObjectRef) -> String {
     )
 }
 
+fn unicode_escape_char(c: char) -> String {
+    let cp = c as u32;
+    if cp <= 0xff {
+        format!("\\x{cp:02x}")
+    } else if cp <= 0xffff {
+        format!("\\u{cp:04x}")
+    } else {
+        format!("\\U{cp:08x}")
+    }
+}
+
+fn unicode_repr_is_printable(c: char) -> bool {
+    c == ' ' || (!c.is_control() && unicode_names2::name(c).is_some())
+}
+
+fn repr_escape_str(s: &str, ascii_only: bool) -> String {
+    let mut escaped = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\t' => escaped.push_str("\\t"),
+            '\r' => escaped.push_str("\\r"),
+            _ if ascii_only && !c.is_ascii() => escaped.push_str(&unicode_escape_char(c)),
+            _ if !unicode_repr_is_printable(c) => escaped.push_str(&unicode_escape_char(c)),
+            _ => escaped.push(c),
+        }
+    }
+    let has_single = escaped.contains('\'');
+    let has_double = escaped.contains('"');
+    if has_single && !has_double {
+        format!("\"{}\"", escaped)
+    } else {
+        let escaped = escaped.replace('\'', "\\'");
+        format!("'{}'", escaped)
+    }
+}
+
+pub fn py_ascii_repr(obj: &PyObjectRef) -> String {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => repr_escape_str(s.as_str(), true),
+        _ => {
+            let repr = obj.repr();
+            repr.chars()
+                .map(|c| {
+                    if c.is_ascii() {
+                        c.to_string()
+                    } else {
+                        unicode_escape_char(c)
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
 pub(super) fn py_repr(obj: &PyObjectRef) -> String {
     match &obj.payload {
-        PyObjectPayload::Str(s) => {
-            // Escape special characters first
-            let mut escaped = String::with_capacity(s.len() + 4);
-            for c in s.chars() {
-                match c {
-                    '\\' => escaped.push_str("\\\\"),
-                    '\n' => escaped.push_str("\\n"),
-                    '\t' => escaped.push_str("\\t"),
-                    '\r' => escaped.push_str("\\r"),
-                    '\x07' => escaped.push_str("\\a"),
-                    '\x08' => escaped.push_str("\\b"),
-                    '\x0C' => escaped.push_str("\\f"),
-                    '\x0B' => escaped.push_str("\\v"),
-                    '\0' => escaped.push_str("\\x00"),
-                    _ if c.is_control() => escaped.push_str(&format!("\\x{:02x}", c as u32)),
-                    _ => escaped.push(c),
-                }
-            }
-            let has_single = escaped.contains('\'');
-            let has_double = escaped.contains('"');
-            if has_single && !has_double {
-                format!("\"{}\"", escaped)
-            } else {
-                // Escape single quotes in the escaped string
-                let escaped = escaped.replace('\'', "\\'");
-                format!("'{}'", escaped)
-            }
-        }
+        PyObjectPayload::Str(s) => repr_escape_str(s.as_str(), false),
         PyObjectPayload::ExceptionInstance(ei) => {
             if ei.args.is_empty() {
                 format!("{}()", ei.kind)
@@ -934,6 +975,11 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
             }
         }
         PyObjectPayload::Instance(inst) => {
+            if inst.attrs.read().contains_key("__deque__") {
+                if let Some(text) = deque_repr(obj, inst) {
+                    return text;
+                }
+            }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
                 if matches!(
@@ -964,11 +1010,6 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                     return format!("{}({{{}}})", class_name, body);
                 }
                 return bv.repr();
-            }
-            if inst.attrs.read().contains_key("__deque__") {
-                if let Some(text) = deque_repr(obj, inst) {
-                    return text;
-                }
             }
             // Dict subclass: repr like a dict
             if let Some(ref ds) = inst.dict_storage {
