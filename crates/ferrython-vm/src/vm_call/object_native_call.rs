@@ -1,5 +1,8 @@
+use compact_str::CompactString;
 use ferrython_core::error::PyResult;
-use ferrython_core::object::{NativeFunctionData, PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    NativeFunctionData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 
 use crate::VirtualMachine;
 
@@ -21,6 +24,26 @@ impl VirtualMachine {
         }
         if nf_data.name.as_str() == "property.__get__" {
             return self.call_property_get_native(&args);
+        }
+        if nf_data.name.as_str() == "type.__new__" {
+            let bases = if args.len() == 4 {
+                args[2].to_list().unwrap_or_default()
+            } else if args.len() == 3 {
+                args[1].to_list().unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let result = (nf_data.func)(&args)?;
+            if matches!(&result.payload, PyObjectPayload::Class(_)) {
+                self.finish_pep487_class(&result, &bases, &[])?;
+                if let PyObjectPayload::Class(cd) = &result.payload {
+                    cd.namespace.write().insert(
+                        CompactString::from("__ferrython_pep487_done__"),
+                        PyObject::bool_val(true),
+                    );
+                }
+            }
+            return Ok(result);
         }
         if nf_data.name.as_str() == "functools.reduce" {
             return self.vm_functools_reduce(&args);

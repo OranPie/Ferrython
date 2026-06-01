@@ -175,6 +175,8 @@ impl Compiler {
         let qualname_prefix = &self.current_unit().qualname_prefix;
         let qualname = if qualname_prefix.is_empty() {
             name.to_string()
+        } else if self.current_unit().is_function && !qualname_prefix.ends_with(".<locals>") {
+            format!("{}.<locals>.{}", qualname_prefix, name)
         } else {
             format!("{}.{}", qualname_prefix, name)
         };

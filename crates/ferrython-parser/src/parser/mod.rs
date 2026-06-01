@@ -41,6 +41,7 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     _filename: CompactString,
+    named_expr_rhs_depth: usize,
 }
 
 impl Parser {
@@ -49,6 +50,7 @@ impl Parser {
             tokens,
             pos: 0,
             _filename: CompactString::from(filename),
+            named_expr_rhs_depth: 0,
         }
     }
 

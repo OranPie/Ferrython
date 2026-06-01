@@ -20,6 +20,12 @@ impl VirtualMachine {
         };
         if let Some((kind, ref gen_arc)) = gen_kind {
             match bbm.method_name.as_str() {
+                "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__" => {
+                    return Err(PyException::type_error(format!(
+                        "cannot pickle '{}' object",
+                        kind
+                    )));
+                }
                 "send" => {
                     let val = if args.is_empty() {
                         PyObject::none()

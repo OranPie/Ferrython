@@ -21,8 +21,22 @@ impl VirtualMachine {
                 let globals = pyfunc.globals.clone();
                 let defaults = pyfunc.defaults.read();
                 let kw_defaults = pyfunc.kw_defaults.read();
+                let attrs = pyfunc.attrs.read();
+                let func_name = attrs
+                    .get("__name__")
+                    .and_then(|v| v.as_str())
+                    .map(CompactString::from)
+                    .unwrap_or_else(|| pyfunc.name.clone());
+                let func_qualname = attrs
+                    .get("__qualname__")
+                    .and_then(|v| v.as_str())
+                    .map(CompactString::from)
+                    .unwrap_or_else(|| pyfunc.qualname.clone());
+                drop(attrs);
                 self.call_function_kw(
                     &pyfunc.code,
+                    func_name,
+                    func_qualname,
                     pos_args,
                     kwargs,
                     &defaults,

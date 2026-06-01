@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-01T21:54:40+08:00
+Last updated: 2026-06-02T02:09:51+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -46,13 +46,17 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_deque | 79 | 76 | 0 | 0 | 3 | 10s |
 | test_dict | 103 | 92 | 0 | 0 | 11 | 0s |
 | test_dictcomps | 7 | 7 | 0 | 0 | 0 | 0s |
+| test_dictviews | 14 | 14 | 0 | 0 | 0 | 0s |
 | test_difflib | 29 | 29 | 0 | 0 | 0 | 3s |
 | test_dynamicclassattribute | 12 | 11 | 0 | 0 | 1 | 0s |
 | test_extcall | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_fnmatch | 12 | 12 | 0 | 0 | 0 | 0s |
 | test_format | 9 | 7 | 0 | 0 | 2 | 0s |
 | test_fractions | 31 | 31 | 0 | 0 | 0 | 1s |
+| test_functools | 232 | 157 | 0 | 0 | 75 | 0s |
 | test_generator_stop | 2 | 2 | 0 | 0 | 0 | 0s |
+| test_generators | 16 | 13 | 0 | 0 | 3 | 0s |
+| test_genericclass | 22 | 21 | 0 | 0 | 1 | 0s |
 | test_genexps | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_getopt | 8 | 8 | 0 | 0 | 0 | 0s |
 | test_global | 4 | 4 | 0 | 0 | 0 | 0s |
@@ -64,12 +68,14 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_html | 2 | 2 | 0 | 0 | 0 | 0s |
 | test_index | 55 | 55 | 0 | 0 | 0 | 0s |
 | test_int_literal | 6 | 6 | 0 | 0 | 0 | 0s |
+| test_ipaddress | 191 | 191 | 0 | 0 | 0 | 0s |
 | test_isinstance | 18 | 18 | 0 | 0 | 0 | 1s |
 | test_iter | 54 | 52 | 0 | 0 | 2 | 1s |
 | test_keyword | 7 | 7 | 0 | 0 | 0 | 0s |
 | test_keywordonlyarg | 11 | 11 | 0 | 0 | 0 | 1s |
 | test_list | 57 | 56 | 0 | 0 | 1 | 0s |
 | test_listcomps | 0 | 0 | 0 | 0 | 0 | 0s |
+| test_named_expressions | 61 | 61 | 0 | 0 | 0 | 0s |
 | test_numeric_tower | 9 | 9 | 0 | 0 | 0 | 1s |
 | test_opcodes | 8 | 8 | 0 | 0 | 0 | 0s |
 | test_operator | 90 | 90 | 0 | 0 | 0 | 0s |
@@ -90,6 +96,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_string | 36 | 36 | 0 | 0 | 0 | 0s |
 | test_string_literals | 16 | 16 | 0 | 0 | 0 | 0s |
 | test_strptime | 51 | 51 | 0 | 0 | 0 | 2s |
+| test_subclassinit | 17 | 17 | 0 | 0 | 0 | 0s |
 | test_super | 21 | 21 | 0 | 0 | 0 | 0s |
 | test_syntax | 14 | 14 | 0 | 0 | 0 | 0s |
 | test_textwrap | 62 | 62 | 0 | 0 | 0 | 0s |
@@ -107,7 +114,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_weakset | 44 | 42 | 0 | 0 | 2 | 1s |
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 89 modules have zero failures/errors. Of those, 83 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 96 modules have zero failures/errors. Of those, 90 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
 ## Current Non-Baseline Modules
 
@@ -121,21 +128,15 @@ These modules are not protected as passing gates yet.
 | test_dataclasses | FAIL | 173 | 48 | 82 | 43 | 0 | 0s |
 | test_decimal | FAIL | 500 | 36 | 62 | 387 | 15 | 0s |
 | test_descr | FAIL | 145 | 37 | 56 | 42 | 10 | 0s |
-| test_dictviews | FAIL | 14 | 6 | 3 | 5 | 0 | 0s |
 | test_enumerate | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_exception_hierarchy | FAIL | 16 | 4 | 3 | 8 | 1 | 0s |
 | test_exceptions | FAIL | 55 | 24 | 16 | 5 | 10 | 1s |
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
 | test_funcattrs | FAIL | 31 | 11 | 11 | 9 | 0 | 0s |
-| test_functools | FAIL | 1 | 0 | 0 | 1 | 0 | 0s |
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
-| test_generators | FAIL | 15 | 8 | 3 | 4 | 0 | 1s |
-| test_genericclass | FAIL | 21 | 9 | 5 | 7 | 0 | 0s |
 | test_int | FAIL | 35 | 12 | 15 | 7 | 1 | 1s |
-| test_ipaddress | FAIL | 1 | 0 | 0 | 1 | 0 | 0s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
-| test_named_expressions | FAIL | 61 | 44 | 13 | 4 | 0 | 0s |
 | test_ordered_dict | FAIL | 265 | 73 | 30 | 154 | 8 | 2s |
 | test_queue | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
@@ -143,7 +144,6 @@ These modules are not protected as passing gates yet.
 | test_sched | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_scope | FAIL | 38 | 21 | 5 | 9 | 3 | 0s |
 | test_statistics | FAIL | 344 | 133 | 68 | 143 | 0 | 1s |
-| test_subclassinit | FAIL | 17 | 8 | 5 | 4 | 0 | 0s |
 | test_traceback | FAIL | 70 | 2 | 25 | 30 | 13 | 0s |
 | test_types | FAIL | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_typing | FAIL | 301 | 81 | 169 | 47 | 4 | 1s |
@@ -158,6 +158,8 @@ This table mirrors `tools/run_cpython_tests.py` `_FERRYTHON_UNNEEDED_TESTS`. The
 | --- | --- |
 | test_tuple.TupleTest.test_hash_exact | Ferrython does not target CPython's exact tuple hash constants |
 | test_slice.SliceTest.test_cycle | Ferrython GC does not expose CPython's cycle-collection timing |
+| test_generators.FinalizationTest.test_frame_resurrect | Ferrython does not target CPython generator frame resurrection during finalization |
+| test_generators.FinalizationTest.test_refcycle | Ferrython GC does not expose CPython's generator finalization timing for isolated cycles |
 | test_weakref.MappingTestCase.test_threaded_weak_key_dict_copy | CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget |
 | test_weakref.MappingTestCase.test_threaded_weak_key_dict_deepcopy | CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget |
 | test_weakref.MappingTestCase.test_threaded_weak_value_dict_copy | CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget |

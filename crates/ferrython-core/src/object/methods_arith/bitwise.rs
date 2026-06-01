@@ -149,22 +149,16 @@ pub(crate) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
         }
         // DictKeys/DictItems set-like intersection
         (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
-        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
-            if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
-        {
-            if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                let mut result = new_fx_hashkey_flatmap();
-                for (k, v) in ak.iter() {
-                    if bk.contains_key(k) {
-                        result.insert(k.clone(), v.clone());
-                    }
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }) => {
+            let ak = extract_view_keys(a)?;
+            let bk = extract_view_keys(b)?;
+            let mut result = new_fx_hashkey_flatmap();
+            for (k, v) in ak.iter() {
+                if bk.contains_key(k) {
+                    result.insert(k.clone(), v.clone());
                 }
-                Ok(keys_to_set(result))
-            } else {
-                Err(PyException::type_error(
-                    "dict view changed during operation",
-                ))
             }
+            Ok(keys_to_set(result))
         }
         _ => int_bitop(a, b, "&", |a, b| a & b),
     }
@@ -263,20 +257,14 @@ pub(crate) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
         }
         // DictKeys/DictItems set-like union
         (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
-        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
-            if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
-        {
-            if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                let mut result = ak;
-                for (k, v) in bk.iter() {
-                    result.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                Ok(keys_to_set(result))
-            } else {
-                Err(PyException::type_error(
-                    "dict view changed during operation",
-                ))
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }) => {
+            let ak = extract_view_keys(a)?;
+            let bk = extract_view_keys(b)?;
+            let mut result = ak;
+            for (k, v) in bk.iter() {
+                result.entry(k.clone()).or_insert_with(|| v.clone());
             }
+            Ok(keys_to_set(result))
         }
         _ => int_bitop(a, b, "|", |a, b| a | b),
     }
@@ -354,27 +342,21 @@ pub(crate) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
         }
         // DictKeys/DictItems set-like symmetric difference
         (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
-        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
-            if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
-        {
-            if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                let mut result = new_fx_hashkey_flatmap();
-                for (k, v) in ak.iter() {
-                    if !bk.contains_key(k) {
-                        result.insert(k.clone(), v.clone());
-                    }
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }) => {
+            let ak = extract_view_keys(a)?;
+            let bk = extract_view_keys(b)?;
+            let mut result = new_fx_hashkey_flatmap();
+            for (k, v) in ak.iter() {
+                if !bk.contains_key(k) {
+                    result.insert(k.clone(), v.clone());
                 }
-                for (k, v) in bk.iter() {
-                    if !ak.contains_key(k) {
-                        result.insert(k.clone(), v.clone());
-                    }
-                }
-                Ok(keys_to_set(result))
-            } else {
-                Err(PyException::type_error(
-                    "dict view changed during operation",
-                ))
             }
+            for (k, v) in bk.iter() {
+                if !ak.contains_key(k) {
+                    result.insert(k.clone(), v.clone());
+                }
+            }
+            Ok(keys_to_set(result))
         }
         _ => int_bitop(a, b, "^", |a, b| a ^ b),
     }

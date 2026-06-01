@@ -18,38 +18,53 @@ pub(super) use bitwise::{py_bit_and, py_bit_or, py_bit_xor, py_lshift, py_rshift
 pub(super) use modulo::py_modulo;
 
 /// Extract keys as HashableKey set from DictKeys or DictItems view.
-fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyFlatMap> {
+fn extract_view_keys(obj: &PyObjectRef) -> PyResult<FxHashKeyFlatMap> {
     match &obj.payload {
         PyObjectPayload::DictKeys { map: m, .. } => {
             let r = m.read();
-            Some(
-                r.keys()
-                    .filter(|k| !is_hidden_dict_key(k))
-                    .map(|k| (k.clone(), k.to_object()))
-                    .collect(),
-            )
+            Ok(r.keys()
+                .filter(|k| !is_hidden_dict_key(k))
+                .map(|k| (k.clone(), k.to_object()))
+                .collect())
         }
         PyObjectPayload::DictItems { map: m, .. } => {
             let r = m.read();
-            Some(
-                r.iter()
-                    .filter(|(k, _)| !is_hidden_dict_key(k))
-                    .map(|(k, v)| {
-                        let tuple_obj = PyObject::tuple(vec![k.to_object(), v.clone()]);
-                        let tuple_key = HashableKey::Tuple(Box::new(vec![
-                            k.clone(),
-                            HashableKey::from_object(v).unwrap_or(HashableKey::None),
-                        ]));
-                        (tuple_key, tuple_obj)
-                    })
-                    .collect(),
-            )
+            Ok(r.iter()
+                .filter(|(k, _)| !is_hidden_dict_key(k))
+                .map(|(k, v)| {
+                    let tuple_obj = PyObject::tuple(vec![k.to_object(), v.clone()]);
+                    let tuple_key = HashableKey::Tuple(Box::new(vec![
+                        k.clone(),
+                        HashableKey::from_object(v).unwrap_or(HashableKey::None),
+                    ]));
+                    (tuple_key, tuple_obj)
+                })
+                .collect())
         }
-        PyObjectPayload::Set(s) => Some(s.read().clone()),
+        PyObjectPayload::Set(s) => Ok(s.read().clone()),
         PyObjectPayload::FrozenSet(s) => {
-            Some(s.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            Ok(s.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         }
-        _ => None,
+        PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
+            let r = m.read();
+            Ok(r.keys()
+                .filter(|k| !is_hidden_dict_key(k))
+                .map(|k| (k.clone(), k.to_object()))
+                .collect())
+        }
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Range(_) => {
+            let items = obj.to_list()?;
+            let mut result = new_fx_hashkey_flatmap();
+            for value in items {
+                let key = value.to_hashable_key()?;
+                result.insert(key, value);
+            }
+            Ok(result)
+        }
+        _ => Err(PyException::type_error(format!(
+            "unsupported operand type(s) for set operation: '{}'",
+            obj.type_name()
+        ))),
     }
 }
 
@@ -293,22 +308,16 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
         }
         // DictKeys/DictItems set-like difference
         (PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }, _)
-        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. })
-            if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() =>
-        {
-            if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                let mut result = new_fx_hashkey_flatmap();
-                for (k, v) in ak.iter() {
-                    if !bk.contains_key(k) {
-                        result.insert(k.clone(), v.clone());
-                    }
+        | (_, PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. }) => {
+            let ak = extract_view_keys(a)?;
+            let bk = extract_view_keys(b)?;
+            let mut result = new_fx_hashkey_flatmap();
+            for (k, v) in ak.iter() {
+                if !bk.contains_key(k) {
+                    result.insert(k.clone(), v.clone());
                 }
-                Ok(keys_to_set(result))
-            } else {
-                Err(PyException::type_error(
-                    "dict view changed during operation",
-                ))
             }
+            Ok(keys_to_set(result))
         }
         // Counter - Counter: subtract counts, keep positive
         (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {

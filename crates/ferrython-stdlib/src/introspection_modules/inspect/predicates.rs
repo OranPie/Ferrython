@@ -133,3 +133,23 @@ pub(super) fn inspect_isdatadescriptor(args: &[PyObjectRef]) -> PyResult<PyObjec
         args[0].get_attr("__get__").is_some() && args[0].get_attr("__set__").is_some(),
     ))
 }
+
+pub(super) fn inspect_getgeneratorstate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("inspect.getgeneratorstate", args, 1)?;
+    match &args[0].payload {
+        PyObjectPayload::Generator(gen) => {
+            let gen = gen.read();
+            let state = if gen.finished {
+                "GEN_CLOSED"
+            } else if gen.running {
+                "GEN_RUNNING"
+            } else if gen.started {
+                "GEN_SUSPENDED"
+            } else {
+                "GEN_CREATED"
+            };
+            Ok(PyObject::str_val(CompactString::from(state)))
+        }
+        _ => Err(PyException::type_error("object is not a generator")),
+    }
+}

@@ -186,6 +186,9 @@ impl VirtualMachine {
                 };
 
                 if let Some(gen_arc) = gen_arc_opt {
+                    if let Some(parent) = self.current_generators.last() {
+                        parent.write().yield_from = Some(sub_iter.clone());
+                    }
                     match self.resume_generator(&gen_arc, send_val) {
                         Ok(yielded) => {
                             let frame = self.vm_frame();
@@ -194,6 +197,9 @@ impl VirtualMachine {
                             return Ok(Some(yielded));
                         }
                         Err(e) if e.kind == ExceptionKind::StopIteration => {
+                            if let Some(parent) = self.current_generators.last() {
+                                parent.write().yield_from = None;
+                            }
                             let frame = self.vm_frame();
                             frame.pop();
                             // yield from captures StopIteration.value as the result

@@ -5,6 +5,19 @@ use ferrython_core::types::HashableKey;
 use crate::VirtualMachine;
 
 impl VirtualMachine {
+    fn object_is_abstract(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
+        if ferrython_core::object::is_property_like(obj) {
+            return self
+                .property_isabstractmethod(obj)
+                .map(|flag| flag.is_truthy());
+        }
+        let Some(flag) = obj.get_attr("__isabstractmethod__") else {
+            return Ok(false);
+        };
+        let flag = self.resolve_descriptor(&flag, obj)?;
+        self.vm_is_truthy(&flag)
+    }
+
     pub(super) fn check_abstract_class_instantiation(&mut self, cls: &PyObjectRef) -> PyResult<()> {
         // ── ABC check (only for non-simple classes) ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
@@ -83,18 +96,7 @@ impl VirtualMachine {
                     }
                 }
                 for (name, val) in ns.iter() {
-                    let is_property_abstract = if ferrython_core::object::is_property_like(val) {
-                        self.property_isabstractmethod(val)
-                            .map(|flag| flag.is_truthy())?
-                    } else {
-                        false
-                    };
-                    let is_callable_abstract = val
-                        .get_attr("__isabstractmethod__")
-                        .map(|flag| self.vm_is_truthy(&flag))
-                        .transpose()?
-                        .unwrap_or(false);
-                    if is_abstract_marker(val) || is_property_abstract || is_callable_abstract {
+                    if is_abstract_marker(val) || self.object_is_abstract(val)? {
                         if !class_abstract_names
                             .iter()
                             .any(|existing| existing == name.as_str())

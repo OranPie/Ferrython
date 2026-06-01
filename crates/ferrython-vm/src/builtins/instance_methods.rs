@@ -10,6 +10,8 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use num_bigint::BigInt;
+use num_traits::{One, ToPrimitive};
 
 mod csv;
 mod datetime;
@@ -231,7 +233,22 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
     }
     let bytes = match &args[0].payload {
         PyObjectPayload::Bytes(b) => (**b).clone(),
-        _ => return Err(PyException::type_error("expected bytes")),
+        PyObjectPayload::ByteArray(b) => (**b).clone(),
+        _ => {
+            let mut out = Vec::new();
+            for item in args[0].to_list()? {
+                let Some(value) = item.as_int() else {
+                    return Err(PyException::type_error(
+                        "'bytes' object cannot be interpreted as an integer",
+                    ));
+                };
+                if !(0..=255).contains(&value) {
+                    return Err(PyException::value_error("bytes must be in range(0, 256)"));
+                }
+                out.push(value as u8);
+            }
+            out
+        }
     };
     // Extract byteorder and signed from positional or kwargs dict
     let mut byteorder = "big".to_string();
@@ -257,16 +274,16 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
     if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
         signed = args[2].is_truthy();
     }
-    let mut result: i64 = 0;
+    let mut result = BigInt::from(0u8);
     match byteorder.as_str() {
         "big" => {
             for &b in &bytes {
-                result = result * 256 + b as i64;
+                result = (result << 8) + BigInt::from(b);
             }
         }
         "little" => {
             for (i, &b) in bytes.iter().enumerate() {
-                result += (b as i64) << (8 * i);
+                result += BigInt::from(b) << (8 * i);
             }
         }
         _ => {
@@ -277,12 +294,17 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
     }
     if signed {
         let bits = bytes.len() * 8;
-        let sign_bit = 1i64 << (bits - 1);
-        if result & sign_bit != 0 {
-            result -= 1i64 << bits;
+        if bits > 0 {
+            let sign_bit = BigInt::one() << (bits - 1);
+            if (&result & &sign_bit) != BigInt::from(0u8) {
+                result -= BigInt::one() << bits;
+            }
         }
     }
-    Ok(PyObject::int(result))
+    Ok(result
+        .to_i64()
+        .map(PyObject::int)
+        .unwrap_or_else(|| PyObject::big_int(result)))
 }
 
 pub(super) fn builtin_bool_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

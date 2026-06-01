@@ -615,14 +615,12 @@ impl VirtualMachine {
                     // Ensure we have an original ExceptionInstance to store attrs on
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
-                        if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
-                            let mut w = ei.ensure_attrs().write();
-                            w.insert(intern_or_new("__cause__"), PyObject::none());
-                            w.insert(
-                                intern_or_new("__suppress_context__"),
-                                PyObject::bool_val(true),
-                            );
-                        }
+                        Self::store_exc_attr(original, "__cause__", PyObject::none());
+                        Self::store_exc_attr(
+                            original,
+                            "__suppress_context__",
+                            PyObject::bool_val(true),
+                        );
                     }
                 } else {
                     if !is_valid_exception_cause(&cause) {
@@ -637,16 +635,13 @@ impl VirtualMachine {
                     };
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
-                        if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
-                            let mut w = ei.ensure_attrs().write();
-                            let cause_obj =
-                                cause_exc.original.clone().unwrap_or_else(|| cause.clone());
-                            w.insert(intern_or_new("__cause__"), cause_obj);
-                            w.insert(
-                                intern_or_new("__suppress_context__"),
-                                PyObject::bool_val(true),
-                            );
-                        }
+                        let cause_obj = cause_exc.original.clone().unwrap_or_else(|| cause.clone());
+                        Self::store_exc_attr(original, "__cause__", cause_obj);
+                        Self::store_exc_attr(
+                            original,
+                            "__suppress_context__",
+                            PyObject::bool_val(true),
+                        );
                     }
                     py_exc.cause = Some(Box::new(cause_exc));
                 }

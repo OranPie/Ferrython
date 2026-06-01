@@ -20,6 +20,9 @@ impl Parser {
             let target = self.parse_target_list()?;
             self.expect(TokenKind::In)?;
             let iter = self.parse_or_test()?;
+            if Self::is_unparenthesized_named_expr(&iter) {
+                return Err(Self::invalid_unparenthesized_named_expr(&iter));
+            }
             let mut ifs = Vec::new();
             while self.check(TokenKind::If) {
                 self.advance();
@@ -36,6 +39,18 @@ impl Parser {
     }
 
     // ─── Helper expression parsers ──────────────────────────────────
+
+    pub(in crate::parser) fn is_unparenthesized_named_expr(expr: &Expression) -> bool {
+        matches!(&expr.node, ExpressionKind::NamedExpr { .. })
+            && expr.location == expr.outer_location
+    }
+
+    pub(in crate::parser) fn invalid_unparenthesized_named_expr(expr: &Expression) -> ParseError {
+        ParseError::new(
+            ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+            Self::span_from_location(expr.location),
+        )
+    }
 
     pub(in crate::parser) fn parse_test_list(&mut self) -> Result<Expression, ParseError> {
         let first = self.parse_test()?;

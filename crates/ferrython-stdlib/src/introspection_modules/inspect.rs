@@ -8,10 +8,10 @@ mod source;
 use frame::{inspect_currentframe, inspect_stack};
 use mro_argspec::{inspect_classify_class_attrs, inspect_getargspec, inspect_getmro};
 use predicates::{
-    inspect_isabstract, inspect_isasyncgen, inspect_isasyncgenfunction, inspect_isawaitable,
-    inspect_isbuiltin, inspect_isclass, inspect_iscoroutine, inspect_iscoroutinefunction,
-    inspect_isdatadescriptor, inspect_isfunction, inspect_isgenerator, inspect_isgeneratorfunction,
-    inspect_ismethod, inspect_ismodule, inspect_isroutine,
+    inspect_getgeneratorstate, inspect_isabstract, inspect_isasyncgen, inspect_isasyncgenfunction,
+    inspect_isawaitable, inspect_isbuiltin, inspect_isclass, inspect_iscoroutine,
+    inspect_iscoroutinefunction, inspect_isdatadescriptor, inspect_isfunction, inspect_isgenerator,
+    inspect_isgeneratorfunction, inspect_ismethod, inspect_ismodule, inspect_isroutine,
 };
 use source::{
     inspect_cleandoc, inspect_getattr_static, inspect_getdoc, inspect_getfile, inspect_getmembers,
@@ -810,6 +810,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             ("ismodule", make_builtin(inspect_ismodule)),
             ("isbuiltin", make_builtin(inspect_isbuiltin)),
             ("isgenerator", make_builtin(inspect_isgenerator)),
+            ("getgeneratorstate", make_builtin(inspect_getgeneratorstate)),
             (
                 "isgeneratorfunction",
                 make_builtin(inspect_isgeneratorfunction),
@@ -868,6 +869,22 @@ pub fn create_inspect_module() -> PyObjectRef {
             ("CO_ITERABLE_COROUTINE", PyObject::int(0x100)),
             ("CO_ASYNC_GENERATOR", PyObject::int(0x200)),
             ("TPFLAGS_IS_ABSTRACT", PyObject::int(1 << 20)),
+            (
+                "GEN_CREATED",
+                PyObject::str_val(CompactString::from("GEN_CREATED")),
+            ),
+            (
+                "GEN_RUNNING",
+                PyObject::str_val(CompactString::from("GEN_RUNNING")),
+            ),
+            (
+                "GEN_SUSPENDED",
+                PyObject::str_val(CompactString::from("GEN_SUSPENDED")),
+            ),
+            (
+                "GEN_CLOSED",
+                PyObject::str_val(CompactString::from("GEN_CLOSED")),
+            ),
         ],
     )
 }

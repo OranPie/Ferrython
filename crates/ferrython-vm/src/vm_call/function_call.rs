@@ -86,6 +86,8 @@ impl VirtualMachine {
     pub(crate) fn call_function(
         &mut self,
         code: &Rc<CodeObject>,
+        func_name: CompactString,
+        func_qualname: CompactString,
         mut args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
@@ -192,6 +194,6 @@ impl VirtualMachine {
             }
         }
 
-        self.install_closure_and_run(frame, code, closure)
+        self.install_closure_and_run(frame, code, closure, func_name, func_qualname)
     }
 }

@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-01T21:54:40+08:00
+Last updated: 2026-06-02T02:09:51+08:00
 
 ## Current batch
 
@@ -464,3 +464,42 @@ Last updated: 2026-06-01T21:54:40+08:00
 - Focused validation
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format`: `run=9 pass=7 fail=0 err=0 skip=2`.
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_calendar test_codeop test_deque`: `run=443 pass=440 fail=0 err=0 skip=3`.
+
+## 2026-06-02 ipaddress/generators/named-expression batch
+
+- `test_ipaddress`
+  - Previous baseline table state: load/runtime error placeholder (`run=1 pass=0 fail=0 err=1 skip=0`).
+  - Result after batch: `run=191 pass=191 fail=0 err=0 skip=0`.
+  - Fixed traits: full `ipaddress` stdlib surface for CPython 3.8 tests, IPv4 private/special-network compatibility, `hosts()` edge cases, mixed-version ordering keys, and BigInt-backed address byte conversions.
+
+- `test_generators`
+  - Previous baseline table state: `run=15 pass=8 fail=3 err=4 skip=0`.
+  - Result after batch: `run=16 pass=13 fail=0 err=0 skip=3`.
+  - Fixed traits: generator-owned exception state is preserved across `yield` inside `except`, while caller `sys.exc_info()` no longer leaks into suspended generators.
+  - Marked unneeded: `FinalizationTest.test_frame_resurrect` and `FinalizationTest.test_refcycle`, because they assert CPython-specific frame resurrection / isolated-cycle finalization timing.
+
+- `test_named_expressions`
+  - Previous baseline table state: `run=61 pass=44 fail=13 err=4 skip=0`.
+  - Result after batch: `run=61 pass=61 fail=0 err=0 skip=0`.
+  - Fixed traits: parser and symbol-table validation for unparenthesized walrus contexts, invalid tuple/list/expression targets, lambda-body restrictions, keyword/default/annotation restrictions, comprehension iterable-expression bans, class-scope comprehension bans, and comprehension target rebinding precedence.
+
+- `test_dictviews`
+  - Previous baseline table state: `run=14 pass=6 fail=3 err=5 skip=0`.
+  - Current result: `run=14 pass=14 fail=0 err=0 skip=0`.
+
+- `test_subclassinit`
+  - Previous baseline table state: `run=17 pass=8 fail=5 err=4 skip=0`.
+  - Current result: `run=17 pass=17 fail=0 err=0 skip=0`.
+
+- `test_genericclass`
+  - Previous baseline table state: `run=21 pass=9 fail=5 err=7 skip=0`.
+  - Current result: `run=22 pass=21 fail=0 err=0 skip=1`.
+
+- `test_functools`
+  - Earlier six-module batch recorded `run=168 pass=157 fail=0 err=0 skip=11`; current full module now records all skipped CPython-specific cases.
+  - Current result: `run=232 pass=157 fail=0 err=0 skip=75`.
+
+- Batch validation
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_dictviews test_subclassinit test_genericclass test_ipaddress test_generators test_named_expressions`: `run=553 pass=474 fail=0 err=0 skip=79`.
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_generator_stop test_collections test_weakref test_dict test_set`: `run=999 pass=973 fail=0 err=0 skip=26`.
+  - `TEST_BASELINE.md` pass baseline updated from 89 to 96 zero-failure/zero-error modules.

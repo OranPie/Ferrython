@@ -1,6 +1,6 @@
-use ferrython_core::error::PyResult;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    BuiltinBoundMethodData, IteratorData, PyObject, PyObjectPayload, PyObjectRef,
+    BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 
 use crate::builtins;
@@ -34,6 +34,60 @@ impl VirtualMachine {
         }
 
         match &bbm.receiver.payload {
+            PyObjectPayload::DictKeys { .. } | PyObjectPayload::DictItems { .. } => {
+                match bbm.method_name.as_str() {
+                    "__contains__" => {
+                        if args.len() != 1 {
+                            return Err(PyException::type_error(
+                                "__contains__() takes exactly one argument",
+                            ));
+                        }
+                        return Ok(Some(PyObject::bool_val(bbm.receiver.contains(&args[0])?)));
+                    }
+                    "isdisjoint" => {
+                        if args.len() != 1 {
+                            return Err(PyException::type_error(
+                                "isdisjoint() takes exactly one argument",
+                            ));
+                        }
+                        let other = if needs_vm_iterable_collection(&args[0]) {
+                            PyObject::list(self.collect_iterable(&args[0])?)
+                        } else {
+                            args[0].clone()
+                        };
+                        let intersection = bbm.receiver.bit_and(&other)?;
+                        return Ok(Some(PyObject::bool_val(intersection.py_len()? == 0)));
+                    }
+                    "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__" => {
+                        return Err(PyException::type_error(format!(
+                            "cannot pickle '{}' object",
+                            bbm.receiver.type_name()
+                        )));
+                    }
+                    _ => {}
+                }
+                return Ok(None);
+            }
+            PyObjectPayload::DictValues { .. } => {
+                match bbm.method_name.as_str() {
+                    "__contains__" => {
+                        if args.len() != 1 {
+                            return Err(PyException::type_error(
+                                "__contains__() takes exactly one argument",
+                            ));
+                        }
+                        return Ok(Some(PyObject::bool_val(bbm.receiver.contains(&args[0])?)));
+                    }
+                    "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__" => {
+                        return Err(PyException::type_error(format!(
+                            "cannot pickle '{}' object",
+                            bbm.receiver.type_name()
+                        )));
+                    }
+                    _ => {}
+                }
+                return Ok(None);
+            }
             PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_)
                 if !args.is_empty()
                     && is_set_iterable_method(bbm.method_name.as_str())

@@ -508,7 +508,9 @@ impl Parser {
                 // Check for walrus operator
                 if self.check(TokenKind::ColonEqual) {
                     self.advance();
+                    self.named_expr_rhs_depth += 1;
                     let value = self.parse_test()?;
+                    self.named_expr_rhs_depth -= 1;
                     let named_loc =
                         Self::with_end_location(loc, Self::expression_outer_location(&value));
                     return Ok(Expression::new(
@@ -693,6 +695,21 @@ impl Parser {
                 }
                 let parenthesized_yield = self.check(TokenKind::Yield);
                 let mut expr = self.parse_test_list_star_expr()?;
+                if self.check(TokenKind::ColonEqual) {
+                    let message = match &expr.node {
+                        ExpressionKind::Tuple { .. } => {
+                            "cannot use assignment expressions with tuple"
+                        }
+                        ExpressionKind::List { .. } => {
+                            "cannot use assignment expressions with list"
+                        }
+                        _ => "cannot use assignment expressions with expression",
+                    };
+                    return Err(ParseError::new(
+                        ParseErrorKind::SyntaxErrorMessage(message.into()),
+                        Self::span_from_location(Self::expression_outer_location(&expr)),
+                    ));
+                }
                 if parenthesized_yield && self.check(TokenKind::Comma) {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidSyntax("invalid syntax".into()),
@@ -776,6 +793,12 @@ impl Parser {
                         break;
                     }
                     elts.push(self.parse_test_or_star()?);
+                }
+                if self.check(TokenKind::For) || self.check(TokenKind::Async) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::InvalidSyntax("invalid syntax".into()),
+                        self.peek().span,
+                    ));
                 }
                 let rbracket_span = self.expect(TokenKind::RightBracket)?.span;
                 let list_loc = Self::with_end_span(loc, rbracket_span);

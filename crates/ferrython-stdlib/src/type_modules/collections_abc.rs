@@ -337,7 +337,12 @@ pub fn create_collections_abc_module() -> PyObjectRef {
             "__delitem__",
         ],
     );
-    let mapping_view_cls = make_abc("MappingView", &[], vec![sized_cls.clone()], &[]);
+    let mapping_view_cls = make_abc(
+        "MappingView",
+        &["dict_keys", "dict_items", "dict_values"],
+        vec![sized_cls.clone()],
+        &[],
+    );
     let keys_view_cls = make_abc(
         "KeysView",
         &["dict_keys"],

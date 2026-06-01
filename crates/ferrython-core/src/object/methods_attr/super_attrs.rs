@@ -384,7 +384,12 @@ pub(super) fn super_attr(
             }
             // Builtin __init_subclass__: object.__init_subclass__() is a no-op
             if name == "__init_subclass__" {
-                return Some(PyObject::native_function("__init_subclass__", |_args| {
+                return Some(PyObject::native_function("__init_subclass__", |args| {
+                    if args.len() > 1 {
+                        return Err(PyException::type_error(
+                            "object.__init_subclass__() takes no keyword arguments",
+                        ));
+                    }
                     Ok(PyObject::none())
                 }));
             }

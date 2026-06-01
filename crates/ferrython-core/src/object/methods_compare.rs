@@ -560,6 +560,19 @@ fn set_like_keys_snapshot(obj: &PyObjectRef) -> Option<Vec<crate::types::Hashabl
     }
 }
 
+fn set_keys_as_item_pairs(
+    keys: Vec<crate::types::HashableKey>,
+) -> Option<Vec<(crate::types::HashableKey, PyObjectRef)>> {
+    keys.into_iter()
+        .map(|key| match key {
+            crate::types::HashableKey::Tuple(items) if items.len() == 2 => {
+                Some((items[0].clone(), items[1].to_object()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn dict_key_view_compare(
     a_keys: &[crate::types::HashableKey],
     b_keys: &[crate::types::HashableKey],
@@ -749,11 +762,47 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let b_keys = set_like_keys_snapshot(b).unwrap();
             return dict_key_view_compare(&dict_keys_snapshot(&a_read), &b_keys, op);
         }
+        (
+            PyObjectPayload::DictKeys { map: a_map, .. },
+            PyObjectPayload::DictItems { map: b_map, .. },
+        ) => {
+            let a_read = a_map.read();
+            let b_read = b_map.read();
+            let b_keys: Vec<_> = dict_items_snapshot(&b_read)
+                .into_iter()
+                .map(|(k, v)| {
+                    crate::types::HashableKey::Tuple(Box::new(vec![
+                        k,
+                        crate::types::HashableKey::from_object(&v)
+                            .unwrap_or(crate::types::HashableKey::None),
+                    ]))
+                })
+                .collect();
+            return dict_key_view_compare(&dict_keys_snapshot(&a_read), &b_keys, op);
+        }
         (_, PyObjectPayload::DictKeys { map: b_map, .. })
             if set_like_keys_snapshot(a).is_some() =>
         {
             let a_keys = set_like_keys_snapshot(a).unwrap();
             let b_read = b_map.read();
+            return dict_key_view_compare(&a_keys, &dict_keys_snapshot(&b_read), op);
+        }
+        (
+            PyObjectPayload::DictItems { map: a_map, .. },
+            PyObjectPayload::DictKeys { map: b_map, .. },
+        ) => {
+            let a_read = a_map.read();
+            let b_read = b_map.read();
+            let a_keys: Vec<_> = dict_items_snapshot(&a_read)
+                .into_iter()
+                .map(|(k, v)| {
+                    crate::types::HashableKey::Tuple(Box::new(vec![
+                        k,
+                        crate::types::HashableKey::from_object(&v)
+                            .unwrap_or(crate::types::HashableKey::None),
+                    ]))
+                })
+                .collect();
             return dict_key_view_compare(&a_keys, &dict_keys_snapshot(&b_read), op);
         }
         (
@@ -774,34 +823,20 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         {
             let _comparison_guard = enter_container_comparison(a, b, op)?;
             let a_read = a_map.read();
-            let b_items: Vec<_> = set_like_keys_snapshot(b)
-                .unwrap()
-                .into_iter()
-                .filter_map(|key| match key {
-                    crate::types::HashableKey::Tuple(items) if items.len() == 2 => {
-                        Some((items[0].clone(), items[1].to_object()))
-                    }
-                    _ => None,
-                })
-                .collect();
-            return dict_item_view_compare(&dict_items_snapshot(&a_read), &b_items, op);
+            if let Some(b_items) = set_keys_as_item_pairs(set_like_keys_snapshot(b).unwrap()) {
+                return dict_item_view_compare(&dict_items_snapshot(&a_read), &b_items, op);
+            }
+            return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
         }
         (_, PyObjectPayload::DictItems { map: b_map, .. })
             if set_like_keys_snapshot(a).is_some() =>
         {
             let _comparison_guard = enter_container_comparison(a, b, op)?;
-            let a_items: Vec<_> = set_like_keys_snapshot(a)
-                .unwrap()
-                .into_iter()
-                .filter_map(|key| match key {
-                    crate::types::HashableKey::Tuple(items) if items.len() == 2 => {
-                        Some((items[0].clone(), items[1].to_object()))
-                    }
-                    _ => None,
-                })
-                .collect();
             let b_read = b_map.read();
-            return dict_item_view_compare(&a_items, &dict_items_snapshot(&b_read), op);
+            if let Some(a_items) = set_keys_as_item_pairs(set_like_keys_snapshot(a).unwrap()) {
+                return dict_item_view_compare(&a_items, &dict_items_snapshot(&b_read), op);
+            }
+            return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
         }
         (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
             let ra = a.read();

@@ -3,7 +3,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
+use num_bigint::{BigInt, Sign};
+use num_traits::{One, Signed};
 
 pub(crate) fn call_int_method(
     _receiver: &PyObjectRef,
@@ -12,25 +14,35 @@ pub(crate) fn call_int_method(
 ) -> PyResult<PyObjectRef> {
     match method {
         "bit_length" => {
-            let n = _receiver.to_int()?;
-            Ok(PyObject::int(if n == 0 {
-                0
+            let n = match &_receiver.payload {
+                PyObjectPayload::Bool(flag) => BigInt::from(if *flag { 1 } else { 0 }),
+                PyObjectPayload::Int(PyInt::Small(value)) => BigInt::from(*value),
+                PyObjectPayload::Int(PyInt::Big(value)) => value.as_ref().clone(),
+                _ => BigInt::from(_receiver.to_int()?),
+            };
+            if n == BigInt::from(0u8) {
+                Ok(PyObject::int(0))
             } else {
-                64 - n.abs().leading_zeros() as i64
-            }))
+                Ok(PyObject::int(n.abs().to_str_radix(2).len() as i64))
+            }
         }
         "bit_count" => {
             let n = _receiver.to_int()?;
             Ok(PyObject::int(n.abs().count_ones() as i64))
         }
         "to_bytes" => {
-            let n = _receiver.to_int()?;
             if args.is_empty() {
                 return Err(PyException::type_error(
                     "to_bytes() requires at least 1 argument",
                 ));
             }
-            let length = args[0].to_int()? as usize;
+            let length_int = args[0].to_int()?;
+            if length_int < 0 {
+                return Err(PyException::value_error(
+                    "length argument must be non-negative",
+                ));
+            }
+            let length = length_int as usize;
             // Extract byteorder and signed from positional or kwargs dict
             let mut byteorder = "big".to_string();
             let mut signed = false;
@@ -57,37 +69,70 @@ pub(crate) fn call_int_method(
             if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
                 signed = args[2].is_truthy();
             }
-            let val_to_encode: u64 = if signed && n < 0 {
-                // Two's complement for negative numbers
-                let bits = length * 8;
-                ((1i128 << bits) + n as i128) as u64
-            } else {
-                n.unsigned_abs()
+
+            let n = match &_receiver.payload {
+                PyObjectPayload::Bool(flag) => BigInt::from(if *flag { 1 } else { 0 }),
+                PyObjectPayload::Int(PyInt::Small(value)) => BigInt::from(*value),
+                PyObjectPayload::Int(PyInt::Big(value)) => value.as_ref().clone(),
+                _ => BigInt::from(_receiver.to_int()?),
             };
+            if byteorder != "big" && byteorder != "little" {
+                return Err(PyException::value_error(
+                    "byteorder must be 'big' or 'little'",
+                ));
+            }
+            if n.is_negative() && !signed {
+                return Err(PyException::overflow_error(
+                    "can't convert negative int to unsigned",
+                ));
+            }
+
+            let bits = length
+                .checked_mul(8)
+                .ok_or_else(|| PyException::overflow_error("int too big to convert"))?;
+            let unsigned_limit = BigInt::one() << bits;
+            let signed_min = if signed && bits > 0 {
+                -(BigInt::one() << (bits - 1))
+            } else {
+                BigInt::from(0u8)
+            };
+            let signed_max = if signed && bits > 0 {
+                (BigInt::one() << (bits - 1)) - BigInt::one()
+            } else {
+                &unsigned_limit - BigInt::one()
+            };
+            if signed {
+                if n < signed_min || n > signed_max {
+                    return Err(PyException::overflow_error("int too big to convert"));
+                }
+            } else if n >= unsigned_limit {
+                return Err(PyException::overflow_error("int too big to convert"));
+            }
+
+            let val_to_encode = if n.is_negative() {
+                unsigned_limit + n
+            } else {
+                n
+            };
+            let (_, mut raw) = val_to_encode.to_bytes_be();
+            if raw.len() > length {
+                return Err(PyException::overflow_error("int too big to convert"));
+            }
+            if raw.len() < length {
+                let mut padded = vec![0u8; length - raw.len()];
+                padded.extend(raw);
+                raw = padded;
+            }
+            if matches!(val_to_encode.sign(), Sign::NoSign) && length == 0 {
+                raw.clear();
+            }
             let bytes: Vec<u8> = match byteorder.as_str() {
-                "big" => {
-                    let mut result = vec![0u8; length];
-                    let mut val = val_to_encode;
-                    for i in (0..length).rev() {
-                        result[i] = (val & 0xff) as u8;
-                        val >>= 8;
-                    }
-                    result
-                }
+                "big" => raw,
                 "little" => {
-                    let mut result = vec![0u8; length];
-                    let mut val = val_to_encode;
-                    for byte in result.iter_mut().take(length) {
-                        *byte = (val & 0xff) as u8;
-                        val >>= 8;
-                    }
-                    result
+                    raw.reverse();
+                    raw
                 }
-                _ => {
-                    return Err(PyException::value_error(
-                        "byteorder must be 'big' or 'little'",
-                    ))
-                }
+                _ => unreachable!(),
             };
             Ok(PyObject::bytes(bytes))
         }

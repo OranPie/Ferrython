@@ -5,6 +5,7 @@
 
 use crate::error::CompileError;
 use ferrython_ast::*;
+use rustc_hash::FxHashSet;
 
 mod model;
 mod resolver;
@@ -28,6 +29,260 @@ pub fn analyze(module: &Module) -> Result<SymbolTable, CompileError> {
 struct Analyzer {
     scope_stack: Vec<Scope>,
     errors: Vec<CompileError>,
+}
+
+fn target_name(expr: &Expression) -> Option<&str> {
+    match &expr.node {
+        ExpressionKind::Name { id, .. } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
+fn collect_target_names(expr: &Expression, names: &mut FxHashSet<String>) {
+    match &expr.node {
+        ExpressionKind::Name { id, .. } => {
+            names.insert(id.to_string());
+        }
+        ExpressionKind::Tuple { elts, .. } | ExpressionKind::List { elts, .. } => {
+            for elt in elts {
+                collect_target_names(elt, names);
+            }
+        }
+        ExpressionKind::Starred { value, .. } => collect_target_names(value, names),
+        _ => {}
+    }
+}
+
+fn collect_named_expr_targets(expr: &Expression, names: &mut FxHashSet<String>) {
+    match &expr.node {
+        ExpressionKind::NamedExpr { target, value } => {
+            if let Some(name) = target_name(target) {
+                names.insert(name.to_string());
+            }
+            collect_named_expr_targets(value, names);
+        }
+        ExpressionKind::BoolOp { values, .. } => {
+            for value in values {
+                collect_named_expr_targets(value, names);
+            }
+        }
+        ExpressionKind::BinOp { left, right, .. } => {
+            collect_named_expr_targets(left, names);
+            collect_named_expr_targets(right, names);
+        }
+        ExpressionKind::UnaryOp { operand, .. } => collect_named_expr_targets(operand, names),
+        ExpressionKind::Lambda { .. } => {}
+        ExpressionKind::IfExp { test, body, orelse } => {
+            collect_named_expr_targets(test, names);
+            collect_named_expr_targets(body, names);
+            collect_named_expr_targets(orelse, names);
+        }
+        ExpressionKind::Dict { keys, values } => {
+            for key in keys.iter().flatten() {
+                collect_named_expr_targets(key, names);
+            }
+            for value in values {
+                collect_named_expr_targets(value, names);
+            }
+        }
+        ExpressionKind::Set { elts }
+        | ExpressionKind::List { elts, .. }
+        | ExpressionKind::Tuple { elts, .. } => {
+            for elt in elts {
+                collect_named_expr_targets(elt, names);
+            }
+        }
+        ExpressionKind::ListComp { elt, generators }
+        | ExpressionKind::SetComp { elt, generators }
+        | ExpressionKind::GeneratorExp { elt, generators } => {
+            collect_named_expr_targets(elt, names);
+            for gen in generators {
+                collect_named_expr_targets(&gen.iter, names);
+                for cond in &gen.ifs {
+                    collect_named_expr_targets(cond, names);
+                }
+            }
+        }
+        ExpressionKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            collect_named_expr_targets(key, names);
+            collect_named_expr_targets(value, names);
+            for gen in generators {
+                collect_named_expr_targets(&gen.iter, names);
+                for cond in &gen.ifs {
+                    collect_named_expr_targets(cond, names);
+                }
+            }
+        }
+        ExpressionKind::Await { value }
+        | ExpressionKind::YieldFrom { value }
+        | ExpressionKind::Starred { value, .. } => collect_named_expr_targets(value, names),
+        ExpressionKind::Yield { value } => {
+            if let Some(value) = value {
+                collect_named_expr_targets(value, names);
+            }
+        }
+        ExpressionKind::Compare {
+            left, comparators, ..
+        } => {
+            collect_named_expr_targets(left, names);
+            for comparator in comparators {
+                collect_named_expr_targets(comparator, names);
+            }
+        }
+        ExpressionKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            collect_named_expr_targets(func, names);
+            for arg in args {
+                collect_named_expr_targets(arg, names);
+            }
+            for keyword in keywords {
+                collect_named_expr_targets(&keyword.value, names);
+            }
+        }
+        ExpressionKind::FormattedValue {
+            value, format_spec, ..
+        } => {
+            collect_named_expr_targets(value, names);
+            if let Some(format_spec) = format_spec {
+                collect_named_expr_targets(format_spec, names);
+            }
+        }
+        ExpressionKind::JoinedStr { values } => {
+            for value in values {
+                collect_named_expr_targets(value, names);
+            }
+        }
+        ExpressionKind::Attribute { value, .. } | ExpressionKind::Subscript { value, .. } => {
+            collect_named_expr_targets(value, names)
+        }
+        ExpressionKind::Slice { lower, upper, step } => {
+            if let Some(expr) = lower {
+                collect_named_expr_targets(expr, names);
+            }
+            if let Some(expr) = upper {
+                collect_named_expr_targets(expr, names);
+            }
+            if let Some(expr) = step {
+                collect_named_expr_targets(expr, names);
+            }
+        }
+        ExpressionKind::Constant { .. } | ExpressionKind::Name { .. } => {}
+    }
+}
+
+fn expr_has_named_expr(expr: &Expression) -> bool {
+    let mut names = FxHashSet::default();
+    collect_named_expr_targets(expr, &mut names);
+    !names.is_empty()
+}
+
+fn expr_contains_named_expr(expr: &Expression) -> bool {
+    match &expr.node {
+        ExpressionKind::NamedExpr { .. } => true,
+        ExpressionKind::BoolOp { values, .. } => values.iter().any(expr_contains_named_expr),
+        ExpressionKind::BinOp { left, right, .. } => {
+            expr_contains_named_expr(left) || expr_contains_named_expr(right)
+        }
+        ExpressionKind::UnaryOp { operand, .. } => expr_contains_named_expr(operand),
+        ExpressionKind::Lambda { args, body } => {
+            arguments_contain_named_expr(args) || expr_contains_named_expr(body)
+        }
+        ExpressionKind::IfExp { test, body, orelse } => {
+            expr_contains_named_expr(test)
+                || expr_contains_named_expr(body)
+                || expr_contains_named_expr(orelse)
+        }
+        ExpressionKind::Dict { keys, values } => {
+            keys.iter().flatten().any(expr_contains_named_expr)
+                || values.iter().any(expr_contains_named_expr)
+        }
+        ExpressionKind::Set { elts }
+        | ExpressionKind::List { elts, .. }
+        | ExpressionKind::Tuple { elts, .. } => elts.iter().any(expr_contains_named_expr),
+        ExpressionKind::ListComp { elt, generators }
+        | ExpressionKind::SetComp { elt, generators }
+        | ExpressionKind::GeneratorExp { elt, generators } => {
+            expr_contains_named_expr(elt) || comprehensions_contain_named_expr(generators)
+        }
+        ExpressionKind::DictComp {
+            key,
+            value,
+            generators,
+        } => {
+            expr_contains_named_expr(key)
+                || expr_contains_named_expr(value)
+                || comprehensions_contain_named_expr(generators)
+        }
+        ExpressionKind::Await { value }
+        | ExpressionKind::YieldFrom { value }
+        | ExpressionKind::Starred { value, .. }
+        | ExpressionKind::Attribute { value, .. } => expr_contains_named_expr(value),
+        ExpressionKind::Yield { value } => value.as_deref().is_some_and(expr_contains_named_expr),
+        ExpressionKind::Compare {
+            left, comparators, ..
+        } => expr_contains_named_expr(left) || comparators.iter().any(expr_contains_named_expr),
+        ExpressionKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
+            expr_contains_named_expr(func)
+                || args.iter().any(expr_contains_named_expr)
+                || keywords
+                    .iter()
+                    .any(|keyword| expr_contains_named_expr(&keyword.value))
+        }
+        ExpressionKind::FormattedValue {
+            value, format_spec, ..
+        } => {
+            expr_contains_named_expr(value)
+                || format_spec.as_deref().is_some_and(expr_contains_named_expr)
+        }
+        ExpressionKind::JoinedStr { values } => values.iter().any(expr_contains_named_expr),
+        ExpressionKind::Subscript { value, slice, .. } => {
+            expr_contains_named_expr(value) || expr_contains_named_expr(slice)
+        }
+        ExpressionKind::Slice { lower, upper, step } => {
+            lower.as_deref().is_some_and(expr_contains_named_expr)
+                || upper.as_deref().is_some_and(expr_contains_named_expr)
+                || step.as_deref().is_some_and(expr_contains_named_expr)
+        }
+        ExpressionKind::Constant { .. } | ExpressionKind::Name { .. } => false,
+    }
+}
+
+fn arguments_contain_named_expr(args: &Arguments) -> bool {
+    args.defaults.iter().any(expr_contains_named_expr)
+        || args
+            .kw_defaults
+            .iter()
+            .flatten()
+            .any(expr_contains_named_expr)
+        || args
+            .posonlyargs
+            .iter()
+            .chain(args.args.iter())
+            .chain(args.vararg.iter())
+            .chain(args.kwonlyargs.iter())
+            .chain(args.kwarg.iter())
+            .any(|arg| {
+                arg.annotation
+                    .as_deref()
+                    .is_some_and(expr_contains_named_expr)
+            })
+}
+
+fn comprehensions_contain_named_expr(generators: &[Comprehension]) -> bool {
+    generators.iter().any(|gen| {
+        expr_contains_named_expr(&gen.iter) || gen.ifs.iter().any(expr_contains_named_expr)
+    })
 }
 
 impl Analyzer {
@@ -74,6 +329,130 @@ impl Analyzer {
     fn finish(mut self) -> Scope {
         assert_eq!(self.scope_stack.len(), 1, "scope stack not balanced");
         self.scope_stack.pop().unwrap()
+    }
+
+    fn syntax_error(&mut self, message: impl Into<String>, location: SourceLocation) {
+        self.errors.push(CompileError::syntax(message, location));
+    }
+
+    fn validate_named_expr_target(&mut self, expr: &Expression) {
+        if let ExpressionKind::NamedExpr { target, .. } = &expr.node {
+            if !matches!(target.node, ExpressionKind::Name { .. }) {
+                let kind = match &target.node {
+                    ExpressionKind::Tuple { .. } => "tuple",
+                    ExpressionKind::List { .. } => "list",
+                    _ => "expression",
+                };
+                self.syntax_error(
+                    format!("cannot use assignment expressions with {}", kind),
+                    target.location,
+                );
+            }
+        }
+    }
+
+    fn validate_comprehension_named_exprs(
+        &mut self,
+        expr: &Expression,
+        generators: &[Comprehension],
+    ) {
+        for gen in generators {
+            if expr_contains_named_expr(&gen.iter) {
+                self.syntax_error(
+                    "assignment expression cannot be used in a comprehension iterable expression",
+                    gen.iter.location,
+                );
+            }
+        }
+
+        let mut prior_loop_targets = FxHashSet::default();
+        let mut prior_named_targets = FxHashSet::default();
+        for gen in generators {
+            let mut cond_named_targets = FxHashSet::default();
+            for cond in &gen.ifs {
+                collect_named_expr_targets(cond, &mut cond_named_targets);
+            }
+
+            let mut targets = FxHashSet::default();
+            collect_target_names(&gen.target, &mut targets);
+            for name in &targets {
+                if prior_named_targets.contains(name) {
+                    self.syntax_error(
+                        format!(
+                            "comprehension inner loop cannot rebind assignment expression target '{}'",
+                            name
+                        ),
+                        gen.target.location,
+                    );
+                }
+            }
+            for name in &cond_named_targets {
+                if prior_loop_targets.contains(name) || targets.contains(name) {
+                    self.syntax_error(
+                        format!(
+                            "assignment expression cannot rebind comprehension iteration variable '{}'",
+                            name
+                        ),
+                        expr.location,
+                    );
+                }
+            }
+
+            prior_loop_targets.extend(targets);
+            prior_named_targets.extend(cond_named_targets);
+        }
+
+        let mut elt_named_targets = FxHashSet::default();
+        match &expr.node {
+            ExpressionKind::ListComp { elt, .. }
+            | ExpressionKind::SetComp { elt, .. }
+            | ExpressionKind::GeneratorExp { elt, .. } => {
+                collect_named_expr_targets(elt, &mut elt_named_targets);
+            }
+            ExpressionKind::DictComp { key, value, .. } => {
+                collect_named_expr_targets(key, &mut elt_named_targets);
+                collect_named_expr_targets(value, &mut elt_named_targets);
+            }
+            _ => {}
+        }
+        for name in &elt_named_targets {
+            if prior_loop_targets.contains(name) {
+                self.syntax_error(
+                    format!(
+                        "assignment expression cannot rebind comprehension iteration variable '{}'",
+                        name
+                    ),
+                    expr.location,
+                );
+            }
+        }
+
+        if self.current_scope().scope_type == ScopeType::Class {
+            let mut targets = FxHashSet::default();
+            match &expr.node {
+                ExpressionKind::ListComp { elt, .. }
+                | ExpressionKind::SetComp { elt, .. }
+                | ExpressionKind::GeneratorExp { elt, .. } => {
+                    collect_named_expr_targets(elt, &mut targets);
+                }
+                ExpressionKind::DictComp { key, value, .. } => {
+                    collect_named_expr_targets(key, &mut targets);
+                    collect_named_expr_targets(value, &mut targets);
+                }
+                _ => {}
+            }
+            for gen in generators {
+                for cond in &gen.ifs {
+                    collect_named_expr_targets(cond, &mut targets);
+                }
+            }
+            if !targets.is_empty() {
+                self.syntax_error(
+                    "assignment expression within a comprehension cannot be used in a class body",
+                    expr.location,
+                );
+            }
+        }
     }
 
     fn analyze_module(&mut self, module: &Module) {
@@ -440,6 +819,7 @@ impl Analyzer {
             }
 
             ExpressionKind::NamedExpr { target, value } => {
+                self.validate_named_expr_target(expr);
                 self.analyze_expression(value);
                 // PEP 572: In comprehensions, walrus target leaks to enclosing scope
                 if self.current_scope().scope_type == ScopeType::Comprehension {
@@ -538,6 +918,7 @@ impl Analyzer {
 
             ExpressionKind::ListComp { elt, generators }
             | ExpressionKind::SetComp { elt, generators } => {
+                self.validate_comprehension_named_exprs(expr, generators);
                 // First generator's iter is evaluated in enclosing scope (CPython semantics)
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
@@ -564,6 +945,7 @@ impl Analyzer {
                 value,
                 generators,
             } => {
+                self.validate_comprehension_named_exprs(expr, generators);
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
                 }
@@ -584,6 +966,7 @@ impl Analyzer {
             }
 
             ExpressionKind::GeneratorExp { elt, generators } => {
+                self.validate_comprehension_named_exprs(expr, generators);
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
                 }
@@ -635,6 +1018,12 @@ impl Analyzer {
                     self.analyze_expression(a);
                 }
                 for kw in keywords {
+                    if kw.arg.is_some()
+                        && expr_has_named_expr(&kw.value)
+                        && kw.value.location == kw.value.outer_location
+                    {
+                        self.syntax_error("invalid syntax", kw.value.location);
+                    }
                     self.analyze_expression(&kw.value);
                 }
             }

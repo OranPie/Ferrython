@@ -291,6 +291,17 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let name = args[1].py_to_string();
     match &args[0].payload {
+        PyObjectPayload::Generator(gen) if matches!(name.as_str(), "__name__" | "__qualname__") => {
+            let new_value = args[2].as_str().ok_or_else(|| {
+                PyException::type_error(format!("{} must be set to a string object", name))
+            })?;
+            let mut gen = gen.write();
+            if name == "__name__" {
+                gen.name = CompactString::from(new_value);
+            } else {
+                gen.qualname = CompactString::from(new_value);
+            }
+        }
         PyObjectPayload::Instance(inst) => {
             inst.attrs
                 .write()
@@ -339,6 +350,12 @@ pub(super) fn builtin_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("delattr", args, 2)?;
     let name = args[1].py_to_string();
     match &args[0].payload {
+        PyObjectPayload::Generator(_) if matches!(name.as_str(), "__name__" | "__qualname__") => {
+            return Err(PyException::type_error(format!(
+                "'generator' object attribute '{}' is read-only",
+                name
+            )));
+        }
         PyObjectPayload::Instance(inst) => {
             inst.attrs.write().shift_remove(name.as_str());
         }

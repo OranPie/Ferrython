@@ -1,6 +1,6 @@
 //! Generator, coroutine, and async-generator VM lifecycle helpers.
 
-use crate::frame::Frame;
+use crate::frame::{BlockKind, Frame};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
@@ -18,6 +18,11 @@ struct GenFramePool(std::cell::UnsafeCell<Vec<*mut Frame>>);
 unsafe impl Sync for GenFramePool {}
 
 static GEN_FRAME_POOL: GenFramePool = GenFramePool(std::cell::UnsafeCell::new(Vec::new()));
+
+struct GeneratorExceptionContext {
+    caller_exception: Option<PyException>,
+    caller_stack: Vec<Option<PyException>>,
+}
 
 /// Get a heap buffer sized for Frame — from pool or fresh allocation.
 #[inline(always)]
@@ -56,6 +61,84 @@ pub(crate) fn drop_generator_frame(ptr: *mut u8) {
 }
 
 impl VirtualMachine {
+    fn frame_has_exception_handler(frame: &Frame) -> bool {
+        frame
+            .block_stack
+            .iter()
+            .any(|block| matches!(block.kind(), BlockKind::ExceptHandler))
+    }
+
+    fn enter_generator_exception_state_if_suspended(
+        &mut self,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
+    ) -> Option<GeneratorExceptionContext> {
+        let mut gen = gen_arc.write();
+        let saved = gen.suspended_exception.take();
+        let saved_stack: Vec<_> = gen.suspended_exception_stack.drain(..).collect();
+        drop(gen);
+        if saved.is_none() {
+            return None;
+        }
+        let caller_exception = self.active_exception.clone();
+        let caller_stack = std::mem::take(&mut self.exception_state_stack);
+        self.exception_state_stack.extend(saved_stack);
+        self.active_exception = saved;
+        if let Some(exc) = &self.active_exception {
+            ferrython_core::error::set_thread_exc_info(
+                exc.kind,
+                exc.message.clone(),
+                exc.traceback.clone(),
+            );
+        } else {
+            ferrython_core::error::clear_thread_exc_info();
+        }
+        Some(GeneratorExceptionContext {
+            caller_exception,
+            caller_stack,
+        })
+    }
+
+    fn restore_generator_caller_exception_state(&mut self, ctx: GeneratorExceptionContext) {
+        self.active_exception = ctx.caller_exception;
+        self.exception_state_stack = ctx.caller_stack;
+        if let Some(exc) = &self.active_exception {
+            ferrython_core::error::set_thread_exc_info(
+                exc.kind,
+                exc.message.clone(),
+                exc.traceback.clone(),
+            );
+        } else {
+            ferrython_core::error::clear_thread_exc_info();
+        }
+    }
+
+    fn save_generator_exception_state_on_yield(
+        &self,
+        gen: &mut GeneratorState,
+        has_exception_handler: bool,
+        strip_inherited_stack_prefix: Option<usize>,
+    ) {
+        if !has_exception_handler {
+            gen.suspended_exception = None;
+            gen.suspended_exception_stack.clear();
+            return;
+        }
+
+        gen.suspended_exception = self.active_exception.clone();
+        let mut stack = self.exception_state_stack.clone();
+        if let Some(prefix_len) = strip_inherited_stack_prefix {
+            if prefix_len <= stack.len() {
+                stack.drain(0..prefix_len);
+            } else {
+                stack.clear();
+            }
+            if let Some(first) = stack.first_mut() {
+                *first = None;
+            }
+        }
+        gen.suspended_exception_stack = stack;
+    }
+
     fn wrap_generator_stop_iteration(mut exc: PyException) -> PyException {
         if exc.kind != ExceptionKind::StopIteration {
             return exc;
@@ -80,10 +163,14 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(ExceptionKind::StopIteration, ""));
         }
+        if gen.running {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
             return Err(PyException::runtime_error("generator already executing"));
         }
+        gen.running = true;
         // Direct cast from raw pointer — no dyn Any downcast.
         // Push frame onto call_stack using copy_nonoverlapping (1 memcpy, no Box dealloc).
         let frame_typed = frame_raw as *mut Frame;
@@ -104,12 +191,26 @@ impl VirtualMachine {
         gen.started = true;
         drop(gen); // release lock before executing
 
+        let inherited_exception_stack_len = self.exception_state_stack.len();
+        self.current_generators.push(gen_arc.clone());
+        let generator_exception_ctx = self.enter_generator_exception_state_if_suspended(gen_arc);
         let result = self.run_frame();
+        self.current_generators.pop();
         let cs_len = self.call_stack.len();
-        let frame_ref = &mut self.call_stack[cs_len - 1];
+        let frame_yielded = self.call_stack[cs_len - 1].yielded;
+        let has_exception_handler = Self::frame_has_exception_handler(&self.call_stack[cs_len - 1]);
 
         let mut gen = gen_arc.write();
-        if frame_ref.yielded {
+        gen.running = false;
+        if frame_yielded {
+            self.save_generator_exception_state_on_yield(
+                &mut gen,
+                has_exception_handler,
+                generator_exception_ctx
+                    .is_none()
+                    .then_some(inherited_exception_stack_len),
+            );
+            let frame_ref = &mut self.call_stack[cs_len - 1];
             frame_ref.yielded = false;
             // Copy frame from call_stack to a heap buffer (1 memcpy, reuses freelist)
             let buf = gen_frame_alloc();
@@ -118,6 +219,10 @@ impl VirtualMachine {
                 self.call_stack.set_len(cs_len - 1); // "pop" without drop
             }
             gen.set_frame_ptr(buf as *mut u8);
+            drop(gen);
+            if let Some(ctx) = generator_exception_ctx {
+                self.restore_generator_caller_exception_state(ctx);
+            }
             result // Ok(yielded_value)
         } else {
             // Generator finished — pop and recycle frame normally
@@ -125,6 +230,10 @@ impl VirtualMachine {
             gen.clear_frame();
             let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
+            drop(gen);
+            if let Some(ctx) = generator_exception_ctx {
+                self.restore_generator_caller_exception_state(ctx);
+            }
             match result {
                 Ok(return_val) => {
                     let msg = return_val.py_to_string();
@@ -148,10 +257,14 @@ impl VirtualMachine {
         if gen.finished {
             return Ok(None);
         }
+        if gen.running {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
             return Err(PyException::runtime_error("generator already executing"));
         }
+        gen.running = true;
         let frame_typed = frame_raw as *mut Frame;
         self.call_stack.reserve(1);
         unsafe {
@@ -169,12 +282,26 @@ impl VirtualMachine {
         gen.started = true;
         drop(gen);
 
+        let inherited_exception_stack_len = self.exception_state_stack.len();
+        self.current_generators.push(gen_arc.clone());
+        let generator_exception_ctx = self.enter_generator_exception_state_if_suspended(gen_arc);
         let result = self.run_frame();
+        self.current_generators.pop();
         let cs_len = self.call_stack.len();
-        let frame_ref = &mut self.call_stack[cs_len - 1];
+        let frame_yielded = self.call_stack[cs_len - 1].yielded;
+        let has_exception_handler = Self::frame_has_exception_handler(&self.call_stack[cs_len - 1]);
 
         let mut gen = gen_arc.write();
-        if frame_ref.yielded {
+        gen.running = false;
+        if frame_yielded {
+            self.save_generator_exception_state_on_yield(
+                &mut gen,
+                has_exception_handler,
+                generator_exception_ctx
+                    .is_none()
+                    .then_some(inherited_exception_stack_len),
+            );
+            let frame_ref = &mut self.call_stack[cs_len - 1];
             frame_ref.yielded = false;
             let buf = gen_frame_alloc();
             unsafe {
@@ -182,12 +309,20 @@ impl VirtualMachine {
                 self.call_stack.set_len(cs_len - 1);
             }
             gen.set_frame_ptr(buf as *mut u8);
+            drop(gen);
+            if let Some(ctx) = generator_exception_ctx {
+                self.restore_generator_caller_exception_state(ctx);
+            }
             result.map(Some)
         } else {
             gen.finished = true;
             gen.clear_frame();
             let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
+            drop(gen);
+            if let Some(ctx) = generator_exception_ctx {
+                self.restore_generator_caller_exception_state(ctx);
+            }
             match result {
                 Ok(_) => Ok(None), // Generator finished — no StopIteration needed
                 Err(e) if e.kind == ExceptionKind::StopIteration => {
@@ -223,10 +358,14 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(kind, msg));
         }
+        if gen.running {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
             return Err(PyException::runtime_error("generator already executing"));
         }
+        gen.running = true;
         // Push frame from raw pointer to call_stack (1 memcpy, no downcast)
         let frame_typed = frame_raw as *mut Frame;
         self.call_stack.reserve(1);
@@ -242,6 +381,7 @@ impl VirtualMachine {
         drop(gen);
 
         // Set up exception on the frame so VM will unwind to handler
+        let inherited_exception_stack_len = self.exception_state_stack.len();
         let mut exc = PyException::new(kind, msg.clone());
         if let Some(ref orig) = original_value {
             exc.original = Some(orig.clone());
@@ -280,12 +420,23 @@ impl VirtualMachine {
             frame_ref.push(exc_type);
             frame_ref.ip = handler_ip;
 
+            self.current_generators.push(gen_arc.clone());
             let result = self.run_frame();
+            self.current_generators.pop();
             let cs_len = self.call_stack.len();
-            let frame_ref = &mut self.call_stack[cs_len - 1];
+            let frame_yielded = self.call_stack[cs_len - 1].yielded;
+            let has_exception_handler =
+                Self::frame_has_exception_handler(&self.call_stack[cs_len - 1]);
 
             let mut gen = gen_arc.write();
-            if frame_ref.yielded {
+            gen.running = false;
+            if frame_yielded {
+                self.save_generator_exception_state_on_yield(
+                    &mut gen,
+                    has_exception_handler,
+                    Some(inherited_exception_stack_len),
+                );
+                let frame_ref = &mut self.call_stack[cs_len - 1];
                 frame_ref.yielded = false;
                 let buf = gen_frame_alloc();
                 unsafe {
@@ -320,6 +471,7 @@ impl VirtualMachine {
             let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
             let mut gen = gen_arc.write();
+            gen.running = false;
             gen.finished = true;
             gen.clear_frame();
             drop(gen);

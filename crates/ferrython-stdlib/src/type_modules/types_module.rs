@@ -306,6 +306,33 @@ pub fn create_types_module() -> PyObjectRef {
                     } else {
                         vec![]
                     };
+                    if args.len() > 2 {
+                        if let PyObjectPayload::Dict(kwds) = &args[2].payload {
+                            let kwds = kwds.read();
+                            let non_metaclass_kwargs = kwds.keys().any(
+                                |k| !matches!(k, HashableKey::Str(s) if s.as_str() == "metaclass"),
+                            );
+                            let metaclass =
+                                kwds.get(&HashableKey::str_key(CompactString::from("metaclass")));
+                            let custom_meta_consumes_kwargs = metaclass
+                                .and_then(|meta| match &meta.payload {
+                                    PyObjectPayload::Class(cd) => {
+                                        let ns = cd.namespace.read();
+                                        Some(
+                                            ns.contains_key("__new__")
+                                                || ns.contains_key("__init__"),
+                                        )
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or(false);
+                            if non_metaclass_kwargs && !custom_meta_consumes_kwargs {
+                                return Err(PyException::type_error(
+                                    "object.__init_subclass__() takes no keyword arguments",
+                                ));
+                            }
+                        }
+                    }
                     Ok(PyObject::class(
                         CompactString::from(&name),
                         bases,

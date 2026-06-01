@@ -924,6 +924,9 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                         let r = m.read();
                         r.get(&hk).cloned()
                     };
+                    if let Some(err) = take_pending_eq_error() {
+                        return Err(err);
+                    }
                     if let Some(val) = val {
                         return element_matches(&val, &pair[1]);
                     }

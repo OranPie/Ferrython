@@ -82,6 +82,9 @@ impl Parser {
             }
             Err(err) => return Err(err),
         };
+        if Self::is_unparenthesized_named_expr(&expr) {
+            return Err(Self::invalid_unparenthesized_named_expr(&expr));
+        }
 
         // Check for augmented assignment
         if let Some(op) = self.try_parse_aug_assign_op() {
@@ -134,6 +137,9 @@ impl Parser {
             while self.check(TokenKind::Equal) {
                 self.advance();
                 let next = self.parse_test_list_star_expr()?;
+                if Self::is_unparenthesized_named_expr(&next) {
+                    return Err(Self::invalid_unparenthesized_named_expr(&next));
+                }
                 targets.push(next);
             }
             let value = targets.pop().unwrap();
@@ -238,6 +244,7 @@ impl Parser {
             tokens: self.tokens.clone(),
             pos: self.pos,
             _filename: self._filename.clone(),
+            named_expr_rhs_depth: self.named_expr_rhs_depth,
         };
         parser.parse_test_list_star_expr().is_err()
     }

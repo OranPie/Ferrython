@@ -1,7 +1,7 @@
 //! Core Python object types — PyObject, PyObjectPayload, and supporting data types.
 
 use super::ClassData;
-use crate::error::{ExceptionKind, PyResult};
+use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::object::methods::PyObjectMethods;
 pub use crate::object::{
     FrozenSetData, FxAttrMap, FxHashKeyFlatMap, FxHashKeyMap, PyCell, SharedFxAttrMap, StrRepr,
@@ -1135,11 +1135,17 @@ impl fmt::Debug for PyObjectPayload {
 /// casts to/from `*mut Frame` directly — no `dyn Any` downcast overhead.
 pub struct GeneratorState {
     pub name: CompactString,
+    pub qualname: CompactString,
+    pub code: std::rc::Rc<ferrython_bytecode::CodeObject>,
     /// Raw pointer to a heap-allocated Frame. Null when no frame is stored.
     /// SAFETY: owned exclusively by this GeneratorState; freed on drop.
     pub frame_ptr: *mut u8,
     pub started: bool,
     pub finished: bool,
+    pub running: bool,
+    pub yield_from: Option<PyObjectRef>,
+    pub suspended_exception: Option<PyException>,
+    pub suspended_exception_stack: Vec<Option<PyException>>,
 }
 
 impl GeneratorState {
@@ -1194,8 +1200,11 @@ impl fmt::Debug for GeneratorState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GeneratorState")
             .field("name", &self.name)
+            .field("qualname", &self.qualname)
+            .field("code", &self.code.name)
             .field("started", &self.started)
             .field("finished", &self.finished)
+            .field("running", &self.running)
             .finish()
     }
 }
@@ -1205,9 +1214,15 @@ impl Clone for GeneratorState {
         // Generators are not truly clonable; this is a placeholder for the derive requirement
         Self {
             name: self.name.clone(),
+            qualname: self.qualname.clone(),
+            code: std::rc::Rc::clone(&self.code),
             frame_ptr: std::ptr::null_mut(),
             started: self.started,
             finished: self.finished,
+            running: false,
+            yield_from: None,
+            suspended_exception: None,
+            suspended_exception_stack: Vec::new(),
         }
     }
 }

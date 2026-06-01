@@ -1,3 +1,4 @@
+use compact_str::CompactString;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{
     BuiltinBoundMethodData, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -200,6 +201,26 @@ impl VirtualMachine {
                     resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
                     resolved.extend_from_slice(&args[1..]);
                     return (nf.func)(&resolved).map(Some);
+                }
+                if nf.name.as_str() == "type.__new__" {
+                    let bases = if args.len() == 4 {
+                        args[2].to_list().unwrap_or_default()
+                    } else if args.len() == 3 {
+                        args[1].to_list().unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+                    let result = (nf.func)(args)?;
+                    if matches!(&result.payload, PyObjectPayload::Class(_)) {
+                        self.finish_pep487_class(&result, &bases, &[])?;
+                        if let PyObjectPayload::Class(cd) = &result.payload {
+                            cd.namespace.write().insert(
+                                CompactString::from("__ferrython_pep487_done__"),
+                                PyObject::bool_val(true),
+                            );
+                        }
+                    }
+                    return Ok(Some(result));
                 }
                 return (nf.func)(args).map(Some);
             }

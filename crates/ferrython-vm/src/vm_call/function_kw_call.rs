@@ -16,6 +16,8 @@ impl VirtualMachine {
     pub(crate) fn call_function_kw(
         &mut self,
         code: &Rc<CodeObject>,
+        func_name: CompactString,
+        func_qualname: CompactString,
         mut pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
         defaults: &[PyObjectRef],
@@ -157,6 +159,6 @@ impl VirtualMachine {
             frame.set_local(kwargs_idx, PyObject::dict(extra_kwargs));
         }
 
-        self.install_closure_and_run(frame, code, closure)
+        self.install_closure_and_run(frame, code, closure, func_name, func_qualname)
     }
 }

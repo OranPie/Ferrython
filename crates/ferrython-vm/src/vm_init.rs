@@ -64,6 +64,7 @@ impl VirtualMachine {
             frame_pool: FramePool::new(),
             recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
             call_object_depth: Rc::new(Cell::new(0)),
+            current_generators: Vec::new(),
         }
     }
 
@@ -86,6 +87,7 @@ impl VirtualMachine {
             frame_pool: FramePool::new(),
             recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
             call_object_depth: Rc::new(Cell::new(0)),
+            current_generators: Vec::new(),
         }
     }
 

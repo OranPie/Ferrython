@@ -1,5 +1,5 @@
 use ferrython_core::error::PyResult;
-use ferrython_core::object::{NativeClosureData, PyObject, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{NativeClosureData, PyObject, PyObjectRef};
 
 use crate::VirtualMachine;
 
@@ -9,15 +9,6 @@ impl VirtualMachine {
         nc: &NativeClosureData,
         args: Vec<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
-        let args = if !args.is_empty() && matches!(&args[0].payload, PyObjectPayload::Generator(_))
-        {
-            let mut resolved = Vec::with_capacity(args.len());
-            resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
-            resolved.extend_from_slice(&args[1..]);
-            resolved
-        } else {
-            args
-        };
         let result = (nc.func)(&args)?;
         self.finish_native_callable_result(result, true)
     }

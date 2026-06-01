@@ -226,11 +226,19 @@ fn builtin_type_create(
     let bases = bases_obj.to_list()?;
     // Check for attempts to subclass final builtin types (bool)
     for base in &bases {
-        if let PyObjectPayload::BuiltinType(n) = &base.payload {
-            if n.as_str() == "bool" {
-                return Err(PyException::type_error(CompactString::from(
-                    "type 'bool' is not an acceptable base type",
-                )));
+        match &base.payload {
+            PyObjectPayload::BuiltinType(n) => {
+                if n.as_str() == "bool" {
+                    return Err(PyException::type_error(CompactString::from(
+                        "type 'bool' is not an acceptable base type",
+                    )));
+                }
+            }
+            PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_) => {}
+            _ => {
+                return Err(PyException::type_error(
+                    "MRO entry resolution; use types.new_class()",
+                ))
             }
         }
     }

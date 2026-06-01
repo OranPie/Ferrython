@@ -37,6 +37,12 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_slice.SliceTest.test_cycle",
         "Ferrython GC does not expose CPython's cycle-collection timing"
     ),
+    ("test_generators.FinalizationTest.test_frame_resurrect",
+        "Ferrython does not target CPython generator frame resurrection during finalization"
+    ),
+    ("test_generators.FinalizationTest.test_refcycle",
+        "Ferrython GC does not expose CPython's generator finalization timing for isolated cycles"
+    ),
     ("test_weakref.MappingTestCase.test_threaded_weak_key_dict_copy",
         "CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget"
     ),

@@ -1171,35 +1171,68 @@ impl PyObject {
             alloc_exception_box(kind, message.into(), args),
         )))
     }
-    pub fn generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
+    pub fn generator(
+        name: CompactString,
+        qualname: CompactString,
+        code: std::rc::Rc<ferrython_bytecode::CodeObject>,
+        frame_ptr: *mut u8,
+    ) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(
             GeneratorState {
+                qualname,
                 name,
+                code,
                 frame_ptr,
                 started: false,
                 finished: false,
+                running: false,
+                yield_from: None,
+                suspended_exception: None,
+                suspended_exception_stack: Vec::new(),
             },
         ))))
     }
 
-    pub fn coroutine(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
+    pub fn coroutine(
+        name: CompactString,
+        qualname: CompactString,
+        code: std::rc::Rc<ferrython_bytecode::CodeObject>,
+        frame_ptr: *mut u8,
+    ) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Coroutine(Rc::new(PyCell::new(
             GeneratorState {
+                qualname,
                 name,
+                code,
                 frame_ptr,
                 started: false,
                 finished: false,
+                running: false,
+                yield_from: None,
+                suspended_exception: None,
+                suspended_exception_stack: Vec::new(),
             },
         ))))
     }
 
-    pub fn async_generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
+    pub fn async_generator(
+        name: CompactString,
+        qualname: CompactString,
+        code: std::rc::Rc<ferrython_bytecode::CodeObject>,
+        frame_ptr: *mut u8,
+    ) -> PyObjectRef {
         Self::wrap(PyObjectPayload::AsyncGenerator(Rc::new(PyCell::new(
             GeneratorState {
+                qualname,
                 name,
+                code,
                 frame_ptr,
                 started: false,
                 finished: false,
+                running: false,
+                yield_from: None,
+                suspended_exception: None,
+                suspended_exception_stack: Vec::new(),
             },
         ))))
     }

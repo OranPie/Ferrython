@@ -270,14 +270,33 @@ fn none_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
 }
 
 fn generator_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Generator(gen) = &obj.payload else {
+        return None;
+    };
     match name {
         "send" | "throw" | "close" | "__next__" | "__enter__" | "__exit__" => {
             Some(bound_builtin(obj, name))
         }
+        "__name__" => Some(PyObject::str_val(gen.read().name.clone())),
+        "__qualname__" => Some(PyObject::str_val(gen.read().qualname.clone())),
+        "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__" => {
+            Some(bound_builtin(obj, name))
+        }
         "__iter__" => Some(obj.clone()),
-        "gi_frame" | "gi_code" => Some(PyObject::none()),
-        "gi_running" => Some(PyObject::bool_val(false)),
-        "gi_yieldfrom" => Some(PyObject::none()),
+        "__class__" => Some(PyObject::builtin_type(CompactString::from("generator"))),
+        "gi_frame" => Some(PyObject::none()),
+        "gi_code" => Some(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::clone(
+            &gen.read().code,
+        )))),
+        "gi_running" => Some(PyObject::bool_val(gen.read().running)),
+        "gi_yieldfrom" => {
+            let gen = gen.read();
+            if gen.running {
+                Some(PyObject::none())
+            } else {
+                Some(gen.yield_from.clone().unwrap_or_else(PyObject::none))
+            }
+        }
         _ => None,
     }
 }
@@ -406,6 +425,12 @@ fn dict_view_attr(obj: &PyObjectRef, type_name: &str, name: &str) -> Option<PyOb
     match name {
         "__class__" => Some(PyObject::builtin_type(CompactString::from(type_name))),
         "__len__" | "__iter__" | "__contains__" | "__reversed__" => Some(bound_builtin(obj, name)),
+        "__copy__" | "__deepcopy__" | "__reduce__" | "__reduce_ex__" => {
+            Some(bound_builtin(obj, name))
+        }
+        "isdisjoint" if matches!(type_name, "dict_keys" | "dict_items") => {
+            Some(bound_builtin(obj, name))
+        }
         _ => None,
     }
 }

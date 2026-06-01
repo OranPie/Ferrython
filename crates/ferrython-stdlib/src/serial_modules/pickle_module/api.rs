@@ -172,11 +172,17 @@ fn pickle_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let mut buf = Vec::new();
     let mut memo = PickleWriteMemo::default();
-    if protocol >= 2 {
+    let serialized = if protocol >= 2 {
         buf.extend_from_slice(b"\x80\x02");
-        pickle_serialize_p2(&args[0], &mut buf, &mut memo)?;
+        pickle_serialize_p2(&args[0], &mut buf, &mut memo)
     } else {
-        pickle_serialize_p0(&args[0], &mut buf, &mut memo)?;
+        pickle_serialize_p0(&args[0], &mut buf, &mut memo)
+    };
+    if let Err(err) = serialized {
+        if err.message.starts_with("PicklingError:") {
+            return Err(PyException::type_error(err.message));
+        }
+        return Err(err);
     }
     buf.push(b'.');
     Ok(PyObject::bytes(buf))

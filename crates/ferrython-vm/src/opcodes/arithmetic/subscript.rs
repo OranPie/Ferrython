@@ -53,10 +53,34 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(cls, int)
                 if matches!(&obj.payload, PyObjectPayload::Class(_)) {
+                    if let PyObjectPayload::Class(class_data) = &obj.payload {
+                        if let Some(meta) = &class_data.metaclass {
+                            if let PyObjectPayload::Class(meta_data) = &meta.payload {
+                                if let Some(getitem) =
+                                    meta_data.namespace.read().get("__getitem__").cloned()
+                                {
+                                    let method = PyObjectRef::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj.clone(),
+                                            method: getitem,
+                                        },
+                                    });
+                                    let result = self.call_object(method, vec![key])?;
+                                    self.vm_push(result);
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                    }
+                    // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(int).
                     if let Some(cgi) = obj.get_attr("__class_getitem__") {
-                        let result = self.call_object(cgi, vec![obj.clone(), key])?;
+                        let args = if matches!(&cgi.payload, PyObjectPayload::BoundMethod { .. }) {
+                            vec![key]
+                        } else {
+                            vec![obj.clone(), key]
+                        };
+                        let result = self.call_object(cgi, args)?;
                         self.vm_push(result);
                         return Ok(None);
                     }
@@ -64,7 +88,7 @@ impl VirtualMachine {
                     // (not for generic subscript like MyClass[int])
                     if matches!(&key.payload, PyObjectPayload::Str(_)) {
                         if let Some(gi) = obj.get_attr("__getitem__") {
-                            let result = self.call_object(gi, vec![obj.clone(), key])?;
+                            let result = self.call_object(gi, vec![key])?;
                             self.vm_push(result);
                             return Ok(None);
                         }

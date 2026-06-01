@@ -9,6 +9,7 @@ use super::super::Parser;
 impl Parser {
     pub(super) fn parse_lambda(&mut self) -> Result<Expression, ParseError> {
         let loc = self.current_location();
+        let in_named_expr_rhs = self.named_expr_rhs_depth > 0;
         self.expect(TokenKind::Lambda)?;
         let args = if self.check(TokenKind::Colon) {
             Arguments::empty()
@@ -16,7 +17,25 @@ impl Parser {
             self.parse_lambda_params()?
         };
         self.expect(TokenKind::Colon)?;
+        if in_named_expr_rhs {
+            self.named_expr_rhs_depth += 1;
+        }
         let body = self.parse_test()?;
+        if in_named_expr_rhs {
+            self.named_expr_rhs_depth -= 1;
+        }
+        if Self::is_unparenthesized_named_expr(&body) {
+            if in_named_expr_rhs {
+                return Err(Self::invalid_unparenthesized_named_expr(&body));
+            } else {
+                return Err(ParseError::new(
+                    ParseErrorKind::SyntaxErrorMessage(
+                        "cannot use assignment expressions with lambda".into(),
+                    ),
+                    Self::span_from_location(body.location),
+                ));
+            }
+        }
         let loc = Self::with_end_location(loc, Self::expression_outer_location(&body));
         Ok(Expression::new(
             ExpressionKind::Lambda {
@@ -83,7 +102,11 @@ impl Parser {
                 let name = self.expect_name()?;
                 let default = if self.check(TokenKind::Equal) {
                     self.advance();
-                    Some(self.parse_test()?)
+                    let default = self.parse_test()?;
+                    if Self::is_unparenthesized_named_expr(&default) {
+                        return Err(Self::invalid_unparenthesized_named_expr(&default));
+                    }
+                    Some(default)
                 } else {
                     None
                 };

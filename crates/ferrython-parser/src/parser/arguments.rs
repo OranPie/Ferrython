@@ -93,7 +93,11 @@ impl Parser {
                     .unwrap_or(location);
                 let default = if self.check(TokenKind::Equal) {
                     self.advance();
-                    Some(self.parse_test()?)
+                    let default = self.parse_test()?;
+                    if Self::is_unparenthesized_named_expr(&default) {
+                        return Err(Self::invalid_unparenthesized_named_expr(&default));
+                    }
+                    Some(default)
                 } else {
                     None
                 };
@@ -184,7 +188,11 @@ impl Parser {
                 self.pos = saved;
                 return Ok(None);
             }
-            Ok(Some(Box::new(self.parse_test()?)))
+            let annotation = self.parse_test()?;
+            if Self::is_unparenthesized_named_expr(&annotation) {
+                return Err(Self::invalid_unparenthesized_named_expr(&annotation));
+            }
+            Ok(Some(Box::new(annotation)))
         } else {
             Ok(None)
         }
@@ -287,6 +295,9 @@ impl Parser {
                             ));
                         }
                         let value = self.parse_test()?;
+                        if Self::is_unparenthesized_named_expr(&value) {
+                            return Err(Self::invalid_unparenthesized_named_expr(&value));
+                        }
                         let location = Self::with_end_location(
                             Self::expression_outer_location(&expr),
                             Self::expression_outer_location(&value),

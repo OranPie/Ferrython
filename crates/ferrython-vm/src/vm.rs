@@ -4,7 +4,9 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    GeneratorState, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 use ferrython_debug::{BreakpointManager, ExecutionProfiler};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -36,6 +38,7 @@ pub struct VirtualMachine {
     pub(crate) recursion_limit: usize,
     /// Recursion depth for call dispatch paths that do not create Python frames.
     pub(crate) call_object_depth: Rc<Cell<usize>>,
+    pub(crate) current_generators: Vec<Rc<PyCell<GeneratorState>>>,
 }
 
 impl VirtualMachine {

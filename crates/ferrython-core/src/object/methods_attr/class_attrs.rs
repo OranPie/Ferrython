@@ -25,7 +25,11 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
         let mut mro_list = vec![obj.clone()];
         mro_list.extend(cd.mro.iter().cloned());
         // Append 'object' as the universal base (like CPython)
-        mro_list.push(PyObject::builtin_type(CompactString::from("object")));
+        if !mro_list.iter().any(
+            |item| matches!(&item.payload, PyObjectPayload::BuiltinType(name) if name.as_str() == "object"),
+        ) {
+            mro_list.push(PyObject::builtin_type(CompactString::from("object")));
+        }
         return Some(PyObject::tuple(mro_list));
     }
     if name == "__dict__" {
@@ -183,7 +187,12 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
         }));
     }
     if name == "__init_subclass__" {
-        return Some(PyObject::native_function("__init_subclass__", |_args| {
+        return Some(PyObject::native_function("__init_subclass__", |args| {
+            if args.len() > 1 {
+                return Err(PyException::type_error(
+                    "object.__init_subclass__() takes no keyword arguments",
+                ));
+            }
             Ok(PyObject::none())
         }));
     }

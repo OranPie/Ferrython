@@ -207,6 +207,12 @@ class TestCase:
             result = self.defaultTestResult()
         method = getattr(self, self._testMethodName)
         result.startTest(self)
+        skip_reason = getattr(type(self), '__skip_reason__', None)
+        if skip_reason is None:
+            skip_reason = getattr(method, '__skip_reason__', None)
+        if skip_reason is not None:
+            result.addSkip(self, skip_reason)
+            return result
 
         try:
             try:
@@ -953,6 +959,9 @@ class TextTestRunner:
 def skip(reason):
     """Unconditionally skip a test."""
     def decorator(func):
+        if isinstance(func, type):
+            func.__skip_reason__ = reason
+            return func
         def wrapper(*args, **kwargs):
             raise SkipTest(reason)
         wrapper.__name__ = func.__name__

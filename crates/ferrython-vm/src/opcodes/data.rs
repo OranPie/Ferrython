@@ -1000,6 +1000,20 @@ impl VirtualMachine {
                 }
             }
         }
+        if matches!(name.as_str(), "__name__" | "__qualname__") {
+            if let PyObjectPayload::Generator(gen) = &obj.payload {
+                let new_value = value.as_str().ok_or_else(|| {
+                    PyException::type_error(format!("{} must be set to a string object", name))
+                })?;
+                let mut gen = gen.write();
+                if name.as_str() == "__name__" {
+                    gen.name = CompactString::from(new_value);
+                } else {
+                    gen.qualname = CompactString::from(new_value);
+                }
+                return Ok(None);
+            }
+        }
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
                 if ferrython_core::object::is_property_like(&desc) {
@@ -1227,6 +1241,14 @@ impl VirtualMachine {
             }
         }
         match &obj.payload {
+            PyObjectPayload::Generator(_)
+                if matches!(name.as_str(), "__name__" | "__qualname__") =>
+            {
+                return Err(PyException::type_error(format!(
+                    "'generator' object attribute '{}' is read-only",
+                    name
+                )));
+            }
             PyObjectPayload::Instance(inst) if matches!(&inst.class.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "traceback") =>
             {
                 return Err(PyException::type_error(format!(

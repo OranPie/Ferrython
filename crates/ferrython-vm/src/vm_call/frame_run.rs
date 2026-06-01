@@ -14,6 +14,8 @@ impl VirtualMachine {
         mut frame: Frame,
         code: &CodeObject,
         closure: &[Rc<PyCell<Option<PyObjectRef>>>],
+        func_name: CompactString,
+        func_qualname: CompactString,
     ) -> PyResult<PyObjectRef> {
         let n_cell = code.cellvars.len();
         for (i, cell) in closure.iter().enumerate() {
@@ -34,25 +36,24 @@ impl VirtualMachine {
         frame.scope_kind = ScopeKind::Function;
 
         if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
+            let code_obj = Rc::clone(&frame.code);
             let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
             return Ok(PyObject::async_generator(
-                CompactString::from(code.name.as_str()),
+                func_name,
+                func_qualname,
+                code_obj,
                 ptr,
             ));
         }
         if code.flags.contains(CodeFlags::COROUTINE) {
+            let code_obj = Rc::clone(&frame.code);
             let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
-            return Ok(PyObject::coroutine(
-                CompactString::from(code.name.as_str()),
-                ptr,
-            ));
+            return Ok(PyObject::coroutine(func_name, func_qualname, code_obj, ptr));
         }
         if code.flags.contains(CodeFlags::GENERATOR) {
+            let code_obj = Rc::clone(&frame.code);
             let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
-            return Ok(PyObject::generator(
-                CompactString::from(code.name.as_str()),
-                ptr,
-            ));
+            return Ok(PyObject::generator(func_name, func_qualname, code_obj, ptr));
         }
 
         self.call_stack.push(frame);

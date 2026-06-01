@@ -49,13 +49,16 @@ impl VirtualMachine {
         None
     }
 
-    /// PEP 560: resolve __mro_entries__ for generic aliases in bases.
-    /// e.g. `class Foo(dict[str, int])` → bases become `[dict]`
-    fn resolve_mro_entries(raw_bases: &[PyObjectRef]) -> Vec<PyObjectRef> {
+    /// PEP 560: resolve __mro_entries__ for generic aliases and non-type bases.
+    /// e.g. `class Foo(dict[str, int])` → bases become `[dict]`.
+    fn resolve_mro_entries(&mut self, raw_bases: &[PyObjectRef]) -> PyResult<Vec<PyObjectRef>> {
         let mut resolved = Vec::with_capacity(raw_bases.len());
+        let bases_tuple = PyObject::tuple(raw_bases.to_vec());
         for base in raw_bases {
             match &base.payload {
-                PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
+                PyObjectPayload::Class(_)
+                | PyObjectPayload::BuiltinType(_)
+                | PyObjectPayload::ExceptionType(_) => {
                     // Already a real class, keep as-is
                     resolved.push(base.clone());
                 }
@@ -73,18 +76,44 @@ impl VirtualMachine {
                             }
                         }
                     }
-                    // Not a generic alias — might be a regular class used as base
-                    resolved.push(base.clone());
+                    if let Some(mro_entries) = base.get_attr("__mro_entries__") {
+                        let entries = self.call_object(mro_entries, vec![bases_tuple.clone()])?;
+                        let PyObjectPayload::Tuple(items) = &entries.payload else {
+                            return Err(PyException::type_error(
+                                "__mro_entries__ must return a tuple",
+                            ));
+                        };
+                        resolved.extend(items.iter().cloned());
+                    } else {
+                        return Err(PyException::type_error(
+                            "MRO entry resolution; use types.new_class()",
+                        ));
+                    }
                 }
                 _ => {
-                    resolved.push(base.clone());
+                    if let Some(mro_entries) = base.get_attr("__mro_entries__") {
+                        let entries = self.call_object(mro_entries, vec![bases_tuple.clone()])?;
+                        let PyObjectPayload::Tuple(items) = &entries.payload else {
+                            return Err(PyException::type_error(
+                                "__mro_entries__ must return a tuple",
+                            ));
+                        };
+                        resolved.extend(items.iter().cloned());
+                    } else {
+                        return Err(PyException::type_error(
+                            "MRO entry resolution; use types.new_class()",
+                        ));
+                    }
                 }
             }
         }
         // CPython typing behavior: if Generic appears as a base and another base
         // already inherits from Generic, remove Generic (it's redundant).
         Self::deduplicate_generic_bases(&mut resolved);
-        resolved
+        if resolved.is_empty() && !raw_bases.is_empty() {
+            resolved.push(PyObject::builtin_type(CompactString::from("object")));
+        }
+        Ok(resolved)
     }
 
     /// Remove `Generic` from bases if another base already has it in its MRO.
@@ -139,7 +168,8 @@ impl VirtualMachine {
                 "__build_class__ requires at least 2 arguments",
             ));
         }
-        let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
+        let raw_bases: Vec<PyObjectRef> = args[2..].to_vec();
+        let bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
 
         // Reject subclassing of final builtin types (bool is not subclassable)
         for base in &bases {
@@ -211,42 +241,25 @@ impl VirtualMachine {
             mro,
             None,
         ))));
+        if !raw_bases
+            .iter()
+            .zip(bases.iter())
+            .all(|(raw, resolved)| PyObjectRef::ptr_eq(raw, resolved))
+        {
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                cd.namespace.write().insert(
+                    CompactString::from("__orig_bases__"),
+                    PyObject::tuple(raw_bases.clone()),
+                );
+            }
+        }
 
         // Populate __class__ cell so methods can access it via super() (PEP 3135)
         if let Some((ref cellvar_names, ref cells)) = class_cell_info {
             Self::patch_class_cell(cellvar_names, cells, &cls);
         }
 
-        // Call __init_subclass__ on the first base class that defines it (PEP 487)
-        // CPython calls it once via super().__init_subclass__ in type.__init__
-        if let Some(base) = bases.first() {
-            if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                // Re-bind to the NEW class (cls) so `cls` is the subclass
-                let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
-                    if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                        PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: cls.clone(),
-                                method: method.clone(),
-                            },
-                        })
-                    } else {
-                        init_sub
-                    }
-                } else {
-                    PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BoundMethod {
-                            receiver: cls.clone(),
-                            method: init_sub,
-                        },
-                    })
-                };
-                self.call_object(bound, vec![])?;
-            }
-        }
-
-        // Call __set_name__ on descriptors in the class namespace (PEP 487)
-        self.call_set_name_on_descriptors(&cls)?;
+        self.finish_pep487_class(&cls, &bases, &[])?;
 
         // NamedTuple metaclass behavior: add __namedtuple__ marker and _fields
         self.process_namedtuple_class(&cls, &bases);
@@ -280,7 +293,8 @@ impl VirtualMachine {
             PyObjectPayload::Str(s) => s.to_compact_string(),
             _ => CompactString::from(args[1].py_to_string()),
         };
-        let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
+        let raw_bases: Vec<PyObjectRef> = args[2..].to_vec();
+        let bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
 
         // Extract metaclass from kwargs, falling back to inherited metaclass from bases
         let metaclass = kwargs
@@ -407,11 +421,28 @@ impl VirtualMachine {
                 PyObject::dict(map)
             };
             let expected_class_cell = Self::class_cell_object(class_cell_info.as_ref());
+            if !raw_bases
+                .iter()
+                .zip(bases.iter())
+                .all(|(raw, resolved)| PyObjectRef::ptr_eq(raw, resolved))
+            {
+                Self::dict_set_str(
+                    &ns_dict,
+                    "__orig_bases__",
+                    PyObject::tuple(raw_bases.clone()),
+                );
+            }
             if let Some(cell_obj) = expected_class_cell.clone() {
                 Self::dict_set_str(&ns_dict, "__classcell__", cell_obj);
             }
             let name_obj = PyObject::str_val(class_name.clone());
             let bases_tuple = PyObject::tuple(bases_list.clone());
+
+            let class_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs
+                .iter()
+                .filter(|(k, _)| k.as_str() != "metaclass")
+                .cloned()
+                .collect();
 
             // Try calling metaclass.__new__(mcs, name, bases, namespace)
             let own_new = if let PyObjectPayload::Class(cd) = &meta.payload {
@@ -430,15 +461,17 @@ impl VirtualMachine {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                     _ => new_method,
                 };
-                let result = self.call_object(
-                    new_fn,
-                    vec![
-                        meta.clone(),
-                        name_obj.clone(),
-                        bases_tuple.clone(),
-                        ns_dict.clone(),
-                    ],
-                )?;
+                let new_args = vec![
+                    meta.clone(),
+                    name_obj.clone(),
+                    bases_tuple.clone(),
+                    ns_dict.clone(),
+                ];
+                let result = if class_kwargs.is_empty() {
+                    self.call_object(new_fn, new_args)?
+                } else {
+                    self.call_object_kw(new_fn, new_args, class_kwargs.clone())?
+                };
                 // Ensure metaclass is set on the class returned by __new__
                 if let PyObjectPayload::Class(cd) = &result.payload {
                     if cd.metaclass.is_none() {
@@ -505,52 +538,21 @@ impl VirtualMachine {
             }
 
             // Call metaclass's __init__ if it has one
-            if let Some(init) = meta.get_attr("__init__") {
-                if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_)))
-                {
-                    let init_fn = match &init.payload {
-                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                        _ => init,
-                    };
-                    self.call_object(
-                        init_fn,
-                        vec![cls.clone(), name_obj, bases_tuple, ns_dict.clone()],
-                    )?;
-                }
-            }
-            // __init_subclass__ handling
-            // Collect non-metaclass kwargs to forward to __init_subclass__
-            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs
-                .iter()
-                .filter(|(k, _)| k.as_str() != "metaclass")
-                .cloned()
-                .collect();
-            if let PyObjectPayload::Class(cd) = &cls.payload {
-                if let Some(base) = cd.bases.first() {
-                    if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                        let bound = if let PyObjectPayload::BoundMethod { method, .. } =
-                            &init_sub.payload
-                        {
-                            PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: cls.clone(),
-                                    method: method.clone(),
-                                },
-                            })
-                        } else {
-                            PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: cls.clone(),
-                                    method: init_sub,
-                                },
-                            })
-                        };
-                        if init_sub_kwargs.is_empty() {
-                            self.call_object(bound, vec![])?;
-                        } else {
-                            self.call_object_kw(bound, vec![], init_sub_kwargs.clone())?;
-                        }
-                    }
+            let own_init = if let PyObjectPayload::Class(cd) = &meta.payload {
+                cd.namespace
+                    .read()
+                    .get("__init__")
+                    .filter(|method| matches!(&method.payload, PyObjectPayload::Function(_)))
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(init_fn) = own_init {
+                let init_args = vec![cls.clone(), name_obj, bases_tuple, ns_dict.clone()];
+                if class_kwargs.is_empty() {
+                    self.call_object(init_fn, init_args)?;
+                } else {
+                    self.call_object_kw(init_fn, init_args, class_kwargs.clone())?;
                 }
             }
             // Populate __class__ cell (PEP 3135)
@@ -565,8 +567,7 @@ impl VirtualMachine {
                     Self::validate_class_cell(cellvar_names, cells, &cls)?;
                 }
             }
-            // Call __set_name__ on descriptors in the class namespace (PEP 487)
-            self.call_set_name_on_descriptors(&cls)?;
+            self.finish_pep487_class(&cls, &bases, &class_kwargs)?;
             // Register as subclass of each base
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 for base in &cd.bases {
@@ -625,45 +626,30 @@ impl VirtualMachine {
                 mro,
                 None,
             ))));
-            // __init_subclass__: bind to new subclass (cls), not parent
+            if !raw_bases
+                .iter()
+                .zip(bases.iter())
+                .all(|(raw, resolved)| PyObjectRef::ptr_eq(raw, resolved))
+            {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    cd.namespace.write().insert(
+                        CompactString::from("__orig_bases__"),
+                        PyObject::tuple(raw_bases.clone()),
+                    );
+                }
+            }
             // Forward non-metaclass kwargs to __init_subclass__
             let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs
                 .iter()
                 .filter(|(k, _)| k.as_str() != "metaclass")
                 .cloned()
                 .collect();
-            if let Some(base) = bases.first() {
-                if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                    let bound =
-                        if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                            PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: cls.clone(),
-                                    method: method.clone(),
-                                },
-                            })
-                        } else {
-                            PyObjectRef::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: cls.clone(),
-                                    method: init_sub,
-                                },
-                            })
-                        };
-                    if init_sub_kwargs.is_empty() {
-                        self.call_object(bound, vec![])?;
-                    } else {
-                        self.call_object_kw(bound, vec![], init_sub_kwargs.clone())?;
-                    }
-                }
-            }
             // Populate __class__ cell (PEP 3135)
             if let Some((ref cellvar_names, ref cells)) = class_cell_info {
                 Self::patch_class_cell(cellvar_names, cells, &cls);
                 Self::validate_class_cell(cellvar_names, cells, &cls)?;
             }
-            // Call __set_name__ on descriptors in the class namespace (PEP 487)
-            self.call_set_name_on_descriptors(&cls)?;
+            self.finish_pep487_class(&cls, &bases, &init_sub_kwargs)?;
 
             // NamedTuple metaclass behavior
             self.process_namedtuple_class(&cls, &bases);
@@ -836,18 +822,113 @@ impl VirtualMachine {
         })
     }
 
+    fn bind_init_subclass(cls: &PyObjectRef, init_sub: PyObjectRef) -> PyObjectRef {
+        if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+            PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: cls.clone(),
+                    method: method.clone(),
+                },
+            })
+        } else {
+            PyObjectRef::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: cls.clone(),
+                    method: init_sub,
+                },
+            })
+        }
+    }
+
+    fn call_init_subclass(
+        &mut self,
+        cls: &PyObjectRef,
+        bases: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
+        if bases.is_empty() {
+            if !kwargs.is_empty() {
+                return Err(PyException::type_error(
+                    "object.__init_subclass__() takes no keyword arguments",
+                ));
+            }
+            return Ok(());
+        }
+        let Some(init_sub) = Self::lookup_init_subclass(cls, bases) else {
+            return Ok(());
+        };
+        let bound = Self::bind_init_subclass(cls, init_sub);
+        if kwargs.is_empty() {
+            self.call_object(bound, vec![])?;
+        } else {
+            self.call_object_kw(bound, vec![], kwargs.to_vec())?;
+        }
+        Ok(())
+    }
+
+    fn lookup_init_subclass(cls: &PyObjectRef, bases: &[PyObjectRef]) -> Option<PyObjectRef> {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let mut mro = cd.mro.iter();
+            if let Some(first) = mro.next() {
+                if !bases.iter().any(|base| PyObjectRef::ptr_eq(base, first)) {
+                    return None;
+                }
+            }
+            for base in std::iter::once(bases.first()?).chain(mro) {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    if let Some(init_sub) = bcd.namespace.read().get("__init_subclass__").cloned() {
+                        return Some(init_sub);
+                    }
+                }
+            }
+        }
+        bases
+            .first()?
+            .get_attr("__init_subclass__")
+            .and_then(|attr| {
+                if let PyObjectPayload::BoundMethod { method, .. } = &attr.payload {
+                    Some(method.clone())
+                } else {
+                    Some(attr)
+                }
+            })
+    }
+
+    pub(crate) fn finish_pep487_class(
+        &mut self,
+        cls: &PyObjectRef,
+        bases: &[PyObjectRef],
+        init_sub_kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<()> {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd
+                .namespace
+                .read()
+                .get("__ferrython_pep487_done__")
+                .is_some()
+            {
+                cd.namespace
+                    .write()
+                    .shift_remove("__ferrython_pep487_done__");
+                return Ok(());
+            }
+        }
+        self.call_set_name_on_descriptors(cls)?;
+        self.call_init_subclass(cls, bases, init_sub_kwargs)
+    }
+
     /// Call __set_name__ on descriptors in the class namespace (PEP 487).
     fn call_set_name_on_descriptors(&mut self, cls: &PyObjectRef) -> PyResult<()> {
         if let PyObjectPayload::Class(cd) = &cls.payload {
             let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
                 let ns = cd.namespace.read();
                 ns.iter()
-                    .filter(|(_, v)| v.get_attr("__set_name__").is_some())
+                    .filter(|(_, v)| Self::lookup_set_name(v).is_some())
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
             };
             for (attr_name, attr_val) in &ns_snapshot {
-                if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
+                if let Some(set_name_method) = Self::lookup_set_name(attr_val) {
                     let bound = if matches!(
                         &set_name_method.payload,
                         PyObjectPayload::BoundMethod { .. }
@@ -863,17 +944,41 @@ impl VirtualMachine {
                     };
                     let name_arg = PyObject::str_val(attr_name.clone());
                     if let Err(err) = self.call_object(bound, vec![cls.clone(), name_arg]) {
+                        let context = err.clone();
                         let mut wrapped = PyException::runtime_error(format!(
-                            "Error calling __set_name__ on '{}'",
+                            "Error calling __set_name__ on '{}' in '{}' for '{}'",
+                            attr_val.type_name(),
+                            cd.name,
                             attr_name
                         ));
-                        wrapped.context = Some(Box::new(err));
+                        wrapped.cause = Some(Box::new(err));
+                        wrapped.context = Some(Box::new(context));
                         return Err(wrapped);
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    fn lookup_set_name(obj: &PyObjectRef) -> Option<PyObjectRef> {
+        let PyObjectPayload::Instance(inst) = &obj.payload else {
+            return None;
+        };
+        let PyObjectPayload::Class(cd) = &inst.class.payload else {
+            return None;
+        };
+        if let Some(method) = cd.namespace.read().get("__set_name__").cloned() {
+            return Some(method);
+        }
+        for base in &cd.mro {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if let Some(method) = bcd.namespace.read().get("__set_name__").cloned() {
+                    return Some(method);
+                }
+            }
+        }
+        None
     }
 
     /// Compute MRO from bases using C3 linearization (matches CPython).

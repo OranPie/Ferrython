@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-01T21:54:40+08:00
+Last updated: 2026-06-02T02:09:51+08:00
 
 ## 性能优化进度
 
@@ -1996,10 +1996,36 @@ Last updated: 2026-06-01T21:54:40+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_calendar test_codeop test_deque`: `run=443 pass=440 fail=0 err=0 skip=3`
     - Pass baseline full guard: `BASELINE_DONE modules=89 failures=0`
 
+- 2026-06-02 ipaddress / generators / named expressions compatibility batch:
+  - 本批把 7 个此前非 baseline 模块推进到零失败/零错误：
+    - `test_ipaddress`: `run=191 pass=191 fail=0 err=0 skip=0`
+    - `test_generators`: `run=16 pass=13 fail=0 err=0 skip=3`
+    - `test_named_expressions`: `run=61 pass=61 fail=0 err=0 skip=0`
+    - `test_dictviews`: `run=14 pass=14 fail=0 err=0 skip=0`
+    - `test_subclassinit`: `run=17 pass=17 fail=0 err=0 skip=0`
+    - `test_genericclass`: `run=22 pass=21 fail=0 err=0 skip=1`
+    - `test_functools`: `run=232 pass=157 fail=0 err=0 skip=75`
+  - 通用修复：
+    - generator resume/exception state 不再把 caller `sys.exc_info()` 泄漏进 generator，同时保留 generator 自身在 `except` 中跨 `yield` 的异常状态。
+    - `ipaddress` 切换到完整 stdlib 兼容实现，并补齐 CPython 3.8 私有网络、mixed key、`hosts()` 和大整数 bytes 转换相关行为。
+    - `int.from_bytes()` / `int.to_bytes()` / `int.bit_length()` 支持大整数路径。
+    - `raise ... from None` 对自定义异常实例正确设置 cause/context/suppress attrs。
+    - parser/symbol-table 补齐 PEP 572 named-expression 禁用上下文、comprehension iterable 深度扫描、comprehension target rebinding 和错误优先级。
+  - Marked unneeded:
+    - `test_generators.FinalizationTest.test_frame_resurrect`: Ferrython 不目标化 CPython generator frame resurrection during finalization。
+    - `test_generators.FinalizationTest.test_refcycle`: Ferrython GC 不暴露 CPython isolated generator cycle finalization timing。
+  - Baseline 更新：`TEST_BASELINE.md` 从 89 个零失败/零错误模块扩展到 96 个；新增上述 7 个模块，并同步 explicit skip table。
+  - 验证：
+    - `cargo check -p ferrython-parser`
+    - `cargo check -p ferrython-compiler`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_dictviews test_subclassinit test_genericclass test_ipaddress test_generators test_named_expressions` -> `run=553 pass=474 fail=0 err=0 skip=79`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_generator_stop test_collections test_weakref test_dict test_set` -> `run=999 pass=973 fail=0 err=0 skip=26`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从低失败数测试组里继续挑选，例如 `test_functools`、`test_decimal` 或已探测过的 crypto/platform 相关组。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_exception_hierarchy`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_decimal` / `test_statistics`。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`
