@@ -11,6 +11,7 @@ pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
         "bisect" => Some(math_modules::create_bisect_module()),
         "fractions" => Some(math_modules::create_fractions_module()),
         "cmath" => Some(math_modules::create_cmath_module()),
+        "colorsys" => Some(math_modules::create_colorsys_module()),
         _ => None,
     }
 }

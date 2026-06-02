@@ -1,8 +1,21 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T08:50:50+08:00
+Last updated: 2026-06-02T09:03:12+08:00
 
 ## 性能优化进度
+
+- 2026-06-02 passed-module native completion 批次：
+  - 将已通过的纯 Python 小模块 `keyword` 和 `colorsys` 补为 Rust native stdlib 模块，减少 import 时 Python 源码执行和常用函数调用的解释器开销。
+  - `keyword` 保留 CPython 3.8 的 sorted `kwlist`、`softkwlist`、`iskeyword()` 和 `issoftkeyword()` 行为；`iskeyword()` 使用内部静态表，不受运行时替换 `keyword.kwlist` 影响。
+  - `colorsys` 补齐 `rgb_to_yiq` / `yiq_to_rgb` / `rgb_to_hls` / `hls_to_rgb` / `rgb_to_hsv` / `hsv_to_rgb` 和公开常量，公式与 stdlib Python 版本一致。
+  - 明确未切换 `copy` / `copyreg` native：现有 `copy_module.rs` 草稿缺 `Error/error`、copyreg dispatch table、reduce 协议和部分 bytearray/slot 语义，直接注册会降低 `test_copy` / pickle 相关通过数。
+  - 验证：
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_keyword` -> `run=7 pass=7 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_colorsys` -> `run=6 pass=6 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_keyword test_colorsys test_html test_fnmatch test_shlex` -> `run=44 pass=44 fail=0 err=0 skip=0`
+    - native import smoke: `import keyword, colorsys; keyword.iskeyword('for'); colorsys.rgb_to_hsv(1.0, 0.0, 0.0)`
 
 - 2026-05-31 generic dunder dispatch 性能批次：
   - 新增 `tests/benchmarks/bench_generic_paths.py`，覆盖普通代码里容易落入泛化慢路径的场景：free/bound function call、实例属性读写、class attr lookup、`getattr`/`hasattr`、descriptor `__get__`、直接 `__hash__`/`__eq__`、custom key dict/set lookup。

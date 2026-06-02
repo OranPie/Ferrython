@@ -1,8 +1,19 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T08:50:50+08:00
+Last updated: 2026-06-02T09:03:12+08:00
 
 ## Current batch
+
+- Native completion batch: keyword and colorsys
+  - `keyword` now resolves through a native stdlib module while preserving `kwlist`, `softkwlist`, `iskeyword()`, and `issoftkeyword()`.
+  - `colorsys` now resolves through a native stdlib module with the same conversion formulas as the Python stdlib implementation.
+  - Per-module results:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_keyword` -> `run=7 pass=7 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_colorsys` -> `run=6 pass=6 fail=0 err=0 skip=0`.
+  - Combined guard:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_keyword test_colorsys test_html test_fnmatch test_shlex` -> `run=44 pass=44 fail=0 err=0 skip=0`.
+  - Deferred native candidates:
+    - `copy` / `copyreg` remain Python-backed because their registry/reduce/slot semantics are part of the current green copy and pickle baseline.
 
 - Compatibility batch: decimal restoration and numeric support
   - Before this batch: `test_decimal` was non-baseline at `run=500 pass=36 fail=62 err=387 skip=15`, dominated by incomplete native Decimal/Context behavior and fresh `_decimal` import assumptions.

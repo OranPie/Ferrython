@@ -3,6 +3,7 @@ use ferrython_core::object::PyObjectRef;
 
 pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
     match name {
+        "keyword" => Some(misc_modules::create_keyword_module()),
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
         "configparser" => Some(config_modules::create_configparser_module()),
         _ => None,
