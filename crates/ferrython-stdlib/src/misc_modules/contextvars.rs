@@ -7,6 +7,10 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+fn current_thread_key() -> CompactString {
+    CompactString::from(format!("{:?}", std::thread::current().id()))
+}
+
 // ── contextvars module ──
 
 pub fn create_contextvars_module() -> PyObjectRef {
@@ -42,23 +46,28 @@ pub fn create_contextvars_module() -> PyObjectRef {
                 CompactString::from("name"),
                 PyObject::str_val(CompactString::from(&name)),
             );
-            let value: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(default_val.clone()));
+            let values: Rc<PyCell<IndexMap<CompactString, PyObjectRef>>> =
+                Rc::new(PyCell::new(IndexMap::new()));
 
-            let v = value.clone();
+            let v = values.clone();
+            let default_for_get = default_val.clone();
             attrs.insert(
                 CompactString::from("get"),
                 PyObject::native_closure("ContextVar.get", move |a: &[PyObjectRef]| {
-                    if let Some(val) = v.read().as_ref() {
+                    let thread_key = current_thread_key();
+                    if let Some(val) = v.read().get(&thread_key) {
                         Ok(val.clone())
                     } else if !a.is_empty() {
                         Ok(a[0].clone())
+                    } else if let Some(default) = default_for_get.as_ref() {
+                        Ok(default.clone())
                     } else {
-                        Err(PyException::runtime_error("ContextVar has no value"))
+                        Err(PyException::lookup_error("ContextVar has no value"))
                     }
                 }),
             );
 
-            let v = value.clone();
+            let v = values.clone();
             let name_clone = name.clone();
             attrs.insert(
                 CompactString::from("set"),
@@ -66,9 +75,11 @@ pub fn create_contextvars_module() -> PyObjectRef {
                     if a.is_empty() {
                         return Err(PyException::type_error("set() requires a value"));
                     }
-                    let old = v.read().clone();
-                    *v.write() = Some(a[0].clone());
+                    let thread_key = current_thread_key();
+                    let old = v.read().get(&thread_key).cloned();
+                    v.write().insert(thread_key.clone(), a[0].clone());
                     let v_restore = v.clone();
+                    let restore_thread_key = thread_key.clone();
                     let token_cls =
                         PyObject::class(CompactString::from("Token"), vec![], IndexMap::new());
                     let token = PyObject::instance(token_cls);
@@ -79,6 +90,14 @@ pub fn create_contextvars_module() -> PyObjectRef {
                             old.clone().unwrap_or_else(PyObject::none),
                         );
                         ta.insert(
+                            CompactString::from("_had_value"),
+                            PyObject::bool_val(old.is_some()),
+                        );
+                        ta.insert(
+                            CompactString::from("_thread_key"),
+                            PyObject::str_val(thread_key.clone()),
+                        );
+                        ta.insert(
                             CompactString::from("var"),
                             PyObject::str_val(CompactString::from(name_clone.as_str())),
                         );
@@ -86,7 +105,11 @@ pub fn create_contextvars_module() -> PyObjectRef {
                         ta.insert(
                             CompactString::from("_restore"),
                             PyObject::native_closure("Token._restore", move |_| {
-                                *v_restore.write() = old_clone.clone();
+                                if let Some(old) = old_clone.clone() {
+                                    v_restore.write().insert(restore_thread_key.clone(), old);
+                                } else {
+                                    v_restore.write().shift_remove(&restore_thread_key);
+                                }
                                 Ok(PyObject::none())
                             }),
                         );
@@ -95,8 +118,7 @@ pub fn create_contextvars_module() -> PyObjectRef {
                 }),
             );
 
-            let v = value.clone();
-            let default_clone = default_val.clone();
+            let v = values.clone();
             attrs.insert(
                 CompactString::from("reset"),
                 PyObject::native_closure("ContextVar.reset", move |a: &[PyObjectRef]| {
@@ -109,11 +131,22 @@ pub fn create_contextvars_module() -> PyObjectRef {
                             return (nc.func)(&[]);
                         }
                     }
+                    let had_value = token
+                        .get_attr("_had_value")
+                        .and_then(|v| match v.payload {
+                            PyObjectPayload::Bool(value) => Some(value),
+                            _ => None,
+                        })
+                        .unwrap_or(true);
+                    let thread_key = token
+                        .get_attr("_thread_key")
+                        .and_then(|v| v.as_str().map(CompactString::from))
+                        .unwrap_or_else(current_thread_key);
                     if let Some(old) = token.get_attr("old_value") {
-                        if matches!(&old.payload, PyObjectPayload::None) {
-                            *v.write() = default_clone.clone();
+                        if had_value {
+                            v.write().insert(thread_key, old);
                         } else {
-                            *v.write() = Some(old);
+                            v.write().shift_remove(&thread_key);
                         }
                     }
                     Ok(PyObject::none())

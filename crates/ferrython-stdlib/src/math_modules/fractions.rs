@@ -68,6 +68,33 @@ pub fn create_fractions_module() -> PyObjectRef {
         obj.get_attr(name)
     }
 
+    fn is_decimal_instance(obj: &PyObjectRef) -> bool {
+        obj.get_attr("__decimal__")
+            .is_some_and(|marker| marker.is_truthy())
+    }
+
+    fn decimal_as_integer_ratio(obj: &PyObjectRef) -> PyResult<Option<(BigInt, BigInt)>> {
+        if !is_decimal_instance(obj) {
+            return Ok(None);
+        }
+        let method = obj
+            .get_attr("as_integer_ratio")
+            .ok_or_else(|| PyException::type_error("from_decimal requires a Decimal instance"))?;
+        let ratio = ferrython_core::object::call_callable(&method, &[])?;
+        if let PyObjectPayload::Tuple(items) = &ratio.payload {
+            if items.len() == 2 {
+                if let (Some(n), Some(d)) =
+                    (object_to_bigint(&items[0]), object_to_bigint(&items[1]))
+                {
+                    return Ok(Some((n, d)));
+                }
+            }
+        }
+        Err(PyException::type_error(
+            "Decimal.as_integer_ratio() returned invalid ratio",
+        ))
+    }
+
     fn get_frac_parts(obj: &PyObjectRef) -> Option<(i64, i64)> {
         let (n, d) = get_frac_bigint_parts(obj)?;
         Some((n.to_i64()?, d.to_i64()?))
@@ -188,6 +215,9 @@ pub fn create_fractions_module() -> PyObjectRef {
                 let s = attrs.get("_value").and_then(|v| v.as_str())?;
                 return decimal_string_ratio(s);
             }
+        }
+        if let Ok(Some(parts)) = decimal_as_integer_ratio(obj) {
+            return Some(parts);
         }
         if let PyObjectPayload::Float(f) = &obj.payload {
             if f.is_infinite() {
@@ -1272,6 +1302,9 @@ pub fn create_fractions_module() -> PyObjectRef {
                 }
             }
         }
+        if let Some((n, d)) = decimal_as_integer_ratio(&args[0])? {
+            return Ok(make_frac_bigint_instance(n, d));
+        }
         Err(PyException::type_error(
             "from_decimal requires a Decimal instance",
         ))
@@ -1354,6 +1387,10 @@ pub fn create_fractions_module() -> PyObjectRef {
 
     // Store new function on the class for instantiation
     if let PyObjectPayload::Class(ref cd) = frac_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__abc_registered_name__"),
+            PyObject::str_val(CompactString::from("Rational")),
+        );
         cd.namespace.write().insert(
             CompactString::from("__new__"),
             make_builtin(|args| {
@@ -1551,6 +1588,18 @@ pub fn create_fractions_module() -> PyObjectRef {
                                     }
                                     return decimal_str_to_fraction(&s);
                                 }
+                            }
+                            if let Some((n, d)) = decimal_as_integer_ratio(&real_args[0])? {
+                                if !args.is_empty()
+                                    && matches!(&args[0].payload, PyObjectPayload::Class(_))
+                                {
+                                    return Ok(make_frac_bigint_instance_for_class(
+                                        args[0].clone(),
+                                        n,
+                                        d,
+                                    ));
+                                }
+                                return Ok(make_frac_bigint_instance(n, d));
                             }
                             return Err(PyException::type_error(
                                 "Fraction() argument must be int, float, str, or Decimal",

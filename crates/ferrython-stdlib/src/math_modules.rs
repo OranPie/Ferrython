@@ -2,7 +2,6 @@
 
 mod bisect;
 mod cmath;
-mod decimal;
 mod fractions;
 mod functions;
 mod heapq;
@@ -13,7 +12,6 @@ mod statistics;
 
 pub use bisect::create_bisect_module;
 pub use cmath::create_cmath_module;
-pub use decimal::create_decimal_module;
 pub use fractions::create_fractions_module;
 pub use functions::create_math_module;
 pub use heapq::{create_heapq_accel_module, create_heapq_module};

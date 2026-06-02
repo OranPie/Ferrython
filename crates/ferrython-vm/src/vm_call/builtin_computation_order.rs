@@ -36,6 +36,9 @@ impl VirtualMachine {
             let items = self.collect_iterable(&args[0])?;
             return self.compute_min_max(items, is_max, None, None, name);
         }
+        if args.len() > 1 {
+            return self.compute_min_max(args.to_vec(), is_max, None, None, name);
+        }
         fallback_computation_builtin(name, args)
     }
 }

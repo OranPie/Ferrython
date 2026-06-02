@@ -6,7 +6,6 @@ pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
         "math" => Some(math_modules::create_math_module()),
         "statistics" => Some(math_modules::create_statistics_module()),
         "numbers" => Some(math_modules::create_numbers_module()),
-        "decimal" => Some(math_modules::create_decimal_module()),
         "random" => Some(math_modules::create_random_module()),
         "heapq" => Some(math_modules::create_heapq_module()),
         "bisect" => Some(math_modules::create_bisect_module()),

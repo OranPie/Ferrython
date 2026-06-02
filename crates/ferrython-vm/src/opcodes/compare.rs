@@ -4,6 +4,7 @@ use crate::vm_truth::exception_kind_matches;
 use crate::VirtualMachine;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
+use ferrython_core::object::helpers::partial_cmp_objects;
 use ferrython_core::object::{
     has_descriptor_get, lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload,
     PyObjectRef,
@@ -36,6 +37,36 @@ fn is_deque_instance(obj: &PyObjectRef) -> bool {
 fn is_enum_member_instance(obj: &PyObjectRef) -> bool {
     matches!(&obj.payload, PyObjectPayload::Instance(inst)
         if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_"))
+}
+
+fn is_decimal_instance(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(_))
+        && obj
+            .get_attr("__decimal__")
+            .is_some_and(|marker| marker.is_truthy())
+}
+
+fn is_native_fraction_instance(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::Instance(inst)
+        if inst.attrs.read().contains_key("__fraction__"))
+}
+
+fn is_numeric_fast_compare_operand(obj: &PyObjectRef) -> bool {
+    matches!(
+        obj.payload,
+        PyObjectPayload::Bool(_) | PyObjectPayload::Int(_) | PyObjectPayload::Float(_)
+    ) || is_decimal_instance(obj)
+        || is_native_fraction_instance(obj)
+}
+
+fn should_use_numeric_fast_compare(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    if is_native_fraction_instance(a) && is_native_fraction_instance(b) {
+        return false;
+    }
+    (is_decimal_instance(a) || is_decimal_instance(b))
+        || ((is_native_fraction_instance(a) || is_native_fraction_instance(b))
+            && is_numeric_fast_compare_operand(a)
+            && is_numeric_fast_compare_operand(b))
 }
 
 fn builtin_value_compare_operands(
@@ -417,6 +448,19 @@ impl VirtualMachine {
                     return Ok(None);
                 }
                 _ => {}
+            }
+            if matches!(cmp, 0 | 1 | 4 | 5) && should_use_numeric_fast_compare(&a, &b) {
+                if let Some(ordering) = partial_cmp_objects(&a, &b) {
+                    let result = match cmp {
+                        0 => ordering == std::cmp::Ordering::Less,
+                        1 => !matches!(ordering, std::cmp::Ordering::Greater),
+                        4 => ordering == std::cmp::Ordering::Greater,
+                        5 => !matches!(ordering, std::cmp::Ordering::Less),
+                        _ => unreachable!(),
+                    };
+                    self.vm_push(PyObject::bool_val(result));
+                    return Ok(None);
+                }
             }
             let (dunder, rdunder) = match cmp {
                 0 => ("__lt__", "__gt__"),

@@ -918,10 +918,10 @@ impl PartialEq for HashableKey {
                 if *hash_value != hash_key_like_python(other) {
                     return false;
                 }
-                if let Some(result) = call_eq_dispatch(&other.to_object(), object) {
+                if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
                     return result;
                 }
-                if let Some(result) = call_eq_dispatch(object, &other.to_object()) {
+                if let Some(result) = call_eq_dispatch(&other.to_object(), object) {
                     return result;
                 }
                 false

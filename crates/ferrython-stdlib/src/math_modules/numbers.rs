@@ -14,13 +14,22 @@ pub fn create_numbers_module() -> PyObjectRef {
         })
     }
 
-    fn register_fn(args: &[PyObjectRef]) -> ferrython_core::error::PyResult<PyObjectRef> {
-        if args.is_empty() {
-            return Err(PyException::type_error(
-                "register() requires a subclass argument",
-            ));
-        }
-        Ok(args.last().cloned().unwrap_or_else(PyObject::none))
+    fn make_register(abc: PyObjectRef) -> PyObjectRef {
+        PyObject::native_closure("register", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error(
+                    "register() requires a subclass argument",
+                ));
+            }
+            let sub = args.last().cloned().unwrap_or_else(PyObject::none);
+            if let ferrython_core::object::PyObjectPayload::Class(cd) = &sub.payload {
+                cd.namespace
+                    .write()
+                    .insert(CompactString::from("__abc_registered__"), abc.clone());
+                cd.invalidate_cache();
+            }
+            Ok(sub)
+        })
     }
 
     // Number — root of the numeric tower
@@ -29,8 +38,13 @@ pub fn create_numbers_module() -> PyObjectRef {
         CompactString::from("__hash__"),
         make_abstract("Number.__hash__"),
     );
-    number_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let number_class = PyObject::class(CompactString::from("Number"), vec![], number_ns);
+    if let ferrython_core::object::PyObjectPayload::Class(cd) = &number_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("register"),
+            make_register(number_class.clone()),
+        );
+    }
 
     // Complex — adds complex arithmetic operations
     let mut complex_ns = IndexMap::new();
@@ -64,12 +78,17 @@ pub fn create_numbers_module() -> PyObjectRef {
         CompactString::from("__bool__"),
         make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(true))),
     );
-    complex_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let complex_class = PyObject::class(
         CompactString::from("Complex"),
         vec![number_class.clone()],
         complex_ns,
     );
+    if let ferrython_core::object::PyObjectPayload::Class(cd) = &complex_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("register"),
+            make_register(complex_class.clone()),
+        );
+    }
 
     // Real — adds ordering and real-valued operations
     let mut real_ns = IndexMap::new();
@@ -113,12 +132,17 @@ pub fn create_numbers_module() -> PyObjectRef {
             Ok(args[0].clone())
         }),
     );
-    real_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let real_class = PyObject::class(
         CompactString::from("Real"),
         vec![complex_class.clone()],
         real_ns,
     );
+    if let ferrython_core::object::PyObjectPayload::Class(cd) = &real_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("register"),
+            make_register(real_class.clone()),
+        );
+    }
 
     // Rational — adds numerator/denominator
     let mut rational_ns = IndexMap::new();
@@ -148,12 +172,17 @@ pub fn create_numbers_module() -> PyObjectRef {
             Ok(PyObject::float(0.0))
         }),
     );
-    rational_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let rational_class = PyObject::class(
         CompactString::from("Rational"),
         vec![real_class.clone()],
         rational_ns,
     );
+    if let ferrython_core::object::PyObjectPayload::Class(cd) = &rational_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("register"),
+            make_register(rational_class.clone()),
+        );
+    }
 
     // Integral — adds integer-specific operations
     let mut integral_ns = IndexMap::new();
@@ -200,12 +229,17 @@ pub fn create_numbers_module() -> PyObjectRef {
         CompactString::from("denominator"),
         make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::int(1))),
     );
-    integral_ns.insert(CompactString::from("register"), make_builtin(register_fn));
     let integral_class = PyObject::class(
         CompactString::from("Integral"),
         vec![rational_class.clone()],
         integral_ns,
     );
+    if let ferrython_core::object::PyObjectPayload::Class(cd) = &integral_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("register"),
+            make_register(integral_class.clone()),
+        );
+    }
 
     make_module(
         "numbers",

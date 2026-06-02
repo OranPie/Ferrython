@@ -501,6 +501,12 @@ pub(in crate::text_modules::regex_impl) fn validate_re_pattern_syntax(
                                 ));
                             }
                         }
+                        '=' | '!' => {
+                            groups.push((i, 0));
+                            i += 3;
+                            atom_available = false;
+                            last_was_repeat = false;
+                        }
                         '(' => {
                             let name_start = i + 3;
                             let mut end = name_start;

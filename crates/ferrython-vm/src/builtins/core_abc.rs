@@ -817,9 +817,41 @@ fn abc_registry_or_subclass_registry_contains(abc: &PyObjectRef, sub: &PyObjectR
 }
 
 fn class_abc_virtual_match(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
+    if let (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(sup_cd)) =
+        (&sub.payload, &sup.payload)
+    {
+        if let Some(marker) = sub_cd.namespace.read().get("__abc_registered_name__") {
+            if marker
+                .as_str()
+                .map(|name| {
+                    name == sup_cd.name.as_str()
+                        || check_abc_registered_name_subclass(name, sup_cd.name.as_str())
+                })
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
     classes_for_abc_registry(sup)
         .iter()
         .any(|abc| abc_registry_or_subclass_registry_contains(abc, sub))
+}
+
+fn check_abc_registered_name_subclass(sub_name: &str, sup_name: &str) -> bool {
+    matches!(
+        (sub_name, sup_name),
+        ("Integral", "Rational")
+            | ("Integral", "Real")
+            | ("Integral", "Complex")
+            | ("Integral", "Number")
+            | ("Rational", "Real")
+            | ("Rational", "Complex")
+            | ("Rational", "Number")
+            | ("Real", "Complex")
+            | ("Real", "Number")
+            | ("Complex", "Number")
+    )
 }
 
 fn class_has_exact_base(cls: &PyObjectRef, target: &PyObjectRef) -> bool {
@@ -932,6 +964,7 @@ fn check_abc_structural_class(cls: &PyObjectRef, abc_name: &str) -> bool {
                 }
             }
             "Callable" => class_has_abc_method(cls, "__call__"),
+            "Number" | "Complex" | "Real" | "Rational" | "Integral" => false,
             "Sequence" | "MutableSequence" | "ByteString" | "Set" | "MutableSet" | "Mapping"
             | "MutableMapping" => false,
             _ => abc_required_methods(abc_name)

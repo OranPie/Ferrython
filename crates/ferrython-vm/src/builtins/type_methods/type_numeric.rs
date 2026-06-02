@@ -3,7 +3,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{
+    float_as_integer_ratio, py_hash_bigint, py_hash_float, HashableKey, PyInt,
+};
 use num_bigint::{BigInt, Sign};
 use num_traits::{One, Signed};
 
@@ -181,7 +183,15 @@ pub(crate) fn call_int_method(
             let n = _receiver.to_int()?;
             Ok(PyObject::str_val(CompactString::from(n.to_string())))
         }
-        "__hash__" => Ok(_receiver.clone()),
+        "__hash__" => {
+            let n = match &_receiver.payload {
+                PyObjectPayload::Bool(flag) => BigInt::from(if *flag { 1 } else { 0 }),
+                PyObjectPayload::Int(PyInt::Small(value)) => BigInt::from(*value),
+                PyObjectPayload::Int(PyInt::Big(value)) => value.as_ref().clone(),
+                _ => BigInt::from(_receiver.to_int()?),
+            };
+            Ok(PyObject::int(py_hash_bigint(&n)))
+        }
         "__bool__" => {
             let n = _receiver.to_int()?;
             Ok(PyObject::bool_val(n != 0))
@@ -528,39 +538,10 @@ pub(crate) fn call_float_method(
                     "cannot convert Infinity or NaN to integer ratio",
                 ));
             }
-            // Decompose f into mantissa * 2^exponent
-            let (mantissa, exponent) = {
-                let bits = f.to_bits();
-                let sign: i64 = if bits >> 63 != 0 { -1 } else { 1 };
-                let exp = ((bits >> 52) & 0x7ff) as i64;
-                let frac = (bits & 0x000f_ffff_ffff_ffff) as i64;
-                if exp == 0 {
-                    // Subnormal
-                    (sign * frac, -1022i64 - 52)
-                } else {
-                    (sign * ((1i64 << 52) | frac), exp - 1023 - 52)
-                }
-            };
-            let (numer, denom) = if exponent >= 0 {
-                (mantissa << exponent.min(62), 1i64)
-            } else {
-                (mantissa, 1i64 << (-exponent).min(62))
-            };
-            // Simplify by GCD
-            fn gcd(mut a: i64, mut b: i64) -> i64 {
-                a = a.abs();
-                b = b.abs();
-                while b != 0 {
-                    let t = b;
-                    b = a % b;
-                    a = t;
-                }
-                a
-            }
-            let g = gcd(numer, denom);
+            let (numer, denom) = float_as_integer_ratio(f);
             Ok(PyObject::tuple(vec![
-                PyObject::int(numer / g),
-                PyObject::int(denom / g),
+                PyObject::big_int(numer),
+                PyObject::big_int(denom),
             ]))
         }
         "conjugate" => Ok(PyObject::float(f)),
@@ -584,7 +565,7 @@ pub(crate) fn call_float_method(
         "__str__" | "__repr__" => Ok(PyObject::str_val(CompactString::from(
             super::super::format_float_repr(f),
         ))),
-        "__hash__" => Ok(PyObject::int(f.to_bits() as i64)),
+        "__hash__" => Ok(PyObject::int(py_hash_float(f))),
         "__bool__" => Ok(PyObject::bool_val(f != 0.0)),
         "__int__" | "__trunc__" => Ok(PyObject::int(f as i64)),
         "__float__" => Ok(PyObject::float(f)),

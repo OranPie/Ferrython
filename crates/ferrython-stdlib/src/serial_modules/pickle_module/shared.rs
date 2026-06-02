@@ -12,8 +12,133 @@ pub(super) fn hashable_key_to_pyobj(k: &HashableKey) -> PyObjectRef {
         HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
         HashableKey::Float(f) => PyObject::float(f.0),
         HashableKey::Bool(b) => PyObject::bool_val(*b),
+        HashableKey::Identity(_, obj) | HashableKey::Custom { object: obj, .. } => {
+            if let PyObjectPayload::Class(cd) = &obj.payload {
+                PyObject::str_val(cd.name.clone())
+            } else {
+                PyObject::str_val(CompactString::from(format!("{:?}", k)))
+            }
+        }
         _ => PyObject::str_val(CompactString::from(format!("{:?}", k))),
     }
+}
+
+fn decimal_signal_from_name(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    let PyObjectPayload::Class(cd) = &inst.class.payload else {
+        return None;
+    };
+    if cd.name.as_str() != "Context" {
+        return None;
+    }
+    let module = inst.class.get_attr("__module__")?;
+    let module_attrs = match &module.payload {
+        PyObjectPayload::Module(data) => data.attrs.read().get(name).cloned(),
+        _ => None,
+    };
+    module_attrs.filter(|value| matches!(&value.payload, PyObjectPayload::Class(_)))
+}
+
+fn decimal_signal_key_from_existing_state(obj: &PyObjectRef, name: &str) -> Option<HashableKey> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    for attr_name in ["flags", "traps"] {
+        let Some(existing) = inst.attrs.read().get(attr_name).cloned() else {
+            continue;
+        };
+        let PyObjectPayload::Dict(map) = &existing.payload else {
+            continue;
+        };
+        for key in map.read().keys() {
+            let signal = match key {
+                HashableKey::Identity(_, signal) => Some(signal),
+                HashableKey::Custom { object, .. } => Some(object),
+                _ => None,
+            };
+            if let Some(signal) = signal {
+                if let PyObjectPayload::Class(cd) = &signal.payload {
+                    if cd.name.as_str() == name {
+                        return Some(key.clone());
+                    }
+                }
+            }
+        }
+    }
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    let module_name = inst
+        .class
+        .get_attr("__module__")
+        .map(|module| module.py_to_string())
+        .unwrap_or_else(|| "decimal".to_string());
+    let module = lookup_loaded_module(&module_name).or_else(|| crate::load_module(&module_name))?;
+    let default_context = module.get_attr("DefaultContext")?;
+    for attr_name in ["flags", "traps"] {
+        let Some(existing) = default_context.get_attr(attr_name) else {
+            continue;
+        };
+        let PyObjectPayload::Dict(map) = &existing.payload else {
+            continue;
+        };
+        for key in map.read().keys() {
+            let signal = match key {
+                HashableKey::Identity(_, signal) => Some(signal),
+                HashableKey::Custom { object, .. } => Some(object),
+                _ => None,
+            };
+            if let Some(signal) = signal {
+                if let PyObjectPayload::Class(cd) = &signal.payload {
+                    if cd.name.as_str() == name {
+                        return Some(key.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn lookup_loaded_module(name: &str) -> Option<PyObjectRef> {
+    let sys = crate::get_current_sys_module()?;
+    let modules = sys.get_attr("modules")?;
+    let PyObjectPayload::Dict(map) = &modules.payload else {
+        return None;
+    };
+    map.read()
+        .get(&HashableKey::str_key(CompactString::from(name)))
+        .cloned()
+        .filter(|obj| !matches!(&obj.payload, PyObjectPayload::None))
+}
+
+fn normalize_decimal_signal_dict(
+    obj: &PyObjectRef,
+    name: &str,
+    value: &PyObjectRef,
+) -> PyObjectRef {
+    if !matches!(name, "flags" | "traps") {
+        return value.clone();
+    }
+    let PyObjectPayload::Dict(map) = &value.payload else {
+        return value.clone();
+    };
+    let mut normalized = IndexMap::new();
+    for (key, item) in map.read().iter() {
+        let normalized_key = match key {
+            HashableKey::Str(s) => decimal_signal_key_from_existing_state(obj, s.as_str())
+                .or_else(|| {
+                    decimal_signal_from_name(obj, s.as_str())
+                        .and_then(|signal| signal.to_hashable_key().ok())
+                })
+                .unwrap_or_else(|| key.clone()),
+            _ => key.clone(),
+        };
+        normalized.insert(normalized_key, item.clone());
+    }
+    PyObject::dict(normalized)
 }
 
 pub(super) fn format_float_repr(f: f64) -> String {
@@ -190,9 +315,8 @@ pub(super) fn pkl_apply_state(obj: &PyObjectRef, state: &PyObjectRef) -> PyResul
         };
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
-                inst.attrs
-                    .write()
-                    .insert(name.to_compact_string(), value.clone());
+                let value = normalize_decimal_signal_dict(obj, name.as_str(), value);
+                inst.attrs.write().insert(name.to_compact_string(), value);
             }
             PyObjectPayload::ExceptionInstance(ei) => {
                 ei.ensure_attrs()

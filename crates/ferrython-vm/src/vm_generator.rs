@@ -22,6 +22,7 @@ static GEN_FRAME_POOL: GenFramePool = GenFramePool(std::cell::UnsafeCell::new(Ve
 struct GeneratorExceptionContext {
     caller_exception: Option<PyException>,
     caller_stack: Vec<Option<PyException>>,
+    restored_generator_state: bool,
 }
 
 /// Get a heap buffer sized for Frame — from pool or fresh allocation.
@@ -68,39 +69,37 @@ impl VirtualMachine {
             .any(|block| matches!(block.kind(), BlockKind::ExceptHandler))
     }
 
-    fn enter_generator_exception_state_if_suspended(
+    fn enter_generator_exception_state(
         &mut self,
         gen_arc: &Rc<PyCell<GeneratorState>>,
-    ) -> Option<GeneratorExceptionContext> {
+    ) -> GeneratorExceptionContext {
         let mut gen = gen_arc.write();
         let saved = gen.suspended_exception.take();
         let saved_stack: Vec<_> = gen.suspended_exception_stack.drain(..).collect();
         drop(gen);
-        if saved.is_none() {
-            return None;
-        }
+        let restored_generator_state = saved.is_some() || !saved_stack.is_empty();
         let caller_exception = self.active_exception.clone();
-        let caller_stack = std::mem::take(&mut self.exception_state_stack);
-        self.exception_state_stack.extend(saved_stack);
-        self.active_exception = saved;
-        if let Some(exc) = &self.active_exception {
-            ferrython_core::error::set_thread_exc_info(
-                exc.kind,
-                exc.message.clone(),
-                exc.traceback.clone(),
-            );
-        } else {
-            ferrython_core::error::clear_thread_exc_info();
+        let caller_stack = self.exception_state_stack.clone();
+        if restored_generator_state {
+            self.exception_state_stack.clear();
+            self.exception_state_stack.extend(saved_stack);
+            self.active_exception = saved;
+            self.sync_thread_exc_info_from_active();
         }
-        Some(GeneratorExceptionContext {
+        GeneratorExceptionContext {
             caller_exception,
             caller_stack,
-        })
+            restored_generator_state,
+        }
     }
 
     fn restore_generator_caller_exception_state(&mut self, ctx: GeneratorExceptionContext) {
         self.active_exception = ctx.caller_exception;
         self.exception_state_stack = ctx.caller_stack;
+        self.sync_thread_exc_info_from_active();
+    }
+
+    fn sync_thread_exc_info_from_active(&self) {
         if let Some(exc) = &self.active_exception {
             ferrython_core::error::set_thread_exc_info(
                 exc.kind,
@@ -193,7 +192,7 @@ impl VirtualMachine {
 
         let inherited_exception_stack_len = self.exception_state_stack.len();
         self.current_generators.push(gen_arc.clone());
-        let generator_exception_ctx = self.enter_generator_exception_state_if_suspended(gen_arc);
+        let generator_exception_ctx = self.enter_generator_exception_state(gen_arc);
         let result = self.run_frame();
         self.current_generators.pop();
         let cs_len = self.call_stack.len();
@@ -206,8 +205,7 @@ impl VirtualMachine {
             self.save_generator_exception_state_on_yield(
                 &mut gen,
                 has_exception_handler,
-                generator_exception_ctx
-                    .is_none()
+                (!generator_exception_ctx.restored_generator_state)
                     .then_some(inherited_exception_stack_len),
             );
             let frame_ref = &mut self.call_stack[cs_len - 1];
@@ -220,9 +218,7 @@ impl VirtualMachine {
             }
             gen.set_frame_ptr(buf as *mut u8);
             drop(gen);
-            if let Some(ctx) = generator_exception_ctx {
-                self.restore_generator_caller_exception_state(ctx);
-            }
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
             result // Ok(yielded_value)
         } else {
             // Generator finished — pop and recycle frame normally
@@ -231,9 +227,7 @@ impl VirtualMachine {
             let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
             drop(gen);
-            if let Some(ctx) = generator_exception_ctx {
-                self.restore_generator_caller_exception_state(ctx);
-            }
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
             match result {
                 Ok(return_val) => {
                     let msg = return_val.py_to_string();
@@ -284,7 +278,7 @@ impl VirtualMachine {
 
         let inherited_exception_stack_len = self.exception_state_stack.len();
         self.current_generators.push(gen_arc.clone());
-        let generator_exception_ctx = self.enter_generator_exception_state_if_suspended(gen_arc);
+        let generator_exception_ctx = self.enter_generator_exception_state(gen_arc);
         let result = self.run_frame();
         self.current_generators.pop();
         let cs_len = self.call_stack.len();
@@ -297,8 +291,7 @@ impl VirtualMachine {
             self.save_generator_exception_state_on_yield(
                 &mut gen,
                 has_exception_handler,
-                generator_exception_ctx
-                    .is_none()
+                (!generator_exception_ctx.restored_generator_state)
                     .then_some(inherited_exception_stack_len),
             );
             let frame_ref = &mut self.call_stack[cs_len - 1];
@@ -310,9 +303,7 @@ impl VirtualMachine {
             }
             gen.set_frame_ptr(buf as *mut u8);
             drop(gen);
-            if let Some(ctx) = generator_exception_ctx {
-                self.restore_generator_caller_exception_state(ctx);
-            }
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
             result.map(Some)
         } else {
             gen.finished = true;
@@ -320,9 +311,7 @@ impl VirtualMachine {
             let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
             drop(gen);
-            if let Some(ctx) = generator_exception_ctx {
-                self.restore_generator_caller_exception_state(ctx);
-            }
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
             match result {
                 Ok(_) => Ok(None), // Generator finished — no StopIteration needed
                 Err(e) if e.kind == ExceptionKind::StopIteration => {

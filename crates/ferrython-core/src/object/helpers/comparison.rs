@@ -7,7 +7,7 @@ use crate::types::{float_as_integer_ratio, PyInt};
 use compact_str::CompactString;
 use ferrython_bytecode::{CodeObject, ConstantValue};
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 fn code_objects_equal(a: &CodeObject, b: &CodeObject) -> bool {
     a.instructions == b.instructions
@@ -112,14 +112,25 @@ fn object_rational_parts(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
             if attrs.contains_key("__fraction__") {
-                let n = attrs.get("numerator").and_then(object_int_to_bigint)?;
-                let d = attrs.get("denominator").and_then(object_int_to_bigint)?;
+                let n = attrs
+                    .get("_numerator")
+                    .or_else(|| attrs.get("numerator"))
+                    .and_then(object_int_to_bigint)?;
+                let d = attrs
+                    .get("_denominator")
+                    .or_else(|| attrs.get("denominator"))
+                    .and_then(object_int_to_bigint)?;
                 Some((n, d))
             } else if attrs.contains_key("__decimal__") {
                 attrs
                     .get("_value")
                     .and_then(|v| v.as_str())
                     .and_then(decimal_ratio)
+            } else if obj
+                .get_attr("__decimal__")
+                .is_some_and(|marker| marker.is_truthy())
+            {
+                Some(decimal_ratio_from_object(obj)?)
             } else {
                 None
             }
@@ -135,6 +146,153 @@ fn object_int_to_bigint(obj: &PyObjectRef) -> Option<BigInt> {
         PyObjectPayload::Int(PyInt::Big(n)) => Some(n.as_ref().clone()),
         _ => None,
     }
+}
+
+fn decimal_ratio_from_object(obj: &PyObjectRef) -> Option<(BigInt, BigInt)> {
+    let (sign, digits, exp_obj) = decimal_tuple_parts(obj)?;
+    let mut numerator = BigInt::zero();
+    for digit in digits.iter() {
+        let value = object_int_to_bigint(digit)?;
+        numerator = numerator * 10u8 + value;
+    }
+    if sign {
+        numerator = -numerator;
+    }
+    let exp = match &exp_obj.payload {
+        PyObjectPayload::Str(s) => {
+            let text = s.as_str();
+            if text == "F" {
+                return Some((
+                    if sign { -BigInt::one() } else { BigInt::one() },
+                    BigInt::zero(),
+                ));
+            }
+            return None;
+        }
+        _ => object_int_to_bigint(&exp_obj)?.to_i64()?,
+    };
+    if numerator.is_zero() {
+        return Some((BigInt::zero(), BigInt::one()));
+    }
+    if exp.abs() > 10_000 {
+        return None;
+    }
+    if exp >= 0 {
+        Some((
+            numerator * BigInt::from(10u8).pow(exp as u32),
+            BigInt::one(),
+        ))
+    } else {
+        Some((numerator, BigInt::from(10u8).pow((-exp) as u32)))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DecimalExtreme {
+    Huge { negative: bool },
+    Tiny { negative: bool },
+}
+
+fn decimal_extreme_from_object(obj: &PyObjectRef) -> Option<DecimalExtreme> {
+    if !obj
+        .get_attr("__decimal__")
+        .is_some_and(|marker| marker.is_truthy())
+    {
+        return None;
+    }
+    let (negative, digits, exp_obj) = decimal_tuple_parts(obj)?;
+    if digits.iter().all(|digit| {
+        object_int_to_bigint(digit)
+            .as_ref()
+            .is_some_and(|value| value.is_zero())
+    }) {
+        return None;
+    }
+    let exp = match &exp_obj.payload {
+        PyObjectPayload::Str(_) => return None,
+        _ => object_int_to_bigint(&exp_obj)?.to_i64()?,
+    };
+    let adjusted = exp + digits.len() as i64 - 1;
+    if adjusted > 10_000 {
+        Some(DecimalExtreme::Huge { negative })
+    } else if adjusted < -10_000 {
+        Some(DecimalExtreme::Tiny { negative })
+    } else {
+        None
+    }
+}
+
+fn decimal_tuple_parts(obj: &PyObjectRef) -> Option<(bool, Vec<PyObjectRef>, PyObjectRef)> {
+    let method = obj.get_attr("as_tuple")?;
+    let tuple = crate::object::call_callable(&method, &[]).ok()?;
+    let (sign_obj, digits_obj, exp_obj) = if let PyObjectPayload::Tuple(items) = &tuple.payload {
+        if items.len() != 3 {
+            return None;
+        }
+        (items[0].clone(), items[1].clone(), items[2].clone())
+    } else {
+        (
+            tuple.get_attr("sign")?,
+            tuple.get_attr("digits")?,
+            tuple.get_attr("exponent")?,
+        )
+    };
+    let sign = object_int_to_bigint(&sign_obj)?.is_one();
+    let PyObjectPayload::Tuple(digits) = &digits_obj.payload else {
+        return None;
+    };
+    Some((sign, digits.iter().cloned().collect(), exp_obj))
+}
+
+fn decimal_extreme_cmp(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
+    if let Some(extreme) = decimal_extreme_from_object(a) {
+        return compare_decimal_extreme_to_object(extreme, b);
+    }
+    if let Some(extreme) = decimal_extreme_from_object(b) {
+        return compare_decimal_extreme_to_object(extreme, a).map(|ordering| ordering.reverse());
+    }
+    None
+}
+
+fn compare_decimal_extreme_to_object(
+    extreme: DecimalExtreme,
+    other: &PyObjectRef,
+) -> Option<std::cmp::Ordering> {
+    if let Some((n, d)) = object_rational_parts(other) {
+        if d.is_zero() {
+            return Some(match (extreme, n.is_negative()) {
+                (_, false) => std::cmp::Ordering::Less,
+                (_, true) => std::cmp::Ordering::Greater,
+            });
+        }
+        if n.is_zero() {
+            return Some(match extreme {
+                DecimalExtreme::Huge { negative: true }
+                | DecimalExtreme::Tiny { negative: true } => std::cmp::Ordering::Less,
+                DecimalExtreme::Huge { negative: false }
+                | DecimalExtreme::Tiny { negative: false } => std::cmp::Ordering::Greater,
+            });
+        }
+        return Some(match extreme {
+            DecimalExtreme::Huge { negative: true } => std::cmp::Ordering::Less,
+            DecimalExtreme::Huge { negative: false } => std::cmp::Ordering::Greater,
+            DecimalExtreme::Tiny { negative: true } => {
+                if n.is_negative() {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            }
+            DecimalExtreme::Tiny { negative: false } => {
+                if n.is_negative() {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            }
+        });
+    }
+    None
 }
 
 fn decimal_ratio(s: &str) -> Option<(BigInt, BigInt)> {
@@ -266,6 +424,9 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         ) {
             return partial_cmp_objects(a, &right);
         }
+    }
+    if let Some(ordering) = decimal_extreme_cmp(a, b) {
+        return Some(ordering);
     }
 
     match (&a.payload, &b.payload) {
@@ -638,6 +799,10 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             // Check if they are the same object
             if PyObjectRef::ptr_eq(a, b) {
                 return Some(std::cmp::Ordering::Equal);
+            }
+            if let (Some(left), Some(right)) = (object_rational_parts(a), object_rational_parts(b))
+            {
+                return compare_rational_parts(left, right);
             }
             if inst_a.attrs.read().contains_key("__weakref_ref__")
                 || inst_b.attrs.read().contains_key("__weakref_ref__")

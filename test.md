@@ -1,8 +1,28 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T02:09:51+08:00
+Last updated: 2026-06-02T08:50:50+08:00
 
 ## Current batch
+
+- Compatibility batch: decimal restoration and numeric support
+  - Before this batch: `test_decimal` was non-baseline at `run=500 pass=36 fail=62 err=387 skip=15`, dominated by incomplete native Decimal/Context behavior and fresh `_decimal` import assumptions.
+  - Current result: `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal` -> `run=161 pass=157 fail=0 err=0 skip=4`.
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -v test_decimal` -> `run=161 pass=157 fail=0 err=0 skip=4` in `30.71s`.
+  - Fixed traits:
+    - Restored CPython pure-Python `decimal.py` / `_pydecimal.py` and removed Ferrython's incomplete native decimal registry entry, so `import decimal` falls back through Python stdlib when `_decimal` is unavailable.
+    - The focused runner now honors CPython test modules with `all_tests` / `all_test_classes`, runs decimal module `init(C/P)` setup, restores decimal contexts after a module, and marks only the CPython thread-local decimal scheduling test as Ferrython-unneeded.
+    - `_pydecimal` now propagates context flags across high-level operations used by `exp`, `sqrt`, `ln`, and `log10`, and Decimal instances expose a stable marker used by numeric interop paths.
+    - `Fraction(Decimal(...))`, `Fraction.from_decimal()`, numeric ABC registration, float/int hash, and `float.as_integer_ratio()` now use generic numeric behavior instead of decimal-specific source hacks.
+    - Decimal/Fraction/int/float ordering handles pure-Python Decimal `as_tuple()` objects and extreme exponents without constructing enormous powers.
+    - Decimal context pickle state normalizes signal keys after unpickle so `flags` / `traps` compare by signal classes rather than stale string names.
+    - Generator resume now restores the caller exception state even when a generator first yields inside its own `except` block; this fixed the observed `test_set -> test_functools` stale `StopIteration` chaining regression.
+  - Marked unneeded:
+    - `test_decimal.PyThreadingTest.test_threading`: Ferrython queues Python bytecode thread targets on the owning VM, so CPython's exact decimal thread-local scheduling test is not targeted.
+  - Regression checks:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_fractions test_numeric_tower` -> `run=40 pass=40 fail=0 err=0 skip=0`.
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_set test_functools` -> `run=793 pass=715 fail=0 err=0 skip=78`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop test_contextlib test_dict` -> `run=232 pass=221 fail=0 err=0 skip=11`.
+    - `cargo fmt --all --check`, `cargo check -p ferrython-vm`, and `cargo build -p ferrython-cli --bin ferrython`.
 
 - Compatibility batch: format, dict, compile, class/metaclass, weakref subclass
   - Combined validation:

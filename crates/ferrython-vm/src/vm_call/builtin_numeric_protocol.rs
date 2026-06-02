@@ -113,6 +113,31 @@ impl VirtualMachine {
                     {
                         return Ok(Some(result));
                     }
+                } else if args.len() == 3 {
+                    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                        if let Some(result) = self.call_plain_instance_dunder(
+                            &args[0],
+                            inst,
+                            "__pow__",
+                            vec![args[1].clone(), args[2].clone()],
+                        )? {
+                            if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                return Ok(Some(result));
+                            }
+                        }
+                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__pow__") {
+                            let ca =
+                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                    vec![args[1].clone(), args[2].clone()]
+                                } else {
+                                    vec![args[0].clone(), args[1].clone(), args[2].clone()]
+                                };
+                            let result = self.call_object(method, ca)?;
+                            if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                return Ok(Some(result));
+                            }
+                        }
+                    }
                 }
             }
             "bin" | "oct" | "hex" => {

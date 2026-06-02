@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-02T02:09:51+08:00
+Last updated: 2026-06-02T08:50:50+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -43,6 +43,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_datetime | 3 | 3 | 0 | 0 | 0 | 0s |
 | test_decorators | 13 | 13 | 0 | 0 | 0 | 0s |
 | test_defaultdict | 11 | 11 | 0 | 0 | 0 | 0s |
+| test_decimal | 161 | 157 | 0 | 0 | 4 | 31s |
 | test_deque | 79 | 76 | 0 | 0 | 3 | 10s |
 | test_dict | 103 | 92 | 0 | 0 | 11 | 0s |
 | test_dictcomps | 7 | 7 | 0 | 0 | 0 | 0s |
@@ -114,7 +115,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_weakset | 44 | 42 | 0 | 0 | 2 | 1s |
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 96 modules have zero failures/errors. Of those, 90 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 97 modules have zero failures/errors. Of those, 91 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
 ## Current Non-Baseline Modules
 
@@ -126,7 +127,6 @@ These modules are not protected as passing gates yet.
 | test_configparser | FAIL | 341 | 36 | 138 | 162 | 5 | 0s |
 | test_coroutines | FAIL | 89 | 10 | 11 | 68 | 0 | 0s |
 | test_dataclasses | FAIL | 173 | 48 | 82 | 43 | 0 | 0s |
-| test_decimal | FAIL | 500 | 36 | 62 | 387 | 15 | 0s |
 | test_descr | FAIL | 145 | 37 | 56 | 42 | 10 | 0s |
 | test_enumerate | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_exception_hierarchy | FAIL | 16 | 4 | 3 | 8 | 1 | 0s |
@@ -169,6 +169,7 @@ This table mirrors `tools/run_cpython_tests.py` `_FERRYTHON_UNNEEDED_TESTS`. The
 | test_weakref.MappingTestCase.test_threaded_weak_valued_consistency | CPython threaded weak-dict stress test exceeds Ferrython's focused runner budget |
 | test_functools.TestLRUC.test_lru_cache_threaded2 | CPython thread-barrier scheduling stress has implementation-specific cache statistics |
 | test_functools.TestLRUPy.test_lru_cache_threaded2 | CPython thread-barrier scheduling stress has implementation-specific cache statistics |
+| test_decimal.PyThreadingTest.test_threading | Ferrython queues Python bytecode thread targets on the owning VM, so CPython decimal thread-local scheduling is not targeted |
 | test_functools.TestLRUC.test_pickle | Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip |
 | test_functools.TestLRUPy.test_pickle | Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip |
 | test_functools.TestPartialPy.test_recursive_pickle | Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack |

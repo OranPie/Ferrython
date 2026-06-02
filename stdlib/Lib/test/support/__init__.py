@@ -358,6 +358,12 @@ def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
         sys.modules[n] = None  # type: ignore[assignment]
     mod = None
     try:
+        for n in fresh:
+            try:
+                importlib.import_module(n)
+            except ImportError:
+                mod = None
+                return None
         if name == 'heapq' and '_heapq' in fresh:
             mod = importlib.import_module('_heapq')
         else:

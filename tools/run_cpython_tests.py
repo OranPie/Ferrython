@@ -70,6 +70,9 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_functools.TestLRUPy.test_lru_cache_threaded2",
         "CPython thread-barrier scheduling stress has implementation-specific cache statistics"
     ),
+    ("test_decimal.PyThreadingTest.test_threading",
+        "Ferrython queues Python bytecode thread targets on the owning VM, so CPython decimal thread-local scheduling is not targeted"
+    ),
     ("test_functools.TestLRUC.test_pickle",
         "Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip"
     ),
@@ -445,6 +448,37 @@ def _filter_suite(suite, selector):
     return unittest.TestSuite(selected)
 
 
+def _suite_from_module(loader, mod):
+    for attr in ("all_tests", "all_test_classes"):
+        classes = getattr(mod, attr, None)
+        if classes is not None:
+            return unittest.TestSuite(loader.loadTestsFromTestCase(cls) for cls in classes)
+    return loader.loadTestsFromModule(mod)
+
+
+def _prepare_module_suite(mod):
+    init = getattr(mod, "init", None)
+    if not callable(init):
+        return
+    for target_name in ("C", "P"):
+        target = getattr(mod, target_name, None)
+        if target:
+            init(target)
+
+
+def _cleanup_module_suite(mod):
+    original_context = getattr(mod, "ORIGINAL_CONTEXT", None)
+    if original_context is None:
+        return
+    for target_name in ("C", "P"):
+        target = getattr(mod, target_name, None)
+        if target:
+            try:
+                target.setcontext(original_context[target])
+            except Exception:
+                pass
+
+
 def _mark_unneeded_tests(suite):
     def make_skip(reason):
         def skipped(self=None):
@@ -479,7 +513,8 @@ def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, li
 
     loader = unittest.TestLoader()
     try:
-        suite = loader.loadTestsFromModule(mod)
+        _prepare_module_suite(mod)
+        suite = _suite_from_module(loader, mod)
         suite = _filter_suite(suite, selector)
         suite = _mark_unneeded_tests(suite)
         total = suite.countTestCases()
@@ -502,6 +537,7 @@ def _run_one(test_dir, name, verbosity, failfast, module_index, module_count, li
         suite.run(result)
     finally:
         result.stopTestRun()
+        _cleanup_module_suite(mod)
 
     elapsed = time.monotonic() - start
     failed = _count(getattr(result, "failures", []))

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T02:09:51+08:00
+Last updated: 2026-06-02T08:50:50+08:00
 
 ## 性能优化进度
 
@@ -76,6 +76,26 @@ Last updated: 2026-06-02T02:09:51+08:00
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
+
+- 2026-06-02 decimal restoration / numeric interop 批次：
+  - `test_decimal` 从非 baseline 的 `run=500 pass=36 fail=62 err=387 skip=15` 推进到 `run=161 pass=157 fail=0 err=0 skip=4`，并加入 `TEST_BASELINE.md`；baseline summary 从 96 个零失败/零错误模块更新为 97 个。
+  - 恢复 CPython 3.8 的纯 Python `decimal.py` / `_pydecimal.py`，并移除不完整 native decimal 注册；`import decimal` 现在通过 Python stdlib fallback 工作，`test.support.import_fresh_module()` 在 fresh accelerator `_decimal` 不可用时返回 `None`。
+  - CPython focused runner 支持 `all_tests` / `all_test_classes`、decimal `init(C/P)` 初始化和模块结束后的 context 清理；只把 `test_decimal.PyThreadingTest.test_threading` 标记为不适用，原因是 Ferrython 的 Python bytecode thread target 调度不目标化 CPython decimal thread-local scheduling。
+  - `_pydecimal` 增加 Decimal marker，并修复 Context flag propagation；`exp`、`sqrt`、`ln`、`log10` 等高层操作的 flags/traps 路径不再静默丢状态。
+  - 数值互操作通用补齐：`float.as_integer_ratio()` 使用 BigInt 精确路径，`int.__hash__` / `float.__hash__` 使用 Python-style numeric hash，Fraction 能识别纯 Python Decimal，numbers ABC registration 与 Rational marker 参与 `isinstance`/`issubclass`。
+  - Decimal/Fraction/int/float 排序改为通用 numeric fast compare，仅用于 ordering；Decimal/Fraction equality 仍走 dunder 以保留 NaN、FloatOperation flags 和 Fraction immutability 语义。极端 Decimal exponent 比较增加 shortcut，避免构造 `10 ** 425000000` 级别的大整数。
+  - pickle 反序列化 normalize Decimal Context 的 `flags` / `traps` signal key，避免旧 state 中 string key 与当前 signal class key 不匹配。
+  - generator resume/exception-state 通用修复：生成器第一次在自身 `except` block 中 `yield` 时，也会恢复 caller active exception state；修复 `test_set` 后运行 `test_functools` 时 stale `StopIteration` 进入 lru_cache exception `__context__` 的交叉失败。
+  - 相邻稳定验证：
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal` -> `run=161 pass=157 fail=0 err=0 skip=4`
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -v test_decimal` -> `run=161 pass=157 fail=0 err=0 skip=4` (`30.71s`)
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_fractions test_numeric_tower` -> `run=40 pass=40 fail=0 err=0 skip=0`
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_set test_functools` -> `run=793 pass=715 fail=0 err=0 skip=78`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_with test_generator_stop test_contextlib test_dict` -> `run=232 pass=221 fail=0 err=0 skip=11`
+  - 构建/格式验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
 
 - 2026-06-01 format / dict / compile / ABCMeta / weakref subclass batch:
   - 新增绿色目标：`test_format`、`test_dict`、`test_compile`、`test_binop`、`test_dynamicclassattribute`、`test_weakref`，并保持 `test_set`、`test_super` 绿色。
@@ -2025,7 +2045,7 @@ Last updated: 2026-06-02T02:09:51+08:00
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_exception_hierarchy`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_decimal` / `test_statistics`。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_exception_hierarchy`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

@@ -386,3 +386,11 @@ def _float_to_ratio(f):
     num = int(f) * sign
     g = _gcd(num, den)
     return (num // g, den // g)
+
+
+try:
+    import numbers as _numbers
+except ImportError:
+    pass
+else:
+    _numbers.Rational.register(Fraction)
