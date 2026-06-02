@@ -398,12 +398,57 @@ impl VirtualMachine {
         a: PyObjectRef,
         b: PyObjectRef,
     ) -> Result<Option<PyObjectRef>, PyException> {
+        let cmp_to_key_compare = |vm: &mut Self,
+                                  obj: &PyObjectRef,
+                                  other: &PyObjectRef,
+                                  method_name: &str|
+         -> Result<Option<PyObjectRef>, PyException> {
+            let cmp_op = match method_name {
+                "__lt__" => CompareOp::Lt,
+                "__le__" => CompareOp::Le,
+                "__eq__" => CompareOp::Eq,
+                "__ne__" => CompareOp::Ne,
+                "__gt__" => CompareOp::Gt,
+                "__ge__" => CompareOp::Ge,
+                _ => return Ok(None),
+            };
+            let PyObjectPayload::Instance(left_inst) = &obj.payload else {
+                return Ok(None);
+            };
+            let PyObjectPayload::Instance(right_inst) = &other.payload else {
+                return Ok(None);
+            };
+            if !PyObjectRef::ptr_eq(&left_inst.class, &right_inst.class) {
+                return Ok(None);
+            }
+            let cmp_func = {
+                let PyObjectPayload::Class(cd) = &left_inst.class.payload else {
+                    return Ok(None);
+                };
+                cd.namespace.read().get("__cmp_to_key_func__").cloned()
+            };
+            let Some(cmp_func) = cmp_func else {
+                return Ok(None);
+            };
+            let Some(left_obj) = left_inst.attrs.read().get("obj").cloned() else {
+                return Ok(None);
+            };
+            let Some(right_obj) = right_inst.attrs.read().get("obj").cloned() else {
+                return Ok(None);
+            };
+            let cmp_result = vm.call_object(cmp_func, vec![left_obj, right_obj])?;
+            let zero = PyObject::int(0);
+            Ok(Some(cmp_result.compare(&zero, cmp_op)?))
+        };
         let call_instance_dunder = |vm: &mut Self,
                                     obj: &PyObjectRef,
                                     other: &PyObjectRef,
                                     method_name: &str|
          -> Result<Option<PyObjectRef>, PyException> {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(result) = cmp_to_key_compare(vm, obj, other, method_name)? {
+                    return Ok(Some(result));
+                }
                 if inst.attrs.read().contains_key(method_name)
                     || inst.attrs.read().contains_key("__deque__")
                 {

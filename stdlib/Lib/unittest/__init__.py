@@ -208,8 +208,12 @@ class TestCase:
         method = getattr(self, self._testMethodName)
         result.startTest(self)
         skip_reason = getattr(type(self), '__skip_reason__', None)
+        if skip_reason is None and getattr(type(self), '__unittest_skip__', False):
+            skip_reason = getattr(type(self), '__unittest_skip_why__', '')
         if skip_reason is None:
             skip_reason = getattr(method, '__skip_reason__', None)
+        if skip_reason is None and getattr(method, '__unittest_skip__', False):
+            skip_reason = getattr(method, '__unittest_skip_why__', '')
         if skip_reason is not None:
             result.addSkip(self, skip_reason)
             return result
@@ -961,11 +965,15 @@ def skip(reason):
     def decorator(func):
         if isinstance(func, type):
             func.__skip_reason__ = reason
+            func.__unittest_skip__ = True
+            func.__unittest_skip_why__ = reason
             return func
         def wrapper(*args, **kwargs):
             raise SkipTest(reason)
         wrapper.__name__ = func.__name__
         wrapper.__skip_reason__ = reason
+        wrapper.__unittest_skip__ = True
+        wrapper.__unittest_skip_why__ = reason
         return wrapper
     return decorator
 

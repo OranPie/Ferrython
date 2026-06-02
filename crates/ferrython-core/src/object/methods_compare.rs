@@ -87,6 +87,47 @@ fn compare_ordering(ordering: std::cmp::Ordering, op: CompareOp) -> bool {
     }
 }
 
+fn cmp_to_key_compare(
+    a: &PyObjectRef,
+    b: &PyObjectRef,
+    name: &str,
+) -> PyResult<Option<PyObjectRef>> {
+    let op = match name {
+        "__lt__" => CompareOp::Lt,
+        "__le__" => CompareOp::Le,
+        "__eq__" => CompareOp::Eq,
+        "__ne__" => CompareOp::Ne,
+        "__gt__" => CompareOp::Gt,
+        "__ge__" => CompareOp::Ge,
+        _ => return Ok(None),
+    };
+    let PyObjectPayload::Instance(left_inst) = &a.payload else {
+        return Ok(None);
+    };
+    let PyObjectPayload::Instance(right_inst) = &b.payload else {
+        return Ok(None);
+    };
+    if !PyObjectRef::ptr_eq(&left_inst.class, &right_inst.class) {
+        return Ok(None);
+    }
+    let PyObjectPayload::Class(cd) = &left_inst.class.payload else {
+        return Ok(None);
+    };
+    let Some(cmp_func) = cd.namespace.read().get("__cmp_to_key_func__").cloned() else {
+        return Ok(None);
+    };
+    let Some(left_obj) = left_inst.attrs.read().get("obj").cloned() else {
+        return Ok(None);
+    };
+    let Some(right_obj) = right_inst.attrs.read().get("obj").cloned() else {
+        return Ok(None);
+    };
+    let cmp_result = call_callable(&cmp_func, &[left_obj, right_obj])?;
+    let zero = PyObject::int(0);
+    let result = cmp_result.compare(&zero, op)?.is_truthy();
+    Ok(Some(PyObject::bool_val(result)))
+}
+
 fn numeric_fraction_cmp_parts(
     obj: &PyObjectRef,
 ) -> Option<(num_bigint::BigInt, num_bigint::BigInt)> {
@@ -908,6 +949,9 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
     let call_instance_dunder =
         |obj: &PyObjectRef, other: &PyObjectRef, name: &str| -> PyResult<Option<PyObjectRef>> {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(result) = cmp_to_key_compare(obj, other, name)? {
+                    return Ok(Some(result));
+                }
                 if inst.attrs.read().contains_key("__deque__") {
                     if let Some(method) = obj.get_attr(name) {
                         let result = call_callable(&method, &[other.clone()])?;

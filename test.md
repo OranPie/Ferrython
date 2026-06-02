@@ -1,8 +1,32 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T14:09:08+08:00
+Last updated: 2026-06-02T15:51:25+08:00
 
 ## Current batch
+
+- Native compatibility batch: functools cmp_to_key, descriptor/classmethod, and _bisect
+  - `_functools` now exposes native `cmp_to_key` together with native `reduce`; incomplete native `partial` and `_lru_cache_wrapper` remain hidden outside the experimental native-functools path.
+  - Native `cmp_to_key` covers `cmp_to_key(mycmp=...)`, `key(obj=...)`, stored `obj`, unhashable wrapper objects, sort keys, and direct rich comparisons through the VM/core comparison paths.
+  - Descriptor resolution now treats `classmethod` and `staticmethod` as descriptors and passes the instance class/class owner correctly; this fixes `string.Template.__init_subclass__` classmethod dispatch.
+  - `_bisect` now resolves to the same native implementation as `bisect`, preserving accelerator alias identity for `bisect is bisect_right` and `insort is insort_right`.
+  - `unittest.skip()` and related skip handling now write/read CPython's standard `__unittest_skip__` and `__unittest_skip_why__` markers as well as the existing Ferrython marker.
+  - Partial adjacent support: `enumerate` subclasses can be created and iterated, but full `test_enumerate` is not counted in this batch because type identity, pickle/reversed, and timeout issues remain.
+  - Five-suite target results observed before final combined gate:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_string` -> `run=36 pass=36 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_bisect` -> `run=36 pass=36 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac` -> `run=20 pass=20 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_operator` -> `run=90 pass=90 fail=0 err=0 skip=0`.
+  - Final combined gate:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator` -> `run=414 pass=339 fail=0 err=0 skip=75`.
+  - Smokes:
+    - `_functools.cmp_to_key`: keyword comparator, keyword object, sort order, direct comparisons, and unhashable behavior passed.
+    - `_functools.cmp_to_key` keeps ordinary dict positional comparators distinct from Ferrython's internal kwargs marker; non-callable comparator errors occur when compared.
+    - `_bisect`: `_bisect.bisect is _bisect.bisect_right` and `_bisect.insort is _bisect.insort_right`.
+    - `unittest` skip class smoke: `testsRun=1 skipped=1 errors=0`.
+  - Non-baseline probes not fixed in this batch:
+    - `test_exception_hierarchy`: `run=16 pass=4 fail=3 err=8 skip=1`.
+    - `test_int`, `test_float`, `test_scope`, `test_yield_from`, `test_funcattrs`, and `test_exceptions` still show broader core numeric/scope/exception gaps and should be handled as separate batches.
 
 - Native acceleration batch: functools reduce
   - `_functools` now exposes native `reduce` by default, using the VM-aware bridge for Python callables and iterables.

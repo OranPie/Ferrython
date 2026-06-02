@@ -1,22 +1,45 @@
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    call_callable, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    call_callable, make_module, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 
 // ── bisect module ──
 
 pub fn create_bisect_module() -> PyObjectRef {
+    create_bisect_module_named("bisect")
+}
+
+pub fn create_bisect_accel_module() -> PyObjectRef {
+    create_bisect_module_named("_bisect")
+}
+
+fn bisect_function(
+    module: &str,
+    name: &str,
+    func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
+) -> PyObjectRef {
+    PyObject::native_function(&format!("{module}.{name}"), func)
+}
+
+fn create_bisect_module_named(module: &str) -> PyObjectRef {
+    let bisect_right_obj = bisect_function(module, "bisect_right", bisect_right);
+    let insort_right_obj = bisect_function(module, "insort_right", insort_right);
     make_module(
-        "bisect",
+        module,
         vec![
-            ("bisect_left", make_builtin(bisect_left)),
-            ("bisect_right", make_builtin(bisect_right)),
-            ("bisect", make_builtin(bisect_right)), // bisect is alias for bisect_right
-            ("insort_left", make_builtin(insort_left)),
-            ("insort_right", make_builtin(insort_right)),
-            ("insort", make_builtin(insort_right)), // insort is alias for insort_right
+            (
+                "bisect_left",
+                bisect_function(module, "bisect_left", bisect_left),
+            ),
+            ("bisect_right", bisect_right_obj.clone()),
+            ("bisect", bisect_right_obj),
+            (
+                "insort_left",
+                bisect_function(module, "insort_left", insort_left),
+            ),
+            ("insort_right", insort_right_obj.clone()),
+            ("insort", insort_right_obj),
         ],
     )
 }

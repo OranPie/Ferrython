@@ -205,6 +205,7 @@ pub fn is_data_descriptor(obj: &PyObjectRef) -> bool {
 pub fn has_descriptor_get(obj: &PyObjectRef) -> bool {
     match &obj.payload {
         PyObjectPayload::Property(_) => true,
+        PyObjectPayload::ClassMethod(_) | PyObjectPayload::StaticMethod(_) => true,
         PyObjectPayload::Instance(inst) => {
             is_property_subclass_class(&inst.class) || has_method_in_class(&inst.class, "__get__")
         }

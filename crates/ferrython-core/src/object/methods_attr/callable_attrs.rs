@@ -362,10 +362,10 @@ pub(super) fn classmethod_attr(func: &PyObjectRef, name: &str) -> Option<PyObjec
         "__get__" => {
             let func = func.clone();
             Some(PyObject::native_closure("__get__", move |args| {
-                if args.len() < 2 {
+                if args.is_empty() {
                     return Err(PyException::type_error("__get__ requires 2 arguments"));
                 }
-                let owner = &args[1];
+                let owner = args.get(2).or_else(|| args.get(1)).unwrap_or(&args[0]);
                 Ok(PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: owner.clone(),

@@ -16,10 +16,16 @@ pub fn create_functools_module() -> PyObjectRef {
     if std::env::var_os("FERRYTHON_EXPERIMENTAL_NATIVE_FUNCTOOLS").is_none() {
         return make_module(
             "_functools",
-            vec![(
-                "reduce",
-                PyObject::native_function("functools.reduce", functools_reduce),
-            )],
+            vec![
+                (
+                    "reduce",
+                    PyObject::native_function("functools.reduce", functools_reduce),
+                ),
+                (
+                    "cmp_to_key",
+                    PyObject::native_function("functools.cmp_to_key", functools_cmp_to_key),
+                ),
+            ],
         );
     }
 
@@ -34,7 +40,10 @@ pub fn create_functools_module() -> PyObjectRef {
                 "partial",
                 PyObject::native_function("functools.partial", functools_partial),
             ),
-            ("cmp_to_key", make_builtin(functools_cmp_to_key)),
+            (
+                "cmp_to_key",
+                PyObject::native_function("functools.cmp_to_key", functools_cmp_to_key),
+            ),
             (
                 "lru_cache",
                 make_builtin(|args| {
@@ -460,13 +469,133 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// that delegate to the comparison function. The comparison function itself is stored
 /// on a marker so the VM can intercept and call it during sort.
 fn functools_cmp_to_key(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() {
+    let kwarg_marker = HashableKey::str_key(CompactString::from("__cmp_to_key_kwargs__"));
+    let mycmp_key = HashableKey::str_key(CompactString::from("mycmp"));
+    let kwargs = args.last().and_then(|last| {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let read = map.read();
+            if read.contains_key(&kwarg_marker) {
+                Some(last.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+    let pos_len = args.len() - usize::from(kwargs.is_some());
+    let cmp_func = if pos_len == 1 {
+        if let Some(kwargs_obj) = &kwargs {
+            let PyObjectPayload::Dict(kw) = &kwargs_obj.payload else {
+                unreachable!();
+            };
+            let read = kw.read();
+            if read.contains_key(&mycmp_key) {
+                return Err(PyException::type_error(
+                    "cmp_to_key() got multiple values for argument 'mycmp'",
+                ));
+            }
+            if read.keys().any(|key| key != &kwarg_marker) {
+                return Err(PyException::type_error(
+                    "cmp_to_key() got an unexpected keyword argument",
+                ));
+            }
+        }
+        args[0].clone()
+    } else if pos_len == 0 {
+        if let Some(kwargs_obj) = kwargs {
+            let PyObjectPayload::Dict(kw) = &kwargs_obj.payload else {
+                unreachable!();
+            };
+            let read = kw.read();
+            if read
+                .keys()
+                .any(|key| key != &mycmp_key && key != &kwarg_marker)
+            {
+                return Err(PyException::type_error(
+                    "cmp_to_key() got an unexpected keyword argument",
+                ));
+            }
+            read.get(&mycmp_key).cloned().ok_or_else(|| {
+                PyException::type_error("cmp_to_key() got an unexpected keyword argument")
+            })?
+        } else {
+            return Err(PyException::type_error("cmp_to_key() requires 1 argument"));
+        }
+    } else {
         return Err(PyException::type_error("cmp_to_key() requires 1 argument"));
-    }
-    let cmp_func = args[0].clone();
-    // Return a callable that wraps each value with the cmp function attached
+    };
     let mut ns = IndexMap::new();
-    ns.insert(CompactString::from("__cmp_to_key_func__"), cmp_func);
+    ns.insert(CompactString::from("__cmp_to_key_func__"), cmp_func.clone());
+    ns.insert(CompactString::from("__hash__"), PyObject::none());
+    ns.insert(
+        CompactString::from("__init__"),
+        PyObject::native_function("cmp_to_key.__init__", |init_args| {
+            let kwarg_marker = HashableKey::str_key(CompactString::from("__cmp_to_key_kwargs__"));
+            let obj_key = HashableKey::str_key(CompactString::from("obj"));
+            let kwargs = init_args.last().and_then(|last| {
+                if let PyObjectPayload::Dict(map) = &last.payload {
+                    if map.read().contains_key(&kwarg_marker) {
+                        Some(last.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            let pos_len = init_args.len() - 1 - usize::from(kwargs.is_some());
+            let obj = if pos_len == 1 {
+                if let Some(kwargs_obj) = &kwargs {
+                    let PyObjectPayload::Dict(kw) = &kwargs_obj.payload else {
+                        unreachable!();
+                    };
+                    let read = kw.read();
+                    if read.contains_key(&obj_key) {
+                        return Err(PyException::type_error(
+                            "cmp_to_key() got multiple values for argument 'obj'",
+                        ));
+                    }
+                    if read.keys().any(|key| key != &kwarg_marker) {
+                        return Err(PyException::type_error(
+                            "cmp_to_key() got an unexpected keyword argument",
+                        ));
+                    }
+                }
+                init_args[1].clone()
+            } else if pos_len == 0 {
+                if let Some(kwargs_obj) = kwargs {
+                    let PyObjectPayload::Dict(kw) = &kwargs_obj.payload else {
+                        unreachable!();
+                    };
+                    let read = kw.read();
+                    if read
+                        .keys()
+                        .any(|key| key != &obj_key && key != &kwarg_marker)
+                    {
+                        return Err(PyException::type_error(
+                            "cmp_to_key() got an unexpected keyword argument",
+                        ));
+                    }
+                    read.get(&obj_key).cloned().ok_or_else(|| {
+                        PyException::type_error("cmp_to_key() got an unexpected keyword argument")
+                    })?
+                } else {
+                    return Err(PyException::type_error(
+                        "cmp_to_key() takes exactly one argument",
+                    ));
+                }
+            } else {
+                return Err(PyException::type_error(
+                    "cmp_to_key() takes exactly one argument",
+                ));
+            };
+            if let PyObjectPayload::Instance(inst) = &init_args[0].payload {
+                inst.attrs.write().insert(CompactString::from("obj"), obj);
+            }
+            Ok(PyObject::none())
+        }),
+    );
     Ok(PyObject::class(
         CompactString::from("cmp_to_key"),
         vec![],

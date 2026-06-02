@@ -1,8 +1,27 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T14:09:08+08:00
+Last updated: 2026-06-02T15:51:25+08:00
 
 ## 性能优化进度
+
+- 2026-06-02 functools cmp_to_key / descriptor / bisect accelerator 批次：
+  - `_functools` 默认暴露 Rust native `cmp_to_key`，保留 `reduce`；继续隐藏不完整的 native `partial` / `_lru_cache_wrapper`，避免破坏 `functools` 兼容面。
+  - native `cmp_to_key` 支持 `cmp_to_key(mycmp=...)`、`key(obj=...)`、`obj` 字段、不可 hash、排序 key 和直接 rich-compare；VM/core compare 路径会识别 `__cmp_to_key_func__` marker 并通过 VM 调回 Python cmp 函数。
+  - `classmethod` / `staticmethod` 现在纳入 descriptor 检测，class 对象 descriptor resolve 会使用 class 本身作为 owner；修复 `string.Template.__init_subclass__` 这类 classmethod descriptor 继承钩子。
+  - `_bisect` 现在注册为现有 native `bisect` 实现的 accelerator alias，并保持 `bisect is bisect_right`、`insort is insort_right` identity。
+  - `unittest.skip()` / `skipUnless()` 现在同时写入并读取 CPython 标准 `__unittest_skip__` / `__unittest_skip_why__` 标记，保留旧 `__skip_reason__` 兼容。
+  - `enumerate` 子类化做了部分通用支撑：`class MyEnum(enumerate)` 可创建并迭代；但 `test_enumerate` 仍因 enumerate type identity、pickle/reversed 等缺口 timeout，未计入本批绿色 gate。
+  - 非 baseline 探测结果：`test_exception_hierarchy`、`test_int`、`test_float`、`test_scope`、`test_yield_from`、`test_funcattrs`、`test_exceptions` 仍是多缺口核心/异常/作用域问题，下一批单独处理。
+  - 验证：
+    - `_functools.cmp_to_key` smoke: keyword cmp, keyword obj, sorting, direct compare, unhashable behavior passed.
+    - `_bisect` smoke: `_bisect.bisect is _bisect.bisect_right` and `_bisect.insort is _bisect.insort_right`.
+    - `target/debug/ferrython` unittest skip class smoke -> `testsRun=1 skipped=1 errors=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_string` -> `run=36 pass=36 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_bisect` -> `run=36 pass=36 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_hmac` -> `run=20 pass=20 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_operator` -> `run=90 pass=90 fail=0 err=0 skip=0`
+    - Combined 5-suite gate: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator` -> `run=414 pass=339 fail=0 err=0 skip=75`
 
 - 2026-06-02 functools native acceleration 批次：
   - `_functools` 默认暴露安全的 Rust native `reduce` accelerator；公开 `functools` 仍通过 `stdlib/Lib/functools.py` 加载完整兼容表面，避免不完整 native `partial` / `_lru_cache_wrapper` / `cmp_to_key` 触发 C 专属测试分支并降低通过数。

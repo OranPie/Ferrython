@@ -93,6 +93,14 @@ impl VirtualMachine {
             "deque" => Some(PyObject::deque_storage(
                 self.collect_iterable(&pos_args[0]).unwrap_or_default(),
             )),
+            "enumerate" => {
+                if pos_args.len() > 2 {
+                    return Err(ferrython_core::error::PyException::type_error(
+                        "enumerate() takes at most 2 arguments",
+                    ));
+                }
+                Some(crate::builtins::dispatch("enumerate", pos_args)?)
+            }
             _ => None,
         };
 

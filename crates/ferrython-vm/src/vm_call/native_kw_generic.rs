@@ -37,6 +37,15 @@ impl VirtualMachine {
                 PyObject::bool_val(true),
             );
         }
+        if matches!(
+            nf_data.name.as_str(),
+            "functools.cmp_to_key" | "cmp_to_key.__init__"
+        ) {
+            kw_map.insert(
+                HashableKey::str_key(CompactString::from("__cmp_to_key_kwargs__")),
+                PyObject::bool_val(true),
+            );
+        }
         all_args.push(PyObject::dict(kw_map));
         (nf_data.func)(&all_args)
     }

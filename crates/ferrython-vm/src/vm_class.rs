@@ -62,6 +62,9 @@ impl VirtualMachine {
                     // Already a real class, keep as-is
                     resolved.push(base.clone());
                 }
+                PyObjectPayload::BuiltinFunction(name) if name.as_str() == "enumerate" => {
+                    resolved.push(base.clone());
+                }
                 PyObjectPayload::Instance(inst) => {
                     // Check for GenericAlias (__origin__ attribute)
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -857,7 +860,11 @@ impl VirtualMachine {
         let Some(init_sub) = Self::lookup_init_subclass(cls, bases) else {
             return Ok(());
         };
-        let bound = Self::bind_init_subclass(cls, init_sub);
+        let bound = if ferrython_core::object::has_descriptor_get(&init_sub) {
+            self.resolve_descriptor(&init_sub, cls)?
+        } else {
+            Self::bind_init_subclass(cls, init_sub)
+        };
         if kwargs.is_empty() {
             self.call_object(bound, vec![])?;
         } else {

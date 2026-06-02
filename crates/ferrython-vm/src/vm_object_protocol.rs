@@ -357,10 +357,10 @@ impl VirtualMachine {
         use ferrython_core::object::has_descriptor_get;
         if has_descriptor_get(val) {
             if let Some(get_method) = val.get_attr("__get__") {
-                let owner = if let PyObjectPayload::Instance(inst) = &instance.payload {
-                    inst.class.clone()
-                } else {
-                    PyObject::none()
+                let owner = match &instance.payload {
+                    PyObjectPayload::Instance(inst) => inst.class.clone(),
+                    PyObjectPayload::Class(_) => instance.clone(),
+                    _ => PyObject::none(),
                 };
                 let bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
                     get_method
