@@ -2103,6 +2103,35 @@ Last updated: 2026-06-02T10:14:03+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`: `run=52 pass=52 fail=0 err=0 skip=0`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`: `run=159 pass=159 fail=0 err=0 skip=0`
 
+- 2026-06-02 second-level native stdlib module batch:
+  - Native module coverage added for medium-low-risk Python-side modules, split by actual module name:
+    - `tomllib`
+    - `graphlib`
+    - `netrc`
+    - `webbrowser`
+  - Registry updates:
+    - All four modules now resolve from the misc extras registry and no longer load from `stdlib/Lib/*.py`.
+  - Runtime details:
+    - `tomllib` implements the existing simplified TOML surface natively: `loads()`, `load()`, basic scalars, arrays, inline tables, normal tables, and array tables.
+    - `graphlib` implements native `TopologicalSorter` with named class methods for Ferrython method binding.
+    - `netrc` implements native `netrc.netrc` parsing/authenticator lookup and repr matching the simplified Python fallback.
+    - `webbrowser` implements native browser registration/get/open helpers and handles Ferrython native kwargs dictionaries for `register(instance=..., preferred=...)`.
+    - Deferred from this batch: `fileinput` needs iterator/global-input state, and `py_compile` touches compiler/pyc behavior; both are higher risk than this native tier.
+  - Validation:
+    - `cargo fmt --all`
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - Native import smoke: `tomllib graphlib netrc webbrowser` all resolve natively.
+    - Functional smokes passed for TOML parse/load, graph static/dynamic topological order, `.netrc` auth/default/repr, and `webbrowser` escaping/register/get kwargs behavior.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`: `run=23 pass=21 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`: `run=52 pass=52 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`: `run=159 pass=159 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_calendar`: `run=68 pass=68 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`: `run=58 pass=15 fail=0 err=0 skip=43`
+    - Non-baseline probes: `test_configparser` remains a known failing non-baseline module, and `test_sched` remains a known timeout non-baseline module per `TEST_BASELINE.md`; neither is counted as a regression for this native batch.
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

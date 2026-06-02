@@ -582,3 +582,41 @@ Last updated: 2026-06-02T10:14:03+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`
+
+## 2026-06-02 second-level native stdlib module batch
+
+- Native modules added
+  - `tomllib`: native import plus TOML `loads()` / file-like `load()` smoke passed.
+  - `graphlib`: native import plus `TopologicalSorter.static_order()` and staged `prepare()` / `get_ready()` / `done()` smoke passed.
+  - `netrc`: native import plus machine/default authenticator lookup and repr smoke passed.
+  - `webbrowser`: native import plus URL escaping, `GenericBrowser`, and `register(instance=..., preferred=True)` / `get()` smoke passed.
+
+- Deferred modules
+  - `fileinput`: not included because it needs iterator and global input state beyond the current medium-low-risk batch.
+  - `py_compile`: not included because it touches compiler and `.pyc` writing behavior.
+
+- Implementation traits
+  - Modules are split by actual name under `misc_modules/`: `tomllib.rs`, `graphlib.rs`, `netrc.rs`, and `webbrowser.rs`.
+  - `graphlib.TopologicalSorter` and browser classes use named native class methods so `LoadMethod` binds `self`.
+  - `webbrowser.register()` handles Ferrython native kwargs dictionaries as well as positional arguments.
+
+- Qpass guard
+  - `test_reprlib`: `run=23 pass=21 fail=0 err=0 skip=2`.
+  - `test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`: `run=52 pass=52 fail=0 err=0 skip=0`.
+  - `test_pprint test_textwrap test_urlparse`: `run=159 pass=159 fail=0 err=0 skip=0`.
+  - `test_calendar`: `run=68 pass=68 fail=0 err=0 skip=0`.
+  - `test_uuid`: `run=58 pass=15 fail=0 err=0 skip=43`.
+  - `test_configparser` was probed and remains a known non-baseline failing module in `TEST_BASELINE.md`.
+  - `test_sched` was probed and remains a known non-baseline timeout module in `TEST_BASELINE.md`.
+
+- Commands used in this batch
+  - `cargo fmt --all`
+  - `cargo fmt --all --check`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_calendar`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`
