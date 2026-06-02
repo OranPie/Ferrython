@@ -1,5 +1,6 @@
 //! Filesystem and process stdlib modules
 
+mod genericpath;
 mod glob;
 mod io;
 mod pathlib;
@@ -9,6 +10,7 @@ mod tempfile;
 mod subprocess;
 mod zlib;
 
+pub use genericpath::create_genericpath_module;
 pub use glob::create_glob_module;
 pub(crate) use glob::glob_match;
 pub use io::create_io_module;

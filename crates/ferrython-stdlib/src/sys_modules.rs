@@ -25,6 +25,7 @@ mod platform;
 mod pwd;
 mod resource;
 mod site;
+mod stat_module;
 mod stdio;
 mod sysconfig;
 
@@ -42,6 +43,7 @@ pub use platform::create_platform_module;
 pub use pwd::create_pwd_module;
 pub use resource::create_resource_module;
 pub use site::create_site_module;
+pub use stat_module::create_stat_module;
 use stdio::make_stdio_object;
 pub use sysconfig::create_sysconfig_module;
 

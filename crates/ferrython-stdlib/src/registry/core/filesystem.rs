@@ -4,6 +4,7 @@ use ferrython_core::object::PyObjectRef;
 pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
     match name {
         "pathlib" => Some(fs_modules::create_pathlib_module()),
+        "genericpath" => Some(fs_modules::create_genericpath_module()),
         "shutil" => Some(fs_modules::create_shutil_module()),
         "glob" => Some(fs_modules::create_glob_module()),
         "tempfile" => Some(fs_modules::create_tempfile_module()),

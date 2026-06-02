@@ -1,8 +1,27 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T09:03:12+08:00
+Last updated: 2026-06-02T10:14:03+08:00
 
 ## 性能优化进度
+
+- 2026-06-02 native stdlib acceleration 批次：
+  - 新增 Rust native `stat`、`genericpath` 和 `getopt`，减少这些已通过 stdlib 模块的 Python 源码 import/执行开销。
+  - `stat` 保留当前仓库语义：`S_IFMT` 仍是 mask 常量，callable helper 继续暴露为 `S_IFMT_func()`；补齐 mode constants、`S_IS*()`、`S_IMODE()` 和 `filemode()`。
+  - `genericpath` 补齐 `exists()`、metadata time/size、`isfile()`、`isdir()`、`samefile()`、`sameopenfile()`、`samestat()` 和 str/bytes `commonprefix()`。
+  - `getopt` native 覆盖 `GetoptError/error`、`getopt()`、`gnu_getopt()`、`short_has_arg()`、`long_has_args()`、`do_longs()`、`do_shorts()` 和 `__all__`；`POSIXLY_CORRECT` 仍读取真实 environment。
+  - 相邻 VM baseline 修复已收口：type 子类 direct metaclass call、simple class/type-subclass fast-path exclusion、C3 MRO object tail、`InstanceDict` VM-aware equality，以及 `functools.total_ordering()` root detection。
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - native import smoke: `import getopt, stat, genericpath` 均解析为 native module，并覆盖 `GetoptError`、`stat.filemode()`、`genericpath.commonprefix()`。
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt` -> `run=8 pass=8 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex` -> `run=52 pass=52 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse` -> `run=1629 pass=1617 fail=0 err=0 skip=12`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_difflib test_reprlib` -> `run=1681 pass=1667 fail=0 err=0 skip=14`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format test_set test_dict test_compile test_super test_binop test_dynamicclassattribute test_weakref` -> `run=918 pass=886 fail=0 err=0 skip=32`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_urlparse test_pprint test_textwrap test_ipaddress` -> `run=350 pass=350 fail=0 err=0 skip=0`
 
 - 2026-06-02 passed-module native completion 批次：
   - 将已通过的纯 Python 小模块 `keyword` 和 `colorsys` 补为 Rust native stdlib 模块，减少 import 时 Python 源码执行和常用函数调用的解释器开销。

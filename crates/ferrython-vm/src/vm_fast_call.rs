@@ -347,6 +347,7 @@ pub(crate) fn try_fast_simple_class_call(
         || cd.namespace.read().contains_key("__new__")
         || cd.is_dict_subclass
         || cd.builtin_base_name.is_some()
+        || class_inherits_type(cd)
         || ferrython_core::object::is_property_subclass_class(cls_obj)
     {
         return FastCallResult::Fallback;
@@ -425,6 +426,19 @@ pub(crate) fn try_fast_simple_class_call(
     }
     push_stack(frame, instance);
     FastCallResult::Pushed
+}
+
+fn class_inherits_type(cd: &ferrython_core::object::ClassData) -> bool {
+    cd.bases
+        .iter()
+        .chain(cd.mro.iter())
+        .any(|base| match &base.payload {
+            PyObjectPayload::BuiltinType(name) => name.as_str() == "type",
+            PyObjectPayload::Class(base_cd) => {
+                base_cd.name.as_str() == "type" || class_inherits_type(base_cd)
+            }
+            _ => false,
+        })
 }
 
 #[inline(always)]

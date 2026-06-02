@@ -1,8 +1,24 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T09:03:12+08:00
+Last updated: 2026-06-02T10:14:03+08:00
 
 ## Current batch
+
+- Native completion batch: stat, genericpath, and getopt
+  - `stat` now resolves through a native stdlib module with mode constants, `S_IS*()` helpers, `S_IMODE()`, `S_IFMT_func()`, and `filemode()`.
+  - `genericpath` now resolves through a native stdlib module for path existence/type checks, metadata timestamps/size, same-file helpers, and str/bytes `commonprefix()`.
+  - `getopt` now resolves through a native stdlib module while preserving `GetoptError/error`, parser helpers, GNU/POSIX scanning behavior, and `POSIXLY_CORRECT` environment handling.
+  - VM baseline traits restored in the same batch: direct metaclass calls for `type` subclasses, type-subclass exclusions in simple class fast paths, object-tail C3 MRO, VM-aware `InstanceDict` equality, and `functools.total_ordering()` root detection.
+  - Per-module/current results:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt` -> `run=8 pass=8 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse` -> `run=1629 pass=1617 fail=0 err=0 skip=12`.
+  - Combined guards:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex` -> `run=52 pass=52 fail=0 err=0 skip=0`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_argparse test_difflib test_reprlib` -> `run=1681 pass=1667 fail=0 err=0 skip=14`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_format test_set test_dict test_compile test_super test_binop test_dynamicclassattribute test_weakref` -> `run=918 pass=886 fail=0 err=0 skip=32`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_urlparse test_pprint test_textwrap test_ipaddress` -> `run=350 pass=350 fail=0 err=0 skip=0`.
+  - Build checks:
+    - `cargo fmt --all`, `cargo check -p ferrython-stdlib`, `cargo build -p ferrython-cli --bin ferrython`, and `git diff --check`.
 
 - Native completion batch: keyword and colorsys
   - `keyword` now resolves through a native stdlib module while preserving `kwlist`, `softkwlist`, `iskeyword()`, and `issoftkeyword()`.

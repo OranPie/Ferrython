@@ -4,10 +4,12 @@ use crate::vm_truth::exception_kind_matches;
 use crate::VirtualMachine;
 use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
-use ferrython_core::object::helpers::partial_cmp_objects;
+use ferrython_core::object::helpers::{
+    instance_dict_as_hashkey_map, is_hidden_dict_key, partial_cmp_objects,
+};
 use ferrython_core::object::{
-    has_descriptor_get, lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload,
-    PyObjectRef,
+    has_descriptor_get, lookup_in_class_mro, CompareOp, FxHashKeyMap, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
 
@@ -135,6 +137,14 @@ fn class_is_strict_subclass(child: &PyObjectRef, parent: &PyObjectRef) -> bool {
     }
 }
 
+fn mapping_snapshot_for_compare(obj: &PyObjectRef) -> Option<FxHashKeyMap> {
+    match &obj.payload {
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Some(map.read().clone()),
+        PyObjectPayload::InstanceDict(attrs) => Some(instance_dict_as_hashkey_map(attrs)),
+        _ => None,
+    }
+}
+
 impl VirtualMachine {
     fn unwrap_weak_proxy_for_compare(
         &mut self,
@@ -152,6 +162,82 @@ impl VirtualMachine {
         };
         drop(attrs);
         Ok(Some(self.call_object(target_fn, vec![])?))
+    }
+
+    fn compare_mapping_values_vm(
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+    ) -> Result<Option<bool>, PyException> {
+        if !matches!(
+            (&a.payload, &b.payload),
+            (PyObjectPayload::InstanceDict(_), _) | (_, PyObjectPayload::InstanceDict(_))
+        ) {
+            return Ok(None);
+        }
+        let Some(a_map) = mapping_snapshot_for_compare(a) else {
+            return Ok(None);
+        };
+        let Some(b_map) = mapping_snapshot_for_compare(b) else {
+            return Ok(None);
+        };
+        let a_visible: Vec<_> = a_map
+            .iter()
+            .filter(|(key, _)| !is_hidden_dict_key(key))
+            .collect();
+        let b_visible_len = b_map
+            .iter()
+            .filter(|(key, _)| !is_hidden_dict_key(key))
+            .count();
+        if a_visible.len() != b_visible_len {
+            return Ok(Some(false));
+        }
+        for (key, left) in a_visible {
+            let Some(right) = b_map.get(key) else {
+                return Ok(Some(false));
+            };
+            let eq = self.compare_objects_for_mapping(left, right)?;
+            if !eq {
+                return Ok(Some(false));
+            }
+        }
+        Ok(Some(true))
+    }
+
+    fn compare_objects_for_mapping(
+        &mut self,
+        left: &PyObjectRef,
+        right: &PyObjectRef,
+    ) -> Result<bool, PyException> {
+        if PyObjectRef::ptr_eq(left, right) {
+            return Ok(true);
+        }
+        if let Some(result) = self.call_eq_for_mapping(left, right)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.call_eq_for_mapping(right, left)? {
+            return Ok(result);
+        }
+        Ok(left.compare(right, CompareOp::Eq)?.is_truthy())
+    }
+
+    fn call_eq_for_mapping(
+        &mut self,
+        obj: &PyObjectRef,
+        other: &PyObjectRef,
+    ) -> Result<Option<bool>, PyException> {
+        if !matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+            return Ok(None);
+        }
+        let Some(eq_method) = obj.get_attr("__eq__") else {
+            return Ok(None);
+        };
+        let result = self.call_object(eq_method, vec![other.clone()])?;
+        if matches!(&result.payload, PyObjectPayload::NotImplemented) {
+            Ok(None)
+        } else {
+            Ok(Some(result.is_truthy()))
+        }
     }
 
     /// Derive a missing comparison from total_ordering root method
@@ -534,6 +620,12 @@ impl VirtualMachine {
                         self.vm_push(result);
                         return Ok(None);
                     }
+                }
+            }
+            if matches!(cmp, 2 | 3) {
+                if let Some(eq) = self.compare_mapping_values_vm(&a, &b)? {
+                    self.vm_push(PyObject::bool_val(if cmp == 2 { eq } else { !eq }));
+                    return Ok(None);
                 }
             }
             if matches!(cmp, 2 | 3)

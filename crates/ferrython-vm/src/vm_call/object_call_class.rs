@@ -1,5 +1,9 @@
-use ferrython_core::error::PyResult;
-use ferrython_core::object::{ClassData, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use compact_str::CompactString;
+use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::{
+    ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
+use ferrython_core::types::HashableKey;
 
 use crate::VirtualMachine;
 
@@ -10,6 +14,9 @@ impl VirtualMachine {
         class_data: &ClassData,
         args: Vec<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
+        if let Some(cls) = self.try_call_type_subclass_as_metaclass(class_obj, class_data, &args)? {
+            return Ok(cls);
+        }
         if let Some(meta) = &class_data.metaclass {
             if let Some(call_method) = meta.get_attr("__call__") {
                 let is_inherited_type_call = matches!(
@@ -26,5 +33,106 @@ impl VirtualMachine {
             }
         }
         self.instantiate_class(class_obj, args, vec![])
+    }
+
+    fn try_call_type_subclass_as_metaclass(
+        &mut self,
+        meta: &PyObjectRef,
+        meta_data: &ClassData,
+        args: &[PyObjectRef],
+    ) -> PyResult<Option<PyObjectRef>> {
+        if !class_inherits_type(meta_data) {
+            return Ok(None);
+        }
+        if args.len() != 3 {
+            return Ok(None);
+        }
+        let Some(class_name) = args[0].as_str().map(CompactString::from) else {
+            return Ok(None);
+        };
+        let PyObjectPayload::Tuple(bases_tuple) = &args[1].payload else {
+            return Ok(None);
+        };
+        let bases = bases_tuple.to_vec();
+        let namespace = namespace_from_mapping(&args[2])?;
+        let mro = VirtualMachine::compute_mro(&bases)?;
+        let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+            class_name,
+            bases.clone(),
+            namespace,
+            mro,
+            Some(meta.clone()),
+        ))));
+        if let Some(init) = meta_data.namespace.read().get("__init__").cloned() {
+            self.call_object(
+                init,
+                vec![
+                    cls.clone(),
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                ],
+            )?;
+        }
+        for base in &bases {
+            if let PyObjectPayload::Class(base_cd) = &base.payload {
+                base_cd
+                    .subclasses
+                    .write()
+                    .push(PyObjectRef::downgrade(&cls));
+            }
+        }
+        Ok(Some(cls))
+    }
+}
+
+fn class_inherits_type(class_data: &ClassData) -> bool {
+    class_data
+        .bases
+        .iter()
+        .chain(class_data.mro.iter())
+        .any(|base| match &base.payload {
+            PyObjectPayload::BuiltinType(name) => name.as_str() == "type",
+            PyObjectPayload::Class(cd) => class_inherits_type(cd),
+            _ => false,
+        })
+}
+
+fn namespace_from_mapping(mapping: &PyObjectRef) -> PyResult<FxAttrMap> {
+    match &mapping.payload {
+        PyObjectPayload::Dict(map) => {
+            let read = map.read();
+            let mut namespace = FxAttrMap::default();
+            for (key, value) in read.iter() {
+                let HashableKey::Str(name) = key else {
+                    return Err(PyException::type_error(
+                        "type.__new__() argument 3 must be dict with string keys",
+                    ));
+                };
+                namespace.insert(name.to_compact_string(), value.clone());
+            }
+            Ok(namespace)
+        }
+        PyObjectPayload::Instance(inst) => {
+            let Some(storage) = inst.dict_storage.as_ref() else {
+                return Err(PyException::type_error(
+                    "type.__new__() argument 3 must be dict",
+                ));
+            };
+            let read = storage.read();
+            let mut namespace = FxAttrMap::default();
+            for (key, value) in read.iter() {
+                let HashableKey::Str(name) = key else {
+                    return Err(PyException::type_error(
+                        "type.__new__() argument 3 must be dict with string keys",
+                    ));
+                };
+                namespace.insert(name.to_compact_string(), value.clone());
+            }
+            Ok(namespace)
+        }
+        _ => Err(PyException::type_error(
+            "type.__new__() argument 3 must be dict",
+        )),
     }
 }

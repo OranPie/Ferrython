@@ -197,9 +197,7 @@ _convert = {
 def total_ordering(cls):
     """Class decorator that fills in missing ordering methods"""
     # Find user-defined comparisons (not those inherited from object).
-    roots = {op for op in _convert
-             if getattr(cls, op, None) is not None and
-             getattr(cls, op, None) is not getattr(object, op, None)}
+    roots = {op for op in _convert if op in cls.__dict__}
     if not roots:
         raise ValueError('must define at least one ordering operation: < > <= >=')
     root = max(roots)       # prefer __lt__ to __le__ to __gt__ to __ge__

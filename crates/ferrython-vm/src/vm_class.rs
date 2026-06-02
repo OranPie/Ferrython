@@ -991,14 +991,28 @@ impl VirtualMachine {
         let mut linearizations: Vec<Vec<PyObjectRef>> = Vec::new();
         for base in bases {
             let mut l = vec![base.clone()];
-            if let PyObjectPayload::Class(cd) = &base.payload {
-                l.extend(cd.mro.iter().cloned());
+            match &base.payload {
+                PyObjectPayload::Class(cd) => {
+                    l.extend(cd.mro.iter().cloned());
+                    if !Self::linearization_has_object(&l) {
+                        l.push(PyObject::builtin_type(CompactString::from("object")));
+                    }
+                }
+                PyObjectPayload::BuiltinType(name) if name.as_str() != "object" => {
+                    l.push(PyObject::builtin_type(CompactString::from("object")));
+                }
+                _ => {}
             }
-            // ExceptionType/BuiltinType bases: no child MRO, just include them
             linearizations.push(l);
         }
         linearizations.push(bases.to_vec());
         Self::c3_merge(&mut linearizations)
+    }
+
+    fn linearization_has_object(items: &[PyObjectRef]) -> bool {
+        items.iter().any(|item| {
+            matches!(&item.payload, PyObjectPayload::BuiltinType(name) if name.as_str() == "object")
+        })
     }
 
     pub(crate) fn c3_merge(

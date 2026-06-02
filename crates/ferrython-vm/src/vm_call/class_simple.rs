@@ -16,7 +16,7 @@ impl VirtualMachine {
     ) -> PyResult<Option<PyObjectRef>> {
         // ── FAST PATH: simple class — skip ABC check entirely ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
-            if !cd.is_simple_class.get() {
+            if !cd.is_simple_class.get() || class_inherits_builtin_type(cd, "type") {
                 return Ok(None);
             }
             if cd.is_simple_class.get()
@@ -177,4 +177,18 @@ impl VirtualMachine {
         }
         Ok(None)
     }
+}
+
+fn class_inherits_builtin_type(cd: &ferrython_core::object::ClassData, type_name: &str) -> bool {
+    cd.bases
+        .iter()
+        .chain(cd.mro.iter())
+        .any(|base| match &base.payload {
+            PyObjectPayload::BuiltinType(name) => name.as_str() == type_name,
+            PyObjectPayload::Class(base_cd) => {
+                base_cd.name.as_str() == type_name
+                    || class_inherits_builtin_type(base_cd, type_name)
+            }
+            _ => false,
+        })
 }
