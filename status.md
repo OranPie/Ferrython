@@ -2175,10 +2175,35 @@ Last updated: 2026-06-02T16:10:31+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`: `run=58 pass=15 fail=0 err=0 skip=43`
     - Non-baseline probes: `test_configparser` remains a known failing non-baseline module, and `test_sched` remains a known timeout non-baseline module per `TEST_BASELINE.md`; neither is counted as a regression for this native batch.
 
+- 2026-06-02 exception / OrderedDict / function-attrs focused batch (2026-06-02T19:16:06+0800):
+  - Current green additions / confirmations:
+    - `test_exception_hierarchy`: `run=16 pass=15 fail=0 err=0 skip=1`.
+    - `test_ordered_dict`: `run=265 pass=233 fail=0 err=0 skip=32`.
+  - General compatibility fixes:
+    - Builtin exception type fast calls now reuse the same exception builder as slow calls, restoring OSError errno subclass mapping and attrs.
+    - User exception subclass construction now handles builtin exception `__new__`/`__init__`, `super().__new__`, default `args`, and bound `__new__` receiver normalization.
+    - `socket.gaierror` and `socket.herror` are real OSError subclasses; `select.error` remains OSError-compatible.
+    - `errno.errorcode` is a dict rather than a callable, and `os.remove` / `os.unlink` now raise errno-derived exceptions such as `FileNotFoundError`.
+    - `dir(function)` and `dir(bound_method)` include user-set function attrs; deleting attrs on exception instances is supported.
+    - `dict.__init__` and unbound dict method dispatch now accept iterable/mapping updates plus kwargs, closing the OrderedDict builtin-dict init failure.
+  - Partial improvements intentionally left non-green:
+    - `test_funcattrs`: `run=31 pass=27 fail=3 err=1 skip=0`; remaining gaps are mutable function `__code__`, nested class `<locals>` qualname generation, and deleted-cell local error classification.
+    - `test_statistics`: broad Fraction/statistics behavior remains non-green, but the previous Fraction float panic is guarded.
+  - Validation:
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy`: `run=16 pass=15 fail=0 err=0 skip=1`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict`: `run=265 pass=233 fail=0 err=0 skip=32`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict`: `run=281 pass=248 fail=0 err=0 skip=33`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=27 fail=3 err=1 skip=0`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_exception_hierarchy`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`；`test_funcattrs` 剩余项需要单独处理 `__code__` / cell / qualname 语义。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

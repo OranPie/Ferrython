@@ -2,12 +2,6 @@ use compact_str::CompactString;
 use ferrython_core::error::ExceptionKind;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 
-/// Attach `split` and `subgroup` methods to an ExceptionGroup instance.
-/// Reads `message` and `exceptions` from the instance attrs.
-pub fn attach_eg_methods_pub(eg: &PyObjectRef) {
-    attach_eg_methods(eg);
-}
-
 pub(super) fn attach_eg_methods(eg: &PyObjectRef) {
     if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
         let (msg, exc_list) = {

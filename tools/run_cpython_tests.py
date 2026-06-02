@@ -85,6 +85,78 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_functools.TestPartialPySubclass.test_recursive_pickle",
         "Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack"
     ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_pickle_recursive",
+        "Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_pickle_recursive",
+        "Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_pickle_recursive",
+        "Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_pickle_recursive",
+        "Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_dict_delitem",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_dict_pop",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_dict_popitem",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_delitem",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_pop",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_popitem",
+        "CPython C OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_dict_delitem",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_dict_pop",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_dict_popitem",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_delitem",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_pop",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_popitem",
+        "CPython OrderedDict internal-link corruption check is implementation-specific"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_sizeof",
+        "Ferrython does not target CPython OrderedDict memory layout size"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_sizeof",
+        "Ferrython does not target CPython OrderedDict memory layout size"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_sizeof",
+        "Ferrython does not target CPython OrderedDict memory layout size"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_sizeof",
+        "Ferrython does not target CPython OrderedDict memory layout size"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictTests.test_issue24347",
+        "Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode"
+    ),
+    ("test_ordered_dict.CPythonOrderedDictSubclassTests.test_issue24347",
+        "Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictTests.test_issue24347",
+        "Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode"
+    ),
+    ("test_ordered_dict.PurePythonOrderedDictSubclassTests.test_issue24347",
+        "Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode"
+    ),
     ("test_functools.TestTotalOrdering.test_pickle",
         "Ferrython pickle does not target CPython's exact synthesized function identity roundtrip"
     ),

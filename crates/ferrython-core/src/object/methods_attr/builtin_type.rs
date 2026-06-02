@@ -15,6 +15,7 @@ pub(super) fn builtin_type_attr(
         "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
         "__itemsize__" => Some(PyObject::int(8)),
         "__basicsize__" => Some(PyObject::int(0)),
+        "__doc__" => Some(PyObject::none()),
         "__dict__" => {
             // Return a mappingproxy with common type descriptors
             let mut map = new_fx_hashkey_map();
@@ -129,6 +130,29 @@ pub(super) fn builtin_type_attr(
                     }
                 }
                 Ok(PyObject::dict(map))
+            }))
+        }
+        "__init__" | "get" | "pop" | "setdefault" | "clear" | "popitem" | "update"
+            if n.as_str() == "dict" =>
+        {
+            super::super::helpers::resolve_builtin_type_method("dict", name)
+        }
+        "__getformat__" if n.as_str() == "float" => {
+            Some(PyObject::native_function("float.__getformat__", |args| {
+                if args.len() != 1 {
+                    return Err(PyException::type_error(
+                        "__getformat__() requires exactly one argument",
+                    ));
+                }
+                let kind = args[0].py_to_string();
+                match kind.as_str() {
+                    "double" | "float" => Ok(PyObject::str_val(CompactString::from(
+                        "IEEE, little-endian",
+                    ))),
+                    _ => Err(PyException::value_error(
+                        "__getformat__() argument 1 must be 'double' or 'float'",
+                    )),
+                }
             }))
         }
         "maketrans" if n.as_str() == "str" => {
@@ -510,6 +534,7 @@ pub(super) fn builtin_type_attr(
                             | "items"
                             | "get"
                             | "pop"
+                            | "popitem"
                             | "setdefault"
                             | "update"
                             | "clear"

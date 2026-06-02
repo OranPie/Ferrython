@@ -10,6 +10,7 @@ use ferrython_core::object::{
     call_callable, check_args, check_args_min, guard_eager_allocation, PropertyData, PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::HashableKey;
 use std::cell::Cell;
 
 pub(crate) use collections::builtin_dict_fromkeys;
@@ -40,6 +41,21 @@ pub(super) fn builtin_len(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("repr", args, 1)?;
+    if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        if inst.attrs.read().contains_key("__ordered_dict_broken__") {
+            return Err(PyException::key_error("OrderedDict mutated by dict method"));
+        }
+        if let Some(ds) = inst.dict_storage.as_ref() {
+            if ds
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from(
+                    "__ordered_dict_broken__",
+                )))
+            {
+                return Err(PyException::key_error("OrderedDict mutated by dict method"));
+            }
+        }
+    }
     ferrython_core::object::helpers::repr_reset_overflow();
     // Check for user-defined __repr__
     if let Some(repr_method) = args[0].get_attr("__repr__") {
@@ -323,11 +339,62 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 .write()
                 .insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::Function(f) => {
-            f.attrs
-                .write()
-                .insert(CompactString::from(name), args[2].clone());
+        PyObjectPayload::BoundMethod { .. } => {
+            if name == "__class__" {
+                return Err(PyException::type_error(
+                    "'method' object does not support attribute assignment",
+                ));
+            }
+            return Err(PyException::attribute_error(
+                "'method' object does not support attribute assignment",
+            ));
         }
+        PyObjectPayload::Function(f) => match name.as_str() {
+            "__dict__" => {
+                if !matches!(
+                    &args[2].payload,
+                    PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_)
+                ) {
+                    return Err(PyException::type_error(
+                        "__dict__ must be set to a dictionary",
+                    ));
+                }
+                f.attrs
+                    .write()
+                    .insert(CompactString::from(name), args[2].clone());
+            }
+            "__closure__" | "__globals__" => {
+                return Err(PyException::attribute_error(format!(
+                    "readonly attribute '{}'",
+                    name
+                )));
+            }
+            "__name__" | "__qualname__" => {
+                if !matches!(&args[2].payload, PyObjectPayload::Str(_)) {
+                    return Err(PyException::type_error(format!(
+                        "{} must be set to a string object",
+                        name
+                    )));
+                }
+                f.attrs
+                    .write()
+                    .insert(CompactString::from(name), args[2].clone());
+            }
+            _ => {
+                if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                    if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                        map.write().insert(
+                            HashableKey::str_key(CompactString::from(name)),
+                            args[2].clone(),
+                        );
+                        return Ok(PyObject::none());
+                    }
+                }
+                f.attrs
+                    .write()
+                    .insert(CompactString::from(name), args[2].clone());
+            }
+        },
         PyObjectPayload::Property(_) if name == "__doc__" => {
             ferrython_core::object::property_set_doc(&args[0], args[2].clone())?;
         }
@@ -362,6 +429,74 @@ pub(super) fn builtin_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Module(md) => {
             md.attrs.write().shift_remove(name.as_str());
         }
+        PyObjectPayload::ExceptionInstance(ei) => {
+            if let Some(attrs) = ei.get_attrs() {
+                if attrs.write().shift_remove(name.as_str()).is_none() {
+                    return Err(PyException::attribute_error(format!(
+                        "'{}' object has no attribute '{}'",
+                        args[0].type_name(),
+                        name
+                    )));
+                }
+            } else {
+                return Err(PyException::attribute_error(format!(
+                    "'{}' object has no attribute '{}'",
+                    args[0].type_name(),
+                    name
+                )));
+            }
+        }
+        PyObjectPayload::BoundMethod { .. } => {
+            if name == "__class__" {
+                return Err(PyException::type_error(
+                    "'method' object does not support attribute deletion",
+                ));
+            }
+            return Err(PyException::attribute_error(
+                "'method' object does not support attribute deletion",
+            ));
+        }
+        PyObjectPayload::Function(f) => match name.as_str() {
+            "__dict__" => {
+                return Err(PyException::type_error(
+                    "function's dictionary may not be deleted",
+                ));
+            }
+            "__defaults__" => {
+                f.defaults.write().clear();
+            }
+            "__name__" | "__qualname__" => {
+                return Err(PyException::type_error(format!(
+                    "'{}' attribute cannot be deleted",
+                    name
+                )));
+            }
+            "__closure__" | "__globals__" => {
+                return Err(PyException::attribute_error(format!(
+                    "readonly attribute '{}'",
+                    name
+                )));
+            }
+            _ => {
+                if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                    if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                        if map
+                            .write()
+                            .shift_remove(&HashableKey::str_key(CompactString::from(name.as_str())))
+                            .is_some()
+                        {
+                            return Ok(PyObject::none());
+                        }
+                    }
+                }
+                if f.attrs.write().shift_remove(name.as_str()).is_none() {
+                    return Err(PyException::attribute_error(format!(
+                        "'function' object has no attribute '{}'",
+                        name
+                    )));
+                }
+            }
+        },
         _ => {
             return Err(PyException::attribute_error(format!(
                 "'{}' object does not support attribute deletion",

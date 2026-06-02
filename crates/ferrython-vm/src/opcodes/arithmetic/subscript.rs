@@ -10,7 +10,8 @@ use ferrython_core::object::helpers::{
     instance_dict_set_item, mark_dict_storage_mutated,
 };
 use ferrython_core::object::{
-    index_to_i64, slice_indices_for_len, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    index_to_i64, is_hidden_dict_key, slice_indices_for_len, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{take_pending_eq_error, HashableKey};
 use indexmap::IndexMap;
@@ -232,6 +233,9 @@ impl VirtualMachine {
                             // Let dunder dispatch handle it below
                         } else {
                             let hk = self.vm_to_hashable_key(&key)?;
+                            if is_hidden_dict_key(&hk) {
+                                return Err(missing_key_error(&key));
+                            }
                             let existing = ds.read().get(&hk).cloned();
                             if let Some(val) = existing {
                                 self.vm_push(val);

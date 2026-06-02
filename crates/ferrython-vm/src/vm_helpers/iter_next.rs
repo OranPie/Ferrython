@@ -7,8 +7,8 @@ use ferrython_core::object::helpers::{
     range_next_i64,
 };
 use ferrython_core::object::{
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, WeakKeyIterKind,
-    WeakValueIterKind,
+    is_hidden_dict_key, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    WeakKeyIterKind, WeakValueIterKind,
 };
 use std::rc::Rc;
 
@@ -115,7 +115,7 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::DictValueIter(data) => {
-                let idx = data.index.get();
+                let mut idx = data.index.get();
                 if idx == usize::MAX {
                     return Ok(None);
                 }
@@ -126,6 +126,13 @@ impl VirtualMachine {
                     return Err(PyException::runtime_error(
                         "dictionary changed size during iteration",
                     ));
+                }
+                while idx < map.len() {
+                    let (key, _) = map.get_index(idx).unwrap();
+                    if !is_hidden_dict_key(key) {
+                        break;
+                    }
+                    idx += 1;
                 }
                 if idx < map.len() {
                     let value = map.get_index(idx).map(|(_, v)| v.clone());

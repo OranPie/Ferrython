@@ -142,6 +142,29 @@ pub(crate) fn call_dict_method(
     owner: Option<PyObjectRef>,
 ) -> PyResult<PyObjectRef> {
     match method {
+        "__init__" => {
+            let kwargs = if args.len() > 1 {
+                match args.last() {
+                    Some(last) if matches!(&last.payload, PyObjectPayload::Dict(_)) => Some(last),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let positional_end = args.len() - usize::from(kwargs.is_some());
+            if positional_end > 1 {
+                return Err(PyException::type_error(
+                    "dict.__init__() expected at most 1 positional argument",
+                ));
+            }
+            if let Some(arg) = args.get(..positional_end).and_then(|items| items.first()) {
+                call_dict_method(map, "update", &[arg.clone()], owner.clone())?;
+            }
+            if let Some(kwargs) = kwargs {
+                call_dict_method(map, "update", &[kwargs.clone()], owner)?;
+            }
+            Ok(PyObject::none())
+        }
         "keys" => {
             if !args.is_empty() {
                 return Err(PyException::type_error("keys() takes no arguments"));
@@ -343,7 +366,9 @@ pub(crate) fn call_dict_method(
         "pop" => {
             check_args_min("pop", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let default = if args.len() >= 2 {
+            let default = if let Some(v) = extract_kwarg(args, "default") {
+                Some(v)
+            } else if args.len() >= 2 {
                 Some(args[1].clone())
             } else {
                 None
@@ -363,7 +388,9 @@ pub(crate) fn call_dict_method(
         "setdefault" => {
             check_args_min("setdefault", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let default = if args.len() >= 2 {
+            let default = if let Some(v) = extract_kwarg(args, "default") {
+                v
+            } else if args.len() >= 2 {
                 args[1].clone()
             } else {
                 PyObject::none()

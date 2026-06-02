@@ -172,6 +172,14 @@ impl VirtualMachine {
                         cd.name
                     )));
                 }
+                if cd.is_exception_subclass {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(vec![]));
+                        }
+                    }
+                }
                 return Ok(Some(instance));
             }
         }

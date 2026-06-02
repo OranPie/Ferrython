@@ -146,6 +146,13 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                             "dictionary changed size during iteration",
                         ));
                     }
+                    while *index < map.len() {
+                        let (hk, _) = map.get_index(*index).unwrap();
+                        if !is_hidden_dict_key(hk) {
+                            break;
+                        }
+                        *index += 1;
+                    }
                     if *index < map.len() {
                         let obj = map.get_index(*index).unwrap().0.to_object();
                         *index += 1;
@@ -255,7 +262,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
             }
         }
         PyObjectPayload::DictValueIter(data) => {
-            let idx = data.index.get();
+            let mut idx = data.index.get();
             if idx == usize::MAX {
                 return Ok(None);
             }
@@ -266,6 +273,13 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 return Err(PyException::runtime_error(
                     "dictionary changed size during iteration",
                 ));
+            }
+            while idx < map.len() {
+                let (hk, _) = map.get_index(idx).unwrap();
+                if !is_hidden_dict_key(hk) {
+                    break;
+                }
+                idx += 1;
             }
             if idx < map.len() {
                 let v = map.get_index(idx).unwrap().1.clone();
@@ -511,6 +525,13 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         return Err(PyException::runtime_error(
                             "dictionary changed size during iteration",
                         ));
+                    }
+                    while *index < map.len() {
+                        let (hk, _) = map.get_index(*index).unwrap();
+                        if !is_hidden_dict_key(hk) {
+                            break;
+                        }
+                        *index += 1;
                     }
                     if *index < map.len() {
                         let obj = map.get_index(*index).unwrap().0.to_object();

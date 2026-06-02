@@ -165,7 +165,12 @@ impl VirtualMachine {
                 }
                 // Dict subclass: iterate over keys
                 if let Some(ref ds) = inst.dict_storage {
-                    return Ok(ds.read().keys().map(|k| k.to_object()).collect());
+                    return Ok(ds
+                        .read()
+                        .keys()
+                        .filter(|key| !ferrython_core::object::is_hidden_dict_key(key))
+                        .map(|key| key.to_object())
+                        .collect());
                 }
                 if let Some(iter_method) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_method, vec![])?;
@@ -499,6 +504,9 @@ impl VirtualMachine {
                         let end = map.len();
                         let mut result = Vec::with_capacity(end.saturating_sub(start));
                         for (key, _) in map.iter().skip(start) {
+                            if ferrython_core::object::is_hidden_dict_key(key) {
+                                continue;
+                            }
                             result.push(self.call_object_one_arg_fast_or_fallback(
                                 func.clone(),
                                 key.to_object(),

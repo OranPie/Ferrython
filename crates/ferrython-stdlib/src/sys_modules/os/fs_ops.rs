@@ -77,8 +77,8 @@ pub(super) fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn os_remove(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.remove", args, 1)?;
-    std::fs::remove_file(args[0].py_to_string())
-        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    let path = args[0].py_to_string();
+    std::fs::remove_file(&path).map_err(|e| PyException::from_io_error(&e, Some(&path)))?;
     Ok(PyObject::none())
 }
 

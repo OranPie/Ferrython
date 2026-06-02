@@ -3,7 +3,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    make_builtin, make_module, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    make_builtin, make_module, ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use indexmap::IndexMap;
 
@@ -30,6 +31,20 @@ use object::socket_constructor;
 // ════════════════════════════════════════════════════════════════════════
 
 pub fn create_socket_module() -> PyObjectRef {
+    let socket_gaierror = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+        CompactString::from("gaierror"),
+        vec![PyObject::exception_type(ExceptionKind::OSError)],
+        FxAttrMap::default(),
+        vec![PyObject::exception_type(ExceptionKind::OSError)],
+        None,
+    ))));
+    let socket_herror = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
+        CompactString::from("herror"),
+        vec![PyObject::exception_type(ExceptionKind::OSError)],
+        FxAttrMap::default(),
+        vec![PyObject::exception_type(ExceptionKind::OSError)],
+        None,
+    ))));
     make_module(
         "socket",
         vec![
@@ -125,6 +140,8 @@ pub fn create_socket_module() -> PyObjectRef {
             ("SHUT_RDWR", PyObject::int(2)),
             // Exception types
             ("error", PyObject::exception_type(ExceptionKind::OSError)),
+            ("gaierror", socket_gaierror),
+            ("herror", socket_herror),
             (
                 "timeout",
                 PyObject::exception_type(ExceptionKind::TimeoutError),

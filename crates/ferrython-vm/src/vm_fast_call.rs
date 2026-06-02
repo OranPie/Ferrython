@@ -4,8 +4,8 @@ use crate::frame::{BlockKind, Frame, FramePool, ScopeKind, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
 use ferrython_bytecode::opcode::{Instruction, Opcode};
-use ferrython_core::error::{ExceptionKind, PyException};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::error::PyException;
+use ferrython_core::object::{PyObject, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::PyFunction;
 use std::rc::Rc;
 
@@ -452,16 +452,6 @@ pub(crate) fn try_fast_exception_type_call(
         return FastCallResult::Fallback;
     };
     let kind = *kind;
-    let msg: CompactString = if arg_count >= 1 {
-        match &unsafe { frame.stack.get_unchecked(func_idx + 1) }.payload {
-            PyObjectPayload::Str(s) => s.to_compact_string(),
-            _ => CompactString::from(
-                unsafe { frame.stack.get_unchecked(func_idx + 1) }.py_to_string(),
-            ),
-        }
-    } else {
-        CompactString::default()
-    };
     let args: Vec<PyObjectRef> = if arg_count > 0 {
         (0..arg_count)
             .map(|i| unsafe { frame.stack.get_unchecked(func_idx + 1 + i) }.clone())
@@ -469,31 +459,16 @@ pub(crate) fn try_fast_exception_type_call(
     } else {
         Vec::new()
     };
+    let inst = match crate::vm_call::build_builtin_exception_instance(kind, args, &[]) {
+        Ok(inst) => inst,
+        Err(_) => return FastCallResult::Fallback,
+    };
     unsafe {
+        let base = frame.stack.as_ptr();
+        for i in 0..=arg_count {
+            let _ = std::ptr::read(base.add(func_idx + i));
+        }
         frame.stack.set_len(func_idx);
-    }
-    let inst = PyObject::exception_instance_with_args(kind, msg, args.clone());
-    if matches!(
-        kind,
-        ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup
-    ) {
-        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-            let mut attrs = ei.ensure_attrs().write();
-            if !args.is_empty() {
-                attrs.insert(CompactString::from("message"), args[0].clone());
-            }
-            if args.len() >= 2 {
-                let exc_list = match &args[1].payload {
-                    PyObjectPayload::List(_) => args[1].clone(),
-                    PyObjectPayload::Tuple(items) => PyObject::list((**items).clone()),
-                    _ => PyObject::list(vec![args[1].clone()]),
-                };
-                attrs.insert(CompactString::from("exceptions"), exc_list);
-            }
-        }
-        if args.len() >= 2 {
-            crate::vm_call::attach_eg_methods_pub(&inst);
-        }
     }
     push_stack(frame, inst);
     FastCallResult::Pushed

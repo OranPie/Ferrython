@@ -669,3 +669,37 @@ Last updated: 2026-06-02T16:10:31+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_calendar`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_uuid`
+
+## 2026-06-02 exception / OrderedDict / function-attrs focused batch
+
+- `test_exception_hierarchy`
+  - Previous current state in this batch: `run=16 pass=5 fail=3 err=7 skip=1`.
+  - Current result: `run=16 pass=15 fail=0 err=0 skip=1`.
+  - Fixed traits: OSError errno subclass remapping, OSError attrs, BlockingIOError `characters_written` deletion, socket/select exception hierarchy, `errno.errorcode` dict behavior, `os.unlink()` FileNotFoundError matching, and user OSError subclass `__new__` / `__init__` / `super().__new__` args behavior.
+
+- `test_ordered_dict`
+  - Previous current state in this batch: `run=265 pass=232 fail=0 err=1 skip=32`.
+  - Current result: `run=265 pass=233 fail=0 err=0 skip=32`.
+  - Fixed trait: unbound `dict.__init__` and dict method dispatch accept mapping/iterable updates plus kwargs, restoring the OrderedDict subclass init path.
+
+- `test_funcattrs`
+  - Previous current state in this batch: `run=31 pass=22 fail=6 err=3 skip=0`.
+  - Current result: `run=31 pass=27 fail=3 err=1 skip=0`.
+  - Fixed / improved traits: native `time.time.__qualname__`, `types.MethodType`, cell comparison, method `__class__` immutability, `float.__getformat__`, and `dir(function)` / `dir(bound_method)` user attrs.
+  - Remaining gaps: function `__code__` replacement and freevar count validation, nested class `<locals>` qualname construction, and deleted-cell direct local access currently raises a free-variable NameError instead of UnboundLocalError.
+
+- `test_statistics`
+  - Current result after panic guard: `run=344 pass=292 fail=20 err=14 skip=18`.
+  - Improvement: `Fraction.__float__` no longer panics on empty internal args in the combined exception/statistics probe.
+  - Remaining broad traits: Fraction arithmetic/statistics type preservation, lazy iterator collection in statistics, MyFloat numeric dunders, NormalDist precision/slots, and doctest runner unpack shape.
+
+- Batch validation
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy`: `run=16 pass=15 fail=0 err=0 skip=1`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict`: `run=265 pass=233 fail=0 err=0 skip=32`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict`: `run=281 pass=248 fail=0 err=0 skip=33`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=27 fail=3 err=1 skip=0`

@@ -345,9 +345,23 @@ pub(super) fn super_attr(
             }
             // Builtin __new__: object.__new__(cls) creates a new instance
             if name == "__new__" {
+                if let PyObjectPayload::Class(cd) = &rt_cls.payload {
+                    if cd.is_exception_subclass {
+                        if let Some(resolved) =
+                            exception_attrs::resolve_exception_type_method(name, instance)
+                        {
+                            return Some(resolved);
+                        }
+                    }
+                }
                 return Some(PyObject::native_function("__new__", |args| {
                     if args.is_empty() {
                         return Err(PyException::type_error("__new__ requires cls"));
+                    }
+                    if let PyObjectPayload::Class(cd) = &args[0].payload {
+                        if cd.is_exception_subclass {
+                            return Ok(PyObject::instance(args[0].clone()));
+                        }
                     }
                     if args.len() != 1 {
                         return Err(PyException::type_error(

@@ -382,6 +382,7 @@ pub fn is_hidden_dict_key(k: &HashableKey) -> bool {
         || s.as_str() == "__defaultdict_kwargs__"
         || s.as_str() == "__counter__"
         || s.as_str() == "__ordered_dict__"
+        || s.as_str() == "__ordered_dict_broken__"
         || s.as_str() == "__move_to_end_fn__"
         || s.as_str() == "_tuple"
     )

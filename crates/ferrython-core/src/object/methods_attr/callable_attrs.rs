@@ -11,6 +11,17 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
     if let Some(v) = f.attrs.read().get(name).cloned() {
         return Some(v);
     }
+    if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+        if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+            if let Some(v) = map
+                .read()
+                .get(&HashableKey::str_key(CompactString::from(name)))
+                .cloned()
+            {
+                return Some(v);
+            }
+        }
+    }
     match name {
         "__name__" => {
             let value = PyObject::str_val(f.name.clone());
@@ -36,7 +47,12 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
             }
         }
         "__module__" => {
-            let value = PyObject::str_val(intern_or_new("__main__"));
+            let value = f
+                .globals
+                .read()
+                .get("__name__")
+                .cloned()
+                .unwrap_or_else(|| PyObject::str_val(intern_or_new("__main__")));
             f.attrs
                 .write()
                 .insert(CompactString::from("__module__"), value.clone());
@@ -57,9 +73,15 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
                 .insert(CompactString::from("__doc__"), value.clone());
             Some(value)
         }
-        "__dict__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(
-            f.attrs.clone(),
-        ))),
+        "__dict__" => {
+            if let Some(v) = f.attrs.read().get("__dict__").cloned() {
+                Some(v)
+            } else {
+                Some(PyObject::wrap(PyObjectPayload::InstanceDict(
+                    f.attrs.clone(),
+                )))
+            }
+        }
         "__annotations__" => {
             let mut map = new_fx_hashkey_map();
             for (k, v) in &f.annotations {
@@ -100,16 +122,9 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
                 Some(PyObject::dict(map))
             }
         }
-        "__globals__" => {
-            let g = f.globals.read();
-            let mut map: FxHashKeyMap = new_fx_hashkey_map();
-            for (k, v) in g.iter() {
-                if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
-                    map.insert(hk, v.clone());
-                }
-            }
-            Some(PyObject::dict(map))
-        }
+        "__globals__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(
+            f.globals.clone(),
+        ))),
         "__get__" => {
             let func = obj.clone();
             Some(PyObject::native_closure("__get__", move |args| {
@@ -399,6 +414,7 @@ pub(super) fn bound_method_attr(
     name: &str,
 ) -> Option<PyObjectRef> {
     match name {
+        "__class__" => Some(PyObject::builtin_type(CompactString::from("method"))),
         "__self__" => Some(receiver.clone()),
         "__func__" => Some(method.clone()),
         _ => method.get_attr(name),

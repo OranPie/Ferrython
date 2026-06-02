@@ -447,6 +447,20 @@ fn builtin_bound_method_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRe
                 None
             }
         }
+        "__qualname__" => {
+            if let PyObjectPayload::BuiltinBoundMethod(bbm) = &obj.payload {
+                let receiver_type = match &bbm.receiver.payload {
+                    PyObjectPayload::BuiltinType(name) => name.as_str().to_string(),
+                    _ => bbm.receiver.type_name().to_string(),
+                };
+                Some(PyObject::str_val(CompactString::from(format!(
+                    "{}.{}",
+                    receiver_type, bbm.method_name
+                ))))
+            } else {
+                None
+            }
+        }
         "__self__" => {
             if let PyObjectPayload::BuiltinBoundMethod(bbm) = &obj.payload {
                 Some(bbm.receiver.clone())
@@ -714,6 +728,7 @@ const LIST_METHODS: &[&str] = &[
 ];
 
 const DICT_METHODS: &[&str] = &[
+    "__init__",
     "keys",
     "values",
     "items",

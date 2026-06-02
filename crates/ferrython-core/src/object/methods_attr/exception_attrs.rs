@@ -1,8 +1,97 @@
 use crate::error::{ExceptionKind, PyException};
 use crate::object::payload::ExceptionInstanceData;
+use crate::object::ClassData;
 use compact_str::CompactString;
 
 use super::*;
+
+fn parent_exception_kind(kind: ExceptionKind) -> Option<ExceptionKind> {
+    match kind {
+        ExceptionKind::BaseException => None,
+        ExceptionKind::Exception
+        | ExceptionKind::SystemExit
+        | ExceptionKind::KeyboardInterrupt
+        | ExceptionKind::GeneratorExit => Some(ExceptionKind::BaseException),
+        ExceptionKind::ArithmeticError
+        | ExceptionKind::LookupError
+        | ExceptionKind::OSError
+        | ExceptionKind::ValueError
+        | ExceptionKind::Warning
+        | ExceptionKind::ImportError
+        | ExceptionKind::RuntimeError
+        | ExceptionKind::SyntaxError
+        | ExceptionKind::NameError
+        | ExceptionKind::TypeError
+        | ExceptionKind::AttributeError
+        | ExceptionKind::AssertionError
+        | ExceptionKind::BufferError
+        | ExceptionKind::EOFError
+        | ExceptionKind::MemoryError
+        | ExceptionKind::ReferenceError
+        | ExceptionKind::SystemError
+        | ExceptionKind::StopIteration
+        | ExceptionKind::StopAsyncIteration => Some(ExceptionKind::Exception),
+        ExceptionKind::FloatingPointError
+        | ExceptionKind::OverflowError
+        | ExceptionKind::ZeroDivisionError => Some(ExceptionKind::ArithmeticError),
+        ExceptionKind::IndexError | ExceptionKind::KeyError => Some(ExceptionKind::LookupError),
+        ExceptionKind::FileExistsError
+        | ExceptionKind::FileNotFoundError
+        | ExceptionKind::PermissionError
+        | ExceptionKind::TimeoutError
+        | ExceptionKind::IsADirectoryError
+        | ExceptionKind::NotADirectoryError
+        | ExceptionKind::ProcessLookupError
+        | ExceptionKind::ConnectionError
+        | ExceptionKind::InterruptedError
+        | ExceptionKind::ChildProcessError
+        | ExceptionKind::BlockingIOError
+        | ExceptionKind::BrokenPipeError => Some(ExceptionKind::OSError),
+        ExceptionKind::ConnectionResetError
+        | ExceptionKind::ConnectionAbortedError
+        | ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
+        ExceptionKind::UnicodeError
+        | ExceptionKind::UnicodeDecodeError
+        | ExceptionKind::UnicodeEncodeError
+        | ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::ValueError),
+        ExceptionKind::JSONDecodeError | ExceptionKind::CsvError => Some(ExceptionKind::ValueError),
+        ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
+        ExceptionKind::NotImplementedError
+        | ExceptionKind::RecursionError
+        | ExceptionKind::ReError => Some(ExceptionKind::RuntimeError),
+        ExceptionKind::UnboundLocalError => Some(ExceptionKind::NameError),
+        ExceptionKind::IndentationError => Some(ExceptionKind::SyntaxError),
+        ExceptionKind::TabError => Some(ExceptionKind::IndentationError),
+        ExceptionKind::SubprocessError => Some(ExceptionKind::Exception),
+        ExceptionKind::CalledProcessError | ExceptionKind::TimeoutExpired => {
+            Some(ExceptionKind::SubprocessError)
+        }
+        ExceptionKind::DeprecationWarning
+        | ExceptionKind::RuntimeWarning
+        | ExceptionKind::UserWarning
+        | ExceptionKind::SyntaxWarning
+        | ExceptionKind::FutureWarning
+        | ExceptionKind::ImportWarning
+        | ExceptionKind::UnicodeWarning
+        | ExceptionKind::EncodingWarning
+        | ExceptionKind::BytesWarning
+        | ExceptionKind::ResourceWarning
+        | ExceptionKind::PendingDeprecationWarning => Some(ExceptionKind::Warning),
+        ExceptionKind::BaseExceptionGroup => Some(ExceptionKind::BaseException),
+        ExceptionKind::ExceptionGroup => Some(ExceptionKind::BaseExceptionGroup),
+    }
+}
+
+fn class_is_exception_subclass_of(cd: &ClassData, expected: ExceptionKind) -> bool {
+    cd.bases
+        .iter()
+        .chain(cd.mro.iter())
+        .any(|base| match &base.payload {
+            PyObjectPayload::ExceptionType(actual) => actual.is_subclass_of(&expected),
+            PyObjectPayload::Class(base_cd) => class_is_exception_subclass_of(base_cd, expected),
+            _ => false,
+        })
+}
 
 pub(super) fn exception_type_attr(
     obj: &PyObjectRef,
@@ -15,92 +104,16 @@ pub(super) fn exception_type_attr(
             kind
         )))),
         "__bases__" => {
-            // Return the parent exception type in the hierarchy
-            use crate::error::ExceptionKind;
-            let parent = match kind {
-                ExceptionKind::BaseException => None,
-                ExceptionKind::Exception
-                | ExceptionKind::SystemExit
-                | ExceptionKind::KeyboardInterrupt
-                | ExceptionKind::GeneratorExit => Some(ExceptionKind::BaseException),
-                ExceptionKind::ArithmeticError
-                | ExceptionKind::LookupError
-                | ExceptionKind::OSError
-                | ExceptionKind::ValueError
-                | ExceptionKind::Warning
-                | ExceptionKind::ImportError
-                | ExceptionKind::RuntimeError
-                | ExceptionKind::SyntaxError
-                | ExceptionKind::NameError
-                | ExceptionKind::TypeError
-                | ExceptionKind::AttributeError
-                | ExceptionKind::AssertionError
-                | ExceptionKind::BufferError
-                | ExceptionKind::EOFError
-                | ExceptionKind::MemoryError
-                | ExceptionKind::ReferenceError
-                | ExceptionKind::SystemError
-                | ExceptionKind::StopIteration
-                | ExceptionKind::StopAsyncIteration => Some(ExceptionKind::Exception),
-                ExceptionKind::FloatingPointError
-                | ExceptionKind::OverflowError
-                | ExceptionKind::ZeroDivisionError => Some(ExceptionKind::ArithmeticError),
-                ExceptionKind::IndexError | ExceptionKind::KeyError => {
-                    Some(ExceptionKind::LookupError)
-                }
-                ExceptionKind::FileExistsError
-                | ExceptionKind::FileNotFoundError
-                | ExceptionKind::PermissionError
-                | ExceptionKind::TimeoutError
-                | ExceptionKind::IsADirectoryError
-                | ExceptionKind::NotADirectoryError
-                | ExceptionKind::ProcessLookupError
-                | ExceptionKind::ConnectionError
-                | ExceptionKind::InterruptedError
-                | ExceptionKind::ChildProcessError
-                | ExceptionKind::BlockingIOError
-                | ExceptionKind::BrokenPipeError => Some(ExceptionKind::OSError),
-                ExceptionKind::ConnectionResetError
-                | ExceptionKind::ConnectionAbortedError
-                | ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
-                ExceptionKind::UnicodeError
-                | ExceptionKind::UnicodeDecodeError
-                | ExceptionKind::UnicodeEncodeError
-                | ExceptionKind::UnicodeTranslateError => Some(ExceptionKind::ValueError),
-                ExceptionKind::JSONDecodeError | ExceptionKind::CsvError => {
-                    Some(ExceptionKind::ValueError)
-                }
-                ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
-                ExceptionKind::NotImplementedError
-                | ExceptionKind::RecursionError
-                | ExceptionKind::ReError => Some(ExceptionKind::RuntimeError),
-                ExceptionKind::UnboundLocalError => Some(ExceptionKind::NameError),
-                ExceptionKind::IndentationError => Some(ExceptionKind::SyntaxError),
-                ExceptionKind::TabError => Some(ExceptionKind::IndentationError),
-                ExceptionKind::SubprocessError => Some(ExceptionKind::Exception),
-                ExceptionKind::CalledProcessError | ExceptionKind::TimeoutExpired => {
-                    Some(ExceptionKind::SubprocessError)
-                }
-                ExceptionKind::DeprecationWarning
-                | ExceptionKind::RuntimeWarning
-                | ExceptionKind::UserWarning
-                | ExceptionKind::SyntaxWarning
-                | ExceptionKind::FutureWarning
-                | ExceptionKind::ImportWarning
-                | ExceptionKind::UnicodeWarning
-                | ExceptionKind::EncodingWarning
-                | ExceptionKind::BytesWarning
-                | ExceptionKind::ResourceWarning
-                | ExceptionKind::PendingDeprecationWarning => Some(ExceptionKind::Warning),
-                ExceptionKind::BaseExceptionGroup => Some(ExceptionKind::BaseException),
-                ExceptionKind::ExceptionGroup => Some(ExceptionKind::BaseExceptionGroup),
-            };
-            let bases = match parent {
+            let bases = match parent_exception_kind(kind) {
                 Some(p) => vec![PyObject::exception_type(p)],
                 None => vec![PyObject::builtin_type(CompactString::from("object"))],
             };
             Some(PyObject::tuple(bases))
         }
+        "__base__" => Some(match parent_exception_kind(kind) {
+            Some(parent) => PyObject::exception_type(parent),
+            None => PyObject::builtin_type(CompactString::from("object")),
+        }),
         "__mro__" => {
             // Build the MRO chain by walking up the hierarchy
             use crate::error::ExceptionKind;
@@ -253,26 +266,61 @@ pub(super) fn exception_type_attr(
                 if args.is_empty() {
                     return Err(PyException::type_error("__new__ requires cls"));
                 }
-                let cls = &args[0];
-                let actual_kind = match &cls.payload {
-                    PyObjectPayload::ExceptionType(actual) => *actual,
+                let start = if args.len() >= 2 {
+                    match (&args[0].payload, &args[1].payload) {
+                        (PyObjectPayload::Instance(inst), PyObjectPayload::Class(cls_cd))
+                            if PyObjectRef::ptr_eq(&inst.class, &args[1])
+                                || cls_cd.is_exception_subclass =>
+                        {
+                            1
+                        }
+                        (PyObjectPayload::Class(receiver_cd), PyObjectPayload::Class(cls_cd))
+                            if receiver_cd.is_exception_subclass
+                                && (PyObjectRef::ptr_eq(&args[0], &args[1])
+                                    || cls_cd.is_exception_subclass) =>
+                        {
+                            1
+                        }
+                        (
+                            PyObjectPayload::ExceptionInstance(_),
+                            PyObjectPayload::ExceptionType(_),
+                        ) => 1,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                let cls = &args[start];
+                match &cls.payload {
+                    PyObjectPayload::ExceptionType(actual_kind) => {
+                        if !actual_kind.is_subclass_of(&new_kind) {
+                            return Err(PyException::type_error(format!(
+                                "{}.__new__({}): {} is not a subtype of {}",
+                                new_kind, actual_kind, actual_kind, new_kind
+                            )));
+                        }
+                        Ok(PyObject::exception_instance_with_args(
+                            *actual_kind,
+                            CompactString::default(),
+                            vec![],
+                        ))
+                    }
+                    PyObjectPayload::Class(cd) if class_is_exception_subclass_of(cd, new_kind) => {
+                        let inst_obj = PyObject::instance(cls.clone());
+                        if let PyObjectPayload::Instance(inst) = &inst_obj.payload {
+                            inst.attrs.write().insert(
+                                CompactString::from("args"),
+                                PyObject::tuple(args[start + 1..].to_vec()),
+                            );
+                        }
+                        Ok(inst_obj)
+                    }
                     _ => {
                         return Err(PyException::type_error(
                             "exception __new__ requires an exception type",
                         ))
                     }
-                };
-                if !actual_kind.is_subclass_of(&new_kind) {
-                    return Err(PyException::type_error(format!(
-                        "{}.__new__({}): {} is not a subtype of {}",
-                        new_kind, actual_kind, actual_kind, new_kind
-                    )));
                 }
-                Ok(PyObject::exception_instance_with_args(
-                    actual_kind,
-                    CompactString::default(),
-                    vec![],
-                ))
             }))
         }
         "__str__" => Some(PyObject::native_function("__str__", |args| {
@@ -493,6 +541,9 @@ pub(super) fn exception_instance_attr(
             .get_attrs()
             .and_then(|a| a.read().get(name).cloned())
             .or_else(|| Some(PyObject::none())),
+        "characters_written" if ei.kind == ExceptionKind::BlockingIOError => {
+            ei.get_attrs().and_then(|a| a.read().get(name).cloned())
+        }
         _ => {
             // Check user-set attrs (e.g., __cause__)
             ei.get_attrs().and_then(|a| a.read().get(name).cloned())
@@ -507,6 +558,53 @@ pub(super) fn resolve_exception_type_method(
     instance: &PyObjectRef,
 ) -> Option<PyObjectRef> {
     match name {
+        "__new__" => Some(PyObject::native_function("__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("__new__ requires cls"));
+            }
+            let start = if args.len() >= 2 {
+                match (&args[0].payload, &args[1].payload) {
+                    (PyObjectPayload::Instance(inst), PyObjectPayload::Class(cls_cd))
+                        if PyObjectRef::ptr_eq(&inst.class, &args[1])
+                            || cls_cd.is_exception_subclass =>
+                    {
+                        1
+                    }
+                    (PyObjectPayload::Class(receiver_cd), PyObjectPayload::Class(cls_cd))
+                        if receiver_cd.is_exception_subclass
+                            && (PyObjectRef::ptr_eq(&args[0], &args[1])
+                                || cls_cd.is_exception_subclass) =>
+                    {
+                        1
+                    }
+                    (PyObjectPayload::ExceptionInstance(_), PyObjectPayload::ExceptionType(_)) => 1,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            let cls = &args[start];
+            match &cls.payload {
+                PyObjectPayload::ExceptionType(kind) => Ok(PyObject::exception_instance_with_args(
+                    *kind,
+                    CompactString::default(),
+                    args[start + 1..].to_vec(),
+                )),
+                PyObjectPayload::Class(cd) if cd.is_exception_subclass => {
+                    let inst_obj = PyObject::instance(cls.clone());
+                    if let PyObjectPayload::Instance(inst) = &inst_obj.payload {
+                        inst.attrs.write().insert(
+                            CompactString::from("args"),
+                            PyObject::tuple(args[start + 1..].to_vec()),
+                        );
+                    }
+                    Ok(inst_obj)
+                }
+                _ => Err(PyException::type_error(
+                    "exception __new__ requires an exception type",
+                )),
+            }
+        })),
         "__init__" => {
             Some(PyObject::native_function("__init__", |args| {
                 // Exception.__init__(self, *args) — only set self.args (CPython behavior)

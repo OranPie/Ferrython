@@ -87,6 +87,36 @@ fn compare_ordering(ordering: std::cmp::Ordering, op: CompareOp) -> bool {
     }
 }
 
+fn compare_cells(
+    left: &PyObjectRef,
+    right: &PyObjectRef,
+    op: CompareOp,
+) -> Option<PyResult<PyObjectRef>> {
+    let (PyObjectPayload::Cell(left_cell), PyObjectPayload::Cell(right_cell)) =
+        (&left.payload, &right.payload)
+    else {
+        return None;
+    };
+    let left_value = left_cell.read().clone();
+    let right_value = right_cell.read().clone();
+    let result = match (left_value, right_value) {
+        (None, None) => Ok(PyObject::bool_val(compare_ordering(
+            std::cmp::Ordering::Equal,
+            op,
+        ))),
+        (None, Some(_)) => Ok(PyObject::bool_val(compare_ordering(
+            std::cmp::Ordering::Less,
+            op,
+        ))),
+        (Some(_), None) => Ok(PyObject::bool_val(compare_ordering(
+            std::cmp::Ordering::Greater,
+            op,
+        ))),
+        (Some(left_obj), Some(right_obj)) => left_obj.compare(&right_obj, op),
+    };
+    Some(result)
+}
+
 fn cmp_to_key_compare(
     a: &PyObjectRef,
     b: &PyObjectRef,
@@ -687,6 +717,9 @@ fn dict_item_view_compare(
 }
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
+    if let Some(result) = compare_cells(a, b, op) {
+        return result;
+    }
     if matches!(
         op,
         CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge

@@ -1,4 +1,5 @@
 use super::*;
+use std::rc::Rc;
 
 fn compare_namespaces(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
     match (&a.payload, &b.payload) {
@@ -52,7 +53,17 @@ pub fn create_types_module() -> PyObjectRef {
             ),
             (
                 "MethodType",
-                PyObject::builtin_type(CompactString::from("method")),
+                make_builtin(|args| {
+                    if args.len() != 2 {
+                        return Err(PyException::type_error(
+                            "MethodType() requires a function and an instance",
+                        ));
+                    }
+                    Ok(PyObject::wrap(PyObjectPayload::BoundMethod {
+                        receiver: args[1].clone(),
+                        method: args[0].clone(),
+                    }))
+                }),
             ),
             (
                 "ModuleType",
@@ -112,7 +123,13 @@ pub fn create_types_module() -> PyObjectRef {
             ),
             (
                 "CellType",
-                PyObject::builtin_type(CompactString::from("cell")),
+                make_builtin(|args| {
+                    if args.len() > 1 {
+                        return Err(PyException::type_error("cell expected at most 1 argument"));
+                    }
+                    let value = args.first().cloned();
+                    Ok(PyObject::cell(Rc::new(PyCell::new(value))))
+                }),
             ),
             (
                 "UnionType",

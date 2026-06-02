@@ -1013,12 +1013,49 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
             }
             // Dict subclass: repr like a dict
             if let Some(ref ds) = inst.dict_storage {
-                let items: Vec<String> = ds
-                    .read()
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                let read = ds.read();
+                let is_ordered_dict = read.contains_key(&HashableKey::str_key(
+                    compact_str::CompactString::from("__ordered_dict__"),
+                ));
+                let visible: Vec<_> = read
+                    .iter()
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
+                    .collect();
+                if is_ordered_dict {
+                    if visible.is_empty() {
+                        return "OrderedDict()".to_string();
+                    }
+                    if !repr_enter(ptr) {
+                        return "OrderedDict(...)".to_string();
+                    }
+                    let items: Vec<String> = visible
+                        .iter()
+                        .map(|(k, v)| {
+                            let value_repr = if matches!(&v.payload, PyObjectPayload::Instance(_))
+                                && PyObjectRef::as_ptr(v) == PyObjectRef::as_ptr(obj)
+                            {
+                                "...".to_string()
+                            } else {
+                                v.repr()
+                            };
+                            format!("({}, {})", k.to_object().repr(), value_repr)
+                        })
+                        .collect();
+                    let result = format!("OrderedDict([{}])", items.join(", "));
+                    repr_leave(ptr);
+                    return result;
+                }
+                if !repr_enter(ptr) {
+                    return "{...}".to_string();
+                }
+                let items: Vec<String> = visible
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
                     .collect();
-                return format!("{{{}}}", items.join(", "));
+                let result = format!("{{{}}}", items.join(", "));
+                repr_leave(ptr);
+                return result;
             }
             // typing _GenericAlias repr
             if let Some(typing_repr) = inst.attrs.read().get("__typing_repr__").cloned() {

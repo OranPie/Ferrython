@@ -103,7 +103,7 @@ mod super_object;
 
 use frameless::{CallObjectDepthGuard, FRAMELESS_CALL_RECURSION_LIMIT};
 
-pub use exception_group::attach_eg_methods_pub;
+pub(crate) use exception_build::build_builtin_exception_instance;
 
 impl VirtualMachine {
     #[inline]

@@ -856,6 +856,11 @@ pub fn create_fractions_module() -> PyObjectRef {
     }
 
     fn frac_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error(
+                "Fraction.__float__() requires a Fraction instance",
+            ));
+        }
         let (n, d) = get_frac_bigint_parts(&args[0]).unwrap_or((BigInt::zero(), BigInt::one()));
         if d.is_zero() {
             return Err(PyException::zero_division_error("division by zero"));

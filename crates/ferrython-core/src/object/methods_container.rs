@@ -591,6 +591,9 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
             if let Some(storage) = inst.dict_storage.as_ref() {
                 let hk = key.to_hashable_key()?;
+                if is_hidden_dict_key(&hk) {
+                    return Err(PyException::key_error_value(key.clone()));
+                }
                 if let Some(value) = storage.read().get(&hk).cloned() {
                     return Ok(value);
                 }
@@ -705,6 +708,9 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
             if inst.dict_storage.is_some() {
                 let hk = item.to_hashable_key()?;
+                if is_hidden_dict_key(&hk) {
+                    return Ok(false);
+                }
                 if let Some(storage) = inst.dict_storage.as_ref() {
                     return Ok(storage.read().contains_key(&hk));
                 }

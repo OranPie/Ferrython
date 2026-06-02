@@ -26,6 +26,66 @@ mod protocol2;
 use protocol0::pickle_loads_p0;
 use protocol2::pickle_loads_p2;
 
+fn pkl_class_name_contains(class: &PyObjectRef, target: &str) -> bool {
+    match &class.payload {
+        PyObjectPayload::Class(cd) => {
+            cd.name.as_str() == target
+                || cd
+                    .mro
+                    .iter()
+                    .any(|base| pkl_class_name_contains(base, target))
+        }
+        PyObjectPayload::BuiltinType(name) => name.as_str() == target,
+        _ => false,
+    }
+}
+
+fn pkl_fill_dict_storage_from_args(obj: &PyObjectRef, arg_list: &[PyObjectRef]) -> PyResult<()> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return Ok(());
+    };
+    let Some(storage) = inst.dict_storage.as_ref() else {
+        return Ok(());
+    };
+    let mut w = storage.write();
+    if pkl_class_name_contains(&inst.class, "OrderedDict") {
+        w.insert(
+            HashableKey::str_key(CompactString::from("__ordered_dict__")),
+            PyObject::bool_val(true),
+        );
+    }
+    let Some(first) = arg_list.first() else {
+        return Ok(());
+    };
+    match &first.payload {
+        PyObjectPayload::Dict(map) => {
+            for (k, v) in map.read().iter() {
+                if !ferrython_core::object::is_hidden_dict_key(k) {
+                    w.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        PyObjectPayload::Instance(src_inst) if src_inst.dict_storage.is_some() => {
+            if let Some(src) = src_inst.dict_storage.as_ref() {
+                for (k, v) in src.read().iter() {
+                    if !ferrython_core::object::is_hidden_dict_key(k) {
+                        w.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        _ => {
+            for item in first.to_list()? {
+                let pair = item.to_list()?;
+                if pair.len() == 2 {
+                    w.insert(pair[0].to_hashable_key()?, pair[1].clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Protocol 0 (text) deserialization ──
 
 #[derive(Clone)]
@@ -1023,7 +1083,9 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         }
                     }
                 }
-                Ok(PyObject::instance(cls))
+                let result = PyObject::instance(cls);
+                pkl_fill_dict_storage_from_args(&result, &arg_list)?;
+                Ok(result)
             }
         }
     } else {

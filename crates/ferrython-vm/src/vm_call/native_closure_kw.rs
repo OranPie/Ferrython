@@ -15,6 +15,7 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         let mut counter_kw_marker = false;
         let mut defaultdict_kw_marker = false;
+        let mut ordered_dict_kw_marker = false;
         let mut weakdict_kw_marker = false;
         let mut finalize_kw_marker = false;
         let mut userdict_kw_marker = false;
@@ -30,6 +31,17 @@ impl VirtualMachine {
             defaultdict_kw_marker = true;
             adjusted_kwargs.push((
                 CompactString::from("__defaultdict_kwargs__"),
+                PyObject::bool_val(true),
+            ));
+        }
+        if !adjusted_kwargs.is_empty()
+            && (nc.name.as_str().starts_with("OrderedDict.")
+                || nc.name.as_str() == "collections.OrderedDict.__init__"
+                || nc.name.as_str() == "collections.OrderedDict.update")
+        {
+            ordered_dict_kw_marker = true;
+            adjusted_kwargs.push((
+                CompactString::from("__ordered_dict_kwargs__"),
                 PyObject::bool_val(true),
             ));
         }
@@ -81,6 +93,12 @@ impl VirtualMachine {
             if defaultdict_kw_marker {
                 kw_map.insert(
                     HashableKey::str_key(CompactString::from("__defaultdict_kwargs__")),
+                    PyObject::bool_val(true),
+                );
+            }
+            if ordered_dict_kw_marker {
+                kw_map.insert(
+                    HashableKey::str_key(CompactString::from("__ordered_dict_kwargs__")),
                     PyObject::bool_val(true),
                 );
             }

@@ -1,11 +1,39 @@
 use compact_str::CompactString;
-use ferrython_core::object::{make_builtin, make_module, PyObject, PyObjectRef};
+use ferrython_core::object::{make_module, PyObject, PyObjectRef};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 
 // ── errno module ──
 
 pub fn create_errno_module() -> PyObjectRef {
+    let mut errorcode = IndexMap::new();
+    let codes: Vec<(i64, &str)> = vec![
+        (1, "EPERM"),
+        (2, "ENOENT"),
+        (3, "ESRCH"),
+        (4, "EINTR"),
+        (10, "ECHILD"),
+        (11, "EAGAIN"),
+        (13, "EACCES"),
+        (17, "EEXIST"),
+        (20, "ENOTDIR"),
+        (21, "EISDIR"),
+        (22, "EINVAL"),
+        (32, "EPIPE"),
+        (103, "ECONNABORTED"),
+        (104, "ECONNRESET"),
+        (108, "ESHUTDOWN"),
+        (110, "ETIMEDOUT"),
+        (111, "ECONNREFUSED"),
+        (114, "EALREADY"),
+        (115, "EINPROGRESS"),
+    ];
+    for (num, name) in codes {
+        errorcode.insert(
+            HashableKey::Int(PyInt::Small(num)),
+            PyObject::str_val(CompactString::from(name)),
+        );
+    }
     make_module(
         "errno",
         vec![
@@ -67,29 +95,7 @@ pub fn create_errno_module() -> PyObjectRef {
             ("EMSGSIZE", PyObject::int(90)),
             ("ENOTSOCK", PyObject::int(88)),
             ("EDESTADDRREQ", PyObject::int(89)),
-            (
-                "errorcode",
-                make_builtin(|_| {
-                    let mut map = IndexMap::new();
-                    let codes: Vec<(i64, &str)> = vec![
-                        (1, "EPERM"),
-                        (2, "ENOENT"),
-                        (13, "EACCES"),
-                        (17, "EEXIST"),
-                        (22, "EINVAL"),
-                        (32, "EPIPE"),
-                        (110, "ETIMEDOUT"),
-                        (111, "ECONNREFUSED"),
-                    ];
-                    for (num, name) in codes {
-                        map.insert(
-                            HashableKey::Int(PyInt::Small(num)),
-                            PyObject::str_val(CompactString::from(name)),
-                        );
-                    }
-                    Ok(PyObject::dict(map))
-                }),
-            ),
+            ("errorcode", PyObject::dict(errorcode)),
         ],
     )
 }

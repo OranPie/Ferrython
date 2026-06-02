@@ -464,6 +464,11 @@ pub(crate) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         Ok(Some(map))
     }
 
+    if args.len() > 1 {
+        return Err(PyException::type_error(
+            "dict expected at most 1 positional argument",
+        ));
+    }
     if args.is_empty() {
         return Ok(PyObject::dict(new_fx_hashkey_map()));
     }

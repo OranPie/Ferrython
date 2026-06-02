@@ -488,6 +488,18 @@ pub(super) fn pickle_serialize_p0(
                 return Ok(());
             }
             let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            if let Some((items, attrs)) = ordered_dict_pickle_parts(inst) {
+                pickle_serialize_ordered_dict_p0(
+                    &module_name,
+                    &class_name,
+                    items,
+                    attrs,
+                    obj,
+                    buf,
+                    memo,
+                )?;
+                return Ok(());
+            }
             buf.push(b'c');
             buf.extend_from_slice(module_name.as_bytes());
             buf.push(b'\n');
@@ -792,7 +804,11 @@ fn pickle_extract_instance(
     inst: &ferrython_core::object::InstanceData,
 ) -> PyResult<(String, String, Vec<(CompactString, PyObjectRef)>)> {
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-        cd.name.to_string()
+        inst.class
+            .get_attr("__qualname__")
+            .map(|value| value.py_to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| cd.name.to_string())
     } else {
         "object".to_string()
     };
@@ -905,6 +921,89 @@ fn defaultdict_pickle_parts(
         }
     }
     Some((factory, items))
+}
+
+fn ordered_dict_pickle_parts(
+    inst: &ferrython_core::object::InstanceData,
+) -> Option<(Vec<PyObjectRef>, Vec<(CompactString, PyObjectRef)>)> {
+    let storage = inst.dict_storage.as_ref()?;
+    if !storage
+        .read()
+        .contains_key(&HashableKey::str_key(CompactString::from(
+            "__ordered_dict__",
+        )))
+    {
+        return None;
+    }
+    let items = storage
+        .read()
+        .iter()
+        .filter(|(k, _)| !ferrython_core::object::is_hidden_dict_key(k))
+        .map(|(k, v)| PyObject::list(vec![hashable_key_to_pyobj(k), v.clone()]))
+        .collect();
+    let attrs = inst
+        .attrs
+        .read()
+        .iter()
+        .filter(|(_, v)| {
+            !matches!(
+                &v.payload,
+                PyObjectPayload::NativeFunction(_)
+                    | PyObjectPayload::NativeClosure(_)
+                    | PyObjectPayload::Function(_)
+                    | PyObjectPayload::Class(_)
+            )
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    Some((items, attrs))
+}
+
+fn pickle_serialize_ordered_dict_p0(
+    module_name: &str,
+    class_name: &str,
+    items: Vec<PyObjectRef>,
+    attrs: Vec<(CompactString, PyObjectRef)>,
+    obj: &PyObjectRef,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    buf.push(b'c');
+    buf.extend_from_slice(module_name.as_bytes());
+    buf.push(b'\n');
+    buf.extend_from_slice(class_name.as_bytes());
+    buf.push(b'\n');
+    buf.push(b'(');
+    pickle_serialize_p0(&PyObject::list(items), buf, memo)?;
+    buf.extend_from_slice(b"tR");
+    p0_emit_put_obj(obj, buf, memo);
+    let state = instance_state_dict(&attrs);
+    pickle_serialize_p0(&state, buf, memo)?;
+    buf.push(b'b');
+    Ok(())
+}
+
+fn pickle_serialize_ordered_dict_p2(
+    module_name: &str,
+    class_name: &str,
+    items: Vec<PyObjectRef>,
+    attrs: Vec<(CompactString, PyObjectRef)>,
+    obj: &PyObjectRef,
+    buf: &mut Vec<u8>,
+    memo: &mut PickleWriteMemo,
+) -> PyResult<()> {
+    buf.push(b'c');
+    buf.extend_from_slice(module_name.as_bytes());
+    buf.push(b'\n');
+    buf.extend_from_slice(class_name.as_bytes());
+    buf.push(b'\n');
+    pickle_serialize_p2(&PyObject::tuple(vec![PyObject::list(items)]), buf, memo)?;
+    buf.push(b'R');
+    p2_emit_put_obj(obj, buf, memo);
+    let state = instance_state_dict(&attrs);
+    pickle_serialize_p2(&state, buf, memo)?;
+    buf.push(b'b');
+    Ok(())
 }
 
 fn pickle_serialize_builtin_factory_p0(factory: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
@@ -1203,6 +1302,18 @@ pub(super) fn pickle_serialize_p2(
                 return Ok(());
             }
             let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            if let Some((items, attrs)) = ordered_dict_pickle_parts(inst) {
+                pickle_serialize_ordered_dict_p2(
+                    &module_name,
+                    &class_name,
+                    items,
+                    attrs,
+                    obj,
+                    buf,
+                    memo,
+                )?;
+                return Ok(());
+            }
             buf.push(b'c');
             buf.extend_from_slice(module_name.as_bytes());
             buf.push(b'\n');

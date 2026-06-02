@@ -74,6 +74,9 @@ impl VirtualMachine {
                 builtins::dispatch("frozenset", &[PyObject::list(items)])
             }
             "dict" => {
+                if args.len() > 1 {
+                    return builtins::dispatch("dict", &args);
+                }
                 if args.is_empty() {
                     return Ok(PyObject::dict(new_fx_hashkey_map()));
                 }

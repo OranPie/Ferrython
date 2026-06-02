@@ -85,7 +85,7 @@ pub fn create_time_module() -> PyObjectRef {
     make_module(
         "time",
         vec![
-            ("time", make_builtin(time_time)),
+            ("time", PyObject::native_function("time", time_time)),
             ("sleep", make_builtin(time_sleep)),
             ("monotonic", make_builtin(time_monotonic)),
             ("perf_counter", make_builtin(time_monotonic)),

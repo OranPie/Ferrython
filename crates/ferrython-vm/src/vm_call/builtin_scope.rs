@@ -28,9 +28,6 @@ impl VirtualMachine {
 
     fn current_globals_object(&self) -> PyObjectRef {
         if let Some(frame) = self.call_stack.last() {
-            if let Some(globals_obj) = &frame.exec_globals {
-                return globals_obj.clone();
-            }
             let globals_arc = frame.globals.clone();
             return PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc));
         }

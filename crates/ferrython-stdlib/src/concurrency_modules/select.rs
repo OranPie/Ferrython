@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::PyException;
+use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     make_builtin, make_module, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -313,6 +313,7 @@ pub fn create_select_module() -> PyObjectRef {
     make_module(
         "select",
         vec![
+            ("error", PyObject::exception_type(ExceptionKind::OSError)),
             ("select", select_fn),
             ("poll", poll_fn),
             ("POLLIN", PyObject::int(0x001)),
@@ -329,10 +330,6 @@ pub fn create_select_module() -> PyObjectRef {
             ("EPOLLET", PyObject::int(1 << 31)),
             ("EPOLLONESHOT", PyObject::int(1 << 30)),
             ("EPOLLRDHUP", PyObject::int(0x2000)),
-            (
-                "error",
-                PyObject::str_val(CompactString::from("select.error")),
-            ),
         ],
     )
 }

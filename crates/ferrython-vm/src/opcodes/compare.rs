@@ -145,6 +145,18 @@ fn mapping_snapshot_for_compare(obj: &PyObjectRef) -> Option<FxHashKeyMap> {
     }
 }
 
+fn vm_is_same_object(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    if PyObjectRef::ptr_eq(a, b) {
+        return true;
+    }
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::InstanceDict(left), PyObjectPayload::InstanceDict(right)) => {
+            std::rc::Rc::ptr_eq(left, right)
+        }
+        _ => false,
+    }
+}
+
 impl VirtualMachine {
     fn unwrap_weak_proxy_for_compare(
         &mut self,
@@ -1088,8 +1100,8 @@ impl VirtualMachine {
             5 => a.compare(&b, CompareOp::Ge)?,
             6 => PyObject::bool_val(b.contains(&a)?),
             7 => PyObject::bool_val(!b.contains(&a)?),
-            8 => PyObject::bool_val(a.is_same(&b)),
-            9 => PyObject::bool_val(!a.is_same(&b)),
+            8 => PyObject::bool_val(vm_is_same_object(&a, &b)),
+            9 => PyObject::bool_val(!vm_is_same_object(&a, &b)),
             10 => {
                 let validate_handler = |handler: &PyObjectRef| -> Result<(), PyException> {
                     match &handler.payload {

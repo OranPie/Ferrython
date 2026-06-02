@@ -34,6 +34,26 @@ fn is_unicode_error_kind(kind: ExceptionKind) -> bool {
     )
 }
 
+fn os_error_kind_for_errno(errno: i64) -> ExceptionKind {
+    match errno {
+        11 | 114 | 115 => ExceptionKind::BlockingIOError,
+        10 => ExceptionKind::ChildProcessError,
+        32 | 108 => ExceptionKind::BrokenPipeError,
+        103 => ExceptionKind::ConnectionAbortedError,
+        111 => ExceptionKind::ConnectionRefusedError,
+        104 => ExceptionKind::ConnectionResetError,
+        17 => ExceptionKind::FileExistsError,
+        2 => ExceptionKind::FileNotFoundError,
+        4 => ExceptionKind::InterruptedError,
+        21 => ExceptionKind::IsADirectoryError,
+        20 => ExceptionKind::NotADirectoryError,
+        13 | 1 => ExceptionKind::PermissionError,
+        3 => ExceptionKind::ProcessLookupError,
+        110 => ExceptionKind::TimeoutError,
+        _ => ExceptionKind::OSError,
+    }
+}
+
 fn set_unicode_error_attrs(inst: &PyObjectRef, kind: ExceptionKind, args: &[PyObjectRef]) {
     let PyObjectPayload::ExceptionInstance(ei) = &inst.payload else {
         return;
@@ -61,8 +81,8 @@ fn set_unicode_error_attrs(inst: &PyObjectRef, kind: ExceptionKind, args: &[PyOb
     }
 }
 
-pub(super) fn build_builtin_exception_instance(
-    kind: ExceptionKind,
+pub(crate) fn build_builtin_exception_instance(
+    mut kind: ExceptionKind,
     args: Vec<PyObjectRef>,
     kwargs: &[(CompactString, PyObjectRef)],
 ) -> PyResult<PyObjectRef> {
@@ -74,6 +94,12 @@ pub(super) fn build_builtin_exception_instance(
                     key, kind
                 )));
             }
+        }
+    }
+
+    if kind == ExceptionKind::OSError && args.len() >= 2 {
+        if let Some(errno) = args[0].as_int() {
+            kind = os_error_kind_for_errno(errno);
         }
     }
 
@@ -123,6 +149,12 @@ pub(super) fn build_builtin_exception_instance(
                 a.insert(CompactString::from("filename"), args[2].clone());
             } else {
                 a.insert(CompactString::from("filename"), PyObject::none());
+            }
+            if kind == ExceptionKind::BlockingIOError
+                && args.len() >= 3
+                && args[2].as_int().is_some()
+            {
+                a.insert(CompactString::from("characters_written"), args[2].clone());
             }
         }
     }

@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-02T08:50:50+08:00
+Last updated: 2026-06-02T19:16:06+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -51,6 +51,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_difflib | 29 | 29 | 0 | 0 | 0 | 3s |
 | test_dynamicclassattribute | 12 | 11 | 0 | 0 | 1 | 0s |
 | test_extcall | 0 | 0 | 0 | 0 | 0 | 0s |
+| test_exception_hierarchy | 16 | 15 | 0 | 0 | 1 | 0s |
 | test_fnmatch | 12 | 12 | 0 | 0 | 0 | 0s |
 | test_format | 9 | 7 | 0 | 0 | 2 | 0s |
 | test_fractions | 31 | 31 | 0 | 0 | 0 | 1s |
@@ -80,6 +81,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_numeric_tower | 9 | 9 | 0 | 0 | 0 | 1s |
 | test_opcodes | 8 | 8 | 0 | 0 | 0 | 0s |
 | test_operator | 90 | 90 | 0 | 0 | 0 | 0s |
+| test_ordered_dict | 265 | 233 | 0 | 0 | 32 | 0s |
 | test_pow | 6 | 6 | 0 | 0 | 0 | 1s |
 | test_pprint | 30 | 30 | 0 | 0 | 0 | 2s |
 | test_print | 9 | 9 | 0 | 0 | 0 | 1s |
@@ -115,7 +117,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_weakset | 44 | 42 | 0 | 0 | 2 | 1s |
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 97 modules have zero failures/errors. Of those, 91 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 99 modules have zero failures/errors. Of those, 93 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
 ## Current Non-Baseline Modules
 
@@ -129,7 +131,6 @@ These modules are not protected as passing gates yet.
 | test_dataclasses | FAIL | 173 | 48 | 82 | 43 | 0 | 0s |
 | test_descr | FAIL | 145 | 37 | 56 | 42 | 10 | 0s |
 | test_enumerate | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
-| test_exception_hierarchy | FAIL | 16 | 4 | 3 | 8 | 1 | 0s |
 | test_exceptions | FAIL | 55 | 24 | 16 | 5 | 10 | 1s |
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
@@ -137,7 +138,6 @@ These modules are not protected as passing gates yet.
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_int | FAIL | 35 | 12 | 15 | 7 | 1 | 1s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
-| test_ordered_dict | FAIL | 265 | 73 | 30 | 154 | 8 | 2s |
 | test_queue | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_richcmp | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |

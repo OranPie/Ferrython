@@ -309,8 +309,13 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
         PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
             if let Some(storage) = inst.dict_storage.as_ref() {
                 let read = storage.read();
-                guard_eager_allocation(read.len(), "instance dict -> list")?;
-                Ok(read.keys().map(|k| k.to_object()).collect())
+                let visible = read.keys().filter(|k| !is_hidden_dict_key(k)).count();
+                guard_eager_allocation(visible, "instance dict -> list")?;
+                Ok(read
+                    .keys()
+                    .filter(|k| !is_hidden_dict_key(k))
+                    .map(|k| k.to_object())
+                    .collect())
             } else {
                 Ok(vec![])
             }
@@ -433,6 +438,7 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     let result = map
                         .iter()
                         .skip(*index)
+                        .filter(|(key, _)| !is_hidden_dict_key(key))
                         .map(|(key, _)| key.to_object())
                         .collect();
                     *index = map.len();
@@ -590,6 +596,7 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
             let result = map
                 .iter()
                 .skip(idx)
+                .filter(|(key, _)| !is_hidden_dict_key(key))
                 .map(|(_, value)| value.clone())
                 .collect();
             data.index.set(usize::MAX);
@@ -635,6 +642,7 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     let result = map
                         .iter()
                         .skip(idx)
+                        .filter(|(key, _)| !is_hidden_dict_key(key))
                         .map(|(key, _)| key.to_object())
                         .collect();
                     index.set(usize::MAX);

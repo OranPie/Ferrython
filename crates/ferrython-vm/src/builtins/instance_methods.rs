@@ -44,6 +44,12 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                 func: builtin_dict_fromkeys,
             },
         )))),
+        (
+            "dict",
+            "get" | "pop" | "popitem" | "setdefault" | "update" | "clear" | "copy" | "keys"
+            | "values" | "items" | "__init__" | "__getitem__" | "__setitem__" | "__delitem__"
+            | "__contains__",
+        ) => ferrython_core::object::helpers::resolve_builtin_type_method("dict", method_name),
         ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction(Box::new(
             NativeFunctionData {
                 name: CompactString::from("int.from_bytes"),

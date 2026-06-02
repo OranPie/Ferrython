@@ -371,6 +371,13 @@ fn try_store_from_iterator_data(
             }
             let value = {
                 let map = source.read();
+                while *index < map.len() {
+                    let (key, _) = map.get_index(*index).unwrap();
+                    if !is_hidden_dict_key(key) {
+                        break;
+                    }
+                    *index += 1;
+                }
                 map.get_index(*index).map(|(key, _)| key.to_object())
             };
             if let Some(value) = value {
@@ -679,6 +686,13 @@ fn try_for_iterator_data(
             }
             let value = {
                 let map = source.read();
+                while *index < map.len() {
+                    let (key, _) = map.get_index(*index).unwrap();
+                    if !is_hidden_dict_key(key) {
+                        break;
+                    }
+                    *index += 1;
+                }
                 map.get_index(*index).map(|(key, _)| key.to_object())
             };
             if let Some(value) = value {

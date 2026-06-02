@@ -1,6 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    is_hidden_dict_key, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+};
 
 use crate::builtins;
 use crate::VirtualMachine;
@@ -22,7 +24,12 @@ impl VirtualMachine {
                             }
                         }
                         if let Some(ref ds) = inst.dict_storage {
-                            return Ok(Some(PyObject::int(ds.read().len() as i64)));
+                            let visible = ds
+                                .read()
+                                .keys()
+                                .filter(|key| !is_hidden_dict_key(key))
+                                .count();
+                            return Ok(Some(PyObject::int(visible as i64)));
                         }
                         if inst.class.get_attr("__namedtuple__").is_some() {
                             return builtins::call_method(&args[0], "__len__", &[]).map(Some);

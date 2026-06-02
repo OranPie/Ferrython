@@ -21,6 +21,14 @@ pub(super) fn class_attr(obj: &PyObjectRef, cd: &ClassData, name: &str) -> Optio
     if name == "__bases__" {
         return Some(PyObject::tuple(cd.bases.clone()));
     }
+    if name == "__base__" {
+        return Some(
+            cd.bases
+                .first()
+                .cloned()
+                .unwrap_or_else(|| PyObject::builtin_type(CompactString::from("object"))),
+        );
+    }
     if name == "__mro__" {
         let mut mro_list = vec![obj.clone()];
         mro_list.extend(cd.mro.iter().cloned());

@@ -611,6 +611,16 @@ impl VirtualMachine {
             return Ok(None);
         }
 
+        if name.as_str() == "cell_contents" {
+            if let PyObjectPayload::Cell(cell) = &obj.payload {
+                if let Some(value) = cell.read().as_ref().cloned() {
+                    self.vm_push(value);
+                    return Ok(None);
+                }
+                return Err(PyException::value_error("Cell is empty"));
+            }
+        }
+
         // __getattribute__ override: called before normal lookup
         // Fast-path: skip MRO scan if the class doesn't override __getattribute__
         if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -1158,7 +1168,42 @@ impl VirtualMachine {
             PyObjectPayload::Module(md) => {
                 md.attrs.write().insert(name.clone(), value);
             }
+            PyObjectPayload::BoundMethod { .. } => {
+                if name.as_str() == "__class__" {
+                    return Err(PyException::type_error(
+                        "'method' object does not support attribute assignment",
+                    ));
+                }
+                return Err(PyException::attribute_error(
+                    "'method' object does not support attribute assignment",
+                ));
+            }
             PyObjectPayload::Function(f) => match name.as_str() {
+                "__dict__" => {
+                    if !matches!(
+                        &value.payload,
+                        PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_)
+                    ) {
+                        return Err(PyException::type_error(
+                            "__dict__ must be set to a dictionary",
+                        ));
+                    }
+                    f.attrs.write().insert(name.clone(), value);
+                }
+                "__closure__" => {
+                    return Err(PyException::attribute_error(
+                        "readonly attribute '__closure__'",
+                    ));
+                }
+                "__name__" | "__qualname__" => {
+                    if !matches!(&value.payload, PyObjectPayload::Str(_)) {
+                        return Err(PyException::type_error(format!(
+                            "{} must be set to a string object",
+                            name
+                        )));
+                    }
+                    f.attrs.write().insert(name.clone(), value);
+                }
                 "__defaults__" => {
                     let mut defaults = f.defaults.write();
                     defaults.clear();
@@ -1194,9 +1239,19 @@ impl VirtualMachine {
                     }
                 }
                 _ => {
+                    if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                        if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                            map.write()
+                                .insert(HashableKey::str_key(name.clone()), value);
+                            return Ok(None);
+                        }
+                    }
                     f.attrs.write().insert(name.clone(), value);
                 }
             },
+            PyObjectPayload::Cell(cell) if name.as_str() == "cell_contents" => {
+                *cell.write() = Some(value);
+            }
             PyObjectPayload::Property(_) if name.as_str() == "__doc__" => {
                 ferrython_core::object::property_set_doc(&obj, value)?;
             }
@@ -1255,6 +1310,9 @@ impl VirtualMachine {
                     "can't delete traceback attribute '{}'",
                     name
                 )));
+            }
+            PyObjectPayload::Cell(cell) if name.as_str() == "cell_contents" => {
+                *cell.write() = None;
             }
             PyObjectPayload::Instance(inst) => {
                 // Check for descriptor with __delete__ or property fdel first
@@ -1374,7 +1432,63 @@ impl VirtualMachine {
             PyObjectPayload::Module(md) => {
                 md.attrs.write().shift_remove(name.as_str());
             }
+            PyObjectPayload::ExceptionInstance(ei) => {
+                if let Some(attrs) = ei.get_attrs() {
+                    if attrs.write().shift_remove(name.as_str()).is_none() {
+                        return Err(PyException::attribute_error(format!(
+                            "'{}' object has no attribute '{}'",
+                            obj.type_name(),
+                            name
+                        )));
+                    }
+                } else {
+                    return Err(PyException::attribute_error(format!(
+                        "'{}' object has no attribute '{}'",
+                        obj.type_name(),
+                        name
+                    )));
+                }
+            }
+            PyObjectPayload::BoundMethod { .. } => {
+                if name.as_str() == "__class__" {
+                    return Err(PyException::type_error(
+                        "'method' object does not support attribute deletion",
+                    ));
+                }
+                return Err(PyException::attribute_error(
+                    "'method' object does not support attribute deletion",
+                ));
+            }
             PyObjectPayload::Function(f) => {
+                match name.as_str() {
+                    "__dict__" => {
+                        return Err(PyException::type_error(
+                            "function's dictionary may not be deleted",
+                        ));
+                    }
+                    "__defaults__" => {
+                        f.defaults.write().clear();
+                        return Ok(None);
+                    }
+                    "__name__" | "__qualname__" | "__closure__" | "__globals__" => {
+                        return Err(PyException::type_error(format!(
+                            "'{}' attribute cannot be deleted",
+                            name
+                        )));
+                    }
+                    _ => {}
+                }
+                if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                    if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                        if map
+                            .write()
+                            .shift_remove(&HashableKey::str_key(name.clone()))
+                            .is_some()
+                        {
+                            return Ok(None);
+                        }
+                    }
+                }
                 if f.attrs.write().swap_remove(name.as_str()).is_none() {
                     return Err(PyException::attribute_error(format!(
                         "'function' object has no attribute '{}'",

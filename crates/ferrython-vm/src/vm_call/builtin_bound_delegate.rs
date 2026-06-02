@@ -233,6 +233,12 @@ impl VirtualMachine {
                 .map(Some);
         }
 
+        if tn.as_str() == "dict" {
+            if let Some(result) = call_unbound_dict_method(bbm.method_name.as_str(), args)? {
+                return Ok(Some(result));
+            }
+        }
+
         if !args.is_empty() {
             let instance = args[0].clone();
             let rest_args = if args.len() > 1 {
@@ -246,4 +252,39 @@ impl VirtualMachine {
 
         Ok(None)
     }
+}
+
+fn call_unbound_dict_method(method: &str, args: &[PyObjectRef]) -> PyResult<Option<PyObjectRef>> {
+    if !matches!(
+        method,
+        "__init__" | "pop" | "popitem" | "__delitem__" | "get" | "setdefault" | "clear" | "update"
+    ) {
+        return Ok(None);
+    }
+    let Some(receiver) = args.first() else {
+        return Ok(None);
+    };
+    let map = match &receiver.payload {
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => map.clone(),
+        PyObjectPayload::Instance(inst) => {
+            let Some(map) = inst.dict_storage.as_ref() else {
+                return Ok(None);
+            };
+            map.clone()
+        }
+        _ => return Ok(None),
+    };
+    let dict_args = &args[1..];
+    let result = builtins::call_dict_method(&map, method, dict_args, Some(receiver.clone()))?;
+    if matches!(method, "pop" | "popitem" | "__delitem__") {
+        let ordered_key = HashableKey::str_key(CompactString::from("__ordered_dict__"));
+        if map.read().contains_key(&ordered_key) {
+            map.write().insert(
+                HashableKey::str_key(CompactString::from("__ordered_dict_broken__")),
+                PyObject::bool_val(true),
+            );
+            ferrython_core::object::mark_dict_storage_mutated(&map);
+        }
+    }
+    Ok(Some(result))
 }

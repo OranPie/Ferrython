@@ -3,12 +3,12 @@
 use super::super::methods::{CompareOp, PyObjectMethods};
 use super::super::payload::*;
 use super::{
-    is_dynamic_class_attribute, mark_dict_storage_mutated, property_field, property_init_doc,
-    property_set_doc, unwrap_builtin_subclass,
+    is_dynamic_class_attribute, is_hidden_dict_key, mark_dict_storage_mutated, property_field,
+    property_init_doc, property_set_doc, unwrap_builtin_subclass,
 };
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
-use crate::object::ClassData;
+use crate::object::{call_callable, ClassData};
 use crate::types::{float_as_integer_ratio, hash_key_like_python, py_hash_bigint, HashableKey};
 use compact_str::CompactString;
 use std::cell::RefCell;
@@ -513,52 +513,106 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(PyObject::none())
         })),
-        // dict.__init__(self, data=None, **kwargs) — populate dict_storage from positional/kw args
+        // dict.__init__(self, data=None, **kwargs) — populate dict storage from positional/kw args
         ("dict", "__init__") => Some(PyObject::native_function("dict.__init__", |args| {
-            if args.is_empty() {
-                return Ok(PyObject::none());
-            }
-            let self_obj = &args[0];
-            if let PyObjectPayload::Instance(inst) = &self_obj.payload {
-                if let Some(ref ds) = inst.dict_storage {
-                    let mut storage = ds.write();
-                    // If there's a positional arg (a dict or iterable of pairs), copy entries
-                    if args.len() >= 2 {
-                        match &args[1].payload {
-                            PyObjectPayload::Dict(src) => {
-                                for (k, v) in src.read().iter() {
-                                    if storage.insert(k.clone(), v.clone()).is_none() {
-                                        mark_dict_storage_mutated(ds);
-                                    }
-                                }
+            fn merge_mapping_or_pairs(
+                target_owner: &std::rc::Rc<PyCell<FxHashKeyMap>>,
+                target: &mut FxHashKeyMap,
+                src: &PyObjectRef,
+            ) -> PyResult<()> {
+                match &src.payload {
+                    PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+                        for (k, v) in map.read().iter() {
+                            if target.insert(k.clone(), v.clone()).is_none() {
+                                mark_dict_storage_mutated(target_owner);
                             }
-                            PyObjectPayload::Instance(src_inst)
-                                if src_inst.dict_storage.is_some() =>
-                            {
-                                if let Some(src_ds) = src_inst.dict_storage.as_ref() {
-                                    for (k, v) in src_ds.read().iter() {
-                                        if storage.insert(k.clone(), v.clone()).is_none() {
-                                            mark_dict_storage_mutated(ds);
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                // Try treating as iterable of (key, value) pairs
-                                if let Ok(items) = args[1].to_list() {
-                                    for item in &items {
-                                        if let Ok(pair) = item.to_list() {
-                                            if pair.len() == 2 {
-                                                let hk = pair[0].to_hashable_key()?;
-                                                if storage.insert(hk, pair[1].clone()).is_none() {
-                                                    mark_dict_storage_mutated(ds);
-                                                }
-                                            }
-                                        }
-                                    }
+                        }
+                    }
+                    PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                        if let Some(src_ds) = inst.dict_storage.as_ref() {
+                            for (k, v) in src_ds.read().iter() {
+                                if target.insert(k.clone(), v.clone()).is_none() {
+                                    mark_dict_storage_mutated(target_owner);
                                 }
                             }
                         }
+                    }
+                    _ => {
+                        if let Some(keys_method) = src.get_attr("keys") {
+                            let keys = call_callable(&keys_method, &[])?;
+                            for key_obj in keys.to_list()? {
+                                let value = src.get_item(&key_obj)?;
+                                let key = key_obj.to_hashable_key()?;
+                                if target.insert(key, value).is_none() {
+                                    mark_dict_storage_mutated(target_owner);
+                                }
+                            }
+                            return Ok(());
+                        }
+                        let items = src.to_list()?;
+                        for item in &items {
+                            let pair = item.to_list()?;
+                            if pair.len() != 2 {
+                                return Err(PyException::value_error(format!(
+                                    "dictionary update sequence element has length {}; 2 is required",
+                                    pair.len()
+                                )));
+                            }
+                            let key = pair[0].to_hashable_key()?;
+                            if target.insert(key, pair[1].clone()).is_none() {
+                                mark_dict_storage_mutated(target_owner);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            if args.is_empty() {
+                return Err(PyException::type_error("dict.__init__() requires self"));
+            }
+            let kwargs = args.last().and_then(|arg| {
+                if args.len() > 2 {
+                    if let PyObjectPayload::Dict(map) = &arg.payload {
+                        Some(map.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            let positional_end = args.len() - usize::from(kwargs.is_some());
+            if positional_end > 2 {
+                return Err(PyException::type_error(
+                    "dict.__init__() expected at most 2 arguments",
+                ));
+            }
+            let self_obj = &args[0];
+            let target = match &self_obj.payload {
+                PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => map.clone(),
+                PyObjectPayload::Instance(inst) => {
+                    let Some(ds) = inst.dict_storage.as_ref() else {
+                        return Err(PyException::type_error(
+                            "descriptor '__init__' requires a 'dict' object",
+                        ));
+                    };
+                    ds.clone()
+                }
+                _ => {
+                    return Err(PyException::type_error(
+                        "descriptor '__init__' requires a 'dict' object",
+                    ))
+                }
+            };
+            let mut storage = target.write();
+            if positional_end >= 2 {
+                merge_mapping_or_pairs(&target, &mut storage, &args[1])?;
+            }
+            if let Some(kwargs) = kwargs {
+                for (k, v) in kwargs.read().iter() {
+                    if storage.insert(k.clone(), v.clone()).is_none() {
+                        mark_dict_storage_mutated(&target);
                     }
                 }
             }
@@ -601,6 +655,193 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 )),
             }
         })),
+        ("dict", "get") => Some(PyObject::native_function("dict.get", |args| {
+            let map = dict_storage_arg(args, "dict.get")?;
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "dict.get() expected at least 2 arguments",
+                ));
+            }
+            if args.len() > 3 {
+                return Err(PyException::type_error(
+                    "dict.get() expected at most 3 arguments",
+                ));
+            }
+            let key = args[1].to_hashable_key()?;
+            let default = args.get(2).cloned().unwrap_or_else(PyObject::none);
+            if is_hidden_dict_key(&key) {
+                return Ok(default);
+            }
+            Ok(map.read().get(&key).cloned().unwrap_or(default))
+        })),
+        ("dict", "pop") => Some(PyObject::native_function("dict.pop", |args| {
+            let map = dict_storage_arg(args, "dict.pop")?;
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "dict.pop() expected at least 2 arguments",
+                ));
+            }
+            if args.len() > 3 {
+                return Err(PyException::type_error(
+                    "dict.pop() expected at most 3 arguments",
+                ));
+            }
+            let key = args[1].to_hashable_key()?;
+            if is_hidden_dict_key(&key) {
+                return Err(PyException::key_error(args[1].py_to_string()));
+            }
+            if let Some(value) = map.write().shift_remove(&key) {
+                mark_ordered_dict_broken_object(&args[0], &map);
+                mark_dict_storage_mutated(&map);
+                Ok(value)
+            } else if let Some(default) = args.get(2) {
+                Ok(default.clone())
+            } else {
+                Err(PyException::key_error(args[1].py_to_string()))
+            }
+        })),
+        ("dict", "setdefault") => Some(PyObject::native_function("dict.setdefault", |args| {
+            let map = dict_storage_arg(args, "dict.setdefault")?;
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "dict.setdefault() expected at least 2 arguments",
+                ));
+            }
+            if args.len() > 3 {
+                return Err(PyException::type_error(
+                    "dict.setdefault() expected at most 3 arguments",
+                ));
+            }
+            let key = args[1].to_hashable_key()?;
+            if is_hidden_dict_key(&key) {
+                return Err(PyException::key_error(args[1].py_to_string()));
+            }
+            let default = args.get(2).cloned().unwrap_or_else(PyObject::none);
+            let mut storage = map.write();
+            if let Some(value) = storage.get(&key) {
+                Ok(value.clone())
+            } else {
+                storage.insert(key, default.clone());
+                mark_dict_storage_mutated(&map);
+                Ok(default)
+            }
+        })),
+        ("dict", "clear") => Some(PyObject::native_function("dict.clear", |args| {
+            let map = dict_storage_arg(args, "dict.clear")?;
+            if args.len() != 1 {
+                return Err(PyException::type_error(
+                    "dict.clear() takes exactly one argument",
+                ));
+            }
+            let mut storage = map.write();
+            if !storage.is_empty() {
+                storage.clear();
+                mark_dict_storage_mutated(&map);
+            }
+            Ok(PyObject::none())
+        })),
+        ("dict", "popitem") => Some(PyObject::native_function("dict.popitem", |args| {
+            let map = dict_storage_arg(args, "dict.popitem")?;
+            if args.len() > 2 {
+                return Err(PyException::type_error(
+                    "dict.popitem() expected at most 2 arguments",
+                ));
+            }
+            let is_ordered = map
+                .read()
+                .contains_key(&HashableKey::str_key(CompactString::from(
+                    "__ordered_dict__",
+                )));
+            let last = if is_ordered {
+                args.get(1).map(|arg| arg.is_truthy()).unwrap_or(true)
+            } else {
+                if args.len() != 1 {
+                    return Err(PyException::type_error(
+                        "dict.popitem() takes exactly one argument",
+                    ));
+                }
+                true
+            };
+            let mut storage = map.write();
+            let len = storage.len();
+            let entry = if last {
+                let mut result = None;
+                for i in (0..len).rev() {
+                    if let Some((key, _)) = storage.get_index(i) {
+                        if !is_hidden_dict_key(key) {
+                            result = storage.shift_remove_index(i);
+                            break;
+                        }
+                    }
+                }
+                result
+            } else {
+                let mut result = None;
+                for i in 0..len {
+                    if let Some((key, _)) = storage.get_index(i) {
+                        if !is_hidden_dict_key(key) {
+                            result = storage.shift_remove_index(i);
+                            break;
+                        }
+                    }
+                }
+                result
+            };
+            if entry.is_some() {
+                mark_ordered_dict_broken_object(&args[0], &map);
+                mark_dict_storage_mutated(&map);
+            }
+            match entry {
+                Some((key, value)) => Ok(PyObject::tuple(vec![key.to_object(), value])),
+                None => Err(PyException::key_error("popitem(): dictionary is empty")),
+            }
+        })),
+        ("dict", "update") => Some(PyObject::native_function("dict.update", |args| {
+            let map = dict_storage_arg(args, "dict.update")?;
+            if args.len() > 2 {
+                return Err(PyException::type_error(
+                    "dict.update() expected at most 2 arguments",
+                ));
+            }
+            if let Some(source) = args.get(1) {
+                match &source.payload {
+                    PyObjectPayload::Dict(src) | PyObjectPayload::MappingProxy(src) => {
+                        for (key, value) in src.read().iter() {
+                            if !is_hidden_dict_key(key) {
+                                map.write().insert(key.clone(), value.clone());
+                                mark_dict_storage_mutated(&map);
+                            }
+                        }
+                    }
+                    PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                        if let Some(src) = inst.dict_storage.as_ref() {
+                            for (key, value) in src.read().iter() {
+                                if !is_hidden_dict_key(key) {
+                                    map.write().insert(key.clone(), value.clone());
+                                    mark_dict_storage_mutated(&map);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        for item in source.to_list()? {
+                            let pair = item.to_list()?;
+                            if pair.len() != 2 {
+                                return Err(PyException::value_error(
+                                    "dictionary update sequence element has length other than 2",
+                                ));
+                            }
+                            let key = pair[0].to_hashable_key()?;
+                            if !is_hidden_dict_key(&key) {
+                                map.write().insert(key, pair[1].clone());
+                                mark_dict_storage_mutated(&map);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        })),
         // dict.__getitem__(self, key) — access dict_storage on dict subclass
         ("dict", "__getitem__") => Some(PyObject::native_function("dict.__getitem__", |args| {
             if args.len() != 2 {
@@ -611,6 +852,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 if let Some(ref ds) = inst.dict_storage {
                     let hk = args[1].to_hashable_key()?;
+                    if is_hidden_dict_key(&hk) {
+                        return Err(PyException::key_error(args[1].py_to_string()));
+                    }
                     if let Some(val) = ds.read().get(&hk) {
                         return Ok(val.clone());
                     }
@@ -651,7 +895,11 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 if let Some(ref ds) = inst.dict_storage {
                     let hk = args[1].to_hashable_key()?;
+                    if is_hidden_dict_key(&hk) {
+                        return Err(PyException::key_error(args[1].py_to_string()));
+                    }
                     if ds.write().shift_remove(&hk).is_some() {
+                        mark_ordered_dict_broken_object(&args[0], ds);
                         mark_dict_storage_mutated(ds);
                         return Ok(PyObject::none());
                     }
@@ -672,6 +920,9 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 if let Some(ref ds) = inst.dict_storage {
                     let hk = args[1].to_hashable_key()?;
+                    if is_hidden_dict_key(&hk) {
+                        return Ok(PyObject::bool_val(false));
+                    }
                     return Ok(PyObject::bool_val(ds.read().contains_key(&hk)));
                 }
             }
@@ -960,5 +1211,45 @@ fn dict_view_payload(
         "keys" => PyObject::wrap(PyObjectPayload::DictKeys { map, owner }),
         "values" => PyObject::wrap(PyObjectPayload::DictValues { map, owner }),
         _ => PyObject::wrap(PyObjectPayload::DictItems { map, owner }),
+    }
+}
+
+fn dict_storage_arg(
+    args: &[PyObjectRef],
+    name: &str,
+) -> PyResult<std::rc::Rc<PyCell<FxHashKeyMap>>> {
+    if args.is_empty() {
+        return Err(PyException::type_error(format!(
+            "{}() requires a dict instance",
+            name
+        )));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Ok(map.clone()),
+        PyObjectPayload::Instance(inst) => inst
+            .dict_storage
+            .clone()
+            .ok_or_else(|| PyException::type_error(format!("{}() requires a dict instance", name))),
+        _ => Err(PyException::type_error(format!(
+            "{}() requires a dict instance",
+            name
+        ))),
+    }
+}
+
+fn mark_ordered_dict_broken_object(obj: &PyObjectRef, map: &std::rc::Rc<PyCell<FxHashKeyMap>>) {
+    let ordered_key = HashableKey::str_key(CompactString::from("__ordered_dict__"));
+    if map.read().contains_key(&ordered_key) {
+        map.write().insert(
+            HashableKey::str_key(CompactString::from("__ordered_dict_broken__")),
+            PyObject::bool_val(true),
+        );
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            inst.attrs.write().insert(
+                CompactString::from("__ordered_dict_broken__"),
+                PyObject::bool_val(true),
+            );
+        }
+        mark_dict_storage_mutated(map);
     }
 }

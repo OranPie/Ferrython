@@ -66,6 +66,43 @@ pub(crate) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
             n.sort();
             n
         }
+        PyObjectPayload::Function(f) => {
+            let mut n: Vec<CompactString> = f.attrs.read().keys().cloned().collect();
+            if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                    for key in map.read().keys() {
+                        n.push(CompactString::from(key.to_object().py_to_string()));
+                    }
+                }
+            }
+            for d in common_dunders {
+                n.push(CompactString::from(*d));
+            }
+            n.sort();
+            n.dedup();
+            n
+        }
+        PyObjectPayload::BoundMethod { method, .. } => {
+            let mut n = method.dir();
+            if let PyObjectPayload::Function(f) = &method.payload {
+                n.extend(f.attrs.read().keys().cloned());
+                if let Some(dict_obj) = f.attrs.read().get("__dict__").cloned() {
+                    if let PyObjectPayload::Dict(map) = &dict_obj.payload {
+                        for key in map.read().keys() {
+                            n.push(CompactString::from(key.to_object().py_to_string()));
+                        }
+                    }
+                }
+            }
+            n.push(CompactString::from("__func__"));
+            n.push(CompactString::from("__self__"));
+            for d in common_dunders {
+                n.push(CompactString::from(*d));
+            }
+            n.sort();
+            n.dedup();
+            n
+        }
         PyObjectPayload::List(_) => {
             let mut v: Vec<&str> = vec![
                 "append",

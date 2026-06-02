@@ -133,7 +133,7 @@ impl VirtualMachine {
         if Self::is_exception_class(cls) {
             if let PyObjectPayload::Instance(inst) = &instance.payload {
                 let mut attrs = inst.attrs.write();
-                if !attrs.contains_key("args") {
+                if !attrs.contains_key("args") || pos_args.is_empty() {
                     attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
                 }
             }
