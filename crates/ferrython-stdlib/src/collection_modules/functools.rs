@@ -14,7 +14,13 @@ pub fn create_functools_module() -> PyObjectRef {
     // incomplete native replacements here makes functools.py skip its more
     // complete Python fallbacks.
     if std::env::var_os("FERRYTHON_EXPERIMENTAL_NATIVE_FUNCTOOLS").is_none() {
-        return make_module("_functools", vec![]);
+        return make_module(
+            "_functools",
+            vec![(
+                "reduce",
+                PyObject::native_function("functools.reduce", functools_reduce),
+            )],
+        );
     }
 
     make_module(

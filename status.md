@@ -1,8 +1,22 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T10:14:03+08:00
+Last updated: 2026-06-02T14:09:08+08:00
 
 ## 性能优化进度
+
+- 2026-06-02 functools native acceleration 批次：
+  - `_functools` 默认暴露安全的 Rust native `reduce` accelerator；公开 `functools` 仍通过 `stdlib/Lib/functools.py` 加载完整兼容表面，避免不完整 native `partial` / `_lru_cache_wrapper` / `cmp_to_key` 触发 C 专属测试分支并降低通过数。
+  - `functools.total_ordering()` root detection 补齐继承自非 `object` base 的比较方法识别，修复 `@total_ordering class A(int): pass` 这类已通过 baseline 回归。
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo test -p ferrython-stdlib` -> ok (`0 passed; 0 failed`, plus doctests `0 passed; 0 failed`)
+    - native import smoke: `_functools.reduce` 存在，`_functools.partial` / `cmp_to_key` / `_lru_cache_wrapper` 仍隐藏，`functools.reduce(lambda x, y: x + y, [1, 2, 3]) == 6`，`total_ordering` over `int` subclass works.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set test_functools` -> `run=793 pass=715 fail=0 err=0 skip=78`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_reprlib` -> `run=44 pass=42 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_set test_getopt test_keyword test_colorsys test_reprlib` -> `run=837 pass=757 fail=0 err=0 skip=80`
 
 - 2026-06-02 native stdlib acceleration 批次：
   - 新增 Rust native `stat`、`genericpath` 和 `getopt`，减少这些已通过 stdlib 模块的 Python 源码 import/执行开销。

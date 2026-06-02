@@ -1,8 +1,21 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T10:14:03+08:00
+Last updated: 2026-06-02T14:09:08+08:00
 
 ## Current batch
+
+- Native acceleration batch: functools reduce
+  - `_functools` now exposes native `reduce` by default, using the VM-aware bridge for Python callables and iterables.
+  - Public `functools` remains Python-backed for full compatibility; incomplete native `partial`, `cmp_to_key`, and `_lru_cache_wrapper` stay hidden so fresh `_functools` imports do not enter unsupported C-accelerator-only test paths.
+  - `functools.total_ordering()` now recognizes inherited comparison roots from non-`object` bases, restoring the `class A(int)` no-overwrite case.
+  - Per-module/current results:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`.
+  - Combined guards:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_set test_functools` -> `run=793 pass=715 fail=0 err=0 skip=78`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_reprlib` -> `run=44 pass=42 fail=0 err=0 skip=2`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_set test_getopt test_keyword test_colorsys test_reprlib` -> `run=837 pass=757 fail=0 err=0 skip=80`.
+  - Build checks:
+    - `cargo fmt --all --check`, `cargo check -p ferrython-stdlib`, `cargo build -p ferrython-cli --bin ferrython`, and `cargo test -p ferrython-stdlib`.
 
 - Native completion batch: stat, genericpath, and getopt
   - `stat` now resolves through a native stdlib module with mode constants, `S_IS*()` helpers, `S_IMODE()`, `S_IFMT_func()`, and `filemode()`.

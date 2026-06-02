@@ -199,6 +199,13 @@ def total_ordering(cls):
     # Find user-defined comparisons (not those inherited from object).
     roots = {op for op in _convert if op in cls.__dict__}
     if not roots:
+        roots = {
+            op for op in _convert
+            if getattr(cls, op, None) is not None
+            and any(base is not object and hasattr(base, op)
+                    for base in cls.__mro__[1:])
+        }
+    if not roots:
         raise ValueError('must define at least one ordering operation: < > <= >=')
     root = max(roots)       # prefer __lt__ to __le__ to __gt__ to __ge__
     for opname, opfunc in _convert[root]:
