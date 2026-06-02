@@ -1,8 +1,18 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T15:51:25+08:00
+Last updated: 2026-06-02T16:10:31+08:00
 
 ## 性能优化进度
+
+- 2026-06-02 functools native partial 批次：
+  - `_functools` 默认暴露 Rust native `partial`，当前默认 native surface 为 `reduce` / `cmp_to_key` / `partial`；`_lru_cache_wrapper` 仍未公开，避免把未完成 C accelerator 表面误标为完整。
+  - `stdlib/Lib/functools.py` 的可选 accelerator import 现在尊重 `sys.modules['_functools'] = None` 的 blocked sentinel，`test.support.import_fresh_module(..., blocked=['_functools'])` 能稳定走纯 Python fallback。
+  - `partialmethod` 内部继续使用纯 Python `_partial_class`，保留可变 `keywords`、`__dict__` 和 `__self__` descriptor 行为；公开 `functools.partial` 仍由 native `_functools.partial` 加速。
+  - 验证：
+    - native partial smoke: `_functools.partial` 存在，`functools.partial is _functools.partial`，`func`/`args`/`keywords` 属性和 call-time kwargs override 通过。
+    - partialmethod smoke: descriptor keyword propagation passed.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator` -> `run=414 pass=339 fail=0 err=0 skip=75`
 
 - 2026-06-02 functools cmp_to_key / descriptor / bisect accelerator 批次：
   - `_functools` 默认暴露 Rust native `cmp_to_key`，保留 `reduce`；继续隐藏不完整的 native `partial` / `_lru_cache_wrapper`，避免破坏 `functools` 兼容面。

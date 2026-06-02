@@ -20,6 +20,7 @@ from collections import namedtuple
 from reprlib import recursive_repr
 from _thread import RLock
 from types import GenericAlias
+import sys as _sys
 
 
 ################################################################################
@@ -238,10 +239,11 @@ def cmp_to_key(mycmp):
         __hash__ = None
     return K
 
-try:
-    from _functools import cmp_to_key
-except ImportError:
-    pass
+if _sys.modules.get("_functools") is not None or "_functools" not in _sys.modules:
+    try:
+        from _functools import cmp_to_key
+    except ImportError:
+        pass
 
 
 ################################################################################
@@ -278,10 +280,11 @@ def reduce(function, sequence, initial=_initial_missing):
 
     return value
 
-try:
-    from _functools import reduce
-except ImportError:
-    pass
+if _sys.modules.get("_functools") is not None or "_functools" not in _sys.modules:
+    try:
+        from _functools import reduce
+    except ImportError:
+        pass
 
 
 ################################################################################
@@ -385,10 +388,13 @@ class partial:
         self.keywords = kwds
         raw_dict.update(namespace)
 
-try:
-    from _functools import partial
-except ImportError:
-    pass
+_partial_class = partial
+
+if _sys.modules.get("_functools") is not None or "_functools" not in _sys.modules:
+    try:
+        from _functools import partial
+    except ImportError:
+        pass
 
 # Descriptor version
 class partialmethod(object):
@@ -455,7 +461,7 @@ class partialmethod(object):
             if new_func is not self.func:
                 # Assume __get__ returning something new indicates the
                 # creation of an appropriate callable
-                result = partial(new_func, *self.args)
+                result = _partial_class(new_func, *self.args)
                 result.keywords.update(self.keywords)
                 try:
                     result.__self__ = new_func.__self__

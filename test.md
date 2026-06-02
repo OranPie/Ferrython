@@ -1,8 +1,20 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T15:51:25+08:00
+Last updated: 2026-06-02T16:10:31+08:00
 
 ## Current batch
+
+- Native acceleration batch: functools partial
+  - `_functools` now exposes native `partial` by default along with `reduce` and `cmp_to_key`; `_lru_cache_wrapper` remains hidden so Ferrython does not opt into unsupported full C-accelerator test paths.
+  - `functools.py` now respects the blocked `_functools` sentinel used by `test.support.import_fresh_module(..., blocked=['_functools'])`, so Python fallback tests still exercise the Python class.
+  - `partialmethod` uses the saved Python `_partial_class` internally to preserve mutable `keywords`, `__dict__`, and bound-method `__self__` behavior while public `functools.partial` resolves to native.
+  - Smokes:
+    - `_functools.partial` exists; `functools.partial is _functools.partial`.
+    - Native partial exposes `func`, tuple `args`, dict `keywords`, and merges call-time keyword overrides.
+    - `partialmethod` descriptor keyword propagation passed.
+  - Current results:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools` -> `run=232 pass=157 fail=0 err=0 skip=75`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator` -> `run=414 pass=339 fail=0 err=0 skip=75`.
 
 - Native compatibility batch: functools cmp_to_key, descriptor/classmethod, and _bisect
   - `_functools` now exposes native `cmp_to_key` together with native `reduce`; incomplete native `partial` and `_lru_cache_wrapper` remain hidden outside the experimental native-functools path.

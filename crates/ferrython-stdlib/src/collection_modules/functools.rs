@@ -25,6 +25,10 @@ pub fn create_functools_module() -> PyObjectRef {
                     "cmp_to_key",
                     PyObject::native_function("functools.cmp_to_key", functools_cmp_to_key),
                 ),
+                (
+                    "partial",
+                    PyObject::native_function("functools.partial", functools_partial),
+                ),
             ],
         );
     }
