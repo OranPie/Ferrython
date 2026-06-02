@@ -2074,6 +2074,35 @@ Last updated: 2026-06-02T10:14:03+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_dictviews test_subclassinit test_genericclass test_ipaddress test_generators test_named_expressions` -> `run=553 pass=474 fail=0 err=0 skip=79`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_generator_stop test_collections test_weakref test_dict test_set` -> `run=999 pass=973 fail=0 err=0 skip=26`
 
+- 2026-06-02 low-risk native stdlib module batch:
+  - Native module coverage added for low-risk Python-side modules:
+    - `imghdr`
+    - `sndhdr`
+    - `nturl2path`
+    - `filecmp`
+    - `chunk`
+    - `xdrlib`
+    - `uu`
+  - Registry updates:
+    - `imghdr`, `sndhdr`, `nturl2path`, and `chunk` now resolve from the misc extras registry.
+    - `filecmp` now resolves from the filesystem core registry.
+    - `uu` and `xdrlib` now resolve from the serialization extras registry.
+  - Runtime details:
+    - Added a new `misc_modules::lowrisk` native module group for compact, low-risk stdlib ports.
+    - `chunk.Chunk`, `xdrlib.Packer`, and `xdrlib.Unpacker` use named native class methods so Ferrython's `LoadMethod` path binds `self` correctly.
+    - `reprlib` native implementation was evaluated but deferred because it regressed `test_reprlib`; the Python fallback remains active to preserve the qpass baseline.
+  - Validation:
+    - `cargo fmt --all`
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - Native import smoke: `imghdr sndhdr nturl2path filecmp chunk xdrlib uu` all resolve natively.
+    - Functional smokes passed for image/sound header detection, Windows URL/path conversion, `xdrlib` pack/unpack, `chunk.Chunk` read, `filecmp.cmp`, and `uu` encode/decode roundtrip.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`: `run=23 pass=21 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`: `run=52 pass=52 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`: `run=159 pass=159 fail=0 err=0 skip=0`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。

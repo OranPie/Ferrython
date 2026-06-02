@@ -550,3 +550,35 @@ Last updated: 2026-06-02T10:14:03+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_dictviews test_subclassinit test_genericclass test_ipaddress test_generators test_named_expressions`: `run=553 pass=474 fail=0 err=0 skip=79`.
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_generator_stop test_collections test_weakref test_dict test_set`: `run=999 pass=973 fail=0 err=0 skip=26`.
   - `TEST_BASELINE.md` pass baseline updated from 89 to 96 zero-failure/zero-error modules.
+
+## 2026-06-02 low-risk native stdlib module batch
+
+- Native modules added
+  - `imghdr`: native import and representative PNG detection smoke passed.
+  - `sndhdr`: native import and representative RIFF/WAVE detection smoke passed.
+  - `nturl2path`: native import and Windows path/url conversion smoke passed.
+  - `filecmp`: native import and same-content temporary file comparison smoke passed.
+  - `chunk`: native import and `Chunk(io.BytesIO(...)).read()` smoke passed.
+  - `xdrlib`: native import and `Packer`/`Unpacker` uint/string roundtrip smoke passed.
+  - `uu`: native import and `encode`/`decode` StringIO/BytesIO roundtrip smoke passed.
+
+- Deferred module
+  - `reprlib`: native implementation attempt was not kept because it regressed `test_reprlib` string/container truncation and recursive decorator behavior. Current batch keeps the Python fallback active.
+
+- Binding trait fixed during native smoke
+  - `Chunk`, `Packer`, and `Unpacker` class methods must use named native functions such as `Chunk.read` or `Packer.pack_uint` so the VM's method-load path binds `self`.
+
+- Qpass guard
+  - `test_reprlib`: `run=23 pass=21 fail=0 err=0 skip=2`.
+  - `test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`: `run=52 pass=52 fail=0 err=0 skip=0`.
+  - `test_pprint test_textwrap test_urlparse`: `run=159 pass=159 fail=0 err=0 skip=0`.
+
+- Commands used in this batch
+  - `cargo fmt --all`
+  - `cargo fmt --all --check`
+  - `cargo check -p ferrython-stdlib`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_reprlib`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_getopt test_keyword test_colorsys test_html test_fnmatch test_shlex`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_pprint test_textwrap test_urlparse`

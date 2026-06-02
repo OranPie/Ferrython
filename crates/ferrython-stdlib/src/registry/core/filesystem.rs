@@ -1,10 +1,11 @@
-use crate::fs_modules;
+use crate::{fs_modules, misc_modules};
 use ferrython_core::object::PyObjectRef;
 
 pub(super) fn resolve(name: &str) -> Option<PyObjectRef> {
     match name {
         "pathlib" => Some(fs_modules::create_pathlib_module()),
         "genericpath" => Some(fs_modules::create_genericpath_module()),
+        "filecmp" => Some(misc_modules::create_filecmp_module()),
         "shutil" => Some(fs_modules::create_shutil_module()),
         "glob" => Some(fs_modules::create_glob_module()),
         "tempfile" => Some(fs_modules::create_tempfile_module()),

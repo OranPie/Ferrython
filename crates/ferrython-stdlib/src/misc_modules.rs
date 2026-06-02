@@ -14,6 +14,7 @@ mod dataclasses;
 mod future;
 mod getopt;
 mod keyword;
+mod lowrisk;
 mod mimetypes;
 mod plistlib;
 mod pstats;
@@ -32,6 +33,10 @@ pub use dataclasses::create_dataclasses_module;
 pub use future::create_future_module;
 pub use getopt::create_getopt_module;
 pub use keyword::create_keyword_module;
+pub use lowrisk::{
+    create_chunk_module, create_filecmp_module, create_imghdr_module, create_nturl2path_module,
+    create_sndhdr_module, create_uu_module, create_xdrlib_module,
+};
 pub use mimetypes::create_mimetypes_module;
 pub use plistlib::create_plistlib_module;
 pub use pstats::create_pstats_module;
