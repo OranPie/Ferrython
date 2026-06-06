@@ -1,8 +1,22 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-06T21:44:37+08:00
+Last updated: 2026-06-06T22:51:43+08:00
 
 ## Current batch
+
+- Compatibility batch: yield-from delegation
+  - `test_yield_from`
+    - Previous recorded state: `run=33 pass=17 fail=8 err=8 skip=0`.
+    - Current result: `run=33 pass=33 fail=0 err=0 skip=0`.
+  - Fixed traits:
+    - `yield from` keeps generator/coroutine delegates intact via `GetYieldFromIter`.
+    - Delegated custom iterator `send`/`throw`/`close` use VM-aware attr lookup, including broken `__getattr__` propagation and close-time unraisable handling.
+    - Delegated `StopIteration.value`, generator `return None`, `GeneratorExit` chaining, subgenerator return after `throw()`, and stale delegation cleanup now follow CPython behavior.
+    - Delegator running state is visible during delegated `throw()` and `close()`, so recursive re-entry raises `ValueError`.
+    - `inspect.stack()` exposes active delegator frames through native current-frame support.
+  - Guard validation:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_yield_from`: `run=33 pass=33 fail=0 err=0 skip=0`.
+    - Focused smokes for broken custom iterator `__getattr__`, recursive delegator `send`/`throw`/`close`, and inspect delegator stack visibility passed.
 
 - Compatibility batch: scope semantics
   - `test_scope`
@@ -57,7 +71,7 @@ Last updated: 2026-06-06T21:44:37+08:00
     - `unittest` skip class smoke: `testsRun=1 skipped=1 errors=0`.
   - Non-baseline probes not fixed in this batch:
     - `test_exception_hierarchy`: `run=16 pass=4 fail=3 err=8 skip=1`.
-    - `test_int`, `test_float`, `test_scope`, `test_yield_from`, `test_funcattrs`, and `test_exceptions` still show broader core numeric/scope/exception gaps and should be handled as separate batches.
+    - `test_int`, `test_float`, `test_funcattrs`, and `test_exceptions` still show broader core numeric/scope/exception gaps; `test_scope` and `test_yield_from` were closed in later batches.
 
 - Native acceleration batch: functools reduce
   - `_functools` now exposes native `reduce` by default, using the VM-aware bridge for Python callables and iterables.

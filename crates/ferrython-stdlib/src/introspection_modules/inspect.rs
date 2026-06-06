@@ -855,8 +855,14 @@ pub fn create_inspect_module() -> PyObjectRef {
             ("unwrap", make_builtin(inspect_unwrap)),
             // ── Frame introspection ──
             ("getattr_static", make_builtin(inspect_getattr_static)),
-            ("currentframe", make_builtin(inspect_currentframe)),
-            ("stack", make_builtin(inspect_stack)),
+            (
+                "currentframe",
+                PyObject::native_function("inspect.currentframe", inspect_currentframe),
+            ),
+            (
+                "stack",
+                PyObject::native_function("inspect.stack", inspect_stack),
+            ),
             // ── Constants ──
             ("CO_OPTIMIZED", PyObject::int(0x01)),
             ("CO_NEWLOCALS", PyObject::int(0x02)),

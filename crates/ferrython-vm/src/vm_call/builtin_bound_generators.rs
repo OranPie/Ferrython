@@ -36,44 +36,14 @@ impl VirtualMachine {
                 }
                 "throw" => {
                     let (exc_kind, msg) = Self::parse_throw_args(args);
-                    let original_value = Self::parse_throw_original_value(args);
+                    let original_value = self.throw_exception_original_from_args(args)?;
                     return self
                         .gen_throw_with_value(gen_arc, exc_kind, msg, original_value)
                         .map(Some);
                 }
                 "close" => {
-                    let gen = gen_arc.read();
-                    if gen.finished || !gen.has_frame() {
-                        drop(gen);
-                        return Ok(Some(PyObject::none()));
-                    }
-                    drop(gen);
-                    match self.gen_throw(
-                        gen_arc,
-                        ExceptionKind::GeneratorExit,
-                        CompactString::new(""),
-                    ) {
-                        Ok(_yielded) => {
-                            return Err(PyException::runtime_error(
-                                "generator ignored GeneratorExit",
-                            ));
-                        }
-                        Err(e)
-                            if e.kind == ExceptionKind::GeneratorExit
-                                || e.kind == ExceptionKind::StopIteration =>
-                        {
-                            let mut gen = gen_arc.write();
-                            gen.finished = true;
-                            gen.clear_frame();
-                            return Ok(Some(PyObject::none()));
-                        }
-                        Err(e) => {
-                            let mut gen = gen_arc.write();
-                            gen.finished = true;
-                            gen.clear_frame();
-                            return Err(e);
-                        }
-                    }
+                    self.gen_close(gen_arc)?;
+                    return Ok(Some(PyObject::none()));
                 }
                 "__next__" if kind != "async_generator" => {
                     return self.resume_generator(gen_arc, PyObject::none()).map(Some);
@@ -86,7 +56,7 @@ impl VirtualMachine {
                         !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None);
                     if has_exc {
                         let (exc_kind, msg) = Self::parse_throw_args(args);
-                        let original_value = Self::parse_throw_original_value(args);
+                        let original_value = self.throw_exception_original_from_args(args)?;
                         match self.gen_throw_with_value(gen_arc, exc_kind, msg, original_value) {
                             Ok(_) => return Ok(Some(PyObject::bool_val(true))),
                             Err(e) if e.kind == ExceptionKind::StopIteration => {
@@ -168,7 +138,7 @@ impl VirtualMachine {
                 }
                 "throw" => {
                     let (exc_kind, msg) = Self::parse_throw_args(args);
-                    let original_value = Self::parse_throw_original_value(args);
+                    let original_value = self.throw_exception_original_from_args(args)?;
                     return self
                         .gen_throw_with_value(gen, exc_kind, msg, original_value)
                         .map(Some);

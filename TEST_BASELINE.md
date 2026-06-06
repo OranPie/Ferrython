@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-06T21:44:37+08:00
+Last updated: 2026-06-06T22:51:43+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -118,8 +118,9 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_weakref | 125 | 115 | 0 | 0 | 10 | 1s |
 | test_weakset | 44 | 42 | 0 | 0 | 2 | 1s |
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
+| test_yield_from | 33 | 33 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 101 modules have zero failures/errors. Of those, 95 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 102 modules have zero failures/errors. Of those, 96 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
 ## Current Non-Baseline Modules
 
@@ -148,7 +149,6 @@ These modules are not protected as passing gates yet.
 | test_types | FAIL | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_typing | FAIL | 301 | 81 | 169 | 47 | 4 | 1s |
 | test_unicode | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |
-| test_yield_from | FAIL | 33 | 17 | 8 | 8 | 0 | 0s |
 
 ## Explicit Skip Table
 

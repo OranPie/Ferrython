@@ -3,6 +3,7 @@
 use crate::frame::{BlockKind, Frame};
 use crate::VirtualMachine;
 use compact_str::CompactString;
+use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, GeneratorState, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -62,6 +63,62 @@ pub(crate) fn drop_generator_frame(ptr: *mut u8) {
 }
 
 impl VirtualMachine {
+    fn generator_exit_exception() -> PyException {
+        let original = PyObject::exception_instance(ExceptionKind::GeneratorExit, "");
+        PyException::with_original(ExceptionKind::GeneratorExit, "", original)
+    }
+
+    fn with_generator_exit_context(mut exc: PyException) -> PyException {
+        if exc.context.is_none() {
+            exc.context = Some(Box::new(Self::generator_exit_exception()));
+        }
+        let context_obj = exc
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.original.clone())
+            .unwrap_or_else(|| PyObject::exception_instance(ExceptionKind::GeneratorExit, ""));
+        if exc.original.is_none() {
+            exc.original = Some(PyObject::exception_instance(exc.kind, exc.message.clone()));
+        }
+        if let Some(original) = exc.original.as_ref() {
+            Self::store_exc_attr(original, "__context__", context_obj);
+        }
+        exc
+    }
+
+    pub(crate) fn stop_iteration_from_value(value: PyObjectRef) -> PyException {
+        let mut exc = PyException::new(ExceptionKind::StopIteration, "");
+        if !matches!(&value.payload, PyObjectPayload::None) {
+            exc.message = value.py_to_string().into();
+            exc.value = Some(value);
+        }
+        exc
+    }
+
+    pub(crate) fn stop_iteration_value(exc: PyException) -> PyObjectRef {
+        if let Some(value) = exc.value {
+            return value;
+        }
+        if let Some(original) = exc.original {
+            match &original.payload {
+                PyObjectPayload::ExceptionInstance(ei)
+                    if ei.kind == ExceptionKind::StopIteration =>
+                {
+                    return ei.args.first().cloned().unwrap_or_else(PyObject::none);
+                }
+                PyObjectPayload::Instance(inst) => {
+                    if let Some(args_obj) = inst.attrs.read().get("args").cloned() {
+                        if let PyObjectPayload::Tuple(items) = &args_obj.payload {
+                            return items.first().cloned().unwrap_or_else(PyObject::none);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        PyObject::none()
+    }
+
     fn frame_has_exception_handler(frame: &Frame) -> bool {
         frame
             .block_stack
@@ -163,11 +220,11 @@ impl VirtualMachine {
             return Err(PyException::new(ExceptionKind::StopIteration, ""));
         }
         if gen.running {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         gen.running = true;
         // Direct cast from raw pointer — no dyn Any downcast.
@@ -229,12 +286,7 @@ impl VirtualMachine {
             drop(gen);
             self.restore_generator_caller_exception_state(generator_exception_ctx);
             match result {
-                Ok(return_val) => {
-                    let msg = return_val.py_to_string();
-                    let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
-                    exc.value = Some(return_val);
-                    Err(exc)
-                }
+                Ok(return_val) => Err(Self::stop_iteration_from_value(return_val)),
                 Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
             }
         }
@@ -252,11 +304,11 @@ impl VirtualMachine {
             return Ok(None);
         }
         if gen.running {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         gen.running = true;
         let frame_typed = frame_raw as *mut Frame;
@@ -333,6 +385,94 @@ impl VirtualMachine {
         self.gen_throw_with_value(gen_arc, kind, msg, None)
     }
 
+    fn resume_generator_after_yield_from_return(
+        &mut self,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
+        return_value: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let mut gen = gen_arc.write();
+        if gen.finished {
+            return Err(PyException::new(ExceptionKind::StopIteration, ""));
+        }
+        if gen.running {
+            return Err(PyException::value_error("generator already executing"));
+        }
+        let frame_raw = gen.take_frame_ptr();
+        if frame_raw.is_null() {
+            return Err(PyException::value_error("generator already executing"));
+        }
+        gen.running = true;
+        let frame_typed = frame_raw as *mut Frame;
+        self.call_stack.reserve(1);
+        unsafe {
+            let len = self.call_stack.len();
+            let dst = self.call_stack.as_mut_ptr().add(len);
+            std::ptr::copy_nonoverlapping(frame_typed, dst, 1);
+            self.call_stack.set_len(len + 1);
+        }
+        gen_frame_recycle(frame_typed);
+        gen.started = true;
+        drop(gen);
+
+        {
+            let frame = self.call_stack.last_mut().unwrap();
+            if frame
+                .code
+                .instructions
+                .get(frame.ip)
+                .is_some_and(|instr| instr.op == Opcode::YieldFrom)
+            {
+                frame.ip += 1;
+            }
+            if !frame.stack.is_empty() {
+                frame.pop();
+            }
+            frame.push(return_value);
+        }
+
+        let inherited_exception_stack_len = self.exception_state_stack.len();
+        self.current_generators.push(gen_arc.clone());
+        let generator_exception_ctx = self.enter_generator_exception_state(gen_arc);
+        let result = self.run_frame();
+        self.current_generators.pop();
+        let cs_len = self.call_stack.len();
+        let frame_yielded = self.call_stack[cs_len - 1].yielded;
+        let has_exception_handler = Self::frame_has_exception_handler(&self.call_stack[cs_len - 1]);
+
+        let mut gen = gen_arc.write();
+        gen.running = false;
+        if frame_yielded {
+            self.save_generator_exception_state_on_yield(
+                &mut gen,
+                has_exception_handler,
+                (!generator_exception_ctx.restored_generator_state)
+                    .then_some(inherited_exception_stack_len),
+            );
+            let frame_ref = &mut self.call_stack[cs_len - 1];
+            frame_ref.yielded = false;
+            let buf = gen_frame_alloc();
+            unsafe {
+                std::ptr::copy_nonoverlapping(frame_ref as *const Frame, buf, 1);
+                self.call_stack.set_len(cs_len - 1);
+            }
+            gen.set_frame_ptr(buf as *mut u8);
+            drop(gen);
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
+            result
+        } else {
+            gen.finished = true;
+            gen.clear_frame();
+            let frame = self.call_stack.pop().unwrap();
+            frame.recycle(&mut self.frame_pool);
+            drop(gen);
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
+            match result {
+                Ok(return_val) => Err(Self::stop_iteration_from_value(return_val)),
+                Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
+            }
+        }
+    }
+
     /// Like gen_throw but preserves an original exception value for identity-
     /// preserving re-raise (needed by contextlib._GeneratorContextManager.__exit__
     /// which does `exc is not value`).
@@ -343,16 +483,83 @@ impl VirtualMachine {
         msg: CompactString,
         original_value: Option<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
+        let delegated_error = if let Some(sub_iter) = gen_arc.read().yield_from.clone() {
+            {
+                let mut gen = gen_arc.write();
+                if gen.running {
+                    return Err(PyException::value_error("generator already executing"));
+                }
+                gen.running = true;
+            }
+            let delegated = match &sub_iter.payload {
+                PyObjectPayload::Generator(sub_gen)
+                | PyObjectPayload::Coroutine(sub_gen)
+                | PyObjectPayload::AsyncGenerator(sub_gen) => {
+                    self.gen_throw_with_value(sub_gen, kind, msg.clone(), original_value.clone())
+                }
+                PyObjectPayload::Instance(_) | PyObjectPayload::Module(_) => {
+                    match self.load_attr_value(sub_iter.clone(), "throw") {
+                        Ok(throw_method) => {
+                            let mut args = Vec::new();
+                            if let Some(ref original) = original_value {
+                                args.push(original.clone());
+                            } else {
+                                args.push(PyObject::exception_type(kind));
+                                if !msg.is_empty() {
+                                    args.push(PyObject::str_val(msg.clone()));
+                                }
+                            }
+                            self.call_object(throw_method, args)
+                        }
+                        Err(e) if e.kind == ExceptionKind::AttributeError => {
+                            Err(PyException::new(kind, msg.clone()))
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => Err(PyException::new(kind, msg.clone())),
+            };
+            gen_arc.write().running = false;
+            match delegated {
+                Ok(_) if kind == ExceptionKind::GeneratorExit => {
+                    gen_arc.write().yield_from = None;
+                    return Err(PyException::runtime_error(
+                        "generator ignored GeneratorExit",
+                    ));
+                }
+                Ok(yielded) => return Ok(yielded),
+                Err(e) if e.kind == ExceptionKind::StopIteration => {
+                    gen_arc.write().yield_from = None;
+                    let value = Self::stop_iteration_value(e);
+                    if kind == ExceptionKind::GeneratorExit {
+                        return self.gen_throw_with_value(
+                            gen_arc,
+                            ExceptionKind::GeneratorExit,
+                            CompactString::new(""),
+                            None,
+                        );
+                    }
+                    return self.resume_generator_after_yield_from_return(gen_arc, value);
+                }
+                Err(e) => {
+                    gen_arc.write().yield_from = None;
+                    Some(e)
+                }
+            }
+        } else {
+            None
+        };
+
         let mut gen = gen_arc.write();
         if gen.finished {
             return Err(PyException::new(kind, msg));
         }
         if gen.running {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         let frame_raw = gen.take_frame_ptr();
         if frame_raw.is_null() {
-            return Err(PyException::runtime_error("generator already executing"));
+            return Err(PyException::value_error("generator already executing"));
         }
         gen.running = true;
         // Push frame from raw pointer to call_stack (1 memcpy, no downcast)
@@ -371,29 +578,54 @@ impl VirtualMachine {
 
         // Set up exception on the frame so VM will unwind to handler
         let inherited_exception_stack_len = self.exception_state_stack.len();
-        let mut exc = PyException::new(kind, msg.clone());
+        let mut exc = delegated_error
+            .clone()
+            .unwrap_or_else(|| PyException::new(kind, msg.clone()));
         if let Some(ref orig) = original_value {
             exc.original = Some(orig.clone());
         }
+        let exc_original = exc.original.clone();
         let exc_result = Err(exc);
-        let (exc_obj, exc_type) = if let Some(orig) = &original_value {
-            let typ = match &orig.payload {
-                PyObjectPayload::Instance(inst) => inst.class.clone(),
-                PyObjectPayload::ExceptionInstance(ei) => PyObject::exception_type(ei.kind),
-                _ => PyObject::exception_type(kind),
+        let (exc_obj, exc_type, active_kind, active_msg) =
+            if let Some(ref delegated) = delegated_error {
+                let obj = delegated.original.clone().unwrap_or_else(|| {
+                    PyObject::exception_instance(delegated.kind, delegated.message.clone())
+                });
+                let typ = match &obj.payload {
+                    PyObjectPayload::Instance(inst) => inst.class.clone(),
+                    PyObjectPayload::ExceptionInstance(ei) => PyObject::exception_type(ei.kind),
+                    _ => PyObject::exception_type(delegated.kind),
+                };
+                (obj, typ, delegated.kind, delegated.message.clone())
+            } else if let Some(orig) = &exc_original {
+                let typ = match &orig.payload {
+                    PyObjectPayload::Instance(inst) => inst.class.clone(),
+                    PyObjectPayload::ExceptionInstance(ei) => PyObject::exception_type(ei.kind),
+                    _ => PyObject::exception_type(kind),
+                };
+                (orig.clone(), typ, kind, msg.clone())
+            } else {
+                (
+                    PyObject::exception_instance(kind, msg.clone()),
+                    PyObject::exception_type(kind),
+                    kind,
+                    msg.clone(),
+                )
             };
-            (orig.clone(), typ)
-        } else {
-            (
-                PyObject::exception_instance(kind, msg.clone()),
-                PyObject::exception_type(kind),
-            )
-        };
         let tb = PyObject::none();
 
         // Try to find an exception handler in the generator's frame
         if let Some(handler_ip) = self.unwind_except() {
-            let mut active = PyException::new(kind, msg);
+            let mut active = PyException::new(active_kind, active_msg);
+            if let Some(ref delegated) = delegated_error {
+                active.original = delegated.original.clone();
+                active.traceback = delegated.traceback.clone();
+                active.cause = delegated.cause.clone();
+                active.context = delegated.context.clone();
+                active.value = delegated.value.clone();
+                active.os_error_info = delegated.os_error_info.clone();
+                active.keepalive = delegated.keepalive.clone();
+            }
             if let Some(ref orig) = original_value {
                 active.original = Some(orig.clone());
                 active.kind = match &orig.payload {
@@ -446,14 +678,9 @@ impl VirtualMachine {
                 if let Err(e) = result {
                     return Err(Self::wrap_generator_stop_iteration(e));
                 }
-                let return_val = result.ok();
-                let msg = return_val
-                    .as_ref()
-                    .map(|v| v.py_to_string())
-                    .unwrap_or_default();
-                let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
-                exc.value = return_val;
-                Err(exc)
+                Err(Self::stop_iteration_from_value(
+                    result.ok().unwrap_or_else(PyObject::none),
+                ))
             }
         } else {
             // No handler — pop frame and re-raise
@@ -468,6 +695,83 @@ impl VirtualMachine {
             match exc_result {
                 Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
                 Ok(value) => Ok(value),
+            }
+        }
+    }
+
+    pub(crate) fn gen_close(&mut self, gen_arc: &Rc<PyCell<GeneratorState>>) -> PyResult<()> {
+        let mut delegated_error: Option<PyException> = None;
+        {
+            let gen = gen_arc.read();
+            if gen.finished || !gen.has_frame() {
+                return Ok(());
+            }
+            if let Some(sub_iter) = gen.yield_from.clone() {
+                drop(gen);
+                gen_arc.write().running = true;
+                match &sub_iter.payload {
+                    PyObjectPayload::Generator(sub_gen)
+                    | PyObjectPayload::Coroutine(sub_gen)
+                    | PyObjectPayload::AsyncGenerator(sub_gen) => {
+                        if let Err(e) = self.gen_close(sub_gen) {
+                            delegated_error = Some(e);
+                        }
+                    }
+                    PyObjectPayload::Instance(_) | PyObjectPayload::Module(_) => {
+                        match self.load_attr_value(sub_iter.clone(), "close") {
+                            Ok(close_method) => {
+                                if let Err(e) = self.call_object(close_method, vec![]) {
+                                    delegated_error = Some(e);
+                                }
+                            }
+                            Err(e) if e.kind == ExceptionKind::AttributeError => {}
+                            Err(e) => self.invoke_unraisablehook(e, sub_iter.clone()),
+                        }
+                    }
+                    _ => {}
+                }
+                gen_arc.write().running = false;
+                gen_arc.write().yield_from = None;
+            }
+        }
+
+        if let Some(e) = delegated_error {
+            let kind = e.kind;
+            let msg = e.message.clone();
+            let original = e.original.clone();
+            let result = self.gen_throw_with_value(gen_arc, kind, msg, original);
+            return match result {
+                Ok(_) => Err(PyException::runtime_error(
+                    "generator ignored GeneratorExit",
+                )),
+                Err(parent_e) if parent_e.kind == ExceptionKind::GeneratorExit => Err(e),
+                Err(parent_e) if parent_e.kind == ExceptionKind::StopIteration => Err(e),
+                Err(parent_e) => Err(parent_e),
+            };
+        }
+
+        match self.gen_throw(
+            gen_arc,
+            ExceptionKind::GeneratorExit,
+            CompactString::new(""),
+        ) {
+            Ok(_) => Err(PyException::runtime_error(
+                "generator ignored GeneratorExit",
+            )),
+            Err(e)
+                if e.kind == ExceptionKind::GeneratorExit
+                    || e.kind == ExceptionKind::StopIteration =>
+            {
+                let mut gen = gen_arc.write();
+                gen.finished = true;
+                gen.clear_frame();
+                Ok(())
+            }
+            Err(e) => {
+                let mut gen = gen_arc.write();
+                gen.finished = true;
+                gen.clear_frame();
+                Err(Self::with_generator_exit_context(e))
             }
         }
     }
@@ -504,13 +808,32 @@ impl VirtualMachine {
         (kind, msg)
     }
 
-    pub(crate) fn parse_throw_original_value(args: &[PyObjectRef]) -> Option<PyObjectRef> {
-        let candidate = match args {
-            [first, ..] if Self::is_exception_value(first) => Some(first),
-            [_, value, ..] if Self::is_exception_value(value) => Some(value),
-            _ => None,
-        }?;
-        Some(candidate.clone())
+    pub(crate) fn throw_exception_original_from_args(
+        &mut self,
+        args: &[PyObjectRef],
+    ) -> PyResult<Option<PyObjectRef>> {
+        let Some(first) = args.first() else {
+            return Ok(None);
+        };
+        match &first.payload {
+            PyObjectPayload::ExceptionInstance(_) => Ok(Some(first.clone())),
+            PyObjectPayload::Instance(inst) if Self::is_exception_class(&inst.class) => {
+                Ok(Some(first.clone()))
+            }
+            PyObjectPayload::Class(_) if Self::is_exception_class(first) => {
+                if args.len() >= 2 && Self::is_exception_value(&args[1]) {
+                    return Ok(Some(args[1].clone()));
+                }
+                let call_args = if args.len() >= 2 {
+                    vec![args[1].clone()]
+                } else {
+                    Vec::new()
+                };
+                let inst = self.instantiate_class(first, call_args, vec![])?;
+                Ok(Some(inst))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn is_exception_value(obj: &PyObjectRef) -> bool {

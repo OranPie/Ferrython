@@ -428,7 +428,7 @@ impl Compiler {
                     });
                 }
                 self.compile_expression(value)?;
-                self.emit_op(Opcode::GetIter);
+                self.emit_op(Opcode::GetYieldFromIter);
                 let none_idx = self.add_const(ConstantValue::None);
                 self.emit_arg(Opcode::LoadConst, none_idx);
                 self.emit_op(Opcode::YieldFrom);

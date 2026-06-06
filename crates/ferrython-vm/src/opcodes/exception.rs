@@ -61,7 +61,7 @@ impl VirtualMachine {
         }
     }
 
-    fn exception_class_is_builtin(cls: &PyObjectRef) -> bool {
+    pub(crate) fn exception_class_is_builtin(cls: &PyObjectRef) -> bool {
         matches!(
             cls.payload,
             PyObjectPayload::Class(ref cd)
@@ -69,7 +69,7 @@ impl VirtualMachine {
         )
     }
 
-    fn exception_message_from_instance(exc: &PyObjectRef) -> String {
+    pub(crate) fn exception_message_from_instance(exc: &PyObjectRef) -> String {
         if let Some(a) = exc.get_attr("args") {
             if let PyObjectPayload::Tuple(items) = &a.payload {
                 if items.len() == 1 {
@@ -87,13 +87,16 @@ impl VirtualMachine {
         }
     }
 
-    fn exception_from_instance(exc: PyObjectRef, class: &PyObjectRef) -> PyException {
+    pub(crate) fn exception_from_instance(exc: PyObjectRef, class: &PyObjectRef) -> PyException {
         let kind = Self::find_exception_kind(class);
         let msg = Self::exception_message_from_instance(&exc);
         PyException::with_original(kind, msg, exc)
     }
 
-    fn exception_from_class(&mut self, exc: &PyObjectRef) -> Result<PyException, PyException> {
+    pub(crate) fn exception_from_class(
+        &mut self,
+        exc: &PyObjectRef,
+    ) -> Result<PyException, PyException> {
         if !Self::is_exception_class(exc) {
             return Err(PyException::type_error(
                 "exceptions must derive from BaseException",

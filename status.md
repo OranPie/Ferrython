@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-06T21:44:37+08:00
+Last updated: 2026-06-06T22:51:43+08:00
 
 ## 性能优化进度
 
@@ -21,7 +21,7 @@ Last updated: 2026-06-06T21:44:37+08:00
   - `_bisect` 现在注册为现有 native `bisect` 实现的 accelerator alias，并保持 `bisect is bisect_right`、`insort is insort_right` identity。
   - `unittest.skip()` / `skipUnless()` 现在同时写入并读取 CPython 标准 `__unittest_skip__` / `__unittest_skip_why__` 标记，保留旧 `__skip_reason__` 兼容。
   - `enumerate` 子类化做了部分通用支撑：`class MyEnum(enumerate)` 可创建并迭代；但 `test_enumerate` 仍因 enumerate type identity、pickle/reversed 等缺口 timeout，未计入本批绿色 gate。
-  - 非 baseline 探测结果：`test_exception_hierarchy`、`test_int`、`test_float`、`test_scope`、`test_yield_from`、`test_funcattrs`、`test_exceptions` 仍是多缺口核心/异常/作用域问题，下一批单独处理。
+  - 当时的非 baseline 探测结果包括 `test_exception_hierarchy`、`test_int`、`test_float`、`test_scope`、`test_yield_from`、`test_funcattrs`、`test_exceptions`；其中 `test_scope` 和 `test_yield_from` 已在后续批次关闭。
   - 验证：
     - `_functools.cmp_to_key` smoke: keyword cmp, keyword obj, sorting, direct compare, unhashable behavior passed.
     - `_bisect` smoke: `_bisect.bisect is _bisect.bisect_right` and `_bisect.insort is _bisect.insort_right`.
@@ -151,6 +151,17 @@ Last updated: 2026-06-06T21:44:37+08:00
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
+
+- 2026-06-06 yield-from delegation batch:
+  - `test_yield_from` from non-baseline `run=33 pass=17 fail=8 err=8 skip=0` to `run=33 pass=33 fail=0 err=0 skip=0`; added to `TEST_BASELINE.md`, moving the zero-failure/error baseline from 101 to 102 modules.
+  - `yield from` now emits/uses `GetYieldFromIter` so generator/coroutine delegation preserves self-iteration semantics instead of forcing generic `iter()` conversion.
+  - Delegated `send`/`throw`/`close` now use VM-aware attribute lookup for custom iterator methods, preserving `__getattr__` errors and routing close-time unraisable exceptions through the existing hook path.
+  - Generator `StopIteration.value`, `return None` formatting, delegated `throw()` return handling, `GeneratorExit` context chaining, and re-entry `ValueError("generator already executing")` are handled on the generic generator path.
+  - `inspect.stack()` now builds `FrameInfo` entries from the VM current-frame chain during native inspect calls, so active delegator generators are visible to debugger-style stack inspection.
+  - Validation:
+    - `cargo fmt --all --check`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_yield_from` -> `run=33 pass=33 fail=0 err=0 skip=0`
 
 - 2026-06-02 decimal restoration / numeric interop 批次：
   - `test_decimal` 从非 baseline 的 `run=500 pass=36 fail=62 err=387 skip=15` 推进到 `run=161 pass=157 fail=0 err=0 skip=4`，并加入 `TEST_BASELINE.md`；baseline summary 从 96 个零失败/零错误模块更新为 97 个。
@@ -2247,7 +2258,7 @@ Last updated: 2026-06-06T21:44:37+08:00
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_float`、`test_fstring`、`test_yield_from`，或内容/API 面广但可批量补齐的 `test_statistics`。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

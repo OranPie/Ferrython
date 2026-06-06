@@ -1,6 +1,5 @@
 //! Miscellaneous operations: format, annotations, generators, async iterators
 
-use crate::builtins;
 use crate::frame::{BlockKind, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
@@ -9,7 +8,7 @@ use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    new_fx_hashkey_map, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
 
@@ -206,7 +205,12 @@ impl VirtualMachine {
                             let return_val = e.value.unwrap_or_else(|| PyObject::none());
                             frame.push(return_val);
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            if let Some(parent) = self.current_generators.last() {
+                                parent.write().yield_from = None;
+                            }
+                            return Err(e);
+                        }
                     }
                 } else if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &sub_iter.payload
                 {
@@ -226,7 +230,12 @@ impl VirtualMachine {
                             let return_val = e.value.unwrap_or_else(|| PyObject::none());
                             frame.push(return_val);
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            if let Some(parent) = self.current_generators.last() {
+                                parent.write().yield_from = None;
+                            }
+                            return Err(e);
+                        }
                     }
                 } else if let PyObjectPayload::BuiltinAwaitable(inner_val) = &sub_iter.payload {
                     // BuiltinAwaitable: immediately resolve with the stored value.
@@ -288,6 +297,35 @@ impl VirtualMachine {
                     frame.pop();
                     frame.push(result);
                 } else if matches!(&sub_iter.payload, PyObjectPayload::Instance(_)) {
+                    if let Some(parent) = self.current_generators.last() {
+                        parent.write().yield_from = Some(sub_iter.clone());
+                    }
+                    if !matches!(&send_val.payload, PyObjectPayload::None) {
+                        let send_method = self.load_attr_value(sub_iter.clone(), "send")?;
+                        match self.call_object(send_method, vec![send_val]) {
+                            Ok(value) => {
+                                let frame = self.vm_frame();
+                                frame.yielded = true;
+                                frame.ip -= 1;
+                                return Ok(Some(value));
+                            }
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
+                                let frame = self.vm_frame();
+                                frame.pop();
+                                frame.push(Self::stop_iteration_value(e));
+                                return Ok(None);
+                            }
+                            Err(e) => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
                     if let Some(next_method) = sub_iter.get_attr("__next__") {
                         match self.call_object(next_method, vec![]) {
                             Ok(val) => {
@@ -297,87 +335,78 @@ impl VirtualMachine {
                                 return Ok(Some(val));
                             }
                             Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
                                 let frame = self.vm_frame();
                                 frame.pop();
-                                frame.push(PyObject::none());
+                                frame.push(Self::stop_iteration_value(e));
                             }
-                            Err(e) => return Err(e),
+                            Err(e) => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
+                                return Err(e);
+                            }
                         }
                     } else {
+                        if let Some(parent) = self.current_generators.last() {
+                            parent.write().yield_from = None;
+                        }
                         let frame = self.vm_frame();
                         frame.pop();
                         frame.push(PyObject::none());
                     }
-                } else if let PyObjectPayload::Iterator(ref iter_data_arc) = sub_iter.payload {
-                    let needs_vm = {
-                        let data = iter_data_arc.read();
-                        matches!(
-                            &*data,
-                            IteratorData::Enumerate { .. }
-                                | IteratorData::Zip { .. }
-                                | IteratorData::ZipLongest { .. }
-                                | IteratorData::Islice { .. }
-                                | IteratorData::MapOne { .. }
-                                | IteratorData::Map { .. }
-                                | IteratorData::Filter { .. }
-                                | IteratorData::FilterFalse { .. }
-                                | IteratorData::Sentinel { .. }
-                                | IteratorData::TakeWhile { .. }
-                                | IteratorData::DropWhile { .. }
-                                | IteratorData::Count { .. }
-                                | IteratorData::Cycle { .. }
-                                | IteratorData::Repeat { .. }
-                                | IteratorData::Chain { .. }
-                                | IteratorData::SeqIter { .. }
-                                | IteratorData::Starmap { .. }
-                                | IteratorData::Tee { .. }
-                                | IteratorData::HeldIter { .. }
-                        )
-                    };
-                    if needs_vm {
-                        match self.advance_lazy_iterator(&sub_iter) {
-                            Ok(Some(val)) => {
+                } else {
+                    if let Some(parent) = self.current_generators.last() {
+                        parent.write().yield_from = Some(sub_iter.clone());
+                    }
+                    if !matches!(&send_val.payload, PyObjectPayload::None) {
+                        let send_method = self.load_attr_value(sub_iter.clone(), "send")?;
+                        match self.call_object(send_method, vec![send_val]) {
+                            Ok(value) => {
                                 let frame = self.vm_frame();
-                                frame.yielded = true;
-                                frame.ip -= 1;
-                                return Ok(Some(val));
-                            }
-                            Ok(None) => {
-                                let frame = self.vm_frame();
-                                frame.pop();
-                                frame.push(PyObject::none());
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    } else {
-                        let frame = self.vm_frame();
-                        match builtins::iter_advance(&sub_iter)? {
-                            Some((new_iter, value)) => {
-                                frame.pop();
-                                frame.push(new_iter);
                                 frame.yielded = true;
                                 frame.ip -= 1;
                                 return Ok(Some(value));
                             }
-                            None => {
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
+                                let frame = self.vm_frame();
                                 frame.pop();
-                                frame.push(PyObject::none());
+                                frame.push(Self::stop_iteration_value(e));
+                                return Ok(None);
+                            }
+                            Err(e) => {
+                                if let Some(parent) = self.current_generators.last() {
+                                    parent.write().yield_from = None;
+                                }
+                                return Err(e);
                             }
                         }
                     }
-                } else {
-                    let frame = self.vm_frame();
-                    match builtins::iter_advance(&sub_iter)? {
-                        Some((new_iter, value)) => {
-                            frame.pop();
-                            frame.push(new_iter);
+                    match self.vm_iter_next(&sub_iter) {
+                        Ok(Some(value)) => {
+                            let frame = self.vm_frame();
                             frame.yielded = true;
                             frame.ip -= 1;
                             return Ok(Some(value));
                         }
-                        None => {
+                        Ok(None) => {
+                            if let Some(parent) = self.current_generators.last() {
+                                parent.write().yield_from = None;
+                            }
+                            let frame = self.vm_frame();
                             frame.pop();
                             frame.push(PyObject::none());
+                        }
+                        Err(e) => {
+                            if let Some(parent) = self.current_generators.last() {
+                                parent.write().yield_from = None;
+                            }
+                            return Err(e);
                         }
                     }
                 }

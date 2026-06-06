@@ -611,6 +611,23 @@ impl VirtualMachine {
         }
     }
 
+    pub(crate) fn load_attr_value(
+        &mut self,
+        obj: PyObjectRef,
+        name: &str,
+    ) -> Result<PyObjectRef, PyException> {
+        let stack_len = self.vm_frame().stack.len();
+        self.exec_load_attr(&CompactString::from(name), obj)?;
+        let frame = self.vm_frame();
+        if frame.stack.len() == stack_len + 1 {
+            Ok(frame.pop())
+        } else {
+            Err(PyException::runtime_error(
+                "attribute lookup did not return a value",
+            ))
+        }
+    }
+
     fn exec_load_attr(
         &mut self,
         name: &CompactString,
