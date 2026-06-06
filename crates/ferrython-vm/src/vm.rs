@@ -817,7 +817,9 @@ impl VirtualMachine {
                         let call_kind = if let PyObjectPayload::Function(pf) =
                             &sget!(frame, func_idx).payload
                         {
-                            if pf.is_simple && pf.code.arg_count as usize == arg_count {
+                            if pf.has_code_override() {
+                                0
+                            } else if pf.is_simple && pf.code.arg_count as usize == arg_count {
                                 // Trivial function: body is just `LoadConst X; ReturnValue`
                                 // or fused `LoadConstReturnValue X`
                                 // Skip frame creation entirely — just push the constant.

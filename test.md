@@ -703,3 +703,18 @@ Last updated: 2026-06-02T16:10:31+08:00
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict`: `run=281 pass=248 fail=0 err=0 skip=33`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=27 fail=3 err=1 skip=0`
+
+## 2026-06-06 function attributes completion batch
+
+- `test_funcattrs`
+  - Previous recorded state: `run=31 pass=27 fail=3 err=1 skip=0`.
+  - Current result: `run=31 pass=31 fail=0 err=0 skip=0`.
+  - Fixed traits: mutable `function.__code__` replacement now updates actual execution, validates free-variable arity, and refreshes code-object attribute reads; nested local class qualnames now include `<locals>`; functions declared `global` inside local scopes keep a module-level qualname; empty local cellvar reads now raise `UnboundLocalError` while empty freevars remain `NameError`.
+
+- `test_scope`
+  - Probe after the shared cell/qualname fixes: `run=38 pass=24 fail=5 err=6 skip=3`, improved from `run=38 pass=22 fail=5 err=8 skip=3`.
+  - Remaining traits: class namespace versus closure precedence, `locals()` snapshots, explicit syntax rejection for import-star in nested unoptimized scopes, and broader free/global lookup cases.
+
+- Guard validation
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=31 fail=0 err=0 skip=0`.
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict test_functools test_string test_bisect test_hmac test_operator`: `run=695 pass=587 fail=0 err=0 skip=108`.

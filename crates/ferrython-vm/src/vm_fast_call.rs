@@ -132,6 +132,9 @@ pub(crate) fn try_fast_block_control(frame: &mut Frame, instr: Instruction) -> F
 
 #[inline(always)]
 fn global_function_call_kind(pf: &PyFunction, arg_count: usize, frame: &Frame) -> u8 {
+    if pf.has_code_override() {
+        return 0;
+    }
     if pf.is_simple && pf.code.arg_count as usize == arg_count {
         if is_trivial_const_return(pf) {
             3

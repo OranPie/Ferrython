@@ -2,7 +2,8 @@
 
 use crate::error::{PyException, PyResult};
 use crate::object::{
-    new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectRef, RangeData, StrRepr,
+    new_fx_hashkey_map, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, RangeData,
+    StrRepr,
 };
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeFlags;
@@ -368,6 +369,40 @@ pub struct PyFunction {
 }
 
 impl PyFunction {
+    #[inline]
+    pub fn effective_code(&self) -> Rc<CodeObject> {
+        self.attrs
+            .read()
+            .get("__code__")
+            .and_then(|obj| match &obj.payload {
+                PyObjectPayload::Code(code) => Some(Rc::clone(code)),
+                _ => None,
+            })
+            .unwrap_or_else(|| Rc::clone(&self.code))
+    }
+
+    #[inline]
+    pub fn effective_constant_cache(&self, code: &Rc<CodeObject>) -> SharedConstantCache {
+        if Rc::ptr_eq(code, &self.code) {
+            Rc::clone(&self.constant_cache)
+        } else {
+            Self::get_or_build_constant_cache(code)
+        }
+    }
+
+    #[inline]
+    pub fn has_code_override(&self) -> bool {
+        self.attrs
+            .read()
+            .get("__code__")
+            .is_some_and(|obj| matches!(&obj.payload, PyObjectPayload::Code(_)))
+    }
+
+    #[inline]
+    pub fn can_replace_code_with(&self, code: &CodeObject) -> bool {
+        self.closure.len() == code.freevars.len()
+    }
+
     /// Check if function supports fast inline CallFunction
     /// (exact positional args, no *args/**kwargs/generators/closures/cells).
     #[inline]

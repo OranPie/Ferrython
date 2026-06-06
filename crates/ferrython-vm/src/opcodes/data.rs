@@ -303,14 +303,19 @@ impl VirtualMachine {
                         }
                         None => {
                             let n_cell = frame.code.cellvars.len();
-                            let name = if idx < n_cell {
-                                frame.code.cellvars[idx].clone()
+                            if idx < n_cell {
+                                let name = frame.code.cellvars[idx].clone();
+                                return Err(PyException::unbound_local_error(format!(
+                                    "local variable '{}' referenced before assignment",
+                                    name
+                                )));
                             } else {
-                                frame.code.freevars[idx - n_cell].clone()
-                            };
-                            return Err(PyException::name_error(format!(
-                            "free variable '{}' referenced before assignment in enclosing scope", name
-                        )));
+                                let name = frame.code.freevars[idx - n_cell].clone();
+                                return Err(PyException::name_error(format!(
+                                    "free variable '{}' referenced before assignment in enclosing scope",
+                                    name
+                                )));
+                            }
                         }
                     }
                 }
@@ -1194,6 +1199,22 @@ impl VirtualMachine {
                     return Err(PyException::attribute_error(
                         "readonly attribute '__closure__'",
                     ));
+                }
+                "__code__" => {
+                    let PyObjectPayload::Code(code) = &value.payload else {
+                        return Err(PyException::type_error(
+                            "__code__ must be set to a code object",
+                        ));
+                    };
+                    if !f.can_replace_code_with(code) {
+                        return Err(PyException::value_error(format!(
+                            "{}() requires a code object with {} free vars, not {}",
+                            f.name,
+                            f.closure.len(),
+                            code.freevars.len()
+                        )));
+                    }
+                    f.attrs.write().insert(name.clone(), value);
                 }
                 "__name__" | "__qualname__" => {
                     if !matches!(&value.payload, PyObjectPayload::Str(_)) {

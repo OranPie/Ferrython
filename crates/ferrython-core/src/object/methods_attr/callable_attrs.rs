@@ -2,7 +2,6 @@ use crate::intern::intern_or_new;
 use crate::object::payload::NativeFunctionData;
 use crate::types::{HashableKey, PyFunction};
 use compact_str::CompactString;
-use std::rc::Rc;
 
 use super::*;
 
@@ -107,7 +106,7 @@ pub(super) fn function_attr(obj: &PyObjectRef, f: &PyFunction, name: &str) -> Op
                 Some(PyObject::tuple(cells))
             }
         }
-        "__code__" => Some(PyObject::wrap(PyObjectPayload::Code(Rc::clone(&f.code)))),
+        "__code__" => Some(PyObject::wrap(PyObjectPayload::Code(f.effective_code()))),
         "__kwdefaults__" => {
             let kw_defaults = f.kw_defaults.read();
             if kw_defaults.is_empty() {

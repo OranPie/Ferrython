@@ -2200,10 +2200,31 @@ Last updated: 2026-06-02T16:10:31+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=27 fail=3 err=1 skip=0`
 
+- 2026-06-06 function attributes completion batch (2026-06-06T19:53:14+0800):
+  - 新增绿色模块：
+    - `test_funcattrs`: `run=31 pass=31 fail=0 err=0 skip=0`。
+  - General compatibility fixes:
+    - `function.__code__` assignment now validates replacement code objects, rejects freevar-count mismatches with `ValueError`, and routes actual calls through the replacement code/cache instead of only changing the visible attr.
+    - Function-call fast paths now fall back when a function has an overridden `__code__`, preserving optimized paths for normal functions while honoring mutable function code.
+    - Nested class qualnames now include function-scope `<locals>` segments, and functions declared `global` inside local scopes keep module-level qualnames.
+    - Empty local cellvar reads now raise `UnboundLocalError`; empty freevar reads continue to raise `NameError`.
+  - Adjacent probe:
+    - `test_scope` improved to `run=38 pass=24 fail=5 err=6 skip=3` from the previous `pass=22 fail=5 err=8`; remaining gaps are broader class namespace / locals / free-global scope semantics and are not green in this batch.
+  - Baseline update:
+    - `TEST_BASELINE.md` now records 100 zero-failure/zero-error modules, with 94 executing modules and 6 zero-test pass modules.
+  - Validation:
+    - `cargo fmt --all`
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=31 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_scope`: `run=38 pass=24 fail=5 err=6 skip=3`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict test_functools test_string test_bisect test_hmac test_operator`: `run=695 pass=587 fail=0 err=0 skip=108`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`；`test_funcattrs` 剩余项需要单独处理 `__code__` / cell / qualname 语义。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`；`test_scope` 当前剩余项需要单独处理 class namespace / locals / free-global scope 语义。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

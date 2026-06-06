@@ -14,6 +14,7 @@ impl VirtualMachine {
         let pyfunc_ptr = match &func.payload {
             PyObjectPayload::Function(pyfunc)
                 if pyfunc.is_simple
+                    && !pyfunc.has_code_override()
                     && pyfunc.code.arg_count == 1
                     && pyfunc.defaults.read().is_empty()
                     && pyfunc.kw_defaults.read().is_empty()
@@ -65,6 +66,7 @@ impl VirtualMachine {
         let pyfunc_ptr = match &func.payload {
             PyObjectPayload::Function(pyfunc)
                 if pyfunc.is_simple
+                    && !pyfunc.has_code_override()
                     && pyfunc.code.arg_count == 2
                     && pyfunc.defaults.read().is_empty()
                     && pyfunc.kw_defaults.read().is_empty()

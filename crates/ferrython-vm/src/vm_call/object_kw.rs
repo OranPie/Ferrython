@@ -33,8 +33,10 @@ impl VirtualMachine {
                     .map(CompactString::from)
                     .unwrap_or_else(|| pyfunc.qualname.clone());
                 drop(attrs);
+                let code = pyfunc.effective_code();
+                let constant_cache = pyfunc.effective_constant_cache(&code);
                 self.call_function_kw(
-                    &pyfunc.code,
+                    &code,
                     func_name,
                     func_qualname,
                     pos_args,
@@ -43,7 +45,7 @@ impl VirtualMachine {
                     &kw_defaults,
                     globals,
                     &pyfunc.closure,
-                    &pyfunc.constant_cache,
+                    &constant_cache,
                 )
             }
             PyObjectPayload::BoundMethod { receiver, method } => {

@@ -55,7 +55,7 @@ pub(crate) fn try_fast_python_method_frame(
     let base_idx = stack_len.checked_sub(arg_count + 2)?;
     let is_simple_method = match &unsafe { frame.stack.get_unchecked(base_idx) }.payload {
         PyObjectPayload::Function(pf) => {
-            pf.is_simple && pf.code.arg_count as usize == arg_count + 1
+            pf.is_simple && !pf.has_code_override() && pf.code.arg_count as usize == arg_count + 1
         }
         PyObjectPayload::None => false,
         _ => false,

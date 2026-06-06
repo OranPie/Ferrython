@@ -369,6 +369,24 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     name
                 )));
             }
+            "__code__" => {
+                let PyObjectPayload::Code(code) = &args[2].payload else {
+                    return Err(PyException::type_error(
+                        "__code__ must be set to a code object",
+                    ));
+                };
+                if !f.can_replace_code_with(code) {
+                    return Err(PyException::value_error(format!(
+                        "{}() requires a code object with {} free vars, not {}",
+                        f.name,
+                        f.closure.len(),
+                        code.freevars.len()
+                    )));
+                }
+                f.attrs
+                    .write()
+                    .insert(CompactString::from(name), args[2].clone());
+            }
             "__name__" | "__qualname__" => {
                 if !matches!(&args[2].payload, PyObjectPayload::Str(_)) {
                     return Err(PyException::type_error(format!(

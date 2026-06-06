@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-02T19:16:06+08:00
+Last updated: 2026-06-06T19:53:14+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -55,6 +55,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_fnmatch | 12 | 12 | 0 | 0 | 0 | 0s |
 | test_format | 9 | 7 | 0 | 0 | 2 | 0s |
 | test_fractions | 31 | 31 | 0 | 0 | 0 | 1s |
+| test_funcattrs | 31 | 31 | 0 | 0 | 0 | 0s |
 | test_functools | 232 | 157 | 0 | 0 | 75 | 0s |
 | test_generator_stop | 2 | 2 | 0 | 0 | 0 | 0s |
 | test_generators | 16 | 13 | 0 | 0 | 3 | 0s |
@@ -117,7 +118,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_weakset | 44 | 42 | 0 | 0 | 2 | 1s |
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 99 modules have zero failures/errors. Of those, 93 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 100 modules have zero failures/errors. Of those, 94 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
 ## Current Non-Baseline Modules
 
@@ -134,7 +135,6 @@ These modules are not protected as passing gates yet.
 | test_exceptions | FAIL | 55 | 24 | 16 | 5 | 10 | 1s |
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
-| test_funcattrs | FAIL | 31 | 11 | 11 | 9 | 0 | 0s |
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_int | FAIL | 35 | 12 | 15 | 7 | 1 | 1s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
@@ -142,7 +142,7 @@ These modules are not protected as passing gates yet.
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_richcmp | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |
 | test_sched | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
-| test_scope | FAIL | 38 | 21 | 5 | 9 | 3 | 0s |
+| test_scope | FAIL | 38 | 24 | 5 | 6 | 3 | 0s |
 | test_statistics | FAIL | 344 | 133 | 68 | 143 | 0 | 1s |
 | test_traceback | FAIL | 70 | 2 | 25 | 30 | 13 | 0s |
 | test_types | FAIL | 0 | 0 | 0 | 0 | 0 | 0s |
