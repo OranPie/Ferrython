@@ -693,6 +693,30 @@ fn decode_iso_8859_15_byte(byte: u8) -> char {
 impl VirtualMachine {
     // ── exec/eval/compile helpers (moved from vm_call.rs) ──
 
+    fn code_requires_closure(builtin: &str) -> PyException {
+        PyException::type_error(format!(
+            "{}() code object passed to {}() may not contain free variables",
+            builtin, builtin
+        ))
+    }
+
+    fn caller_locals_for_exec(&mut self) -> PyObjectRef {
+        let Some(frame) = self.call_stack.last() else {
+            return PyObject::dict(ferrython_core::object::new_fx_hashkey_map());
+        };
+        if let Some(locals) = &frame.exec_locals {
+            return locals.clone();
+        }
+        if matches!(frame.scope_kind, ScopeKind::Module) {
+            return PyObject::wrap(PyObjectPayload::InstanceDict(frame.globals.clone()));
+        }
+        if matches!(frame.scope_kind, ScopeKind::Class) {
+            let local_names = self.call_stack.last_mut().unwrap().ensure_local_names();
+            return PyObject::wrap(PyObjectPayload::InstanceDict(local_names));
+        }
+        PyObject::dict(self.frame_locals_map(frame))
+    }
+
     pub(crate) fn builtin_exec(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() || args.len() > 3 {
             return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
@@ -712,6 +736,9 @@ impl VirtualMachine {
                     .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?,
             )
         };
+        if matches!(&args[0].payload, PyObjectPayload::Code(_)) && !code.freevars.is_empty() {
+            return Err(Self::code_requires_closure("exec"));
+        }
         if args.len() >= 2 {
             // Accept both Dict and InstanceDict (returned by globals())
             if let PyObjectPayload::InstanceDict(ref shared_globals) = args[1].payload {
@@ -781,7 +808,8 @@ impl VirtualMachine {
             }
         } else {
             let globals = self.call_stack.last().unwrap().globals.clone();
-            self.execute_with_globals(code, globals)?;
+            let locals = self.caller_locals_for_exec();
+            self.execute_with_globals_and_locals_obj(code, globals, Some(locals), None)?;
         }
         Ok(PyObject::none())
     }
@@ -1007,6 +1035,9 @@ impl VirtualMachine {
             )
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
+        if is_code_obj && !code.freevars.is_empty() {
+            return Err(Self::code_requires_closure("eval"));
+        }
         if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
             // Extract globals as FxAttrMap, whether Dict or InstanceDict
             let (new_globals, globals_source) =
@@ -1118,7 +1149,7 @@ impl VirtualMachine {
                         merged.insert(name.clone(), val.clone());
                     }
                 }
-                for (k, v) in frame.local_names_iter() {
+                for (k, v) in frame.local_names_snapshot() {
                     merged.insert(k.clone(), v.clone());
                 }
                 for (i, name) in frame

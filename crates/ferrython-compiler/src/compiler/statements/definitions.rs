@@ -647,6 +647,26 @@ impl Compiler {
         if has_freevars {
             // For each freevar in the class code, emit LoadClosure from the parent scope
             for freevar_name in &class_code.freevars.clone() {
+                let parent_has_cell = self
+                    .current_unit()
+                    .code
+                    .cellvars
+                    .iter()
+                    .any(|v| v == freevar_name);
+                let parent_has_free = self
+                    .current_unit()
+                    .code
+                    .freevars
+                    .iter()
+                    .any(|v| v == freevar_name);
+                if self.current_unit().is_function {
+                    if !parent_has_cell && !parent_has_free {
+                        Self::ensure_name(&mut self.current_unit_mut().code.cellvars, freevar_name);
+                    }
+                } else if !parent_has_cell && !parent_has_free {
+                    Self::ensure_name(&mut self.current_unit_mut().code.freevars, freevar_name);
+                    self.current_unit_mut().code.flags |= CodeFlags::NESTED;
+                }
                 // Find the cell index in the current (parent) scope
                 let unit = self.current_unit();
                 let cell_idx = unit

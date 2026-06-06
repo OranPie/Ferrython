@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-02T16:10:31+08:00
+Last updated: 2026-06-06T21:44:37+08:00
 
 ## 性能优化进度
 
@@ -2221,10 +2221,33 @@ Last updated: 2026-06-02T16:10:31+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_scope`: `run=38 pass=24 fail=5 err=6 skip=3`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict test_functools test_string test_bisect test_hmac test_operator`: `run=695 pass=587 fail=0 err=0 skip=108`
 
+- 2026-06-06 scope compatibility completion batch (2026-06-06T21:44:37+0800):
+  - 新增绿色模块：
+    - `test_scope`: `run=38 pass=35 fail=0 err=0 skip=3`，从上一批记录的 `run=38 pass=24 fail=5 err=6 skip=3` 收口到零失败/零错误。
+  - 通用作用域/执行语义修复：
+    - class frame 的 `locals()` 现在返回共享 namespace view；`locals()["x"] = value` 会影响后续 `LOAD_NAME`，而不是只写入快照。
+    - `exec()`/`eval()` 默认 caller locals/globals 与显式 globals/locals mapping identity 对齐；带 freevars 的 code object 通过 `exec`/`eval` 执行时按 CPython 抛 `TypeError`。
+    - symbol resolver 递归传播嵌套 explicit global，module scope 对这类名字发射 global opcodes；`from x import *` 在非 module scope 进入 symbol analysis 时直接 `SyntaxError`。
+    - class local 名字不会因为方法引用就错误升级为 cellvar（`__class__` 例外），嵌套 class body 可继续穿透使用父级 freevar。
+    - `set_local`/fast local 写入同步同名 cellvar，修复 closure 看到 stale local 的路径。
+    - 修正 `LoadGlobal+CallFunction` peephole 只在零参数调用时融合，避免把普通 global load/call 变成错误 callee。
+    - frame recycle 路径补齐 pending finalizer drain，并把 cell wrapper cache 改为 weak cache，保留 `f.__closure__[0] is f.__closure__[0]` 身份稳定同时不保活 closure 内容。
+  - Baseline 更新：
+    - `TEST_BASELINE.md` 从 100 个零失败/零错误模块更新到 101 个；执行至少一个测试的模块从 94 个更新到 95 个，zero-test pass 仍为 6 个。
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_scope`: `run=38 pass=35 fail=0 err=0 skip=3`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict test_compile`: `run=340 pass=303 fail=0 err=0 skip=37`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs test_exception_hierarchy test_ordered_dict test_compile`: `run=387 pass=349 fail=0 err=0 skip=38`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
+
 ## 后续修复队列
 
 1. 保持 dotted 单例 runner 用法，避免长跑全量测试；批量修复后再统一 rebuild/test/commit。
-2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_scope`、`test_float`、`test_fstring`，或内容/API 面广但可批量补齐的 `test_statistics`；`test_scope` 当前剩余项需要单独处理 class namespace / locals / free-global scope 语义。
+2. 下一轮优先从剩余非 baseline 模块里继续挑选，例如 `test_float`、`test_fstring`、`test_yield_from`，或内容/API 面广但可批量补齐的 `test_statistics`。
 3. 提交下一批 focused fix 后继续更新本文件。
 4. 扩展小批候选：
    - `test_iter`

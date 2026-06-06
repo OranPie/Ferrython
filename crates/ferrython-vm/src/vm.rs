@@ -1740,21 +1740,26 @@ impl VirtualMachine {
                         };
                         let discard = child.discard_return;
                         child.recycle(&mut self.frame_pool);
-                        // SAFETY: we verified len > initial_depth >= 1 and popped one
-                        let cs_len = self.call_stack.len();
-                        let parent = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
-                        // Check if the calling instruction was CallMethodPopTop — if so,
-                        // discard the return value instead of pushing it to the stack.
-                        // Also discard if child was an __init__ frame from inline class instantiation.
-                        let caller_op = parent
-                            .code
-                            .instructions
-                            .get(parent.ip.wrapping_sub(1))
-                            .map(|i| i.op);
-                        if discard || caller_op == Some(Opcode::CallMethodPopTop) {
-                            drop(ret);
-                        } else {
-                            parent.stack.push(ret);
+                        {
+                            // SAFETY: we verified len > initial_depth >= 1 and popped one
+                            let cs_len = self.call_stack.len();
+                            let parent = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
+                            // Check if the calling instruction was CallMethodPopTop — if so,
+                            // discard the return value instead of pushing it to the stack.
+                            // Also discard if child was an __init__ frame from inline class instantiation.
+                            let caller_op = parent
+                                .code
+                                .instructions
+                                .get(parent.ip.wrapping_sub(1))
+                                .map(|i| i.op);
+                            if discard || caller_op == Some(Opcode::CallMethodPopTop) {
+                                drop(ret);
+                            } else {
+                                parent.stack.push(ret);
+                            }
+                        }
+                        if ferrython_core::error::has_pending_finalizers() {
+                            self.drain_pending_finalizers();
                         }
                         // Re-derive frame_ptr: child frame was popped
                         rederive_frame!(self, frame_ptr, instr_base, instr_count);

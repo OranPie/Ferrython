@@ -91,7 +91,7 @@ impl VirtualMachine {
                 local_pairs.push((PyObject::str_val(name.clone()), val.clone()));
             }
         }
-        for (name, val) in frame.local_names_iter() {
+        for (name, val) in frame.local_names_snapshot() {
             local_pairs.push((PyObject::str_val(name.clone()), val.clone()));
         }
         attrs.insert(

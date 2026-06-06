@@ -224,10 +224,7 @@ impl VirtualMachine {
                 body_result?;
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (
-                    frame.local_names.map(|b| *b).unwrap_or_default(),
-                    Some((cellvar_names, cells)),
-                )
+                (frame.local_names_snapshot(), Some((cellvar_names, cells)))
             }
             _ => (FxAttrMap::default(), None),
         };
@@ -367,10 +364,7 @@ impl VirtualMachine {
                 body_result?;
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (
-                    frame.local_names.map(|b| *b).unwrap_or_default(),
-                    Some((cellvar_names, cells)),
-                )
+                (frame.local_names_snapshot(), Some((cellvar_names, cells)))
             }
             _ => (FxAttrMap::default(), None),
         };

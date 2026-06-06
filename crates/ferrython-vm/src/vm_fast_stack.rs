@@ -72,7 +72,7 @@ fn local_ref(frame: &Frame, idx: usize) -> Option<&PyObjectRef> {
 
 #[inline(always)]
 fn set_local(frame: &mut Frame, idx: usize, value: PyObjectRef) {
-    unsafe { *frame.locals.get_unchecked_mut(idx) = Some(value) };
+    frame.set_local(idx, value);
 }
 
 #[inline(always)]
@@ -168,6 +168,16 @@ fn load_const_store_fast(frame: &mut Frame, arg: u32) -> FastStackResult {
     let const_idx = (arg >> 16) as usize;
     let store_idx = (arg & 0xFFFF) as usize;
     let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+    let stores_cellvar = frame
+        .code
+        .varnames
+        .get(store_idx)
+        .map(|name| frame.code.cellvars.iter().any(|cell| cell == name))
+        .unwrap_or(false);
+    if stores_cellvar {
+        frame.set_local(store_idx, const_ref.clone());
+        return FastStackResult::Handled;
+    }
     let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
     if let Some(ref mut arc) = dest_slot {
         if let Some(obj) = PyObjectRef::get_mut(arc) {
@@ -191,7 +201,7 @@ fn load_const_store_fast(frame: &mut Frame, arg: u32) -> FastStackResult {
             }
         }
     }
-    *unsafe { frame.locals.get_unchecked_mut(store_idx) } = Some(const_ref.clone());
+    frame.set_local(store_idx, const_ref.clone());
     FastStackResult::Handled
 }
 

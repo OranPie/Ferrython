@@ -717,6 +717,12 @@ impl Analyzer {
             StatementKind::ImportFrom { names, .. } => {
                 for alias in names {
                     if alias.name.as_str() == "*" {
+                        if self.current_scope().scope_type != ScopeType::Module {
+                            self.errors.push(CompileError::syntax(
+                                "import * only allowed at module level",
+                                alias.location,
+                            ));
+                        }
                         continue;
                     }
                     let store_name = alias.asname.as_deref().unwrap_or(&alias.name);

@@ -358,6 +358,9 @@ impl Compiler {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::LoadGlobal, idx);
             }
+        } else if self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::LoadGlobal, idx);
         } else {
             let idx = self.add_name(name);
             self.emit_arg(Opcode::LoadName, idx);
@@ -396,6 +399,9 @@ impl Compiler {
                 let idx = self.varname_index(name);
                 self.emit_arg(Opcode::StoreFast, idx);
             }
+        } else if self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::StoreGlobal, idx);
         } else {
             let idx = self.add_name(name);
             self.emit_arg(Opcode::StoreName, idx);
@@ -431,6 +437,9 @@ impl Compiler {
                 let idx = self.varname_index(name);
                 self.emit_arg(Opcode::DeleteFast, idx);
             }
+        } else if self.is_explicit_global(name) {
+            let idx = self.add_name(name);
+            self.emit_arg(Opcode::DeleteGlobal, idx);
         } else {
             let idx = self.add_name(name);
             self.emit_arg(Opcode::DeleteName, idx);

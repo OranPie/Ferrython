@@ -59,7 +59,7 @@ thread_local! {
     static TUPLE_BOX_FREELIST: RefCell<Vec<Box<Vec<PyObjectRef>>>>                = RefCell::new(Vec::new());
     static LIST_BOX_FREELIST:  RefCell<Vec<Box<PyCell<Vec<PyObjectRef>>>>>        = RefCell::new(Vec::new());
     static BBM_BOX_FREELIST:   RefCell<Vec<Box<BuiltinBoundMethodData>>>          = RefCell::new(Vec::new());
-    static CELL_OBJECT_CACHE:  RefCell<rustc_hash::FxHashMap<usize, PyObjectRef>> = RefCell::new(rustc_hash::FxHashMap::default());
+    static CELL_OBJECT_CACHE:  RefCell<rustc_hash::FxHashMap<usize, PyWeakRef>>   = RefCell::new(rustc_hash::FxHashMap::default());
 }
 
 /// Allocate a Box<CompactString>, reusing from freelist if possible.
@@ -1132,11 +1132,13 @@ impl PyObject {
         let key = Rc::as_ptr(&cell) as usize;
         CELL_OBJECT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if let Some(obj) = cache.get(&key) {
-                return obj.clone();
+            if let Some(weak) = cache.get(&key) {
+                if let Some(obj) = weak.upgrade() {
+                    return obj;
+                }
             }
             let obj = Self::wrap(PyObjectPayload::Cell(cell));
-            cache.insert(key, obj.clone());
+            cache.insert(key, PyObjectRef::downgrade(&obj));
             obj
         })
     }

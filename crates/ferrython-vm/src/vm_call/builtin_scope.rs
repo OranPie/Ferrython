@@ -3,8 +3,6 @@ use ferrython_core::error::PyResult;
 use ferrython_core::object::{
     new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
-use indexmap::IndexMap;
 
 use crate::builtins;
 use crate::frame::ScopeKind;
@@ -28,6 +26,9 @@ impl VirtualMachine {
 
     fn current_globals_object(&self) -> PyObjectRef {
         if let Some(frame) = self.call_stack.last() {
+            if let Some(globals_obj) = &frame.exec_globals {
+                return globals_obj.clone();
+            }
             let globals_arc = frame.globals.clone();
             return PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc));
         }
@@ -44,23 +45,14 @@ impl VirtualMachine {
                     return Ok(globals_obj.clone());
                 }
             }
-            let mut map = IndexMap::new();
-            for (i, name) in frame.code.varnames.iter().enumerate() {
-                if let Some(Some(val)) = frame.locals.get(i) {
-                    map.insert(HashableKey::str_key(name.clone()), val.clone());
+            if matches!(frame.scope_kind, ScopeKind::Class) {
+                if let Some(local_names) = &frame.local_names {
+                    return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(
+                        local_names.clone(),
+                    )));
                 }
             }
-            if frame.code.varnames.is_empty() {
-                let g = frame.globals.read();
-                for (k, v) in g.iter() {
-                    map.insert(HashableKey::str_key(k.clone()), v.clone());
-                }
-                drop(g);
-                for (k, v) in frame.local_names_iter() {
-                    map.insert(HashableKey::str_key(k.clone()), v.clone());
-                }
-            }
-            return Ok(PyObject::dict(map));
+            return Ok(PyObject::dict(self.frame_locals_map(frame)));
         }
         Ok(PyObject::dict(new_fx_hashkey_map()))
     }

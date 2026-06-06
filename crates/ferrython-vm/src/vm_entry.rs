@@ -25,7 +25,7 @@ impl VirtualMachine {
         exc.keepalive
             .extend(frame.locals.iter().filter_map(|item| item.clone()));
         if let Some(local_names) = &frame.local_names {
-            exc.keepalive.extend(local_names.values().cloned());
+            exc.keepalive.extend(local_names.read().values().cloned());
         }
         for cell in &frame.cells {
             if let Some(value) = cell.read().clone() {

@@ -8,6 +8,13 @@ use crate::frame::{Frame, ScopeKind};
 use crate::VirtualMachine;
 
 impl VirtualMachine {
+    pub(crate) fn recycle_frame(&mut self, frame: Frame) {
+        frame.recycle(&mut self.frame_pool);
+        if ferrython_core::error::has_pending_finalizers() {
+            self.drain_pending_finalizers();
+        }
+    }
+
     /// Install closure cells, set scope, and either return generator/coroutine or execute frame.
     pub(super) fn install_closure_and_run(
         &mut self,
@@ -60,7 +67,7 @@ impl VirtualMachine {
         // Check recursion limit
         if self.call_stack.len() > self.recursion_limit {
             if let Some(frame) = self.call_stack.pop() {
-                frame.recycle(&mut self.frame_pool);
+                self.recycle_frame(frame);
             }
             return Err(PyException::recursion_error(
                 "maximum recursion depth exceeded",
@@ -68,7 +75,7 @@ impl VirtualMachine {
         }
         let result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
-            frame.recycle(&mut self.frame_pool);
+            self.recycle_frame(frame);
         }
         result
     }

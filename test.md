@@ -1,8 +1,27 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-02T16:10:31+08:00
+Last updated: 2026-06-06T21:44:37+08:00
 
 ## Current batch
+
+- Compatibility batch: scope semantics
+  - `test_scope`
+    - Previous recorded state: `run=38 pass=24 fail=5 err=6 skip=3`.
+    - Current result: `run=38 pass=35 fail=0 err=0 skip=3`.
+  - Fixed traits:
+    - Class-scope `locals()` returns a live namespace object backed by the executing frame, so writes through the mapping affect later `LOAD_NAME`.
+    - Default `exec()`/`eval()` caller locals and explicit globals/locals mapping identity now match CPython, including `globals()` returning the supplied globals object and `locals()` returning the supplied locals mapping.
+    - Code objects with freevars are rejected by `exec`/`eval` with `TypeError`.
+    - Explicit `global` declarations propagate recursively through nested children, and module-scope loads/stores/deletes for those names use global opcodes.
+    - Non-module `from x import *` is rejected during symbol analysis.
+    - Class locals no longer become closure cells just because a nested method references the same name, while nested class bodies still pass through parent freevars.
+    - Local writes synchronize same-name cellvars across ordinary, unchecked, and fast-stack paths.
+    - Weak cell-wrapper cache preserves closure cell object identity without retaining closure contents after frames finish.
+  - Guard validation:
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_scope`: `run=38 pass=35 fail=0 err=0 skip=3`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict test_compile`: `run=340 pass=303 fail=0 err=0 skip=37`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs test_exception_hierarchy test_ordered_dict test_compile`: `run=387 pass=349 fail=0 err=0 skip=38`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`.
 
 - Native acceleration batch: functools partial
   - `_functools` now exposes native `partial` by default along with `reduce` and `cmp_to_key`; `_lru_cache_wrapper` remains hidden so Ferrython does not opt into unsupported full C-accelerator test paths.

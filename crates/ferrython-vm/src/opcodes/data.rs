@@ -415,6 +415,7 @@ impl VirtualMachine {
                 Opcode::StoreGlobal => {
                     let idx = instr.arg as usize;
                     let value = frame.pop();
+                    let exec_value = value.clone();
                     if frame.global_cache.is_some() {
                         let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
                         if idx < cache.len() {
@@ -430,12 +431,36 @@ impl VirtualMachine {
                         globals.insert(name_ref.clone(), value);
                     }
                     drop(globals);
+                    if let Some(exec_globals) = &frame.exec_globals {
+                        match &exec_globals.payload {
+                            PyObjectPayload::Dict(map) => {
+                                map.write()
+                                    .insert(HashableKey::str_key(name_ref.clone()), exec_value);
+                            }
+                            PyObjectPayload::InstanceDict(map) => {
+                                map.write().insert(name_ref.clone(), exec_value);
+                            }
+                            _ => {}
+                        }
+                    }
                     crate::frame::bump_globals_version();
                     frame.global_cache_version = crate::frame::globals_version();
                 }
                 Opcode::DeleteGlobal => {
                     let name = &frame.code.names[instr.arg as usize];
                     let old = frame.globals.write().shift_remove(name.as_str());
+                    if let Some(exec_globals) = &frame.exec_globals {
+                        match &exec_globals.payload {
+                            PyObjectPayload::Dict(map) => {
+                                map.write()
+                                    .shift_remove(&HashableKey::str_key(name.clone()));
+                            }
+                            PyObjectPayload::InstanceDict(map) => {
+                                map.write().shift_remove(name.as_str());
+                            }
+                            _ => {}
+                        }
+                    }
                     crate::frame::bump_globals_version();
                     if let Some(ref obj) = old {
                         if matches!(&obj.payload, PyObjectPayload::Instance(_))

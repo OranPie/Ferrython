@@ -2,7 +2,9 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::{FxAttrMap, PyCell, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{
+    new_shared_fx, FxAttrMap, PyCell, PyObjectPayload, PyObjectRef, SharedFxAttrMap,
+};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::cell::Cell;
@@ -166,8 +168,8 @@ pub struct Frame {
     pub cells: Vec<CellRef>,
     pub pending_return: Option<PyObjectRef>,
     pub pending_jump: Option<usize>,
-    /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
-    pub local_names: Option<Box<FxAttrMap>>,
+    /// Shared namespace used by class/function frames that execute STORE_NAME/LOAD_NAME.
+    pub local_names: Option<SharedFxAttrMap>,
     /// The dict returned by metaclass.__prepare__() (PEP 3115).
     /// When set, STORE_NAME in class scope also writes to this dict so that
     /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
@@ -631,7 +633,8 @@ impl Frame {
     /// Unchecked local set — caller guarantees idx < locals.len().
     #[inline(always)]
     pub unsafe fn set_local_unchecked(&mut self, idx: usize, v: PyObjectRef) {
-        *self.locals.get_unchecked_mut(idx) = Some(v);
+        *self.locals.get_unchecked_mut(idx) = Some(v.clone());
+        self.set_matching_cellvar(idx, v);
     }
 
     /// Replace TOS-1 with `val` and pop TOS in one operation (binary op result).
@@ -650,7 +653,23 @@ impl Frame {
         self.locals[idx].as_ref()
     }
     pub fn set_local(&mut self, idx: usize, v: PyObjectRef) {
-        self.locals[idx] = Some(v);
+        self.locals[idx] = Some(v.clone());
+        self.set_matching_cellvar(idx, v);
+    }
+
+    #[inline]
+    fn set_matching_cellvar(&mut self, idx: usize, v: PyObjectRef) {
+        let Some(name) = self.code.varnames.get(idx) else {
+            return;
+        };
+        for (cell_idx, cell_name) in self.code.cellvars.iter().enumerate() {
+            if cell_name == name {
+                if let Some(cell) = self.cells.get(cell_idx) {
+                    *cell.write() = Some(v);
+                }
+                break;
+            }
+        }
     }
     pub fn push_block(&mut self, kind: BlockKind, handler: usize) {
         self.block_stack
@@ -662,7 +681,7 @@ impl Frame {
     pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {
         self.local_names
             .as_ref()
-            .and_then(|m| m.get(name).cloned())
+            .and_then(|m| m.read().get(name).cloned())
             .or_else(|| self.globals.read().get(name).cloned())
             .or_else(|| self.lookup_builtin(name))
     }
@@ -689,42 +708,59 @@ impl Frame {
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
         self.local_names
-            .get_or_insert_with(|| Box::new(FxAttrMap::default()))
+            .get_or_insert_with(new_shared_fx)
+            .write()
             .insert(name, value);
+    }
+    /// Return a shared local_names map, allocating it if needed.
+    #[inline]
+    pub fn ensure_local_names(&mut self) -> SharedFxAttrMap {
+        self.local_names.get_or_insert_with(new_shared_fx).clone()
     }
     /// Get a value from local_names (class/module namespace).
     #[inline]
     pub fn local_names_get(&self, name: &str) -> Option<PyObjectRef> {
-        self.local_names.as_ref().and_then(|m| m.get(name).cloned())
+        self.local_names
+            .as_ref()
+            .and_then(|m| m.read().get(name).cloned())
     }
     /// Check if local_names contains a key.
     #[inline]
     pub fn local_names_contains_key(&self, name: &str) -> bool {
         self.local_names
             .as_ref()
-            .map_or(false, |m| m.contains_key(name))
+            .map_or(false, |m| m.read().contains_key(name))
     }
     /// Remove a key from local_names.
     #[inline]
     pub fn local_names_remove(&mut self, name: &str) -> Option<PyObjectRef> {
-        self.local_names.as_mut().and_then(|m| m.shift_remove(name))
+        self.local_names
+            .as_ref()
+            .and_then(|m| m.write().shift_remove(name))
     }
     /// Insert into local_names (allocates if needed).
     #[inline]
     pub fn local_names_insert(&mut self, name: CompactString, value: PyObjectRef) {
         self.local_names
-            .get_or_insert_with(|| Box::new(FxAttrMap::default()))
+            .get_or_insert_with(new_shared_fx)
+            .write()
             .insert(name, value);
     }
-    /// Iterate over local_names. Returns empty iter if None.
+    /// Snapshot local_names. Returns an empty map if None.
     #[inline]
-    pub fn local_names_iter(&self) -> impl Iterator<Item = (&CompactString, &PyObjectRef)> {
-        self.local_names.as_ref().into_iter().flat_map(|m| m.iter())
+    pub fn local_names_snapshot(&self) -> FxAttrMap {
+        self.local_names
+            .as_ref()
+            .map(|m| m.read().clone())
+            .unwrap_or_default()
     }
     /// Take ownership of local_names (for class creation).
     #[inline]
     pub fn take_local_names(&mut self) -> FxAttrMap {
-        self.local_names.take().map(|b| *b).unwrap_or_default()
+        self.local_names
+            .take()
+            .map(|m| m.read().clone())
+            .unwrap_or_default()
     }
 }
 

@@ -44,7 +44,7 @@ impl VirtualMachine {
         self.call_stack.push(frame);
         if self.call_stack.len() > self.recursion_limit {
             if let Some(frame) = self.call_stack.pop() {
-                frame.recycle(&mut self.frame_pool);
+                self.recycle_frame(frame);
             }
             return Err(PyException::recursion_error(
                 "maximum recursion depth exceeded",
@@ -52,7 +52,7 @@ impl VirtualMachine {
         }
         let result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
-            frame.recycle(&mut self.frame_pool);
+            self.recycle_frame(frame);
         }
         result
     }
@@ -97,7 +97,7 @@ impl VirtualMachine {
         self.call_stack.push(frame);
         if self.call_stack.len() > self.recursion_limit {
             if let Some(frame) = self.call_stack.pop() {
-                frame.recycle(&mut self.frame_pool);
+                self.recycle_frame(frame);
             }
             return Err(PyException::recursion_error(
                 "maximum recursion depth exceeded",
@@ -105,7 +105,7 @@ impl VirtualMachine {
         }
         let result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
-            frame.recycle(&mut self.frame_pool);
+            self.recycle_frame(frame);
         }
         result
     }

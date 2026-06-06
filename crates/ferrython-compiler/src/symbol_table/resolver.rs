@@ -41,6 +41,11 @@ fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
     let mut child_available = available.clone();
     if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension {
         for (name, sym) in &scope.symbols {
+            if sym.scope == SymbolScope::Global && sym.is_explicit_global_or_nonlocal {
+                child_available.remove(name);
+            }
+        }
+        for (name, sym) in &scope.symbols {
             if sym.scope == SymbolScope::Local || sym.scope == SymbolScope::Free {
                 child_available.insert(name.clone());
             }
@@ -69,7 +74,9 @@ fn resolve_bottom_up(scope: &mut Scope) {
 
     // Collect names that children need as Free or Nonlocal
     let mut names_needed: FxHashSet<String> = FxHashSet::default();
+    let mut explicit_globals_needed: FxHashSet<String> = FxHashSet::default();
     for child in &scope.children {
+        collect_explicit_globals(child, &mut explicit_globals_needed);
         for (name, sym) in &child.symbols {
             if sym.scope == SymbolScope::Free || sym.scope == SymbolScope::Nonlocal {
                 names_needed.insert(name.clone());
@@ -77,9 +84,21 @@ fn resolve_bottom_up(scope: &mut Scope) {
         }
     }
 
+    if scope.scope_type == ScopeType::Module {
+        for name in explicit_globals_needed {
+            if let Some(sym) = scope.symbols.get_mut(name.as_str()) {
+                sym.scope = SymbolScope::Global;
+                sym.is_explicit_global_or_nonlocal = true;
+            }
+        }
+    }
+
     for name in &names_needed {
         if let Some(sym) = scope.symbols.get_mut(name.as_str()) {
             if sym.scope == SymbolScope::Local {
+                if scope.scope_type == ScopeType::Class && name != "__class__" {
+                    continue;
+                }
                 sym.scope = SymbolScope::Cell;
             }
         } else if scope.scope_type == ScopeType::Function
@@ -108,5 +127,16 @@ fn resolve_bottom_up(scope: &mut Scope) {
                 sym.scope = SymbolScope::Free;
             }
         }
+    }
+}
+
+fn collect_explicit_globals(scope: &Scope, names: &mut FxHashSet<String>) {
+    for (name, sym) in &scope.symbols {
+        if sym.scope == SymbolScope::Global && sym.is_explicit_global_or_nonlocal {
+            names.insert(name.clone());
+        }
+    }
+    for child in &scope.children {
+        collect_explicit_globals(child, names);
     }
 }

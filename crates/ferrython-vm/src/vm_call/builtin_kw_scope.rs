@@ -3,8 +3,6 @@ use ferrython_core::error::PyResult;
 use ferrython_core::object::{
     new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
-use indexmap::IndexMap;
 
 use crate::frame::ScopeKind;
 use crate::VirtualMachine;
@@ -31,23 +29,12 @@ impl VirtualMachine {
                     return globals_obj.clone();
                 }
             }
-            let mut map = IndexMap::new();
-            for (i, name) in frame.code.varnames.iter().enumerate() {
-                if let Some(Some(val)) = frame.locals.get(i) {
-                    map.insert(HashableKey::str_key(name.clone()), val.clone());
+            if matches!(frame.scope_kind, ScopeKind::Class) {
+                if let Some(local_names) = &frame.local_names {
+                    return PyObject::wrap(PyObjectPayload::InstanceDict(local_names.clone()));
                 }
             }
-            if frame.code.varnames.is_empty() {
-                let g = frame.globals.read();
-                for (k, v) in g.iter() {
-                    map.insert(HashableKey::str_key(k.clone()), v.clone());
-                }
-                drop(g);
-                for (k, v) in frame.local_names_iter() {
-                    map.insert(HashableKey::str_key(k.clone()), v.clone());
-                }
-            }
-            return PyObject::dict(map);
+            return PyObject::dict(self.frame_locals_map(frame));
         }
         PyObject::dict(new_fx_hashkey_map())
     }
