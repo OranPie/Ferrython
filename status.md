@@ -1,8 +1,31 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-07T17:31:16+08:00
+Last updated: 2026-06-07T21:33:27+08:00
 
 ## 性能优化进度
+
+- 2026-06-07 custom key dunder inline 性能批次：
+  - 针对 custom-key dict/set 热点补齐保守 inline：小型 Python `__hash__` 可直接读取实例字段做 `attr * const + attr`，小型 `__eq__` 的 `try: self.a == other.a and self.b == other.b except AttributeError: return False` 形状可在 direct call 与 HashableKey eq dispatch 中跳过 Python frame。
+  - 安全条件：只处理 plain instance、raw class `Function`、无 `__getattribute__` / `__getattr__`、无 descriptor、无 deque/builtin subclass/special marker、无 `__class__` override；trace/profile 开启或函数 `__code__` 被替换时回退普通调用。
+  - `__eq__` 字段比较对 int/bool/float/str/None 走 primitive bool，避免临时 bool 对象和完整 compare dispatch；其他类型继续回退普通 compare。
+  - generic 基准关键 before/after（release Ferrython；before 为本批开始前观测）：
+    - `custom __hash__ dispatch`: `0.1599s` -> `0.1325s`
+    - `custom __eq__ dispatch`: `0.2182s` -> `0.1769s`
+    - `custom dict lookup`: `0.2288s` -> `0.1801s`
+    - `custom set lookup`: `0.2387s` -> `0.1785s`
+  - complex 相邻基准：
+    - `custom_key_dict eq/hash lookup`: `0.0328s` -> `0.0271s`
+    - `custom_set eq/hash membership`: `0.0424s` -> `0.0343s`
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - custom-key dynamic rewrite / descriptor / `__getattr__` smoke on `target/debug/ferrython`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_generic_paths.py`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_complex_ops.py`
+    - Debug guard: `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_copy test_contextlib test_with test_yield_from test_queue test_sched test_enumerate test_functools test_bisect test_operator test_string test_hmac test_set test_iter test_weakref test_deque` -> `run=1617 pass=1470 fail=0 err=0 skip=147`
+    - Release guards: `test_dict` -> `run=103 pass=92 fail=0 err=0 skip=11`; `test_set` -> `run=561 pass=558 fail=0 err=0 skip=3`; `test_iter test_weakref test_deque test_copy` -> `run=333 pass=318 fail=0 err=0 skip=15`; `test_contextlib test_with test_yield_from test_functools test_bisect test_operator test_string test_hmac` -> `run=574 pass=499 fail=0 err=0 skip=75`
 
 - 2026-06-02 functools native partial 批次：
   - `_functools` 默认暴露 Rust native `partial`，当前默认 native surface 为 `reduce` / `cmp_to_key` / `partial`；`_lru_cache_wrapper` 仍未公开，避免把未完成 C accelerator 表面误标为完整。

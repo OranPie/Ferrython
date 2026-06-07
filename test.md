@@ -1,8 +1,27 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-07T17:31:16+08:00
+Last updated: 2026-06-07T21:33:27+08:00
 
 ## Current batch
+
+- Performance batch: custom key dunder inline
+  - Scope:
+    - `__hash__` pattern: small plain Python methods reading instance attrs and returning `self.attr * const + self.attr`.
+    - `__eq__` pattern: small plain Python methods matching `try: self.a == other.a and self.b == other.b except AttributeError: return False`.
+    - Container path: HashableKey eq dispatch now tries the same conservative attr-pair equality before falling back to Python dunder calls.
+  - Safety traits:
+    - Fast path rejects custom `__getattribute__`, `__getattr__`, descriptors, deque markers, builtin-value subclasses, special instances, `__class__` overrides, active tracing/profiling, and function `__code__` overrides.
+    - Dynamic class rewrite smoke confirms replacing `Key.__hash__` and `Key.__eq__` still changes results.
+  - Release benchmark results:
+    - `bench_generic_paths.py`: `custom __hash__ dispatch 0.1325s`, `custom __eq__ dispatch 0.1769s`, `custom dict lookup 0.1801s`, `custom set lookup 0.1785s`.
+    - `bench_complex_ops.py`: `custom_key_dict eq/hash lookup 0.0271s`, `custom_set eq/hash membership 0.0343s`.
+  - Guard validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - Debug combined guard: `run=1617 pass=1470 fail=0 err=0 skip=147` across copy/contextlib/with/yield_from/queue/sched/enumerate/functools/bisect/operator/string/hmac/set/iter/weakref/deque.
+    - Release per-module guards: `test_dict` `run=103 pass=92 fail=0 err=0 skip=11`; `test_set` `run=561 pass=558 fail=0 err=0 skip=3`; `test_iter test_weakref test_deque test_copy` `run=333 pass=318 fail=0 err=0 skip=15`; context/functools/string group `run=574 pass=499 fail=0 err=0 skip=75`.
 
 - Compatibility finalization: copy, contextlib, datetime, dict, and yield_from guard
   - `test_copy`

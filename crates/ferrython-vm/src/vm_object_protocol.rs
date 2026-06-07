@@ -2,11 +2,13 @@
 
 use crate::VirtualMachine;
 use compact_str::CompactString;
+use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    InstanceData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    has_descriptor_get, InstanceData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_GETATTR, CLASS_FLAG_HAS_GETATTRIBUTE,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyFunction, PyInt};
 
 impl VirtualMachine {
     /// Install thread-local __hash__ and __eq__ dispatch callbacks for HashableKey.
@@ -16,6 +18,9 @@ impl VirtualMachine {
         ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
             let vm = unsafe { &mut *vm_ptr };
             if let PyObjectPayload::Instance(inst) = &a.payload {
+                if let Some(result) = Self::try_inline_plain_attr_pair_eq(a, inst, b) {
+                    return Ok(Some(result));
+                }
                 if let Some(result) =
                     vm.call_plain_instance_dunder(a, inst, "__eq__", vec![b.clone()])?
                 {
@@ -397,5 +402,167 @@ impl VirtualMachine {
             }
         }
         obj.to_hashable_key()
+    }
+
+    fn try_inline_plain_attr_pair_eq(
+        left_obj: &PyObjectRef,
+        left_inst: &InstanceData,
+        right_obj: &PyObjectRef,
+    ) -> Option<bool> {
+        if ferrython_stdlib::is_trace_active() || ferrython_stdlib::is_profile_active() {
+            return None;
+        }
+        let eq_func = Self::lookup_plain_class_dunder(left_inst, "__eq__")?;
+        let PyObjectPayload::Function(pyfunc) = &eq_func.payload else {
+            return None;
+        };
+        let fields = attr_pair_eq_fields(pyfunc)?;
+        let (first_left, first_right) =
+            inline_attr_eq_by_name(left_obj, fields[0].0, right_obj, fields[0].1)?;
+        if !inline_eq_bool(&first_left, &first_right)? {
+            return Some(false);
+        }
+        let (second_left, second_right) =
+            inline_attr_eq_by_name(left_obj, fields[1].0, right_obj, fields[1].1)?;
+        Some(inline_eq_bool(&second_left, &second_right)?)
+    }
+}
+
+#[inline(always)]
+fn attr_pair_eq_fields(pyfunc: &PyFunction) -> Option<[(&str, &str); 2]> {
+    let instrs = &pyfunc.code.instructions;
+    if !pyfunc.is_simple
+        || pyfunc.has_code_override()
+        || pyfunc.code.arg_count != 2
+        || instrs.len() != 18
+        || instrs[0].op != Opcode::SetupExcept
+        || instrs[4].op != Opcode::JumpIfFalseOrPop
+        || instrs[4].arg != 8
+        || instrs[8].op != Opcode::ReturnValue
+        || instrs[9].op != Opcode::DupTop
+        || instrs[10].op != Opcode::LoadGlobal
+        || pyfunc
+            .code
+            .names
+            .get(instrs[10].arg as usize)
+            .map(|name| name.as_str())
+            != Some("AttributeError")
+        || instrs[11].op != Opcode::CompareOpPopJumpIfFalse
+        || (instrs[11].arg >> 24) != 10
+        || instrs[12].op != Opcode::PopTop
+        || instrs[13].op != Opcode::PopTop
+        || instrs[14].op != Opcode::PopTop
+        || instrs[15].op != Opcode::LoadConstReturnValue
+        || instrs[16].op != Opcode::EndFinally
+        || instrs[17].op != Opcode::LoadConstReturnValue
+    {
+        return None;
+    }
+    let false_value = pyfunc.constant_cache.get(instrs[15].arg as usize)?;
+    let trailing_value = pyfunc.constant_cache.get(instrs[17].arg as usize)?;
+    if !matches!(&false_value.payload, PyObjectPayload::Bool(false))
+        || !matches!(&trailing_value.payload, PyObjectPayload::None)
+    {
+        return None;
+    }
+    Some([
+        attr_eq_field_names(pyfunc, instrs[1], instrs[2], instrs[3])?,
+        attr_eq_field_names(pyfunc, instrs[5], instrs[6], instrs[7])?,
+    ])
+}
+
+#[inline(always)]
+fn attr_eq_field_names<'a>(
+    pyfunc: &'a PyFunction,
+    left_instr: Instruction,
+    right_instr: Instruction,
+    cmp_instr: Instruction,
+) -> Option<(&'a str, &'a str)> {
+    if cmp_instr.op != Opcode::CompareOp || cmp_instr.arg != 2 {
+        return None;
+    }
+    let (left_local, left_name_idx) = unpack_local_name(left_instr)?;
+    let (right_local, right_name_idx) = unpack_local_name(right_instr)?;
+    if left_local != 0 || right_local != 1 {
+        return None;
+    }
+    Some((
+        pyfunc.code.names.get(left_name_idx)?.as_str(),
+        pyfunc.code.names.get(right_name_idx)?.as_str(),
+    ))
+}
+
+#[inline(always)]
+fn unpack_local_name(instr: Instruction) -> Option<(usize, usize)> {
+    if instr.op != Opcode::LoadFastLoadAttr {
+        return None;
+    }
+    Some(((instr.arg >> 16) as usize, (instr.arg & 0xFFFF) as usize))
+}
+
+#[inline(always)]
+fn inline_attr_eq_by_name(
+    left_obj: &PyObjectRef,
+    left_name: &str,
+    right_obj: &PyObjectRef,
+    right_name: &str,
+) -> Option<(PyObjectRef, PyObjectRef)> {
+    let left = inline_instance_attr_by_name(left_obj, left_name)?;
+    let right = inline_instance_attr_by_name(right_obj, right_name)?;
+    Some((left, right))
+}
+
+#[inline(always)]
+fn inline_instance_attr_by_name(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    let PyObjectPayload::Instance(inst) = &obj.payload else {
+        return None;
+    };
+    if inst.class_flags & (CLASS_FLAG_HAS_GETATTRIBUTE | CLASS_FLAG_HAS_GETATTR) != 0
+        || inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0
+        || inst.dict_storage.is_some()
+    {
+        return None;
+    }
+    let attrs = unsafe { &*inst.attrs.data_ptr() };
+    if inst.is_special
+        || attrs.contains_key("__deque__")
+        || attrs.contains_key("__builtin_value__")
+        || attrs.contains_key("__class__")
+    {
+        return None;
+    }
+    if let Some(value) = attrs.get(name) {
+        return Some(value.clone());
+    }
+    let PyObjectPayload::Class(cd) = &inst.class.payload else {
+        return None;
+    };
+    let vtable = unsafe { &*cd.method_vtable.data_ptr() };
+    let class_value = vtable.get(name)?;
+    match &class_value.payload {
+        PyObjectPayload::Function(_)
+        | PyObjectPayload::NativeFunction(_)
+        | PyObjectPayload::NativeClosure { .. }
+        | PyObjectPayload::Property(_)
+        | PyObjectPayload::ClassMethod(_)
+        | PyObjectPayload::StaticMethod(_) => None,
+        _ if has_descriptor_get(class_value) => None,
+        _ => Some(class_value.clone()),
+    }
+}
+
+#[inline(always)]
+fn inline_eq_bool(left: &PyObjectRef, right: &PyObjectRef) -> Option<bool> {
+    match (&left.payload, &right.payload) {
+        (PyObjectPayload::Int(left), PyObjectPayload::Int(right)) => Some(left == right),
+        (PyObjectPayload::Bool(left), PyObjectPayload::Bool(right)) => Some(left == right),
+        (PyObjectPayload::Bool(left), PyObjectPayload::Int(PyInt::Small(right)))
+        | (PyObjectPayload::Int(PyInt::Small(right)), PyObjectPayload::Bool(left)) => {
+            Some((*left as i64) == *right)
+        }
+        (PyObjectPayload::Float(left), PyObjectPayload::Float(right)) => Some(left == right),
+        (PyObjectPayload::Str(left), PyObjectPayload::Str(right)) => Some(left == right),
+        (PyObjectPayload::None, PyObjectPayload::None) => Some(true),
+        _ => None,
     }
 }
