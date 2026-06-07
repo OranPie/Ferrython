@@ -227,6 +227,18 @@ pub(in crate::collection_modules) fn count_elements(args: &[PyObjectRef]) -> PyR
                 None => PyObject::int(1),
             };
             map.write().insert(key, new_val);
+        } else if let PyObjectPayload::Instance(inst) = &mapping.payload {
+            if let Some(storage) = inst.dict_storage.as_ref() {
+                let current = {
+                    let r = storage.read();
+                    r.get(&key).cloned()
+                };
+                let new_val = match current {
+                    Some(v) => PyObject::int(v.to_int().unwrap_or(0) + 1),
+                    None => PyObject::int(1),
+                };
+                storage.write().insert(key, new_val);
+            }
         }
     }
     Ok(PyObject::none())

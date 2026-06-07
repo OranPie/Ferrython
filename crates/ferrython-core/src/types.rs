@@ -49,15 +49,6 @@ pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> PyResult<Option<i64>> + 'stat
     });
 }
 
-fn builtin_method_receiver_key(receiver: &PyObjectRef) -> String {
-    match &receiver.payload {
-        crate::object::PyObjectPayload::BuiltinType(name) => format!("type:{}", name),
-        crate::object::PyObjectPayload::Class(cd) => format!("class:{}", cd.name),
-        crate::object::PyObjectPayload::Module(m) => format!("module:{}", m.name),
-        _ => format!("object:{}", PyObjectRef::as_ptr(receiver) as usize),
-    }
-}
-
 /// Call the installed __eq__ dispatch, if any.
 fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
     EQ_DISPATCH.with(|cell| {
@@ -587,6 +578,8 @@ pub enum HashableKey {
     Tuple(Box<Vec<HashableKey>>),
     FrozenSet(Rc<FrozenSetKeyData>),
     Range(Box<RangeKeyData>),
+    /// Stable descriptor/callable key for lookup-created builtin callables.
+    Callable(Box<CallableKeyData>),
     /// Identity-based key using the Arc pointer address, preserving the original object.
     Identity(usize, PyObjectRef),
     /// Custom hashable key for objects with __hash__/__eq__.
@@ -603,6 +596,13 @@ pub struct RangeKeyData {
     len: PyInt,
     start: Option<PyInt>,
     step: Option<PyInt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CallableKeyData {
+    kind: u8,
+    owner: usize,
+    name: CompactString,
 }
 
 impl RangeKeyData {
@@ -681,26 +681,42 @@ impl HashableKey {
                     Ok(HashableKey::Identity(ptr, obj.clone()))
                 }
             }
-            // Functions/methods are hashable by identity in CPython
+            // Python functions/methods are normal identity keys.
             PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
-            PyObjectPayload::NativeFunction(nf) => Ok(HashableKey::str_key(CompactString::from(
-                format!("<native-function:{}>", nf.name),
-            ))),
-            PyObjectPayload::NativeClosure(nc) => Ok(HashableKey::str_key(CompactString::from(
-                format!("<native-closure:{}>", nc.name),
-            ))),
-            PyObjectPayload::BuiltinFunction(name) => Ok(HashableKey::str_key(
-                CompactString::from(format!("<builtin-function:{}>", name)),
-            )),
+            // Builtin/native descriptors are commonly recreated on lookup, so
+            // make their dict-key identity stable without merging different
+            // owners such as dict.__repr__ and OrderedDict.__repr__.
+            PyObjectPayload::NativeFunction(nf) => {
+                Ok(HashableKey::Callable(Box::new(CallableKeyData {
+                    kind: 1,
+                    owner: 0,
+                    name: nf.name.clone(),
+                })))
+            }
+            PyObjectPayload::NativeClosure(nc) => {
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
+                Ok(HashableKey::Callable(Box::new(CallableKeyData {
+                    kind: 2,
+                    owner: ptr,
+                    name: nc.name.clone(),
+                })))
+            }
+            PyObjectPayload::BuiltinFunction(name) => {
+                Ok(HashableKey::Callable(Box::new(CallableKeyData {
+                    kind: 3,
+                    owner: 0,
+                    name: (*name.clone()).clone(),
+                })))
+            }
             PyObjectPayload::BuiltinBoundMethod(bbm) => {
-                Ok(HashableKey::str_key(CompactString::from(format!(
-                    "<builtin-bound-method:{}:{}>",
-                    builtin_method_receiver_key(&bbm.receiver),
-                    bbm.method_name
-                ))))
+                Ok(HashableKey::Callable(Box::new(CallableKeyData {
+                    kind: 4,
+                    owner: PyObjectRef::as_ptr(&bbm.receiver) as usize,
+                    name: bbm.method_name.clone(),
+                })))
             }
             // Class objects: hash by identity (each class definition is unique)
             PyObjectPayload::Class(_) => {
@@ -755,6 +771,7 @@ impl HashableKey {
                 PyObject::frozenset(map)
             }
             HashableKey::Range(_) => PyObject::str_val(CompactString::from("range")),
+            HashableKey::Callable(_) => PyObject::none(),
             HashableKey::Identity(_ptr, obj) => obj.clone(),
             HashableKey::Custom { object, .. } => object.clone(),
         }
@@ -857,6 +874,15 @@ pub fn hash_key_like_python(key: &HashableKey) -> i64 {
             h as i64
         }
         HashableKey::FrozenSet(items) => items.py_hash(),
+        HashableKey::Callable(data) => {
+            let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
+            h = h.wrapping_mul(1_000_003) ^ data.kind as u64;
+            h = h.wrapping_mul(1_000_003) ^ data.owner as u64;
+            for b in data.name.as_bytes() {
+                h = h.wrapping_mul(33).wrapping_add(*b as u64);
+            }
+            h as i64
+        }
         HashableKey::Bytes(b) => {
             if b.is_empty() {
                 return 0;
@@ -894,6 +920,8 @@ impl PartialEq for HashableKey {
             (HashableKey::FrozenSet(a), HashableKey::FrozenSet(b)) => a == b,
             // Range/Range
             (HashableKey::Range(a), HashableKey::Range(b)) => a == b,
+            // Callable/Callable
+            (HashableKey::Callable(a), HashableKey::Callable(b)) => a == b,
             // Bool/Int cross-comparison (True == 1, False == 0)
             (HashableKey::Bool(b), HashableKey::Int(n))
             | (HashableKey::Int(n), HashableKey::Bool(b)) => *n == PyInt::Small(*b as i64),
@@ -1012,6 +1040,10 @@ impl Hash for HashableKey {
             }
             HashableKey::Range(data) => {
                 8u8.hash(state);
+                data.hash(state);
+            }
+            HashableKey::Callable(data) => {
+                9u8.hash(state);
                 data.hash(state);
             }
             HashableKey::Identity(ptr, _) => {

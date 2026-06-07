@@ -6,6 +6,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 
 use super::chainmap::make_chainmap_class;
 use super::counter::{
@@ -18,6 +19,10 @@ use super::namedtuple::{
     namedtuple_rebuild_field, namedtuple_rebuild_instance,
 };
 use super::user_types::{make_user_dict_class, make_user_list_class, make_user_string_class};
+
+thread_local! {
+    static ORDERED_DICT_REPR_GUARD: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
 
 pub fn create_collections_module() -> PyObjectRef {
     let abc_module = crate::type_modules::create_collections_abc_module();
@@ -295,6 +300,36 @@ fn ordered_dict_items(obj: &PyObjectRef) -> PyResult<Vec<(PyObjectRef, PyObjectR
         .collect())
 }
 
+struct OrderedDictReprGuard {
+    ptr: usize,
+}
+
+impl OrderedDictReprGuard {
+    fn enter(obj: &PyObjectRef) -> Option<Self> {
+        let ptr = PyObjectRef::as_ptr(obj) as usize;
+        ORDERED_DICT_REPR_GUARD.with(|active| {
+            let mut active = active.borrow_mut();
+            if active.contains(&ptr) {
+                None
+            } else {
+                active.push(ptr);
+                Some(Self { ptr })
+            }
+        })
+    }
+}
+
+impl Drop for OrderedDictReprGuard {
+    fn drop(&mut self) {
+        ORDERED_DICT_REPR_GUARD.with(|active| {
+            let mut active = active.borrow_mut();
+            if let Some(pos) = active.iter().rposition(|ptr| *ptr == self.ptr) {
+                active.remove(pos);
+            }
+        });
+    }
+}
+
 fn make_ordered_dict_class() -> PyObjectRef {
     let mut ns = IndexMap::new();
     ns.insert(
@@ -391,6 +426,39 @@ fn make_ordered_dict_class() -> PyObjectRef {
                 )?
                 .is_truthy(),
             ))
+        }),
+    );
+    ns.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("OrderedDict.__repr__", move |args| {
+            if args.len() != 1 {
+                return Err(PyException::type_error("__repr__ takes no arguments"));
+            }
+            let Some(_guard) = OrderedDictReprGuard::enter(&args[0]) else {
+                return Ok(PyObject::str_val(CompactString::from("...")));
+            };
+            let items = ordered_dict_items(&args[0])?;
+            if items.is_empty() {
+                return Ok(PyObject::str_val(CompactString::from("OrderedDict()")));
+            }
+            let body = items
+                .into_iter()
+                .map(|(k, v)| {
+                    let value_repr = if matches!(&v.payload, PyObjectPayload::Instance(_))
+                        && PyObjectRef::as_ptr(&v) == PyObjectRef::as_ptr(&args[0])
+                    {
+                        "...".to_string()
+                    } else {
+                        v.repr()
+                    };
+                    format!("({}, {})", k.repr(), value_repr)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "OrderedDict([{}])",
+                body
+            ))))
         }),
     );
     ns.insert(

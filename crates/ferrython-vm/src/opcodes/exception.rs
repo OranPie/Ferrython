@@ -317,12 +317,27 @@ impl VirtualMachine {
                                 f.push(PyObject::none());
                                 f.push(PyObject::bool_val(true));
                             }
-                            Err(_e) => {
-                                // Generator re-raised or raised a different exception
+                            Err(e) => {
+                                // If a generator context manager re-raises the same exception
+                                // object, keep that object on the unwind stack so identity-based
+                                // checks in contextlib see the original value.
+                                let (reraised_type, reraised_value) =
+                                    if let Some(original) = e.original.clone() {
+                                        let typ = match &original.payload {
+                                            PyObjectPayload::Instance(inst) => inst.class.clone(),
+                                            PyObjectPayload::ExceptionInstance(ei) => {
+                                                PyObject::exception_type(ei.kind)
+                                            }
+                                            _ => exc_type.clone(),
+                                        };
+                                        (typ, original)
+                                    } else {
+                                        (exc_type.clone(), exc_val)
+                                    };
                                 let f = self.vm_frame();
                                 f.push(exc_tb);
-                                f.push(exc_val);
-                                f.push(exc_type.clone());
+                                f.push(reraised_value);
+                                f.push(reraised_type);
                                 f.push(PyObject::none());
                             }
                         }

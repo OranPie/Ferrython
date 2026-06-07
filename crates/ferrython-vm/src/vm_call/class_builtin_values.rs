@@ -94,6 +94,11 @@ impl VirtualMachine {
                 self.collect_iterable(&pos_args[0]).unwrap_or_default(),
             )),
             "enumerate" => {
+                if pos_args.is_empty() {
+                    return Err(ferrython_core::error::PyException::type_error(
+                        "enumerate() missing required argument",
+                    ));
+                }
                 if pos_args.len() > 2 {
                     return Err(ferrython_core::error::PyException::type_error(
                         "enumerate() takes at most 2 arguments",
@@ -101,6 +106,7 @@ impl VirtualMachine {
                 }
                 Some(crate::builtins::dispatch("enumerate", pos_args)?)
             }
+            "time" => None,
             _ => None,
         };
 

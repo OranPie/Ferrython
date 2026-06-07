@@ -235,6 +235,7 @@ fn builtin_type_create(
                 }
             }
             PyObjectPayload::BuiltinFunction(name) if name.as_str() == "enumerate" => {}
+            PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "datetime.time" => {}
             PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_) => {}
             _ => {
                 return Err(PyException::type_error(

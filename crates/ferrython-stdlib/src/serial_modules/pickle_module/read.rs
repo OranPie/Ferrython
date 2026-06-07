@@ -637,6 +637,30 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     }),
                 ))))
             }
+            ("__builtin__" | "builtins", "__ferrython_enumerate__") => {
+                use ferrython_core::object::IteratorData;
+                let source = arg_list.first().cloned().unwrap_or_else(PyObject::none);
+                let index = arg_list
+                    .get(1)
+                    .map(|obj| {
+                        obj.to_index().map_err(|err| {
+                            if err.kind == ExceptionKind::TypeError {
+                                PyException::type_error("enumerate() index must be an integer")
+                            } else {
+                                err
+                            }
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| ferrython_core::types::PyInt::Small(0));
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
+                    PyCell::new(IteratorData::Enumerate {
+                        source,
+                        index,
+                        cached_tuple: None,
+                    }),
+                ))))
+            }
             ("__builtin__" | "builtins", "__ferrython_rangeiter__") => {
                 if arg_list.len() != 3 {
                     return Err(PyException::runtime_error(

@@ -58,8 +58,11 @@ impl VirtualMachine {
                         while j > 0 {
                             let a = &items[indices[j]];
                             let b = &items[indices[j - 1]];
-                            let result =
-                                self.call_object(cmp_func.clone(), vec![a.clone(), b.clone()])?;
+                            let result = if reverse {
+                                self.call_object(cmp_func.clone(), vec![b.clone(), a.clone()])?
+                            } else {
+                                self.call_object(cmp_func.clone(), vec![a.clone(), b.clone()])?
+                            };
                             let cmp_val = result.to_int().unwrap_or(0);
                             if cmp_val < 0 {
                                 indices.swap(j, j - 1);
@@ -70,9 +73,6 @@ impl VirtualMachine {
                         }
                     }
                     *items = indices.into_iter().map(|i| items[i].clone()).collect();
-                    if reverse {
-                        items.reverse();
-                    }
                     return Ok(());
                 }
             }

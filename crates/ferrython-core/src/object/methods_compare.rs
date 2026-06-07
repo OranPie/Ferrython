@@ -137,9 +137,6 @@ fn cmp_to_key_compare(
     let PyObjectPayload::Instance(right_inst) = &b.payload else {
         return Ok(None);
     };
-    if !PyObjectRef::ptr_eq(&left_inst.class, &right_inst.class) {
-        return Ok(None);
-    }
     let PyObjectPayload::Class(cd) = &left_inst.class.payload else {
         return Ok(None);
     };
@@ -153,8 +150,12 @@ fn cmp_to_key_compare(
         return Ok(None);
     };
     let cmp_result = call_callable(&cmp_func, &[left_obj, right_obj])?;
+    let cmp_value = match &cmp_result.payload {
+        PyObjectPayload::Bool(value) => PyObject::int(if *value { 1 } else { 0 }),
+        _ => cmp_result,
+    };
     let zero = PyObject::int(0);
-    let result = cmp_result.compare(&zero, op)?.is_truthy();
+    let result = cmp_value.compare(&zero, op)?.is_truthy();
     Ok(Some(PyObject::bool_val(result)))
 }
 
@@ -448,45 +449,26 @@ fn compare_dict_value_equal(left: &PyObjectRef, right: &PyObjectRef) -> PyResult
     Ok(left.compare(right, CompareOp::Eq)?.is_truthy())
 }
 
-fn compare_dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> PyResult<bool> {
-    let od_key = crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
-    let a_is_od = a.contains_key(&od_key);
-    let b_is_od = b.contains_key(&od_key);
-    if a_is_od && b_is_od {
-        let a_items: Vec<_> = a
-            .iter()
-            .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
-            .collect();
-        let b_items: Vec<_> = b
-            .iter()
-            .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
-            .collect();
-        if a_items.len() != b_items.len() {
-            return Ok(false);
-        }
-        for ((ak, av), (bk, bv)) in a_items.iter().zip(b_items.iter()) {
-            let left = (*av).clone();
-            let right = (*bv).clone();
-            if ak != bk || !compare_dict_value_equal(&left, &right)? {
+struct DictSnapshot {
+    is_ordered: bool,
+    items: Vec<(crate::types::HashableKey, PyObjectRef)>,
+}
+
+fn compare_dict_snapshots_equal(a: &DictSnapshot, b: &DictSnapshot) -> PyResult<bool> {
+    if a.items.len() != b.items.len() {
+        return Ok(false);
+    }
+    if a.is_ordered && b.is_ordered {
+        for ((ak, av), (bk, bv)) in a.items.iter().zip(b.items.iter()) {
+            if ak != bk || !compare_dict_value_equal(av, bv)? {
                 return Ok(false);
             }
         }
         return Ok(true);
     }
 
-    let a_effective: Vec<_> = a
-        .iter()
-        .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
-        .collect();
-    let b_effective: Vec<_> = b
-        .iter()
-        .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
-        .collect();
-    if a_effective.len() != b_effective.len() {
-        return Ok(false);
-    }
-    for (key, left) in &a_effective {
-        let Some(right) = b.get(*key) else {
+    for (key, left) in &a.items {
+        let Some((_, right)) = b.items.iter().find(|(other_key, _)| other_key == key) else {
             if let Some(err) = take_pending_eq_error() {
                 return Err(err);
             }
@@ -495,9 +477,7 @@ fn compare_dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> PyResult<bool>
         if let Some(err) = take_pending_eq_error() {
             return Err(err);
         }
-        let left = (*left).clone();
-        let right = right.clone();
-        if !compare_dict_value_equal(&left, &right)? {
+        if !compare_dict_value_equal(left, right)? {
             return Ok(false);
         }
     }
@@ -507,15 +487,15 @@ fn compare_dict_maps_equal(a: &FxHashKeyMap, b: &FxHashKeyMap) -> PyResult<bool>
 fn compare_dict_objects(
     a: &PyObjectRef,
     b: &PyObjectRef,
-    a_map: &FxHashKeyMap,
-    b_map: &FxHashKeyMap,
+    a_items: &DictSnapshot,
+    b_items: &DictSnapshot,
     op: CompareOp,
 ) -> PyResult<PyObjectRef> {
     if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
         return Err(set_order_type_error(a, b, op));
     }
     let _comparison_guard = enter_container_comparison(a, b, op)?;
-    let eq = compare_dict_maps_equal(a_map, b_map)?;
+    let eq = compare_dict_snapshots_equal(a_items, b_items)?;
     Ok(PyObject::bool_val(if matches!(op, CompareOp::Eq) {
         eq
     } else {
@@ -596,14 +576,22 @@ fn compare_mapping_proxy_objects(
         (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
             let a_read = a_map.read();
             let b_read = b_map.read();
-            compare_dict_objects(a, b, &a_read, &b_read, op)
+            let a_items = dict_items_snapshot(&a_read);
+            let b_items = dict_items_snapshot(&b_read);
+            drop(b_read);
+            drop(a_read);
+            compare_dict_objects(a, b, &a_items, &b_items, op)
         }
         (PyObjectPayload::Dict(a_map), PyObjectPayload::MappingProxy(b_map))
         | (PyObjectPayload::MappingProxy(a_map), PyObjectPayload::Dict(b_map))
         | (PyObjectPayload::MappingProxy(a_map), PyObjectPayload::MappingProxy(b_map)) => {
             let a_read = a_map.read();
             let b_read = b_map.read();
-            compare_dict_objects(a, b, &a_read, &b_read, op)
+            let a_items = dict_items_snapshot(&a_read);
+            let b_items = dict_items_snapshot(&b_read);
+            drop(b_read);
+            drop(a_read);
+            compare_dict_objects(a, b, &a_items, &b_items, op)
         }
         _ => unreachable!(),
     }
@@ -616,7 +604,19 @@ fn dict_keys_snapshot(map: &FxHashKeyMap) -> Vec<crate::types::HashableKey> {
         .collect()
 }
 
-fn dict_items_snapshot(map: &FxHashKeyMap) -> Vec<(crate::types::HashableKey, PyObjectRef)> {
+fn dict_items_snapshot(map: &FxHashKeyMap) -> DictSnapshot {
+    let ordered_key = crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
+    DictSnapshot {
+        is_ordered: map.contains_key(&ordered_key),
+        items: map
+            .iter()
+            .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    }
+}
+
+fn dict_item_pairs_snapshot(map: &FxHashKeyMap) -> Vec<(crate::types::HashableKey, PyObjectRef)> {
     map.iter()
         .filter(|(k, _)| !super::helpers::is_hidden_dict_key(k))
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -787,7 +787,11 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let a_storage = instance_dict_storage(a).unwrap();
             let a_read = a_storage.read();
             let b_read = b_map.read();
-            return compare_dict_objects(a, b, &a_read, &b_read, op);
+            let a_items = dict_items_snapshot(&a_read);
+            let b_items = dict_items_snapshot(&b_read);
+            drop(b_read);
+            drop(a_read);
+            return compare_dict_objects(a, b, &a_items, &b_items, op);
         }
         (PyObjectPayload::Dict(a_map), PyObjectPayload::Instance(_))
             if instance_dict_storage(b).is_some() =>
@@ -795,7 +799,11 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let b_storage = instance_dict_storage(b).unwrap();
             let a_read = a_map.read();
             let b_read = b_storage.read();
-            return compare_dict_objects(a, b, &a_read, &b_read, op);
+            let a_items = dict_items_snapshot(&a_read);
+            let b_items = dict_items_snapshot(&b_read);
+            drop(b_read);
+            drop(a_read);
+            return compare_dict_objects(a, b, &a_items, &b_items, op);
         }
         (PyObjectPayload::Instance(_), PyObjectPayload::Instance(_))
             if instance_dict_storage(a).is_some() && instance_dict_storage(b).is_some() =>
@@ -804,7 +812,11 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let b_storage = instance_dict_storage(b).unwrap();
             let a_read = a_storage.read();
             let b_read = b_storage.read();
-            return compare_dict_objects(a, b, &a_read, &b_read, op);
+            let a_items = dict_items_snapshot(&a_read);
+            let b_items = dict_items_snapshot(&b_read);
+            drop(b_read);
+            drop(a_read);
+            return compare_dict_objects(a, b, &a_items, &b_items, op);
         }
         _ => {}
     }
@@ -842,7 +854,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         ) => {
             let a_read = a_map.read();
             let b_read = b_map.read();
-            let b_keys: Vec<_> = dict_items_snapshot(&b_read)
+            let b_keys: Vec<_> = dict_item_pairs_snapshot(&b_read)
                 .into_iter()
                 .map(|(k, v)| {
                     crate::types::HashableKey::Tuple(Box::new(vec![
@@ -867,7 +879,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         ) => {
             let a_read = a_map.read();
             let b_read = b_map.read();
-            let a_keys: Vec<_> = dict_items_snapshot(&a_read)
+            let a_keys: Vec<_> = dict_item_pairs_snapshot(&a_read)
                 .into_iter()
                 .map(|(k, v)| {
                     crate::types::HashableKey::Tuple(Box::new(vec![
@@ -887,8 +899,8 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let a_read = a_map.read();
             let b_read = b_map.read();
             return dict_item_view_compare(
-                &dict_items_snapshot(&a_read),
-                &dict_items_snapshot(&b_read),
+                &dict_item_pairs_snapshot(&a_read),
+                &dict_item_pairs_snapshot(&b_read),
                 op,
             );
         }
@@ -898,7 +910,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let _comparison_guard = enter_container_comparison(a, b, op)?;
             let a_read = a_map.read();
             if let Some(b_items) = set_keys_as_item_pairs(set_like_keys_snapshot(b).unwrap()) {
-                return dict_item_view_compare(&dict_items_snapshot(&a_read), &b_items, op);
+                return dict_item_view_compare(&dict_item_pairs_snapshot(&a_read), &b_items, op);
             }
             return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
         }
@@ -908,7 +920,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             let _comparison_guard = enter_container_comparison(a, b, op)?;
             let b_read = b_map.read();
             if let Some(a_items) = set_keys_as_item_pairs(set_like_keys_snapshot(a).unwrap()) {
-                return dict_item_view_compare(&a_items, &dict_items_snapshot(&b_read), op);
+                return dict_item_view_compare(&a_items, &dict_item_pairs_snapshot(&b_read), op);
             }
             return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
         }

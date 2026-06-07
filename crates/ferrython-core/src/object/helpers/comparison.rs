@@ -29,14 +29,22 @@ fn code_objects_equal(a: &CodeObject, b: &CodeObject) -> bool {
         && a.max_stack_size == b.max_stack_size
 }
 
-fn builtin_bound_receivers_equal(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+fn builtin_callable_equal(a: &PyObjectRef, b: &PyObjectRef) -> bool {
     match (&a.payload, &b.payload) {
-        (PyObjectPayload::BuiltinType(left), PyObjectPayload::BuiltinType(right)) => left == right,
-        (PyObjectPayload::Class(left), PyObjectPayload::Class(right)) => {
-            left.name == right.name && PyObjectRef::ptr_eq(a, b)
+        (PyObjectPayload::BuiltinFunction(left), PyObjectPayload::BuiltinFunction(right)) => {
+            left == right
         }
-        (PyObjectPayload::Module(left), PyObjectPayload::Module(right)) => left.name == right.name,
-        _ => PyObjectRef::ptr_eq(a, b),
+        (PyObjectPayload::NativeFunction(left), PyObjectPayload::NativeFunction(right)) => {
+            left.name == right.name
+        }
+        (PyObjectPayload::NativeClosure(left), PyObjectPayload::NativeClosure(right)) => {
+            PyObjectRef::ptr_eq(a, b) || left.name == right.name
+        }
+        (PyObjectPayload::BuiltinBoundMethod(left), PyObjectPayload::BuiltinBoundMethod(right)) => {
+            left.method_name == right.method_name
+                && PyObjectRef::ptr_eq(&left.receiver, &right.receiver)
+        }
+        _ => false,
     }
 }
 
@@ -534,31 +542,11 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
             }
             Some(std::cmp::Ordering::Equal)
         }
-        (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
-            if a == b {
-                Some(std::cmp::Ordering::Equal)
-            } else {
-                None
-            }
-        }
-        (PyObjectPayload::NativeFunction(a), PyObjectPayload::NativeFunction(b)) => {
-            if a.name == b.name {
-                Some(std::cmp::Ordering::Equal)
-            } else {
-                None
-            }
-        }
-        (PyObjectPayload::NativeClosure(a), PyObjectPayload::NativeClosure(b)) => {
-            if a.name == b.name {
-                Some(std::cmp::Ordering::Equal)
-            } else {
-                None
-            }
-        }
-        (PyObjectPayload::BuiltinBoundMethod(a), PyObjectPayload::BuiltinBoundMethod(b)) => {
-            if a.method_name == b.method_name
-                && builtin_bound_receivers_equal(&a.receiver, &b.receiver)
-            {
+        (PyObjectPayload::BuiltinFunction(_), PyObjectPayload::BuiltinFunction(_))
+        | (PyObjectPayload::NativeFunction(_), PyObjectPayload::NativeFunction(_))
+        | (PyObjectPayload::NativeClosure(_), PyObjectPayload::NativeClosure(_))
+        | (PyObjectPayload::BuiltinBoundMethod(_), PyObjectPayload::BuiltinBoundMethod(_)) => {
+            if builtin_callable_equal(a, b) {
                 Some(std::cmp::Ordering::Equal)
             } else {
                 None

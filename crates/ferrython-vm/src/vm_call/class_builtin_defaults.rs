@@ -13,6 +13,7 @@ pub(super) fn default_builtin_subclass_value(base_type: &str) -> Option<PyObject
         "bytes" => Some(PyObject::bytes(vec![])),
         "bytearray" => Some(PyObject::bytes(vec![])),
         "deque" => Some(PyObject::deque_storage(vec![])),
+        "time" => None,
         _ => None,
     }
 }

@@ -6,6 +6,7 @@ use ferrython_core::object::{
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
+use std::convert::TryFrom;
 
 // ── operator module ──
 
@@ -167,7 +168,14 @@ pub fn create_operator_module() -> PyObjectRef {
                     if !either_float {
                         if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
                             if b >= 0 {
-                                return Ok(PyObject::int(a.pow(b as u32)));
+                                let exp = u32::try_from(b).map_err(|_| {
+                                    PyException::overflow_error("integer exponent too large")
+                                })?;
+                                let result = PyInt::pow_op(&PyInt::Small(a), exp);
+                                return Ok(match result {
+                                    PyInt::Small(n) => PyObject::int(n),
+                                    PyInt::Big(n) => PyObject::big_int(*n),
+                                });
                             }
                             return Ok(PyObject::float((a as f64).powf(b as f64)));
                         }

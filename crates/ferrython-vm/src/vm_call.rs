@@ -48,6 +48,7 @@ mod builtin_sum_generator;
 mod builtin_sum_range;
 mod builtin_sum_sequence;
 mod builtin_text;
+mod builtin_typeddict;
 mod bytes_constructor;
 mod class_abstract;
 mod class_builtin_defaults;

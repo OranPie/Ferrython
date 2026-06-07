@@ -670,6 +670,13 @@ pub(super) fn pickle_serialize_p0(
                     buf.extend_from_slice(b"tR");
                     return Ok(());
                 }
+                IteratorData::Enumerate { source, index, .. } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_enumerate__\n(");
+                    pickle_serialize_p0(source, buf, memo)?;
+                    pickle_serialize_p0(&index.to_object(), buf, memo)?;
+                    buf.extend_from_slice(b"tR");
+                    return Ok(());
+                }
                 IteratorData::Islice {
                     source,
                     index,
@@ -1517,6 +1524,16 @@ pub(super) fn pickle_serialize_p2(
                             PyObject::int(*index),
                             PyObject::bool_val(*exhausted),
                         ]),
+                        buf,
+                        memo,
+                    )?;
+                    buf.push(b'R');
+                    return Ok(());
+                }
+                IteratorData::Enumerate { source, index, .. } => {
+                    buf.extend_from_slice(b"cbuiltins\n__ferrython_enumerate__\n");
+                    pickle_serialize_p2(
+                        &PyObject::tuple(vec![source.clone(), index.to_object()]),
                         buf,
                         memo,
                     )?;

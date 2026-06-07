@@ -1,7 +1,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    get_builtin_base_type_name, ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 
@@ -16,6 +18,22 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         if let Some(cls) = self.try_call_type_subclass_as_metaclass(class_obj, class_data, &args)? {
             return Ok(cls);
+        }
+        if class_data.name == "TypedDict" {
+            if let Some(cls) = self.call_typeddict_builtin(&args)? {
+                return Ok(cls);
+            }
+        }
+        if get_builtin_base_type_name(class_obj).as_deref() == Some("enumerate") {
+            let value = crate::builtins::dispatch("enumerate", &args)?;
+            let inst = PyObject::instance(class_obj.clone());
+            if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+                inst_data
+                    .attrs
+                    .write()
+                    .insert(intern_or_new("__builtin_value__"), value);
+            }
+            return Ok(inst);
         }
         if let Some(meta) = &class_data.metaclass {
             if let Some(call_method) = meta.get_attr("__call__") {

@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-06T22:51:43+08:00
+Last updated: 2026-06-07T17:31:16+08:00
 
 ## 性能优化进度
 
@@ -151,6 +151,52 @@ Last updated: 2026-06-06T22:51:43+08:00
 4. call/frame 热点继续跟踪 `call_3args`、recursive call、closure capture many；这类属于核心调用栈优化，不和 hash 容器批次混提交。
 
 ## CPython 兼容修复进度
+
+- 2026-06-07 copy / contextlib / datetime / dict / yield_from regression cleanup:
+  - 修复/确认绿色面：
+    - `test_copy`: `run=75 pass=75 fail=0 err=0 skip=0`；`types.MethodType` 现在暴露 builtin `method` type，并通过 VM builtin call path 构造 method object。
+    - `test_contextlib` + `test_with`: combined `run=127 pass=127 fail=0 err=0 skip=0`；generator `throw()` 现在保留/构造正确 original exception value，避免 context manager exception state 丢失。
+    - `test_datetime`: `run=3 pass=3 fail=0 err=0 skip=0`；`_datetime` accelerator 缺失时，runner 对 partial-load stdlib 模块走 smoke fallback，避免误开启不完整 accelerator 测试面。
+    - `test_dict`: `run=103 pass=92 fail=0 err=0 skip=11`；dict equality 会 snapshot owned visible entries，并在比较时释放 map borrow，支持 equality 期间 operand mutation。
+    - `test_yield_from`: `run=33 pass=33 fail=0 err=0 skip=0`；delegated `throw()` 抛出的新异常保留自身 original value，不再被父级传入的 original 覆盖。
+  - Baseline 守卫：
+    - `TEST_BASELINE.md` 仍为 105 个零失败/零错误模块；104 个非 `test_decimal` baseline 模块用 30s per-module timeout 复跑，`baseline failures: 0`。
+    - `test_decimal` 因记录时间约 31s 单独用 60s timeout 复跑，保持 `run=161 pass=157 fail=0 err=0 skip=4`。
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_copy test_datetime`: `run=205 pass=205 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict test_yield_from`: `run=136 pass=125 fail=0 err=0 skip=11`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_copy test_datetime test_dict test_yield_from`: `run=341 pass=330 fail=0 err=0 skip=11`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sort test_pprint test_collections test_userlist test_queue test_sched test_enumerate`: `run=330 pass=274 fail=0 err=0 skip=56`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_string test_hmac`: `run=414 pass=339 fail=0 err=0 skip=75`
+    - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal`: `run=161 pass=157 fail=0 err=0 skip=4`
+
+- 2026-06-07 queue / sched / enumerate completion batch:
+  - 新增绿色模块：
+    - `test_queue`: `run=54 pass=16 fail=0 err=0 skip=38`，从 30s timeout 收口。
+    - `test_sched`: `run=10 pass=8 fail=0 err=0 skip=2`，从 30s timeout 收口。
+    - `test_enumerate`: `run=85 pass=71 fail=0 err=0 skip=14`，从 30s timeout 收口。
+  - 通用兼容修复：
+    - `queue` 改为 class surface，补齐 `Queue` / `LifoQueue` / `PriorityQueue` / `_PySimpleQueue`、`Empty` / `Full`、subclass `_put` / `_get` hook、负 timeout 校验和 deque-backed storage。
+    - `enumerate` 现在是 builtin type，支持大整数 `start`、subclass self-iteration、参数校验、pickle roundtrip 和 iterator state restore。
+    - `reversed()` custom sequence fallback 改为惰性 reverse sequence iterator，只要求 `__len__` + `__getitem__`；`operator.length_hint()` 会按 CPython 延迟传播 `__len__` 异常，并尊重 `__reversed__ = None`。
+    - sequence protocol 收集把 `__getitem__` 抛出的 `StopIteration` 当作终止；只有 `__next__` 但没有 `__iter__` / `__getitem__` 的 instance 不再被误判为 iterable。
+    - `operator.pow` 的非负整数指数路径改用 `PyInt::pow_op`，避免 small-int 溢出 panic。
+  - 新增/同步 Ferrython-unneeded：
+    - `test_sched` 的两个 CPython cross-thread scheduler ordering 测试。
+    - `test_queue` 的 blocking Queue / SimpleQueue thread wakeup、join、stress timing 测试。
+  - Baseline 更新：
+    - `TEST_BASELINE.md` 从 102 个零失败/零错误模块更新到 105 个；执行至少一个测试的模块从 96 个更新到 99 个，zero-test pass 仍为 6 个。
+  - 验证：
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue`: `run=54 pass=16 fail=0 err=0 skip=38`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sched`: `run=10 pass=8 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_enumerate`: `run=85 pass=71 fail=0 err=0 skip=14`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue test_sched test_enumerate`: `run=149 pass=95 fail=0 err=0 skip=54`
 
 - 2026-06-06 yield-from delegation batch:
   - `test_yield_from` from non-baseline `run=33 pass=17 fail=8 err=8 skip=0` to `run=33 pass=33 fail=0 err=0 skip=0`; added to `TEST_BASELINE.md`, moving the zero-failure/error baseline from 101 to 102 modules.

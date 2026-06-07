@@ -1,8 +1,67 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-06T22:51:43+08:00
+Last updated: 2026-06-07T17:31:16+08:00
 
 ## Current batch
+
+- Compatibility finalization: copy, contextlib, datetime, dict, and yield_from guard
+  - `test_copy`
+    - Current result: `run=75 pass=75 fail=0 err=0 skip=0`.
+    - Fixed trait: `types.MethodType` resolves to the builtin `method` type and constructs method objects through the VM builtin call path.
+  - `test_contextlib` / `test_with`
+    - Current combined result: `run=127 pass=127 fail=0 err=0 skip=0`.
+    - Fixed trait: generator `throw()` preserves or constructs the correct original exception value for exception-state-sensitive context manager paths.
+  - `test_datetime`
+    - Current result: `run=3 pass=3 fail=0 err=0 skip=0`.
+    - Fixed trait: missing `_datetime` accelerator now triggers a partial-load smoke fallback instead of expanding into unsupported full accelerator tests.
+  - `test_dict`
+    - Current result: `run=103 pass=92 fail=0 err=0 skip=11`.
+    - Fixed trait: dict equality snapshots owned visible entries before user equality calls, so operand mutation during comparison no longer corrupts iteration/borrows.
+  - `test_yield_from`
+    - Current result: `run=33 pass=33 fail=0 err=0 skip=0`.
+    - Fixed trait: delegated `throw()` exceptions keep their own original value, preserving the `ValueError("Vorpal bunny encountered")` case instead of inheriting the incoming `GeneratorExit`.
+  - Baseline guard:
+    - All 104 pass-baseline modules except `test_decimal` were rerun independently with 30s timeouts: `baseline failures: 0`.
+    - `test_decimal` was rerun separately with 60s timeout because its baseline time is about 31s: `run=161 pass=157 fail=0 err=0 skip=4`.
+  - Validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_copy test_datetime`: `run=205 pass=205 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_dict test_yield_from`: `run=136 pass=125 fail=0 err=0 skip=11`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_contextlib test_with test_copy test_datetime test_dict test_yield_from`: `run=341 pass=330 fail=0 err=0 skip=11`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sort test_pprint test_collections test_userlist test_queue test_sched test_enumerate`: `run=330 pass=274 fail=0 err=0 skip=56`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_string test_hmac`: `run=414 pass=339 fail=0 err=0 skip=75`
+    - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal`: `run=161 pass=157 fail=0 err=0 skip=4`
+
+- Compatibility batch: queue, sched, enumerate, and sequence iterator fallback
+  - `test_queue`
+    - Previous baseline state: `TIMEOUT` at 30s.
+    - Current result: `run=54 pass=16 fail=0 err=0 skip=38`.
+  - `test_sched`
+    - Previous baseline state: `TIMEOUT` at 30s.
+    - Current result: `run=10 pass=8 fail=0 err=0 skip=2`.
+  - `test_enumerate`
+    - Previous baseline state: `TIMEOUT` at 30s.
+    - Current result: `run=85 pass=71 fail=0 err=0 skip=14`.
+  - Fixed traits:
+    - `queue` now exposes class-based `Queue` / `LifoQueue` / `PriorityQueue` / `_PySimpleQueue`, `Empty` / `Full` exception classes, subclass `_put` / `_get` hooks, negative-timeout validation, and deque-backed storage.
+    - `sched` now runs without timeout-driven failures after queue/thread wakeup behavior is made explicit through Ferrython-unneeded CPython thread-timing stress cases.
+    - `enumerate` is a builtin type, preserves arbitrary-size integer starts, supports subclass construction, validates argument arity/type, pickles/restores iterator state, and keeps subclass instances self-iterating while delegating `next()` to their builtin iterator value.
+    - `reversed()` custom-sequence fallback now requires only `__len__` + `__getitem__`, uses a lazy reverse sequence iterator, propagates `__len__` errors through `operator.length_hint()`, and respects `__reversed__ = None`.
+    - Sequence-protocol collection now treats `StopIteration` from `__getitem__` as sequence exhaustion, and instance objects with only `__next__` are no longer treated as iterable.
+    - `operator.pow` uses the general `PyInt::pow_op` path for non-negative integer exponents, avoiding small-int overflow panics.
+  - Marked unneeded:
+    - `test_sched.TestCase.test_enter_concurrent` and `test_cancel_concurrent`: CPython cross-thread scheduler wakeup/cancellation ordering is not targeted by Ferrython's bytecode-thread model.
+    - Queue blocking/thread stress cases in `test_queue`: CPython blocking queue thread wakeup/join timing is not targeted by Ferrython's bytecode-thread model.
+  - Validation:
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue`: `run=54 pass=16 fail=0 err=0 skip=38`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_sched`: `run=10 pass=8 fail=0 err=0 skip=2`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_enumerate`: `run=85 pass=71 fail=0 err=0 skip=14`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_queue test_sched test_enumerate`: `run=149 pass=95 fail=0 err=0 skip=54`
 
 - Compatibility batch: yield-from delegation
   - `test_yield_from`

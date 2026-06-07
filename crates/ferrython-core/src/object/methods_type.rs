@@ -91,7 +91,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 IteratorData::SetRefs { .. } | IteratorData::FrozenSetItems { .. } => {
                     "set_iterator"
                 }
-                IteratorData::SeqIter { .. } => "iterator",
+                IteratorData::SeqIter { .. } | IteratorData::RevSeqIter { .. } => "iterator",
             }
         }
         PyObjectPayload::Range { .. } => "range",
@@ -1027,7 +1027,7 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                         return "OrderedDict()".to_string();
                     }
                     if !repr_enter(ptr) {
-                        return "OrderedDict(...)".to_string();
+                        return "...".to_string();
                     }
                     let items: Vec<String> = visible
                         .iter()

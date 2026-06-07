@@ -504,13 +504,16 @@ pub fn get_builtin_base_type_name_from_bases(bases: &[PyObjectRef]) -> Option<Co
                         | "frozenset"
                         | "bytes"
                         | "bytearray"
+                        | "enumerate"
                 ) {
                     return Some((**name).clone());
                 }
             }
-            PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "collections.deque" => {
-                return Some(CompactString::from("deque"));
-            }
+            PyObjectPayload::NativeFunction(nf) => match nf.name.as_str() {
+                "collections.deque" => return Some(CompactString::from("deque")),
+                "datetime.time" => return Some(CompactString::from("time")),
+                _ => {}
+            },
             PyObjectPayload::BuiltinFunction(name) if name.as_str() == "enumerate" => {
                 return Some(CompactString::from("enumerate"));
             }

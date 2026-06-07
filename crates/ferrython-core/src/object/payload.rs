@@ -1320,7 +1320,7 @@ pub enum IteratorData {
     },
     Enumerate {
         source: PyObjectRef,
-        index: i64,
+        index: PyInt,
         cached_tuple: Option<PyObjectRef>,
     },
     Zip {
@@ -1376,6 +1376,12 @@ pub enum IteratorData {
     },
     /// Lazy sequence-protocol iterator (old-style __getitem__(0),__getitem__(1),... iter)
     SeqIter {
+        obj: PyObjectRef,
+        index: i64,
+        exhausted: bool,
+    },
+    /// Lazy reverse sequence-protocol iterator used by reversed(obj) fallback.
+    RevSeqIter {
         obj: PyObjectRef,
         index: i64,
         exhausted: bool,

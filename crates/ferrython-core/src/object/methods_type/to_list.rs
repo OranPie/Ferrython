@@ -6,6 +6,7 @@ use num_traits::ToPrimitive;
 use super::super::helpers::*;
 use super::super::methods::PyObjectMethods;
 use super::super::payload::*;
+use crate::types::PyInt;
 
 fn ensure_iterator_for_to_list(owner: &PyObjectRef, iter: PyObjectRef) -> PyResult<PyObjectRef> {
     if iter.get_attr("__next__").is_some() {
@@ -485,8 +486,8 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                     loop {
                         match next_static_iterator(source)? {
                             Some(value) => {
-                                let pair = PyObject::tuple(vec![PyObject::int(*index), value]);
-                                *index = index.saturating_add(1);
+                                let pair = PyObject::tuple(vec![index.to_object(), value]);
+                                *index = PyInt::add_op(index, &PyInt::Small(1));
                                 guarded_push(&mut result, pair, "enumerate iterator -> list")?;
                             }
                             None => return Ok(result),
@@ -543,7 +544,8 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 | IteratorData::Starmap { .. }
                 | IteratorData::Tee { .. }
                 | IteratorData::HeldIter { .. }
-                | IteratorData::DictEntries { .. } => Err(PyException::type_error(
+                | IteratorData::DictEntries { .. }
+                | IteratorData::RevSeqIter { .. } => Err(PyException::type_error(
                     "lazy iterator requires VM to collect",
                 )),
                 IteratorData::SeqIter {

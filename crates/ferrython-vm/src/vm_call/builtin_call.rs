@@ -89,6 +89,9 @@ impl VirtualMachine {
         if name.as_str() == "module" {
             return self.call_module_type(args);
         }
+        if name.as_str() == "method" {
+            return self.call_method_type(args);
+        }
         if name.as_str() == "traceback" {
             return self.call_traceback_type(args);
         }
@@ -187,6 +190,20 @@ impl VirtualMachine {
             CompactString::from(name),
             attrs,
         ))
+    }
+
+    fn call_method_type(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
+        if args.len() != 2 {
+            return Err(PyException::type_error(
+                "MethodType() requires a function and an instance",
+            ));
+        }
+        Ok(PyObjectRef::new(PyObject {
+            payload: PyObjectPayload::BoundMethod {
+                receiver: args[1].clone(),
+                method: args[0].clone(),
+            },
+        }))
     }
 
     fn call_traceback_type(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {

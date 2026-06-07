@@ -33,10 +33,40 @@ impl VirtualMachine {
                     return Ok(Some(bbm.receiver.clone()));
                 }
                 "__length_hint__" => {
-                    if matches!(&bbm.receiver.payload, PyObjectPayload::RevRefIter { .. }) {
-                        return Err(PyException::type_error(
-                            "object of type 'list_reverseiterator' has no len()",
-                        ));
+                    if let PyObjectPayload::Iterator(iter_data) = &bbm.receiver.payload {
+                        let data = iter_data.read();
+                        if let IteratorData::RevSeqIter { obj, exhausted, .. } = &*data {
+                            if *exhausted {
+                                return Ok(Some(PyObject::int(0)));
+                            }
+                            let source = obj.clone();
+                            drop(data);
+                            let len_obj = self.call_object(
+                                Self::resolve_instance_dunder(&source, "__len__")
+                                    .ok_or_else(|| PyException::type_error("object has no len"))?,
+                                vec![],
+                            )?;
+                            let len = len_obj.to_int().map_err(|_| {
+                                PyException::type_error(format!(
+                                    "'{}' object cannot be interpreted as an integer",
+                                    len_obj.type_name()
+                                ))
+                            })?;
+                            if len < 0 {
+                                return Err(PyException::value_error(
+                                    "__len__() should return >= 0",
+                                ));
+                            }
+                            return Ok(Some(PyObject::int(len)));
+                        }
+                    }
+                    if let PyObjectPayload::RevRefIter { index, .. } = &bbm.receiver.payload {
+                        let remaining = index.get();
+                        return Ok(Some(PyObject::int(if remaining == usize::MAX {
+                            0
+                        } else {
+                            remaining as i64
+                        })));
                     }
                     let len = bbm.receiver.py_len().unwrap_or(0);
                     return Ok(Some(PyObject::int(len as i64)));

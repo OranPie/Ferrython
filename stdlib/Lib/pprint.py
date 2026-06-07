@@ -186,6 +186,8 @@ class PrettyPrinter:
             return PrettyPrinter._pprint_default_dict
         if name == "UserString" and hasattr(object, "data"):
             return PrettyPrinter._pprint_user_string
+        if name == "mappingproxy":
+            return PrettyPrinter._pprint_mappingproxy
         if issubclass(type(object), set):
             return PrettyPrinter._pprint_set
         if issubclass(type(object), frozenset):

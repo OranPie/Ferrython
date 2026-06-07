@@ -65,6 +65,12 @@ impl VirtualMachine {
                 PyObjectPayload::BuiltinFunction(name) if name.as_str() == "enumerate" => {
                     resolved.push(base.clone());
                 }
+                PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "collections.deque" => {
+                    resolved.push(base.clone());
+                }
+                PyObjectPayload::NativeFunction(nf) if nf.name.as_str() == "datetime.time" => {
+                    resolved.push(base.clone());
+                }
                 PyObjectPayload::Instance(inst) => {
                     // Check for GenericAlias (__origin__ attribute)
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -74,8 +80,15 @@ impl VirtualMachine {
                         {
                             // Use __origin__ as the real base class
                             if let Some(origin) = inst.attrs.read().get("__origin__").cloned() {
-                                resolved.push(origin);
-                                continue;
+                                if matches!(
+                                    origin.payload,
+                                    PyObjectPayload::Class(_)
+                                        | PyObjectPayload::BuiltinType(_)
+                                        | PyObjectPayload::ExceptionType(_)
+                                ) {
+                                    resolved.push(origin);
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -165,6 +178,85 @@ impl VirtualMachine {
         }
     }
 
+    fn is_typeddict_base(base: &PyObjectRef) -> bool {
+        if let PyObjectPayload::Class(cd) = &base.payload {
+            cd.name == "TypedDict" || cd.namespace.read().contains_key("__typed_dict__")
+        } else {
+            false
+        }
+    }
+
+    fn normalize_typeddict_bases(bases: &mut Vec<PyObjectRef>) -> bool {
+        if !bases.iter().any(Self::is_typeddict_base) {
+            return false;
+        }
+        bases.clear();
+        bases.push(PyObject::builtin_type(CompactString::from("dict")));
+        true
+    }
+
+    fn process_typeddict_class(&mut self, cls: &PyObjectRef, raw_bases: &[PyObjectRef]) {
+        if !raw_bases.iter().any(Self::is_typeddict_base) {
+            return;
+        }
+        let PyObjectPayload::Class(cd) = &cls.payload else {
+            return;
+        };
+
+        let mut merged = new_fx_hashkey_map();
+        for base in raw_bases {
+            if let PyObjectPayload::Class(base_cd) = &base.payload {
+                if let Some(ann) = base_cd.namespace.read().get("__annotations__").cloned() {
+                    if let PyObjectPayload::Dict(map) = &ann.payload {
+                        merged.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+                    }
+                }
+            }
+        }
+        if let Some(ann) = cd.namespace.read().get("__annotations__").cloned() {
+            if let PyObjectPayload::Dict(map) = &ann.payload {
+                merged.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
+
+        let mut ns = cd.namespace.write();
+        ns.insert(
+            CompactString::from("__annotations__"),
+            PyObject::dict(merged),
+        );
+        ns.insert(
+            CompactString::from("__typed_dict__"),
+            PyObject::bool_val(true),
+        );
+        ns.entry(CompactString::from("__total__"))
+            .or_insert_with(|| PyObject::bool_val(true));
+        ns.insert(
+            CompactString::from("__new__"),
+            PyObject::native_closure("TypedDict.__new__", |args: &[PyObjectRef]| {
+                let mut data = new_fx_hashkey_map();
+                let positional = args
+                    .iter()
+                    .skip(1)
+                    .filter(|arg| !matches!(arg.payload, PyObjectPayload::Dict(_)))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(first) = positional.first() {
+                    if let PyObjectPayload::Dict(map) = &first.payload {
+                        data.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+                    }
+                }
+                if let Some(last) = args.last() {
+                    if let PyObjectPayload::Dict(map) = &last.payload {
+                        data.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+                    }
+                }
+                Ok(PyObject::dict(data))
+            }),
+        );
+        drop(ns);
+        cd.invalidate_cache();
+    }
+
     pub(crate) fn build_class(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error(
@@ -172,7 +264,9 @@ impl VirtualMachine {
             ));
         }
         let raw_bases: Vec<PyObjectRef> = args[2..].to_vec();
-        let bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
+        let mut bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
+        let raw_typeddict_bases = bases.clone();
+        Self::normalize_typeddict_bases(&mut bases);
 
         // Reject subclassing of final builtin types (bool is not subclassable)
         for base in &bases {
@@ -263,6 +357,7 @@ impl VirtualMachine {
 
         // NamedTuple metaclass behavior: add __namedtuple__ marker and _fields
         self.process_namedtuple_class(&cls, &bases);
+        self.process_typeddict_class(&cls, &raw_typeddict_bases);
 
         // Enum metaclass behavior: transform class attributes into enum members
         self.process_enum_class(&cls, &bases)?;
@@ -294,7 +389,9 @@ impl VirtualMachine {
             _ => CompactString::from(args[1].py_to_string()),
         };
         let raw_bases: Vec<PyObjectRef> = args[2..].to_vec();
-        let bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
+        let mut bases: Vec<PyObjectRef> = self.resolve_mro_entries(&raw_bases)?;
+        let raw_typeddict_bases = bases.clone();
+        Self::normalize_typeddict_bases(&mut bases);
 
         // Extract metaclass from kwargs, falling back to inherited metaclass from bases
         let metaclass = kwargs
@@ -650,6 +747,7 @@ impl VirtualMachine {
 
             // NamedTuple metaclass behavior
             self.process_namedtuple_class(&cls, &bases);
+            self.process_typeddict_class(&cls, &raw_typeddict_bases);
 
             // Enum metaclass behavior
             self.process_enum_class(&cls, &bases)?;

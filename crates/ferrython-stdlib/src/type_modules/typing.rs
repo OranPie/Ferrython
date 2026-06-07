@@ -98,11 +98,9 @@ pub fn create_typing_module() -> PyObjectRef {
         data.invalidate_cache();
     }
 
-    // Generic — placeholder class
-    let generic_class = PyObject::class(CompactString::from("Generic"), vec![], IndexMap::new());
-
-    // Protocol — placeholder class
-    let protocol_class = PyObject::class(CompactString::from("Protocol"), vec![], IndexMap::new());
+    // Generic / Protocol — generic bases that participate in PEP 560 class creation.
+    let generic_class = make_generic_base_class("Generic");
+    let protocol_class = make_generic_base_class("Protocol");
 
     // Helper to create typing generic alias classes
     // These support subscript notation: List[int] → _GenericAlias with __origin__ and __args__
@@ -174,6 +172,18 @@ pub fn create_typing_module() -> PyObjectRef {
                     };
                     attrs.insert(CompactString::from("__origin__"), origin_obj);
                     attrs.insert(CompactString::from("__args__"), args_tuple);
+                    let mro_origin = typing_mro_origin(
+                        attrs
+                            .get("__origin__")
+                            .cloned()
+                            .unwrap_or_else(PyObject::none),
+                    );
+                    attrs.insert(
+                        CompactString::from("__mro_entries__"),
+                        PyObject::native_closure("_GenericAlias.__mro_entries__", move |_args| {
+                            Ok(PyObject::tuple(vec![mro_origin.clone()]))
+                        }),
+                    );
                     // __repr__ and __str__ must be callable (not plain strings)
                     let repr_clone = repr.clone();
                     attrs.insert(
@@ -469,32 +479,109 @@ pub fn create_typing_module() -> PyObjectRef {
     // TypedDict: In CPython, TypedDict creates a class that, when instantiated,
     // returns a plain dict. TypedDict subclasses are conceptually dict subclasses.
     // We implement __new__ to return a dict built from kwargs.
+    let typed_dict_new = || {
+        PyObject::native_closure("TypedDict.__new__", |args: &[PyObjectRef]| {
+            let mut data = new_fx_hashkey_map();
+            let positional = args
+                .iter()
+                .skip(1)
+                .filter(|arg| !matches!(arg.payload, PyObjectPayload::Dict(_)))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(first) = positional.first() {
+                if let PyObjectPayload::Dict(map) = &first.payload {
+                    data.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                    data.extend(kw_map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+            Ok(PyObject::dict(data))
+        })
+    };
+
     let typed_dict_cls = {
         let mut td_ns = IndexMap::new();
+        td_ns.insert(
+            CompactString::from("__module__"),
+            PyObject::str_val(CompactString::from("typing")),
+        );
         td_ns.insert(
             CompactString::from("__init_subclass__"),
             make_builtin(|_args| Ok(PyObject::none())),
         );
-        // __new__ returns a plain dict from kwargs
-        td_ns.insert(
-            CompactString::from("__new__"),
-            PyObject::native_closure("__new__", |args: &[PyObjectRef]| {
-                // args[0] = cls, rest = positional, last may be kwargs dict
-                if args.len() > 1 {
-                    if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
-                        let r = kw_map.read();
-                        let mut data = IndexMap::new();
-                        for (k, v) in r.iter() {
-                            data.insert(k.clone(), v.clone());
-                        }
-                        return Ok(PyObject::dict(data));
-                    }
-                }
-                Ok(PyObject::dict(IndexMap::new()))
-            }),
-        );
+        // __new__ returns a plain dict from kwargs.
+        td_ns.insert(CompactString::from("__new__"), typed_dict_new());
         PyObject::class(CompactString::from("TypedDict"), vec![], td_ns)
     };
+    let typed_dict_factory_class = typed_dict_cls.clone();
+    if let PyObjectPayload::Class(td_data) = &typed_dict_cls.payload {
+        td_data.namespace.write().insert(
+            CompactString::from("__call__"),
+            PyObject::native_closure("TypedDict.__call__", move |args: &[PyObjectRef]| {
+                check_args_min("TypedDict", args, 1)?;
+                let typename = args[0].py_to_string();
+                let has_kwargs = args
+                    .last()
+                    .is_some_and(|arg| matches!(arg.payload, PyObjectPayload::Dict(_)));
+                let positional_end = args.len() - usize::from(has_kwargs);
+                if positional_end > 2 {
+                    return Err(PyException::type_error(
+                        "TypedDict takes at most two positional arguments",
+                    ));
+                }
+                let kwargs = if has_kwargs {
+                    match &args[args.len() - 1].payload {
+                        PyObjectPayload::Dict(map) => Some(map.read().clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let mut annotations = new_fx_hashkey_map();
+                if positional_end == 2 {
+                    typed_dict_annotations_from_fields(&args[1], &mut annotations)?;
+                }
+                let mut total = true;
+                if let Some(kw) = kwargs.as_ref() {
+                    for (key, value) in kw.iter() {
+                        let key_name = match key {
+                            ferrython_core::types::HashableKey::Str(s) => s.as_str(),
+                            _ => "",
+                        };
+                        if key_name == "total" {
+                            total = value.is_truthy();
+                        } else {
+                            annotations.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                let mut ns = IndexMap::new();
+                ns.insert(
+                    CompactString::from("__module__"),
+                    PyObject::str_val(CompactString::from("__main__")),
+                );
+                ns.insert(
+                    CompactString::from("__annotations__"),
+                    PyObject::dict(annotations),
+                );
+                ns.insert(CompactString::from("__total__"), PyObject::bool_val(total));
+                ns.insert(
+                    CompactString::from("__typed_dict__"),
+                    PyObject::bool_val(true),
+                );
+                ns.insert(CompactString::from("__new__"), typed_dict_new());
+                Ok(PyObject::class(
+                    CompactString::from(typename.as_str()),
+                    vec![PyObject::builtin_type(CompactString::from("dict"))],
+                    ns,
+                ))
+            }),
+        );
+    }
+    let typed_dict_cls = typed_dict_factory_class;
     attrs.push(("TypedDict", typed_dict_cls));
     attrs.push(("ForwardRef", make_typing_alias("ForwardRef")));
 
@@ -707,6 +794,13 @@ pub fn create_typing_module() -> PyObjectRef {
                 let mut iattrs = IndexMap::new();
                 iattrs.insert(CompactString::from("__origin__"), origin.clone());
                 iattrs.insert(CompactString::from("__args__"), args_tuple);
+                let mro_origin = typing_mro_origin(origin.clone());
+                iattrs.insert(
+                    CompactString::from("__mro_entries__"),
+                    PyObject::native_closure("_GenericAlias.__mro_entries__", move |_args| {
+                        Ok(PyObject::tuple(vec![mro_origin.clone()]))
+                    }),
+                );
                 let rc1 = repr_str.clone();
                 iattrs.insert(
                     CompactString::from("__repr__"),
@@ -743,6 +837,14 @@ pub fn create_typing_module() -> PyObjectRef {
                         let mut a = IndexMap::new();
                         a.insert(CompactString::from("__origin__"), origin_cw.clone());
                         a.insert(CompactString::from("__args__"), new_at);
+                        let mro_origin = typing_mro_origin(origin_cw.clone());
+                        a.insert(
+                            CompactString::from("__mro_entries__"),
+                            PyObject::native_closure(
+                                "_GenericAlias.__mro_entries__",
+                                move |_args| Ok(PyObject::tuple(vec![mro_origin.clone()])),
+                            ),
+                        );
                         Ok(PyObject::instance_with_attrs(c, a))
                     }),
                 );
@@ -768,6 +870,14 @@ pub fn create_typing_module() -> PyObjectRef {
                         let mut a = IndexMap::new();
                         a.insert(CompactString::from("__origin__"), origin_gi.clone());
                         a.insert(CompactString::from("__args__"), new_at);
+                        let mro_origin = typing_mro_origin(origin_gi.clone());
+                        a.insert(
+                            CompactString::from("__mro_entries__"),
+                            PyObject::native_closure(
+                                "_GenericAlias.__mro_entries__",
+                                move |_args| Ok(PyObject::tuple(vec![mro_origin.clone()])),
+                            ),
+                        );
                         Ok(PyObject::instance_with_attrs(c, a))
                     }),
                 );
@@ -848,6 +958,107 @@ pub fn create_typing_module() -> PyObjectRef {
     attrs.push(("Sentinel", sentinel_cls));
 
     make_module("typing", attrs)
+}
+
+fn make_generic_base_class(name: &str) -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(
+        CompactString::from("__module__"),
+        PyObject::str_val(CompactString::from("typing")),
+    );
+    ns.insert(
+        CompactString::from("__class_getitem__"),
+        PyObject::native_closure(
+            "typing.Generic.__class_getitem__",
+            |args: &[PyObjectRef]| {
+                let origin = args.first().cloned().unwrap_or_else(PyObject::none);
+                let params = if args.len() >= 2 {
+                    args[1].clone()
+                } else {
+                    PyObject::none()
+                };
+                Ok(make_generic_alias_instance(origin, params))
+            },
+        ),
+    );
+    PyObject::class(CompactString::from(name), vec![], ns)
+}
+
+fn make_generic_alias_instance(origin: PyObjectRef, params: PyObjectRef) -> PyObjectRef {
+    let args_tuple = match &params.payload {
+        PyObjectPayload::Tuple(items) => PyObject::tuple((**items).clone()),
+        PyObjectPayload::None => PyObject::tuple(vec![]),
+        _ => PyObject::tuple(vec![params]),
+    };
+    let alias_cls = PyObject::class(
+        CompactString::from("_GenericAlias"),
+        vec![],
+        IndexMap::new(),
+    );
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("__origin__"), origin.clone());
+    attrs.insert(CompactString::from("__args__"), args_tuple);
+    let mro_origin = typing_mro_origin(origin.clone());
+    attrs.insert(
+        CompactString::from("__mro_entries__"),
+        PyObject::native_closure("_GenericAlias.__mro_entries__", move |_args| {
+            Ok(PyObject::tuple(vec![mro_origin.clone()]))
+        }),
+    );
+    PyObject::instance_with_attrs(alias_cls, attrs)
+}
+
+fn typed_dict_annotations_from_fields(
+    fields: &PyObjectRef,
+    annotations: &mut FxHashKeyMap,
+) -> PyResult<()> {
+    match &fields.payload {
+        PyObjectPayload::Dict(map) => {
+            annotations.extend(map.read().iter().map(|(k, v)| (k.clone(), v.clone())));
+            Ok(())
+        }
+        PyObjectPayload::List(items) => {
+            for item in items.read().iter() {
+                typed_dict_insert_field_pair(item, annotations)?;
+            }
+            Ok(())
+        }
+        PyObjectPayload::Tuple(items) => {
+            for item in items.iter() {
+                typed_dict_insert_field_pair(item, annotations)?;
+            }
+            Ok(())
+        }
+        PyObjectPayload::None => Ok(()),
+        _ => Err(PyException::type_error(
+            "TypedDict fields must be a dict or list of pairs",
+        )),
+    }
+}
+
+fn typed_dict_insert_field_pair(
+    item: &PyObjectRef,
+    annotations: &mut FxHashKeyMap,
+) -> PyResult<()> {
+    let pair = item.to_list()?;
+    if pair.len() != 2 {
+        return Err(PyException::type_error(
+            "TypedDict field entries must be name/type pairs",
+        ));
+    }
+    let key =
+        ferrython_core::types::HashableKey::str_key(CompactString::from(pair[0].py_to_string()));
+    annotations.insert(key, pair[1].clone());
+    Ok(())
+}
+
+fn typing_mro_origin(origin: PyObjectRef) -> PyObjectRef {
+    match &origin.payload {
+        PyObjectPayload::Class(_)
+        | PyObjectPayload::BuiltinType(_)
+        | PyObjectPayload::ExceptionType(_) => origin,
+        _ => PyObject::builtin_type(CompactString::from("object")),
+    }
 }
 
 fn resolve_string_annotation(name: &str) -> Option<PyObjectRef> {

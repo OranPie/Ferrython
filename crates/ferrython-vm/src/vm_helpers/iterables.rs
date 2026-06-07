@@ -239,7 +239,12 @@ impl VirtualMachine {
                                 items.push(val);
                                 idx += 1;
                             }
-                            Err(e) if e.kind == ExceptionKind::IndexError => break,
+                            Err(e)
+                                if e.kind == ExceptionKind::IndexError
+                                    || e.kind == ExceptionKind::StopIteration =>
+                            {
+                                break
+                            }
                             Err(e) => return Err(e),
                         }
                     }
@@ -385,6 +390,7 @@ impl VirtualMachine {
                             | IteratorData::Repeat { .. }
                             | IteratorData::Chain { .. }
                             | IteratorData::SeqIter { .. }
+                            | IteratorData::RevSeqIter { .. }
                             | IteratorData::Starmap { .. }
                             | IteratorData::Tee { .. }
                             | IteratorData::HeldIter { .. }

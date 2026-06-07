@@ -143,10 +143,34 @@ pub(crate) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(crate) fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("enumerate", args, 1)?;
+    if args.len() > 2 {
+        return Err(PyException::type_error(
+            "enumerate() takes at most 2 arguments",
+        ));
+    }
+    if matches!(&args[0].payload, PyObjectPayload::Instance(_))
+        && args[0].get_attr("__next__").is_some()
+        && args[0].get_attr("__iter__").is_none()
+        && args[0].get_attr("__getitem__").is_none()
+    {
+        return Err(PyException::type_error(format!(
+            "'{}' object is not iterable",
+            args[0].type_name()
+        )));
+    }
     let start = if args.len() > 1 {
-        args[1].as_int().unwrap_or(0)
+        args[1].to_index().map_err(|err| {
+            if err.kind == ExceptionKind::TypeError {
+                PyException::type_error(format!(
+                    "'{}' object cannot be interpreted as an integer",
+                    args[1].type_name()
+                ))
+            } else {
+                err
+            }
+        })?
     } else {
-        0
+        PyInt::Small(0)
     };
     // Get an iterator from the source
     let source = get_iter_from_obj(&args[0])?;

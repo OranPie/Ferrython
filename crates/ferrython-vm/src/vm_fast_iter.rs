@@ -510,12 +510,12 @@ fn try_for_iterator_data(
             index,
             cached_tuple: _,
         } => {
-            let idx = *index;
+            let idx = index.clone();
             let advanced = advance_enumerate_source(source);
             match advanced {
                 Some(Some(value)) => {
-                    *index = idx + 1;
-                    let idx_obj = PyObject::int(idx);
+                    *index = PyInt::add_op(&idx, &PyInt::Small(1));
+                    let idx_obj = idx.to_object();
                     drop(data);
                     push_pair_or_unpack(frame, idx_obj, value, instr_base, instr_count)
                 }

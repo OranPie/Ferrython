@@ -368,7 +368,9 @@ fn iterator_refs(data: &IteratorData) -> Vec<PyObjectRef> {
         IteratorData::Sentinel {
             callable, sentinel, ..
         } => vec![callable.clone(), sentinel.clone()],
-        IteratorData::SeqIter { obj, .. } => vec![obj.clone()],
+        IteratorData::SeqIter { obj, .. } | IteratorData::RevSeqIter { obj, .. } => {
+            vec![obj.clone()]
+        }
         IteratorData::Repeat { item, .. } => vec![item.clone()],
         IteratorData::Tee { source, buffer, .. } => {
             let mut refs = vec![source.read().clone()];

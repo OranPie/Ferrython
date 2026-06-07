@@ -872,6 +872,7 @@ fn native_function_class_name(name: &str) -> Option<&'static str> {
     match name {
         "range" => Some("range"),
         "collections.deque" => Some("deque"),
+        "datetime.time" => Some("time"),
         _ => None,
     }
 }

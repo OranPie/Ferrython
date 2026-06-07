@@ -229,6 +229,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::DropWhile { .. }
                 | IteratorData::Chain { .. }
                 | IteratorData::SeqIter { .. }
+                | IteratorData::RevSeqIter { .. }
                 | IteratorData::Starmap { .. }
                 | IteratorData::Tee { .. }
                 | IteratorData::HeldIter { .. } => Err(PyException::type_error(

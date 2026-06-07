@@ -404,7 +404,10 @@ pub fn create_datetime_module() -> PyObjectRef {
         vec![
             ("datetime", datetime_cls),
             ("date", date_cls),
-            ("time", make_builtin(datetime_time_obj)),
+            (
+                "time",
+                PyObject::native_function("datetime.time", datetime_time_obj),
+            ),
             ("timedelta", make_builtin(datetime_timedelta)),
             ("timezone", tz_cls),
             ("tzinfo", tzinfo_cls),

@@ -232,6 +232,7 @@ impl VirtualMachine {
                                 | IteratorData::Repeat { .. }
                                 | IteratorData::Chain { .. }
                                 | IteratorData::SeqIter { .. }
+                                | IteratorData::RevSeqIter { .. }
                                 | IteratorData::Starmap { .. }
                                 | IteratorData::Tee { .. }
                                 | IteratorData::HeldIter { .. }

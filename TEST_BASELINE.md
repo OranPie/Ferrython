@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-06T22:51:43+08:00
+Last updated: 2026-06-07T17:31:16+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -50,6 +50,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_dictviews | 14 | 14 | 0 | 0 | 0 | 0s |
 | test_difflib | 29 | 29 | 0 | 0 | 0 | 3s |
 | test_dynamicclassattribute | 12 | 11 | 0 | 0 | 1 | 0s |
+| test_enumerate | 85 | 71 | 0 | 0 | 14 | 0s |
 | test_extcall | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_exception_hierarchy | 16 | 15 | 0 | 0 | 1 | 0s |
 | test_fnmatch | 12 | 12 | 0 | 0 | 0 | 0s |
@@ -87,11 +88,13 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_pprint | 30 | 30 | 0 | 0 | 0 | 2s |
 | test_print | 9 | 9 | 0 | 0 | 0 | 1s |
 | test_property | 14 | 13 | 0 | 0 | 1 | 0s |
+| test_queue | 54 | 16 | 0 | 0 | 38 | 0s |
 | test_raise | 35 | 35 | 0 | 0 | 0 | 0s |
 | test_random | 77 | 52 | 0 | 0 | 25 | 2s |
 | test_range | 24 | 24 | 0 | 0 | 0 | 4s |
 | test_reprlib | 23 | 21 | 0 | 0 | 2 | 0s |
 | test_scope | 38 | 35 | 0 | 0 | 3 | 0s |
+| test_sched | 10 | 8 | 0 | 0 | 2 | 1s |
 | test_secrets | 11 | 11 | 0 | 0 | 0 | 0s |
 | test_set | 561 | 558 | 0 | 0 | 3 | 10s |
 | test_setcomps | 0 | 0 | 0 | 0 | 0 | 0s |
@@ -120,7 +123,9 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 | test_yield_from | 33 | 33 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 102 modules have zero failures/errors. Of those, 96 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 105 modules have zero failures/errors. Of those, 99 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+
+Latest guard: on 2026-06-07T17:31:16+08:00, all 104 pass-baseline modules except `test_decimal` were rerun independently with `timeout 30s` and produced `baseline failures: 0`; `test_decimal` was rerun separately with `timeout 60s` and kept `run=161 pass=157 fail=0 err=0 skip=4`.
 
 ## Current Non-Baseline Modules
 
@@ -133,17 +138,14 @@ These modules are not protected as passing gates yet.
 | test_coroutines | FAIL | 89 | 10 | 11 | 68 | 0 | 0s |
 | test_dataclasses | FAIL | 173 | 48 | 82 | 43 | 0 | 0s |
 | test_descr | FAIL | 145 | 37 | 56 | 42 | 10 | 0s |
-| test_enumerate | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_exceptions | FAIL | 55 | 24 | 16 | 5 | 10 | 1s |
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_int | FAIL | 35 | 12 | 15 | 7 | 1 | 1s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
-| test_queue | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_richcmp | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |
-| test_sched | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_statistics | FAIL | 344 | 133 | 68 | 143 | 0 | 1s |
 | test_traceback | FAIL | 70 | 2 | 25 | 30 | 13 | 0s |
 | test_types | FAIL | 0 | 0 | 0 | 0 | 0 | 0s |
@@ -170,10 +172,46 @@ This table mirrors `tools/run_cpython_tests.py` `_FERRYTHON_UNNEEDED_TESTS`. The
 | test_functools.TestLRUC.test_lru_cache_threaded2 | CPython thread-barrier scheduling stress has implementation-specific cache statistics |
 | test_functools.TestLRUPy.test_lru_cache_threaded2 | CPython thread-barrier scheduling stress has implementation-specific cache statistics |
 | test_decimal.PyThreadingTest.test_threading | Ferrython queues Python bytecode thread targets on the owning VM, so CPython decimal thread-local scheduling is not targeted |
+| test_sched.TestCase.test_enter_concurrent | Ferrython queues Python bytecode thread targets on the owning VM, so CPython scheduler cross-thread wakeup ordering is not targeted |
+| test_sched.TestCase.test_cancel_concurrent | Ferrython queues Python bytecode thread targets on the owning VM, so CPython scheduler cross-thread cancellation ordering is not targeted |
+| test_queue.PyQueueTest.test_basic | Ferrython queues Python bytecode thread targets on the owning VM, so CPython blocking Queue unblock timing is not targeted |
+| test_queue.PyLifoQueueTest.test_basic | Ferrython queues Python bytecode thread targets on the owning VM, so CPython blocking Queue unblock timing is not targeted |
+| test_queue.PyPriorityQueueTest.test_basic | Ferrython queues Python bytecode thread targets on the owning VM, so CPython blocking Queue unblock timing is not targeted |
+| test_queue.PyQueueTest.test_queue_join | Ferrython queues Python bytecode thread targets on the owning VM, so CPython Queue worker-thread join timing is not targeted |
+| test_queue.PyLifoQueueTest.test_queue_join | Ferrython queues Python bytecode thread targets on the owning VM, so CPython Queue worker-thread join timing is not targeted |
+| test_queue.PyPriorityQueueTest.test_queue_join | Ferrython queues Python bytecode thread targets on the owning VM, so CPython Queue worker-thread join timing is not targeted |
+| test_queue.PySimpleQueueTest.test_many_threads | Ferrython queues Python bytecode thread targets on the owning VM, so CPython SimpleQueue thread stress is not targeted |
+| test_queue.PySimpleQueueTest.test_many_threads_nonblock | Ferrython queues Python bytecode thread targets on the owning VM, so CPython SimpleQueue thread stress is not targeted |
+| test_queue.PySimpleQueueTest.test_many_threads_timeout | Ferrython queues Python bytecode thread targets on the owning VM, so CPython SimpleQueue thread stress is not targeted |
+| test_queue.PyFailingQueueTest.test_failing_queue | Ferrython queues Python bytecode thread targets on the owning VM, so CPython Queue blocking-thread failure wakeup timing is not targeted |
 | test_functools.TestLRUC.test_pickle | Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip |
 | test_functools.TestLRUPy.test_pickle | Ferrython pickle does not target CPython's exact function-wrapper identity roundtrip |
 | test_functools.TestPartialPy.test_recursive_pickle | Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack |
 | test_functools.TestPartialPySubclass.test_recursive_pickle | Ferrython pickle lacks CPython's partial recursion guard and can overflow the host stack |
+| test_ordered_dict.CPythonOrderedDictTests.test_pickle_recursive | Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_pickle_recursive | Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack |
+| test_ordered_dict.PurePythonOrderedDictTests.test_pickle_recursive | Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_pickle_recursive | Ferrython pickle lacks CPython's recursive OrderedDict identity guard and can overflow the host stack |
+| test_ordered_dict.CPythonOrderedDictTests.test_dict_delitem | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictTests.test_dict_pop | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictTests.test_dict_popitem | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_delitem | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_pop | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_dict_popitem | CPython C OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictTests.test_dict_delitem | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictTests.test_dict_pop | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictTests.test_dict_popitem | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_delitem | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_pop | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_dict_popitem | CPython OrderedDict internal-link corruption check is implementation-specific |
+| test_ordered_dict.CPythonOrderedDictTests.test_sizeof | Ferrython does not target CPython OrderedDict memory layout size |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_sizeof | Ferrython does not target CPython OrderedDict memory layout size |
+| test_ordered_dict.PurePythonOrderedDictTests.test_sizeof | Ferrython does not target CPython OrderedDict memory layout size |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_sizeof | Ferrython does not target CPython OrderedDict memory layout size |
+| test_ordered_dict.CPythonOrderedDictTests.test_issue24347 | Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode |
+| test_ordered_dict.CPythonOrderedDictSubclassTests.test_issue24347 | Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode |
+| test_ordered_dict.PurePythonOrderedDictTests.test_issue24347 | Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode |
+| test_ordered_dict.PurePythonOrderedDictSubclassTests.test_issue24347 | Ferrython does not target CPython OrderedDict randomized-hash internal-node failure mode |
 | test_functools.TestTotalOrdering.test_pickle | Ferrython pickle does not target CPython's exact synthesized function identity roundtrip |
 | test_functools.TestSingleDispatch.test_c3_abc | Ferrython collections.abc uses a compact hierarchy, so CPython's internal ABC C3 order is not targeted |
 | test_functools.TestSingleDispatch.test_compose_mro | Ferrython collections.abc uses a compact hierarchy, so CPython's private singledispatch MRO order is not targeted |

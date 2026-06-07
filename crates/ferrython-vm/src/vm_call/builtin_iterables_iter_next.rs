@@ -39,6 +39,9 @@ impl VirtualMachine {
             return args[0].get_iter().map(Some);
         }
         if let Some(builtin_value) = Self::get_builtin_value(&args[0]) {
+            if builtin_value.get_attr("__next__").is_some() {
+                return Ok(Some(args[0].clone()));
+            }
             let iter = self.resolve_iterable(&builtin_value)?;
             return Ok(Some(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
                 PyCell::new(IteratorData::HeldIter {

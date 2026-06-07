@@ -10,6 +10,7 @@ use ferrython_core::object::{
     is_hidden_dict_key, IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     WeakKeyIterKind, WeakValueIterKind,
 };
+use ferrython_core::types::PyInt;
 use std::rc::Rc;
 
 impl VirtualMachine {
@@ -40,6 +41,8 @@ impl VirtualMachine {
                         Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
                         Err(e) => Err(e),
                     }
+                } else if let Some(builtin_value) = Self::get_builtin_value(iter_obj) {
+                    self.vm_iter_next(&builtin_value)
                 } else {
                     Err(PyException::type_error("iterator has no __next__ method"))
                 }
@@ -89,6 +92,7 @@ impl VirtualMachine {
                         | IteratorData::Repeat { .. }
                         | IteratorData::Chain { .. }
                         | IteratorData::SeqIter { .. }
+                        | IteratorData::RevSeqIter { .. }
                         | IteratorData::Starmap { .. }
                         | IteratorData::Tee { .. }
                         | IteratorData::HeldIter { .. } => {
@@ -274,11 +278,11 @@ impl VirtualMachine {
         match &mut *data {
             IteratorData::Enumerate { source, index, .. } => {
                 let src = source.clone();
-                let idx = *index;
-                *index += 1;
+                let idx = index.clone();
+                *index = PyInt::add_op(index, &PyInt::Small(1));
                 drop(data);
                 match self.vm_iter_next(&src)? {
-                    Some(val) => Ok(Some(PyObject::tuple(vec![PyObject::int(idx), val]))),
+                    Some(val) => Ok(Some(PyObject::tuple(vec![idx.to_object(), val]))),
                     None => Ok(None),
                 }
             }
@@ -725,6 +729,76 @@ impl VirtualMachine {
                     {
                         let mut d = iter_data_arc.write();
                         if let IteratorData::SeqIter { obj, exhausted, .. } = &mut *d {
+                            *exhausted = true;
+                            let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                            drop(d);
+                            drop(old_source);
+                        } else {
+                            drop(d);
+                        }
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            IteratorData::RevSeqIter {
+                obj,
+                index,
+                exhausted,
+            } => {
+                if *exhausted || *index < 0 {
+                    *exhausted = true;
+                    let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                    drop(data);
+                    drop(old_source);
+                    return Ok(None);
+                }
+                let src = obj.clone();
+                let idx = *index;
+                drop(data);
+                let getitem = match src.get_attr("__getitem__") {
+                    Some(f) => f,
+                    None => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::RevSeqIter { obj, exhausted, .. } = &mut *d {
+                            *exhausted = true;
+                            let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                            drop(d);
+                            drop(old_source);
+                        } else {
+                            drop(d);
+                        }
+                        return Ok(None);
+                    }
+                };
+                match self.call_object(getitem, vec![PyObject::int(idx)]) {
+                    Ok(val) => {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::RevSeqIter {
+                            obj,
+                            index,
+                            exhausted,
+                        } = &mut *d
+                        {
+                            if idx <= 0 {
+                                *index = -1;
+                                *exhausted = true;
+                                let old_source = std::mem::replace(obj, PyObject::list(vec![]));
+                                drop(d);
+                                drop(old_source);
+                                return Ok(Some(val));
+                            } else {
+                                *index = idx - 1;
+                            }
+                        }
+                        Ok(Some(val))
+                    }
+                    Err(e)
+                        if e.kind == ExceptionKind::StopIteration
+                            || e.kind == ExceptionKind::IndexError =>
+                    {
+                        let mut d = iter_data_arc.write();
+                        if let IteratorData::RevSeqIter { obj, exhausted, .. } = &mut *d {
                             *exhausted = true;
                             let old_source = std::mem::replace(obj, PyObject::list(vec![]));
                             drop(d);

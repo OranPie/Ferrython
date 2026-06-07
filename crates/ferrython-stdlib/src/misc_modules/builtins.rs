@@ -211,7 +211,7 @@ pub fn create_builtins_module() -> PyObjectRef {
             ),
             (
                 "enumerate",
-                PyObject::builtin_function(CompactString::from("enumerate")),
+                PyObject::builtin_type(CompactString::from("enumerate")),
             ),
             (
                 "eval",

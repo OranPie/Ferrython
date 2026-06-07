@@ -430,9 +430,6 @@ impl VirtualMachine {
             let PyObjectPayload::Instance(right_inst) = &other.payload else {
                 return Ok(None);
             };
-            if !PyObjectRef::ptr_eq(&left_inst.class, &right_inst.class) {
-                return Ok(None);
-            }
             let cmp_func = {
                 let PyObjectPayload::Class(cd) = &left_inst.class.payload else {
                     return Ok(None);
@@ -449,8 +446,12 @@ impl VirtualMachine {
                 return Ok(None);
             };
             let cmp_result = vm.call_object(cmp_func, vec![left_obj, right_obj])?;
+            let cmp_value = match &cmp_result.payload {
+                PyObjectPayload::Bool(value) => PyObject::int(if *value { 1 } else { 0 }),
+                _ => cmp_result,
+            };
             let zero = PyObject::int(0);
-            Ok(Some(cmp_result.compare(&zero, cmp_op)?))
+            Ok(Some(cmp_value.compare(&zero, cmp_op)?))
         };
         let call_instance_dunder = |vm: &mut Self,
                                     obj: &PyObjectRef,

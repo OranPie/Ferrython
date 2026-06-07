@@ -197,6 +197,9 @@ impl VirtualMachine {
             }
             _ => {}
         }
+        if let Some(result) = self.sort_cmp_to_key_compare(a, b, CompareOp::Lt)? {
+            return Ok(result);
+        }
         if let PyObjectPayload::Instance(_) = &a.payload {
             if let Some(method) = self.sort_instance_lt_method(a) {
                 let result = self.call_object(method, vec![b.clone()])?;
@@ -232,12 +235,70 @@ impl VirtualMachine {
 
     fn vm_sequence_lt(&mut self, left: &[PyObjectRef], right: &[PyObjectRef]) -> PyResult<bool> {
         for (a_item, b_item) in left.iter().zip(right.iter()) {
-            if a_item.compare(b_item, CompareOp::Eq)?.is_truthy() {
+            if self.vm_rich_eq(a_item, b_item)? {
                 continue;
             }
             return self.vm_rich_lt(a_item, b_item);
         }
         Ok(left.len() < right.len())
+    }
+
+    fn vm_rich_eq(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
+        if PyObjectRef::ptr_eq(a, b) {
+            return Ok(true);
+        }
+        if let Some(result) = self.sort_cmp_to_key_compare(a, b, CompareOp::Eq)? {
+            return Ok(result);
+        }
+        Ok(a.compare(b, CompareOp::Eq)?.is_truthy())
+    }
+
+    fn sort_cmp_to_key_compare(
+        &mut self,
+        a: &PyObjectRef,
+        b: &PyObjectRef,
+        op: CompareOp,
+    ) -> PyResult<Option<bool>> {
+        let PyObjectPayload::Instance(left_inst) = &a.payload else {
+            return Ok(None);
+        };
+        let PyObjectPayload::Instance(right_inst) = &b.payload else {
+            return Ok(None);
+        };
+        let cmp_func = {
+            let PyObjectPayload::Class(cd) = &left_inst.class.payload else {
+                return Ok(None);
+            };
+            cd.namespace.read().get("__cmp_to_key_func__").cloned()
+        };
+        let Some(cmp_func) = cmp_func else {
+            return Ok(None);
+        };
+        let Some(left_obj) = left_inst.attrs.read().get("obj").cloned() else {
+            return Ok(None);
+        };
+        let Some(right_obj) = right_inst.attrs.read().get("obj").cloned() else {
+            return Ok(None);
+        };
+        let result = self.call_object(cmp_func, vec![left_obj, right_obj])?;
+        let value = match &result.payload {
+            PyObjectPayload::Bool(flag) => {
+                if *flag {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => result.to_int().unwrap_or(0),
+        };
+        Ok(Some(match op {
+            CompareOp::Lt => value < 0,
+            CompareOp::Le => value <= 0,
+            CompareOp::Eq => value == 0,
+            CompareOp::Ne => value != 0,
+            CompareOp::Gt => value > 0,
+            CompareOp::Ge => value >= 0,
+        }))
     }
 
     fn sort_instance_lt_method(&self, obj: &PyObjectRef) -> Option<PyObjectRef> {

@@ -605,7 +605,9 @@ impl Frame {
     #[inline(always)]
     pub unsafe fn push_unchecked(&mut self, v: PyObjectRef) {
         let len = self.stack.len();
-        debug_assert!(len < self.stack.capacity());
+        if len == self.stack.capacity() {
+            self.stack.reserve(1);
+        }
         std::ptr::write(self.stack.as_mut_ptr().add(len), v);
         self.stack.set_len(len + 1);
     }

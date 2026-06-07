@@ -53,17 +53,7 @@ pub fn create_types_module() -> PyObjectRef {
             ),
             (
                 "MethodType",
-                make_builtin(|args| {
-                    if args.len() != 2 {
-                        return Err(PyException::type_error(
-                            "MethodType() requires a function and an instance",
-                        ));
-                    }
-                    Ok(PyObject::wrap(PyObjectPayload::BoundMethod {
-                        receiver: args[1].clone(),
-                        method: args[0].clone(),
-                    }))
-                }),
+                PyObject::builtin_type(CompactString::from("method")),
             ),
             (
                 "ModuleType",
@@ -95,7 +85,34 @@ pub fn create_types_module() -> PyObjectRef {
             ),
             (
                 "MappingProxyType",
-                PyObject::builtin_type(CompactString::from("mappingproxy")),
+                PyObject::native_closure("MappingProxyType", |args: &[PyObjectRef]| {
+                    if args.len() != 1 {
+                        return Err(PyException::type_error(
+                            "mappingproxy() requires a mapping argument",
+                        ));
+                    }
+                    match &args[0].payload {
+                        PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => {
+                            Ok(PyObject::wrap(PyObjectPayload::MappingProxy(map.clone())))
+                        }
+                        PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                            Ok(PyObject::wrap(PyObjectPayload::MappingProxy(
+                                inst.dict_storage.as_ref().unwrap().clone(),
+                            )))
+                        }
+                        _ if args[0].get_attr("__getitem__").is_some()
+                            && args[0].get_attr("items").is_some() =>
+                        {
+                            let cls = PyObject::builtin_type(CompactString::from("mappingproxy"));
+                            let mut attrs = IndexMap::new();
+                            attrs.insert(CompactString::from("_mapping"), args[0].clone());
+                            Ok(PyObject::instance_with_attrs(cls, attrs))
+                        }
+                        _ => Err(PyException::type_error(
+                            "mappingproxy() argument must be a mapping, not a non-mapping type",
+                        )),
+                    }
+                }),
             ),
             (
                 "GetSetDescriptorType",
@@ -170,8 +187,20 @@ pub fn create_types_module() -> PyObjectRef {
                         IndexMap::new(),
                     );
                     let mut attrs = IndexMap::new();
-                    attrs.insert(CompactString::from("__origin__"), origin);
+                    attrs.insert(CompactString::from("__origin__"), origin.clone());
                     attrs.insert(CompactString::from("__args__"), args_tuple);
+                    let mro_origin = match &origin.payload {
+                        PyObjectPayload::Class(_)
+                        | PyObjectPayload::BuiltinType(_)
+                        | PyObjectPayload::ExceptionType(_) => origin,
+                        _ => PyObject::builtin_type(CompactString::from("object")),
+                    };
+                    attrs.insert(
+                        CompactString::from("__mro_entries__"),
+                        PyObject::native_closure("GenericAlias.__mro_entries__", move |_| {
+                            Ok(PyObject::tuple(vec![mro_origin.clone()]))
+                        }),
+                    );
                     attrs.insert(
                         CompactString::from("__typing_repr__"),
                         PyObject::str_val(CompactString::from(repr_str.as_str())),

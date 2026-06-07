@@ -581,8 +581,10 @@ impl VirtualMachine {
         let mut exc = delegated_error
             .clone()
             .unwrap_or_else(|| PyException::new(kind, msg.clone()));
-        if let Some(ref orig) = original_value {
-            exc.original = Some(orig.clone());
+        if delegated_error.is_none() {
+            if let Some(ref orig) = original_value {
+                exc.original = Some(orig.clone());
+            }
         }
         let exc_original = exc.original.clone();
         let exc_result = Err(exc);
@@ -626,13 +628,15 @@ impl VirtualMachine {
                 active.os_error_info = delegated.os_error_info.clone();
                 active.keepalive = delegated.keepalive.clone();
             }
-            if let Some(ref orig) = original_value {
-                active.original = Some(orig.clone());
-                active.kind = match &orig.payload {
-                    PyObjectPayload::Instance(inst) => Self::find_exception_kind(&inst.class),
-                    PyObjectPayload::ExceptionInstance(ei) => ei.kind,
-                    _ => active.kind,
-                };
+            if delegated_error.is_none() {
+                if let Some(ref orig) = original_value {
+                    active.original = Some(orig.clone());
+                    active.kind = match &orig.payload {
+                        PyObjectPayload::Instance(inst) => Self::find_exception_kind(&inst.class),
+                        PyObjectPayload::ExceptionInstance(ei) => ei.kind,
+                        _ => active.kind,
+                    };
+                }
             }
             self.enter_exception_handler(active);
             let frame_ref = self.call_stack.last_mut().unwrap();
@@ -676,7 +680,7 @@ impl VirtualMachine {
                 drop(gen);
                 self.restore_previous_exception();
                 if let Err(e) = result {
-                    return Err(Self::wrap_generator_stop_iteration(e));
+                    return Err(e);
                 }
                 Err(Self::stop_iteration_from_value(
                     result.ok().unwrap_or_else(PyObject::none),
@@ -820,6 +824,20 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) if Self::is_exception_class(&inst.class) => {
                 Ok(Some(first.clone()))
             }
+            PyObjectPayload::ExceptionType(kind) => {
+                if args.len() >= 2 {
+                    if Self::is_exception_value(&args[1]) {
+                        return Ok(Some(args[1].clone()));
+                    }
+                    return crate::vm_call::build_builtin_exception_instance(
+                        *kind,
+                        vec![args[1].clone()],
+                        &[],
+                    )
+                    .map(Some);
+                }
+                crate::vm_call::build_builtin_exception_instance(*kind, Vec::new(), &[]).map(Some)
+            }
             PyObjectPayload::Class(_) if Self::is_exception_class(first) => {
                 if args.len() >= 2 && Self::is_exception_value(&args[1]) {
                     return Ok(Some(args[1].clone()));
@@ -835,7 +853,6 @@ impl VirtualMachine {
             _ => Ok(None),
         }
     }
-
     fn is_exception_value(obj: &PyObjectRef) -> bool {
         match &obj.payload {
             PyObjectPayload::ExceptionInstance(_) => true,
