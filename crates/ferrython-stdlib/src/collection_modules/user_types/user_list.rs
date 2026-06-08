@@ -193,6 +193,19 @@ fn userlist_item_matches(item: &PyObjectRef, target: &PyObjectRef) -> PyResult<b
     Ok(item.compare(target, CompareOp::Eq)?.is_truthy())
 }
 
+fn userlist_compare(args: &[PyObjectRef], op: CompareOp) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
+    }
+    let data = get_user_data(&args[0], "data")?;
+    let other = if let Ok(od) = get_user_data(&args[1], "data") {
+        od
+    } else {
+        args[1].clone()
+    };
+    data.compare(&other, op)
+}
+
 fn build_userlist_copy(
     data: &PyObjectRef,
     owner_class: PyObjectRef,
@@ -505,32 +518,37 @@ pub(in crate::collection_modules) fn make_user_list_class() -> PyObjectRef {
     ns.insert(
         CompactString::from("__eq__"),
         native_method("UserList", "__eq__", |args| {
-            if args.len() < 2 {
-                return Ok(PyObject::bool_val(false));
-            }
-            let data = get_user_data(&args[0], "data")?;
-            let other = if let Ok(od) = get_user_data(&args[1], "data") {
-                od
-            } else {
-                args[1].clone()
-            };
-            if let (PyObjectPayload::List(a), PyObjectPayload::List(b)) =
-                (&data.payload, &other.payload)
-            {
-                let ra = a.read();
-                let rb = b.read();
-                if ra.len() != rb.len() {
-                    return Ok(PyObject::bool_val(false));
-                }
-                for (x, y) in ra.iter().zip(rb.iter()) {
-                    if !x.compare(y, CompareOp::Eq).map_or(false, |v| v.is_truthy()) {
-                        return Ok(PyObject::bool_val(false));
-                    }
-                }
-                Ok(PyObject::bool_val(true))
-            } else {
-                Ok(PyObject::bool_val(false))
-            }
+            userlist_compare(args, CompareOp::Eq)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__ne__"),
+        native_method("UserList", "__ne__", |args| {
+            userlist_compare(args, CompareOp::Ne)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__lt__"),
+        native_method("UserList", "__lt__", |args| {
+            userlist_compare(args, CompareOp::Lt)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__le__"),
+        native_method("UserList", "__le__", |args| {
+            userlist_compare(args, CompareOp::Le)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__gt__"),
+        native_method("UserList", "__gt__", |args| {
+            userlist_compare(args, CompareOp::Gt)
+        }),
+    );
+    ns.insert(
+        CompactString::from("__ge__"),
+        native_method("UserList", "__ge__", |args| {
+            userlist_compare(args, CompareOp::Ge)
         }),
     );
     ns.insert(

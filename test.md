@@ -1,8 +1,27 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-09T02:42:50+08:00
+Last updated: 2026-06-09T03:20:00+08:00
 
 ## Current batch
+
+- Compatibility batch: `test_richcmp`
+  - Result:
+    - `test_richcmp` is now baseline green: `run=11 pass=11 fail=0 err=0 skip=0`; previous latest probe was `run=11 pass=8 fail=3 err=0 skip=0`, with earlier stale-binary/probe state aborting on stack overflow.
+  - Fixed traits:
+    - `UserList` native rich comparison delegates to the underlying `data` list and now implements `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, and `__ge__`.
+    - Recursive `UserList` comparisons now raise `RecursionError` for same-length recursive structures and still short-circuit different-length equality/inequality as CPython expects.
+    - List/tuple sequence comparison no longer uses the partial-compare fast path for instance elements, so Python-level comparison exceptions propagate instead of being converted to equality or non-comparability.
+    - Unsupported ordering comparisons such as `int < None`, `tuple > list`, and `None >= None` now raise `TypeError` rather than returning `False`.
+    - VM truthiness dispatch is exposed to native code; `operator.not_()` and `bool()` now honor instance `__bool__` / `__len__` and propagate exceptions.
+  - Guard validation:
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-core`
+    - `cargo check -p ferrython-vm`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_richcmp`: `run=11 pass=11 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_bool test_operator test_userlist test_deque`: `run=248 pass=245 fail=0 err=0 skip=3`
 
 - Compatibility batch: `test_int`
   - Result:

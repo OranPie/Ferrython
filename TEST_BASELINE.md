@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-09T02:42:50+08:00
+Last updated: 2026-06-09T03:20:00+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -95,6 +95,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_random | 77 | 52 | 0 | 0 | 25 | 2s |
 | test_range | 24 | 24 | 0 | 0 | 0 | 4s |
 | test_reprlib | 23 | 21 | 0 | 0 | 2 | 0s |
+| test_richcmp | 11 | 11 | 0 | 0 | 0 | 0s |
 | test_scope | 38 | 35 | 0 | 0 | 3 | 0s |
 | test_sched | 10 | 8 | 0 | 0 | 2 | 1s |
 | test_secrets | 11 | 11 | 0 | 0 | 0 | 0s |
@@ -125,9 +126,9 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 | test_yield_from | 33 | 33 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 107 modules have zero failures/errors. Of those, 101 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 108 modules have zero failures/errors. Of those, 102 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
-Latest guard: on 2026-06-09T02:42:50+08:00, new baseline module `test_exceptions` passed with `run=55 pass=45 fail=0 err=0 skip=10`; focused baseline guards kept `test_int test_userstring test_exception_hierarchy test_ordered_dict` green with `run=370 pass=323 fail=0 err=0 skip=47`, `test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower` green with `run=417 pass=326 fail=0 err=0 skip=91`, and `test_decimal` green with `run=161 pass=157 fail=0 err=0 skip=4`.
+Latest guard: on 2026-06-09T03:20:00+08:00, new baseline module `test_richcmp` passed with `run=11 pass=11 fail=0 err=0 skip=0`; focused guards kept `test_bool test_operator test_userlist test_deque` green with `run=248 pass=245 fail=0 err=0 skip=3`.
 
 ## Current Non-Baseline Modules
 
@@ -145,7 +146,6 @@ These modules are not protected as passing gates yet.
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
-| test_richcmp | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |
 | test_statistics | FAIL | 344 | 133 | 68 | 143 | 0 | 1s |
 | test_traceback | FAIL | 70 | 2 | 25 | 30 | 13 | 0s |
 | test_types | FAIL | 0 | 0 | 0 | 0 | 0 | 0s |

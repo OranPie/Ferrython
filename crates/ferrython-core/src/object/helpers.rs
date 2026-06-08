@@ -175,6 +175,8 @@ thread_local! {
         = std::cell::RefCell::new(None);
     static VM_CALL_KW_DISPATCH: std::cell::RefCell<Option<Box<dyn FnMut(PyObjectRef, Vec<PyObjectRef>, Vec<(CompactString, PyObjectRef)>) -> PyResult<PyObjectRef>>>>
         = std::cell::RefCell::new(None);
+    static VM_TRUTH_DISPATCH: std::cell::RefCell<Option<Box<dyn FnMut(PyObjectRef) -> PyResult<bool>>>>
+        = std::cell::RefCell::new(None);
 }
 
 static mut GLOBAL_LOOKUP_INVALIDATE: Option<fn()> = None;
@@ -232,6 +234,16 @@ where
         + 'static,
 {
     VM_CALL_KW_DISPATCH.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(f));
+    });
+}
+
+/// Register the VM's truthiness dispatch function.
+pub fn register_vm_truth_dispatch<F>(f: F)
+where
+    F: FnMut(PyObjectRef) -> PyResult<bool> + 'static,
+{
+    VM_TRUTH_DISPATCH.with(|cell| {
         *cell.borrow_mut() = Some(Box::new(f));
     });
 }
@@ -334,6 +346,21 @@ pub fn call_callable_kw(
         Err(PyException::type_error(
             "not a callable (no VM keyword dispatch registered)",
         ))
+    }
+}
+
+/// Evaluate truthiness through the VM when available so native modules honor
+/// Python-level __bool__ and __len__ methods.
+pub fn truthy_with_vm(obj: &PyObjectRef) -> PyResult<bool> {
+    let dispatch_fn = VM_TRUTH_DISPATCH.with(|cell| cell.borrow_mut().take());
+    if let Some(mut dispatch) = dispatch_fn {
+        let result = dispatch(obj.clone());
+        VM_TRUTH_DISPATCH.with(|cell| {
+            *cell.borrow_mut() = Some(dispatch);
+        });
+        result
+    } else {
+        Ok(obj.is_truthy())
     }
 }
 

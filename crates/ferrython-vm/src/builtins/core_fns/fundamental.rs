@@ -1,7 +1,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    check_args, truthy_with_vm, FxAttrMap, PyCell, PyObject, PyObjectMethods, PyObjectPayload,
+    PyObjectRef,
 };
 use ferrython_core::types::{float_as_integer_ratio, HashableKey};
 use num_bigint::BigInt;
@@ -295,11 +296,11 @@ pub(crate) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
             if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
                 let referent = (nc.func)(&[])?;
-                return Ok(PyObject::bool_val(referent.is_truthy()));
+                return Ok(PyObject::bool_val(truthy_with_vm(&referent)?));
             }
         }
     }
-    Ok(PyObject::bool_val(args[0].is_truthy()))
+    Ok(PyObject::bool_val(truthy_with_vm(&args[0])?))
 }
 
 pub(crate) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -1,8 +1,29 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-09T02:42:50+08:00
+Last updated: 2026-06-09T03:20:00+08:00
 
 ## 性能优化进度
+
+- 2026-06-09 rich comparison / native truthiness 兼容批次：
+  - `collections.UserList` native rich comparison 现在补齐 `__ne__` / ordering methods，并委托底层 `data` list 比较，复用核心 list 递归 guard 和 live-list 比较语义。
+  - 核心 list equality 在长度不同且操作为 `==` / `!=` 时先返回，匹配 CPython 对不同长度递归 list-like 对象的行为。
+  - sequence compare 对实例元素不再走会吞掉异常的 `partial_cmp_objects()` 快路，递归 wrapper 比较现在传播 `RecursionError`，同时非递归快速内建比较仍保留。
+  - unsupported builtin ordering fallback 现在抛 `TypeError`，避免 `42 < None`、`() > []`、`None >= None` 等比较静默返回 `False`。
+  - Native truthiness dispatch 接入 VM，`operator.not_()` 和 `bool()` 这类 native builtin 现在能触发 Python-level `__bool__` / `__len__` 并传播异常。
+  - 新增 baseline:
+    - `test_richcmp`: `run=11 pass=11 fail=0 err=0 skip=0`
+  - 验证：
+    - `cargo fmt --all`
+    - `cargo check -p ferrython-core`
+    - `cargo check -p ferrython-vm`
+    - `cargo check -p ferrython-stdlib`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `git diff --check`
+    - UserList recursive comparison smoke for `eq/ne/lt/le/gt/ge`, different-length equality, same-length recursive equality, and first-element ordering.
+    - Native truthiness smoke: `not Bad()` and `operator.not_(Bad())` both propagate custom `__bool__` exception.
+    - Unsupported ordering smoke: `42 < None`, `None >= None`, and `Spam() <= Spam()` raise `TypeError`.
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_richcmp` -> `run=11 pass=11 fail=0 err=0 skip=0`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_bool test_operator test_userlist test_deque` -> `run=248 pass=245 fail=0 err=0 skip=3`
 
 - 2026-06-08 ASCII str index/slice 性能批次：
   - ASCII `str.__getitem__` 单字符索引现在直接按 byte 返回 cached ASCII char，避免每次 `s[i]` 都收集整串 `Vec<char>`。

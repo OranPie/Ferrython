@@ -260,6 +260,26 @@ fn set_order_type_error(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyEx
     ))
 }
 
+fn is_builtin_orderable_pair(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    matches!(
+        (&a.payload, &b.payload),
+        (PyObjectPayload::Bool(_), PyObjectPayload::Bool(_))
+            | (PyObjectPayload::Bool(_), PyObjectPayload::Int(_))
+            | (PyObjectPayload::Bool(_), PyObjectPayload::Float(_))
+            | (PyObjectPayload::Int(_), PyObjectPayload::Bool(_))
+            | (PyObjectPayload::Int(_), PyObjectPayload::Int(_))
+            | (PyObjectPayload::Int(_), PyObjectPayload::Float(_))
+            | (PyObjectPayload::Float(_), PyObjectPayload::Bool(_))
+            | (PyObjectPayload::Float(_), PyObjectPayload::Int(_))
+            | (PyObjectPayload::Float(_), PyObjectPayload::Float(_))
+            | (PyObjectPayload::Str(_), PyObjectPayload::Str(_))
+            | (PyObjectPayload::Bytes(_), PyObjectPayload::Bytes(_))
+            | (PyObjectPayload::Bytes(_), PyObjectPayload::ByteArray(_))
+            | (PyObjectPayload::ByteArray(_), PyObjectPayload::Bytes(_))
+            | (PyObjectPayload::ByteArray(_), PyObjectPayload::ByteArray(_))
+    )
+}
+
 fn is_set_like(obj: &PyObjectRef) -> bool {
     matches!(
         obj.payload,
@@ -328,6 +348,13 @@ fn is_recursive_container_pair(a: &PyObjectRef, b: &PyObjectRef) -> bool {
     )
 }
 
+fn should_try_fast_sequence_compare(left: &PyObjectRef, right: &PyObjectRef) -> bool {
+    !matches!(
+        (&left.payload, &right.payload),
+        (PyObjectPayload::Instance(_), _) | (_, PyObjectPayload::Instance(_))
+    )
+}
+
 fn compare_sequence_items(
     a_items: &[PyObjectRef],
     b_items: &[PyObjectRef],
@@ -342,7 +369,9 @@ fn compare_sequence_items(
             continue;
         }
 
-        if !is_recursive_container_pair(left, right) {
+        if should_try_fast_sequence_compare(left, right)
+            && !is_recursive_container_pair(left, right)
+        {
             if let Some(ordering) = partial_cmp_objects(left, right) {
                 if ordering == std::cmp::Ordering::Equal {
                     continue;
@@ -373,6 +402,13 @@ fn compare_list_items_live(
     b_items: &PyCell<Vec<PyObjectRef>>,
     op: CompareOp,
 ) -> PyResult<PyObjectRef> {
+    if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        let a_len = a_items.read().len();
+        let b_len = b_items.read().len();
+        if a_len != b_len {
+            return Ok(PyObject::bool_val(matches!(op, CompareOp::Ne)));
+        }
+    }
     let mut index = 0;
     loop {
         let (left, right, a_len, b_len) = {
@@ -391,7 +427,9 @@ fn compare_list_items_live(
             continue;
         }
 
-        if !is_recursive_container_pair(&left, &right) {
+        if should_try_fast_sequence_compare(&left, &right)
+            && !is_recursive_container_pair(&left, &right)
+        {
             if let Some(ordering) = partial_cmp_objects(&left, &right) {
                 if ordering == std::cmp::Ordering::Equal {
                     index += 1;
@@ -1157,6 +1195,13 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         }
     }
     let ord = partial_cmp_objects(a, b);
+    if matches!(
+        op,
+        CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge
+    ) && !is_builtin_orderable_pair(a, b)
+    {
+        return Err(set_order_type_error(a, b, op));
+    }
     let result = match op {
         CompareOp::Eq => {
             if has_nan {

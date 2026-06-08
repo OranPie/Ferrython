@@ -2,8 +2,8 @@ use crate::introspection_modules::emit_deprecation_warning;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    check_args, check_args_min, make_builtin, make_module, CompareOp, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    check_args, check_args_min, make_builtin, make_module, truthy_with_vm, CompareOp, PyObject,
+    PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::PyInt;
 use std::convert::TryFrom;
@@ -213,7 +213,7 @@ pub fn create_operator_module() -> PyObjectRef {
                 "not_",
                 make_builtin(|args| {
                     check_args("not_", args, 1)?;
-                    Ok(PyObject::bool_val(!args[0].is_truthy()))
+                    Ok(PyObject::bool_val(!truthy_with_vm(&args[0])?))
                 }),
             ),
             (
