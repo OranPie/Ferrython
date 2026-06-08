@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-08T18:42:27+08:00
+Last updated: 2026-06-08T20:07:49+08:00
 
 ## 性能优化进度
 
@@ -2387,6 +2387,31 @@ Last updated: 2026-06-08T18:42:27+08:00
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_ordered_dict test_compile`: `run=340 pass=303 fail=0 err=0 skip=37`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs test_exception_hierarchy test_ordered_dict test_compile`: `run=387 pass=349 fail=0 err=0 skip=38`
     - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_string test_bisect test_hmac test_operator`: `run=414 pass=339 fail=0 err=0 skip=75`
+
+## 2026-06-08 int compatibility completion batch
+
+- 新增绿色模块：
+  - `test_int`: 从 `run=35 pass=12 fail=15 err=7 skip=1` 收口到 `run=35 pass=23 fail=0 err=0 skip=12`，并加入 `TEST_BASELINE.md` pass baseline。
+- 通用修复：
+  - `int()` 文本解析改为 byte-oriented parser，支持 `str`、`bytes`、`bytearray`、no-base memoryview、no-base `array('B'/'b')`，并让非 UTF-8 bytes 走 invalid-literal `ValueError`。
+  - `int(x, base)` 使用 `__index__` 解析 base，并只接受 `str`/`bytes`/`bytearray` 及其 builtin-value 子类作为 explicit-base 输入。
+  - 补齐 base 0 前缀、underscore、old-style octal 拒绝、错误 repr、`__int__` / `__index__` / `__trunc__` 顺序和 int subclass 构造路径。
+  - 对 `__int__` / `__index__` 返回 bool/int subclass 的路径发出 `DeprecationWarning` 并转 exact `int`；`__trunc__` 直接返回 bool/int subclass 的路径保持无警告以匹配当前测试。
+  - 修复 ASCII string slice 快路径 `start >= end` 的空结果，关闭 broad baseline 扫描中暴露的 `test_userstring` panic。
+- 显式 skip：
+  - 新增 11 个 `test_int` digit-limit skip，理由是 Ferrython 目标为 Python 3.8 语义，不实现 CPython 3.11 int string digit DoS limit。
+- Baseline 更新：
+  - `TEST_BASELINE.md` 从 105 个零失败/零错误模块更新到 106 个；执行至少一个测试的模块从 99 个更新到 100 个，zero-test pass 仍为 6 个。
+- 验证：
+  - `cargo fmt --all --check`
+  - `cargo check -p ferrython-core`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_int`: `run=35 pass=23 fail=0 err=0 skip=12`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_userstring`: `run=54 pass=52 fail=0 err=0 skip=2`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_string test_slice test_tuple test_list test_iter`: `run=191 pass=182 fail=0 err=0 skip=9`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`: `run=417 pass=326 fail=0 err=0 skip=91`
+  - Broad pass-baseline rerun：所有原 pass-baseline 模块（除 `test_decimal`）独立 `timeout 30s` 无失败；`test_decimal` 独立 `timeout 60s` 保持 `run=161 pass=157 fail=0 err=0 skip=4`。
 
 ## 后续修复队列
 

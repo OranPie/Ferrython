@@ -1,8 +1,33 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-08T18:42:27+08:00
+Last updated: 2026-06-08T20:07:49+08:00
 
 ## Current batch
+
+- Compatibility batch: `test_int`
+  - Result:
+    - `test_int` is now baseline green: `run=35 pass=23 fail=0 err=0 skip=12`, improved from `run=35 pass=12 fail=15 err=7 skip=1`.
+  - Fixed traits:
+    - `int()` text parsing now accepts `str`, `bytes`, `bytearray`, memoryview for no-base conversion, and `array('B'/'b')` byte data for no-base conversion.
+    - `int(x, base)` now follows the narrower CPython input contract: `str`/`bytes`/`bytearray` only, including their builtin-value subclasses; memoryview and array reject explicit base as non-string.
+    - Base values use `__index__` rather than `__int__`, so float bases reject and custom indexable bases work.
+    - Text parsing handles ASCII bytes directly, preserving invalid-literal `ValueError` for non-UTF-8 bytes instead of turning them into `TypeError`.
+    - Prefix detection, underscore validation, base 0, valid `0b_0`, invalid `0_7` / `09_99`, and invalid literal reprs now match the CPython tests covered here.
+    - `int(obj)` protocol order now covers `__int__`, exact builtin int value, `__index__`, and `__trunc__`; bool/int-subclass protocol returns are coerced to exact `int` with CPython-style `DeprecationWarning` where the suite expects it.
+    - Int subclass construction reuses VM-aware int conversion so subclasses preserve protocol-derived values.
+    - ASCII string slicing fast path now returns an empty string for normalized `start >= end`, fixing the baseline `test_userstring` panic discovered during the broad guard.
+  - Explicit skips added:
+    - Eleven `IntStrDigitLimitsTests` / `IntSubclassStrDigitLimitsTests` CPython 3.11 int string digit DoS-limit tests are marked unneeded because Ferrython targets Python 3.8 semantics and does not implement that CPython 3.11 limit.
+  - Guard validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-core`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_int`: `run=35 pass=23 fail=0 err=0 skip=12`
+    - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_userstring`: `run=54 pass=52 fail=0 err=0 skip=2`
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_string test_slice test_tuple test_list test_iter`: `run=191 pass=182 fail=0 err=0 skip=9`
+    - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`: `run=417 pass=326 fail=0 err=0 skip=91`
+    - Broad pass-baseline rerun: all pre-existing pass-baseline modules except `test_decimal` independently passed under `timeout 30s`; `test_decimal` separately passed under `timeout 60s` with `run=161 pass=157 fail=0 err=0 skip=4`.
 
 - Performance batch: ASCII str index/slice
   - Scope:

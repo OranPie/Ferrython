@@ -334,6 +334,39 @@ _FERRYTHON_UNNEEDED_TESTS = (
     ("test_random.TestModule.test_after_fork",
         "Ferrython does not target CPython fork/file-descriptor behavior in random module tests"
     ),
+    ("test_int.IntStrDigitLimitsTests.test_denial_of_service_prevented_int_to_str",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntStrDigitLimitsTests.test_denial_of_service_prevented_str_to_int",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntStrDigitLimitsTests.test_int_from_other_bases",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntStrDigitLimitsTests.test_max_str_digits",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntStrDigitLimitsTests.test_underscores_ignored",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_denial_of_service_prevented_int_to_str",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_denial_of_service_prevented_str_to_int",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_int_from_other_bases",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_max_str_digits",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_sign_not_counted",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
+    ("test_int.IntSubclassStrDigitLimitsTests.test_underscores_ignored",
+        "Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits"
+    ),
 )
 
 _FERRYTHON_PARTIAL_LOAD_SMOKE_MODULES = {

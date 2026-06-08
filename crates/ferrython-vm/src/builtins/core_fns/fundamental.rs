@@ -34,57 +34,23 @@ pub(crate) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Ok(PyObject::int(0));
     }
     if args.len() >= 2 {
-        // int(string, base)
-        let s = args[0].as_str().ok_or_else(|| {
+        let text = int_explicit_base_text_arg(&args[0]).ok_or_else(|| {
             PyException::type_error("int() can't convert non-string with explicit base")
         })?;
-        let base_int = args[1].to_int()?;
+        let base_index = args[1].to_index()?;
+        let base_int = base_index
+            .to_i64()
+            .ok_or_else(|| PyException::value_error("int() base must be >= 2 and <= 36, or 0"))?;
         if base_int != 0 && !(2..=36).contains(&base_int) {
             return Err(PyException::value_error(format!(
                 "int() base must be >= 2 and <= 36, or 0, got {}",
                 base_int
             )));
         }
-        let mut base = base_int as u32;
-        let s = s.trim();
-        // Handle base 0: auto-detect from prefix
-        let s = if base == 0 {
-            if s.starts_with("0x") || s.starts_with("0X") {
-                base = 16;
-                &s[2..]
-            } else if s.starts_with("0o") || s.starts_with("0O") {
-                base = 8;
-                &s[2..]
-            } else if s.starts_with("0b") || s.starts_with("0B") {
-                base = 2;
-                &s[2..]
-            } else {
-                base = 10;
-                s
-            }
-        } else if base == 16 && (s.starts_with("0x") || s.starts_with("0X")) {
-            &s[2..]
-        } else if base == 8 && (s.starts_with("0o") || s.starts_with("0O")) {
-            &s[2..]
-        } else if base == 2 && (s.starts_with("0b") || s.starts_with("0B")) {
-            &s[2..]
-        } else {
-            s
-        };
-        let val = BigInt::parse_bytes(s.as_bytes(), base).ok_or_else(|| {
-            PyException::value_error(format!(
-                "invalid literal for int() with base {}: '{}'",
-                base,
-                args[0].as_str().unwrap()
-            ))
-        })?;
-        return Ok(PyObject::big_int(val));
+        return parse_int_text(&text, Some(base_int as u32), &args[0]);
     }
-    if let Some(text) = args[0].as_str() {
-        let value = text.trim().parse::<BigInt>().map_err(|_| {
-            PyException::value_error(format!("invalid literal for int(): '{}'", text))
-        })?;
-        return Ok(PyObject::big_int(value));
+    if let Some(text) = int_text_arg(&args[0]) {
+        return parse_int_text(&text, None, &args[0]);
     }
     if let PyObjectPayload::Float(f) = &args[0].payload {
         if f.is_nan() {
@@ -105,6 +71,203 @@ pub(crate) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Ok(PyObject::big_int(n / d));
     }
     Ok(PyObject::int(args[0].to_int()?))
+}
+
+fn int_explicit_base_text_arg(obj: &PyObjectRef) -> Option<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => Some(s.as_str().as_bytes().to_vec()),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some((**b).clone()),
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .and_then(int_explicit_base_text_arg),
+        _ => None,
+    }
+}
+
+fn int_text_arg(obj: &PyObjectRef) -> Option<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+            int_explicit_base_text_arg(obj)
+        }
+        PyObjectPayload::Instance(_) if obj.get_attr("__memoryview__").is_some() => {
+            obj.get_attr("obj").and_then(|base| int_text_arg(&base))
+        }
+        PyObjectPayload::Instance(inst) if obj.get_attr("__array__").is_some() => {
+            let typecode = obj.get_attr("typecode")?.py_to_string();
+            if typecode != "B" && typecode != "b" {
+                return None;
+            }
+            let data = inst.attrs.read().get("_data").cloned()?;
+            let PyObjectPayload::List(items) = &data.payload else {
+                return None;
+            };
+            items
+                .read()
+                .iter()
+                .map(|item| item.to_int().ok().map(|value| value as u8))
+                .collect()
+        }
+        PyObjectPayload::Instance(inst) => inst
+            .attrs
+            .read()
+            .get("__builtin_value__")
+            .and_then(int_text_arg),
+        _ => None,
+    }
+}
+
+fn parse_int_text(
+    text: &[u8],
+    explicit_base: Option<u32>,
+    original: &PyObjectRef,
+) -> PyResult<PyObjectRef> {
+    let trimmed = trim_ascii_whitespace(text);
+    let (negative, unsigned) = match trimmed.first().copied() {
+        Some(b'+') => (false, &trimmed[1..]),
+        Some(b'-') => (true, &trimmed[1..]),
+        _ => (false, trimmed),
+    };
+    let mut base = explicit_base.unwrap_or(10);
+    let mut digits = unsigned;
+    let mut prefixed = false;
+    if explicit_base == Some(0) {
+        if ascii_starts_with_any(unsigned, b"0x", b"0X") {
+            base = 16;
+            digits = &unsigned[2..];
+            prefixed = true;
+        } else if ascii_starts_with_any(unsigned, b"0o", b"0O") {
+            base = 8;
+            digits = &unsigned[2..];
+            prefixed = true;
+        } else if ascii_starts_with_any(unsigned, b"0b", b"0B") {
+            base = 2;
+            digits = &unsigned[2..];
+            prefixed = true;
+        } else {
+            base = 10;
+            digits = unsigned;
+        }
+    } else {
+        match base {
+            16 if ascii_starts_with_any(unsigned, b"0x", b"0X") => {
+                digits = &unsigned[2..];
+                prefixed = true;
+            }
+            8 if ascii_starts_with_any(unsigned, b"0o", b"0O") => {
+                digits = &unsigned[2..];
+                prefixed = true;
+            }
+            2 if ascii_starts_with_any(unsigned, b"0b", b"0B") => {
+                digits = &unsigned[2..];
+                prefixed = true;
+            }
+            _ => {}
+        }
+    }
+    let Some(cleaned) = clean_int_digits(digits, base, prefixed) else {
+        let shown_base = if explicit_base.is_none() { 10 } else { base };
+        return Err(PyException::value_error(format!(
+            "invalid literal for int() with base {}: {}",
+            shown_base,
+            int_literal_repr(original)
+        )));
+    };
+    if explicit_base == Some(0)
+        && base == 10
+        && !decimal_base_zero_allows_leading_zero(unsigned, &cleaned)
+    {
+        return Err(PyException::value_error(format!(
+            "invalid literal for int() with base 0: {}",
+            int_literal_repr(original)
+        )));
+    }
+    let mut value = BigInt::parse_bytes(&cleaned, base).ok_or_else(|| {
+        let shown_base = if explicit_base.is_none() { 10 } else { base };
+        PyException::value_error(format!(
+            "invalid literal for int() with base {}: {}",
+            shown_base,
+            int_literal_repr(original)
+        ))
+    })?;
+    if negative {
+        value = -value;
+    }
+    Ok(PyObject::big_int(value))
+}
+
+fn trim_ascii_whitespace(text: &[u8]) -> &[u8] {
+    let start = text
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(text.len());
+    let end = text
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &text[start..end]
+}
+
+fn ascii_starts_with_any(text: &[u8], first: &[u8], second: &[u8]) -> bool {
+    text.starts_with(first) || text.starts_with(second)
+}
+
+fn decimal_base_zero_allows_leading_zero(unsigned: &[u8], cleaned: &[u8]) -> bool {
+    if !unsigned.starts_with(b"0") {
+        return true;
+    }
+    cleaned.iter().all(|ch| *ch == b'0')
+}
+
+fn clean_int_digits(digits: &[u8], base: u32, allow_prefix_underscore: bool) -> Option<Vec<u8>> {
+    if digits.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len());
+    let mut prev_digit = false;
+    let mut saw_digit = false;
+    for (i, byte) in digits.iter().copied().enumerate() {
+        if byte == b'_' {
+            if !prev_digit && !(allow_prefix_underscore && i == 0) {
+                return None;
+            }
+            prev_digit = false;
+            continue;
+        }
+        let Some(value) = ascii_digit_value(byte) else {
+            return None;
+        };
+        if value >= base {
+            return None;
+        }
+        out.push(byte);
+        prev_digit = true;
+        saw_digit = true;
+    }
+    if !saw_digit || !prev_digit {
+        return None;
+    }
+    Some(out)
+}
+
+fn ascii_digit_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u32),
+        b'a'..=b'z' => Some((byte - b'a' + 10) as u32),
+        b'A'..=b'Z' => Some((byte - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
+fn int_literal_repr(obj: &PyObjectRef) -> String {
+    match &obj.payload {
+        PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+            obj.repr()
+        }
+        _ => ferrython_core::object::py_ascii_repr(obj),
+    }
 }
 
 pub(crate) fn builtin_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

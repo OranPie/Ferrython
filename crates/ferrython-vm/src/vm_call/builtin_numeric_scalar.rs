@@ -2,7 +2,7 @@ use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use ferrython_core::types::float_as_integer_ratio;
+use ferrython_core::types::{float_as_integer_ratio, PyInt};
 
 use crate::VirtualMachine;
 
@@ -36,35 +36,24 @@ impl VirtualMachine {
                         return Ok(Some(PyObject::big_int(n / d)));
                     }
                     if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__int__") {
+                            let result = self.call_bound_or_unbound(method, &args[0])?;
+                            return self.coerce_int_protocol_result(result, "__int__").map(Some);
+                        }
                         if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
                             if matches!(&val.payload, PyObjectPayload::Int(_)) {
                                 return Ok(Some(val));
                             }
                         }
-                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__int__") {
-                            let ca =
-                                if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    vec![]
-                                } else {
-                                    vec![args[0].clone()]
-                                };
-                            let result = self.call_object(method, ca)?;
-                            if matches!(&result.payload, PyObjectPayload::Int(_))
-                                || matches!(&result.payload, PyObjectPayload::Bool(_))
-                            {
-                                return Ok(Some(result));
-                            }
-                            if let Some(bv) = Self::get_builtin_value(&result) {
-                                if matches!(&bv.payload, PyObjectPayload::Int(_))
-                                    || matches!(&bv.payload, PyObjectPayload::Bool(_))
-                                {
-                                    return Ok(Some(bv));
-                                }
-                            }
-                            return Err(PyException::type_error(format!(
-                                "__int__ returned non-int (type {})",
-                                result.type_name()
-                            )));
+                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__index__") {
+                            let result = self.call_bound_or_unbound(method, &args[0])?;
+                            return self
+                                .coerce_int_protocol_result(result, "__index__")
+                                .map(Some);
+                        }
+                        if let Some(method) = Self::resolve_instance_dunder(&args[0], "__trunc__") {
+                            let result = self.call_bound_or_unbound(method, &args[0])?;
+                            return self.coerce_trunc_result(result).map(Some);
                         }
                     }
                 }
@@ -136,6 +125,117 @@ impl VirtualMachine {
             _ => {}
         }
         Ok(None)
+    }
+
+    fn call_bound_or_unbound(
+        &mut self,
+        method: PyObjectRef,
+        receiver: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let args = if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) {
+            vec![]
+        } else {
+            vec![receiver.clone()]
+        };
+        self.call_object(method, args)
+    }
+
+    fn coerce_int_protocol_result(
+        &mut self,
+        result: PyObjectRef,
+        method_name: &str,
+    ) -> PyResult<PyObjectRef> {
+        match &result.payload {
+            PyObjectPayload::Int(PyInt::Small(n)) => return Ok(PyObject::int(*n)),
+            PyObjectPayload::Int(PyInt::Big(n)) => {
+                return Ok(PyObject::big_int(n.as_ref().clone()))
+            }
+            PyObjectPayload::Bool(b) => {
+                self.warn_int_protocol_subclass_result(method_name, "bool")?;
+                return Ok(PyObject::int(if *b { 1 } else { 0 }));
+            }
+            PyObjectPayload::Instance(inst) => {
+                if let Some(value) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    match &value.payload {
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            self.warn_int_protocol_subclass_result(method_name, "int")?;
+                            return Ok(PyObject::int(*n));
+                        }
+                        PyObjectPayload::Int(PyInt::Big(n)) => {
+                            self.warn_int_protocol_subclass_result(method_name, "int")?;
+                            return Ok(PyObject::big_int(n.as_ref().clone()));
+                        }
+                        PyObjectPayload::Bool(b) => {
+                            self.warn_int_protocol_subclass_result(method_name, "bool")?;
+                            return Ok(PyObject::int(if *b { 1 } else { 0 }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        Err(PyException::type_error(format!(
+            "{} returned non-int (type {})",
+            method_name,
+            result.type_name()
+        )))
+    }
+
+    fn warn_int_protocol_subclass_result(
+        &mut self,
+        method_name: &str,
+        type_name: &str,
+    ) -> PyResult<()> {
+        let warnings = self.import_module_simple("warnings", 0)?;
+        let warn = warnings.get_attr("warn").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'warn'")
+        })?;
+        let category = warnings.get_attr("DeprecationWarning").ok_or_else(|| {
+            PyException::attribute_error("module 'warnings' has no attribute 'DeprecationWarning'")
+        })?;
+        self.call_object(
+            warn,
+            vec![
+                PyObject::str_val(CompactString::from(format!(
+                    "{} returned non-int (type {})",
+                    method_name, type_name
+                ))),
+                category,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn coerce_trunc_result(&mut self, result: PyObjectRef) -> PyResult<PyObjectRef> {
+        if let Some(value) = self.coerce_trunc_direct_result(&result) {
+            return Ok(value);
+        }
+        if let PyObjectPayload::Instance(_) = &result.payload {
+            for method_name in ["__index__", "__int__"] {
+                if let Some(method) = Self::resolve_instance_dunder(&result, method_name) {
+                    let value = self.call_bound_or_unbound(method, &result)?;
+                    return self.coerce_int_protocol_result(value, method_name);
+                }
+            }
+        }
+        Err(PyException::type_error(format!(
+            "__trunc__ returned non-Integral (type {})",
+            result.type_name()
+        )))
+    }
+
+    fn coerce_trunc_direct_result(&mut self, result: &PyObjectRef) -> Option<PyObjectRef> {
+        match &result.payload {
+            PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(*n)),
+            PyObjectPayload::Int(PyInt::Big(n)) => Some(PyObject::big_int(n.as_ref().clone())),
+            PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { 1 } else { 0 })),
+            PyObjectPayload::Instance(inst) => {
+                let value = inst.attrs.read().get("__builtin_value__").cloned()?;
+                self.coerce_trunc_direct_result(&value)
+            }
+            _ => None,
+        }
     }
 
     fn call_bool_numeric_builtin(&mut self, obj: &PyObjectRef) -> PyResult<PyObjectRef> {

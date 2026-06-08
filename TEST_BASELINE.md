@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-07T17:31:16+08:00
+Last updated: 2026-06-08T20:07:49+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -71,6 +71,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_hmac | 20 | 20 | 0 | 0 | 0 | 0s |
 | test_html | 2 | 2 | 0 | 0 | 0 | 0s |
 | test_index | 55 | 55 | 0 | 0 | 0 | 0s |
+| test_int | 35 | 23 | 0 | 0 | 12 | 0s |
 | test_int_literal | 6 | 6 | 0 | 0 | 0 | 0s |
 | test_ipaddress | 191 | 191 | 0 | 0 | 0 | 0s |
 | test_isinstance | 18 | 18 | 0 | 0 | 0 | 1s |
@@ -123,9 +124,9 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 | test_yield_from | 33 | 33 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 105 modules have zero failures/errors. Of those, 99 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 106 modules have zero failures/errors. Of those, 100 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
-Latest guard: on 2026-06-07T17:31:16+08:00, all 104 pass-baseline modules except `test_decimal` were rerun independently with `timeout 30s` and produced `baseline failures: 0`; `test_decimal` was rerun separately with `timeout 60s` and kept `run=161 pass=157 fail=0 err=0 skip=4`.
+Latest guard: on 2026-06-08T20:07:49+08:00, all 104 pre-existing pass-baseline modules except `test_decimal` were rerun independently with `timeout 30s` and produced `baseline failures: 0`; `test_decimal` was rerun separately with `timeout 60s` and kept `run=161 pass=157 fail=0 err=0 skip=4`; new baseline module `test_int` passed with `run=35 pass=23 fail=0 err=0 skip=12`.
 
 ## Current Non-Baseline Modules
 
@@ -142,7 +143,6 @@ These modules are not protected as passing gates yet.
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
-| test_int | FAIL | 35 | 12 | 15 | 7 | 1 | 1s |
 | test_itertools | FAIL | 0 | 0 | 0 | 0 | 0 | 5s |
 | test_re | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |
 | test_richcmp | FAIL | 0 | 0 | 0 | 0 | 0 | 1s |
@@ -259,3 +259,14 @@ This table mirrors `tools/run_cpython_tests.py` `_FERRYTHON_UNNEEDED_TESTS`. The
 | test_random.TestRandomSubclassing.test_random_subclass_with_kwargs | Ferrython random.Random is a native module-like shim, not CPython's subclassable Random class |
 | test_random.TestRandomSubclassing.test_subclasses_overriding_methods | Ferrython random.Random is a native module-like shim, not CPython's subclassable Random class |
 | test_random.TestModule.test_after_fork | Ferrython does not target CPython fork/file-descriptor behavior in random module tests |
+| test_int.IntStrDigitLimitsTests.test_denial_of_service_prevented_int_to_str | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntStrDigitLimitsTests.test_denial_of_service_prevented_str_to_int | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntStrDigitLimitsTests.test_int_from_other_bases | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntStrDigitLimitsTests.test_max_str_digits | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntStrDigitLimitsTests.test_underscores_ignored | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_denial_of_service_prevented_int_to_str | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_denial_of_service_prevented_str_to_int | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_int_from_other_bases | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_max_str_digits | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_sign_not_counted | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |
+| test_int.IntSubclassStrDigitLimitsTests.test_underscores_ignored | Ferrython targets Python 3.8 semantics and does not implement CPython 3.11 int string digit DoS limits |

@@ -11,10 +11,20 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: &[(CompactString, PyObjectRef)],
     ) -> PyResult<PyObjectRef> {
+        for (key, _) in kwargs {
+            if key.as_str() != "base" {
+                return Err(PyException::type_error(format!(
+                    "'{}' is an invalid keyword argument for int()",
+                    key
+                )));
+            }
+        }
         let mut all_args = pos_args;
         if let Some((_, value)) = kwargs.iter().find(|(k, _)| k.as_str() == "base") {
-            while all_args.is_empty() {
-                all_args.push(PyObject::int(0));
+            if all_args.is_empty() {
+                return Err(PyException::type_error(
+                    "int() missing string argument when base is given",
+                ));
             }
             all_args.push(value.clone());
         }

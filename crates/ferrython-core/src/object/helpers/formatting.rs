@@ -991,6 +991,9 @@ pub(in crate::object) fn get_slice_impl(
                 if step == 1 {
                     let start = sv.max(0).min(len) as usize;
                     let end = ev.max(0).min(len) as usize;
+                    if start >= end {
+                        return Ok(PyObject::str_val(CompactString::from("")));
+                    }
                     return Ok(PyObject::str_from_utf8_slice(
                         &s.as_str().as_bytes()[start..end],
                     ));

@@ -31,7 +31,15 @@ impl VirtualMachine {
         }
 
         let value = match base_type {
-            "int" => int_builtin_value(&pos_args[0])?,
+            "int" => {
+                if let Some(value) =
+                    self.call_scalar_numeric_builtin("int", &[pos_args[0].clone()])?
+                {
+                    Some(value)
+                } else {
+                    int_builtin_value(&pos_args[0])?
+                }
+            }
             "float" => float_builtin_value(&pos_args[0]),
             "str" => match str_mode {
                 BuiltinSubclassStrMode::VmAware => {
