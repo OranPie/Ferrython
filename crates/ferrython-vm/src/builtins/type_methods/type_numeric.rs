@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::{
-    float_as_integer_ratio, py_hash_bigint, py_hash_float, HashableKey, PyInt,
+    float_as_integer_ratio, py_hash_float, py_hash_int, HashableKey, PyInt,
 };
 use num_bigint::{BigInt, Sign};
 use num_traits::{One, Signed};
@@ -185,12 +185,11 @@ pub(crate) fn call_int_method(
         }
         "__hash__" => {
             let n = match &_receiver.payload {
-                PyObjectPayload::Bool(flag) => BigInt::from(if *flag { 1 } else { 0 }),
-                PyObjectPayload::Int(PyInt::Small(value)) => BigInt::from(*value),
-                PyObjectPayload::Int(PyInt::Big(value)) => value.as_ref().clone(),
-                _ => BigInt::from(_receiver.to_int()?),
+                PyObjectPayload::Bool(flag) => PyInt::Small(*flag as i64),
+                PyObjectPayload::Int(value) => value.clone(),
+                _ => PyInt::Small(_receiver.to_int()?),
             };
-            Ok(PyObject::int(py_hash_bigint(&n)))
+            Ok(PyObject::int(py_hash_int(&n)))
         }
         "__bool__" => {
             let n = _receiver.to_int()?;

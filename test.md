@@ -1,8 +1,29 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-07T21:33:27+08:00
+Last updated: 2026-06-08T17:50:41+08:00
 
 ## Current batch
+
+- Performance batch: int/str hash container paths
+  - Scope:
+    - `PyInt` / `HashableKey::Int` hash no longer allocates `BigInt` for small ints.
+    - `BorrowedIntKey` now hashes like stored int keys, including `-1 -> -2` and `PY_HASH_MODULUS` normalization.
+    - `HashableKey::Str`, borrowed str lookup, and `str.__hash__` share a stable FNV-1a + avalanche helper instead of rebuilding `DefaultHasher` work on every hash.
+  - Semantics:
+    - Numeric hash equality remains green for `int`, `float`, `complex`, Decimal, and Fraction coverage in `test_numeric_tower`.
+    - Ferrython still does not target exact CPython SipHash/PYTHONHASHSEED string hash values; the existing unneeded skip table remains valid.
+    - Hash distribution smoke remains covered by `test_hash`; manual probe for the replacement string hash had minimum 16/16 low-nibble buckets and 150/256 low-byte buckets across the CPython distribution prefixes.
+  - Release benchmark results:
+    - `bench_arch_probe.py`: `dict_insert_int 0.3115s`, `set_add 0.4778s`, `set_lookup 0.1297s`, `str_hash (via dict) 0.7623s`.
+    - `bench_complex_ops.py`: `int_dict update+miss/hit 0.0229s`, `int_set add/discard/membership 0.0235s`, `dynamic_str_dict insert+lookup 0.0126s`, `custom_set eq/hash membership 0.0339s`.
+  - Guard validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - Hash smoke: `hash(2**61 - 1) == 0`, `hash(-1) == -2`, dict/set membership for large int, `-1`, and str keys.
+    - Debug guards: `test_hash test_numeric_tower test_tuple` `run=74 pass=53 fail=0 err=0 skip=21`; `test_set` `run=561 pass=558 fail=0 err=0 skip=3`; `test_string` `run=36 pass=36 fail=0 err=0 skip=0`; `test_functools test_bisect test_operator test_hmac` `run=378 pass=303 fail=0 err=0 skip=75`; `test_dict` `run=103 pass=92 fail=0 err=0 skip=11`.
+    - Release guards: `test_hash test_numeric_tower test_tuple` `run=74 pass=53 fail=0 err=0 skip=21`; `test_dict test_set` `run=664 pass=650 fail=0 err=0 skip=14`.
 
 - Performance batch: custom key dunder inline
   - Scope:

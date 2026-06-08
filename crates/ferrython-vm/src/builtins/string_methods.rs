@@ -6,7 +6,7 @@ use ferrython_core::object::{
     alloc_list_box_empty, check_args_min, checked_repeat_len, index_to_i64, index_to_usize_repeat,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::{py_hash_str, HashableKey, PyInt};
 use indexmap::IndexMap;
 use num_traits::ToPrimitive;
 
@@ -1298,13 +1298,7 @@ pub(crate) fn call_str_method(
             "'{}'",
             s.replace('\\', "\\\\").replace('\'', "\\'")
         )))),
-        "__hash__" => {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            s.hash(&mut hasher);
-            Ok(PyObject::int(hasher.finish() as i64))
-        }
+        "__hash__" => Ok(PyObject::int(py_hash_str(s))),
         "__len__" => Ok(PyObject::int(s.chars().count() as i64)),
         "__contains__" => {
             check_args_min("str.__contains__", &args, 1)?;

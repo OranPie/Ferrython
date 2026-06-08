@@ -329,8 +329,9 @@ impl Ord for PyInt {
     }
 }
 impl Hash for PyInt {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        py_hash_bigint(&self.to_bigint()).hash(state);
+        py_hash_int(self).hash(state);
     }
 }
 
@@ -839,17 +840,9 @@ pub fn hash_frozenset_keys(items: &[HashableKey]) -> i64 {
 #[inline]
 pub fn hash_key_like_python(key: &HashableKey) -> i64 {
     match key {
-        HashableKey::Int(n) => py_hash_bigint(&n.to_bigint()),
+        HashableKey::Int(n) => py_hash_int(n),
         HashableKey::Bool(b) => *b as i64,
-        HashableKey::Str(s) => {
-            if s.is_empty() {
-                return 0;
-            }
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            3u8.hash(&mut hasher);
-            s.as_str().hash(&mut hasher);
-            hasher.finish() as i64
-        }
+        HashableKey::Str(s) => py_hash_str(s.as_str()),
         HashableKey::Float(f) => py_hash_float(f.0),
         HashableKey::None => 0,
         HashableKey::Tuple(items) => {
@@ -1010,7 +1003,7 @@ impl Hash for HashableKey {
                 (*b as i64).hash(state);
             }
             HashableKey::Int(v) => {
-                py_hash_bigint(&v.to_bigint()).hash(state);
+                py_hash_int(v).hash(state);
             }
             HashableKey::Float(f) => {
                 py_hash_float(f.0).hash(state);
@@ -1060,6 +1053,34 @@ impl Hash for HashableKey {
 pub const PY_HASH_MODULUS: i64 = 2_305_843_009_213_693_951;
 pub const PY_HASH_INF: i64 = 314_159;
 pub const PY_HASH_IMAG: i64 = 1_000_003;
+
+#[inline]
+pub fn py_hash_int(value: &PyInt) -> i64 {
+    match value {
+        PyInt::Small(n) => py_hash_small_int(*n),
+        PyInt::Big(n) => py_hash_bigint(n.as_ref()),
+    }
+}
+
+#[inline]
+pub fn py_hash_small_int(value: i64) -> i64 {
+    let modulus = PY_HASH_MODULUS as i128;
+    let abs_mod = if value < 0 {
+        -(value as i128)
+    } else {
+        value as i128
+    } % modulus;
+    let result = if value < 0 {
+        -(abs_mod as i64)
+    } else {
+        abs_mod as i64
+    };
+    if result == -1 {
+        -2
+    } else {
+        result
+    }
+}
 
 pub fn py_hash_bigint(value: &BigInt) -> i64 {
     let modulus = BigInt::from(PY_HASH_MODULUS);
@@ -1184,6 +1205,29 @@ fn normalize_hash_width(hash: i64) -> i64 {
     x as i64
 }
 
+#[inline]
+pub fn py_hash_str(value: &str) -> i64 {
+    if value.is_empty() {
+        return 0;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^= hash >> 33;
+    let result = hash as i64;
+    if result == -1 {
+        -2
+    } else {
+        result
+    }
+}
+
 // ── Zero-clone dict lookup keys ──
 // These types allow IndexMap::get without cloning the key.
 // They hash and compare identically to their HashableKey counterparts.
@@ -1224,13 +1268,7 @@ impl PartialEq for BorrowedStrKey<'_> {
 impl Eq for BorrowedStrKey<'_> {}
 
 fn hash_borrowed_str_key(value: &str) -> i64 {
-    if value.is_empty() {
-        return 0;
-    }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    3u8.hash(&mut hasher);
-    value.hash(&mut hasher);
-    hasher.finish() as i64
+    py_hash_str(value)
 }
 
 /// Borrowed small-int key for zero-clone dict[int] lookups.
@@ -1239,7 +1277,7 @@ pub struct BorrowedIntKey(pub i64);
 impl Hash for BorrowedIntKey {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+        py_hash_small_int(self.0).hash(state);
     }
 }
 
@@ -1249,7 +1287,9 @@ impl indexmap::Equivalent<HashableKey> for BorrowedIntKey {
         match key {
             HashableKey::Int(PyInt::Small(n)) => *n == self.0,
             HashableKey::Bool(b) => (*b as i64) == self.0,
-            HashableKey::Custom { hash_value, object } if *hash_value == self.0 => {
+            HashableKey::Custom { hash_value, object }
+                if *hash_value == py_hash_small_int(self.0) =>
+            {
                 call_eq_dispatch(object, &PyObject::int(self.0)).unwrap_or(false)
             }
             _ => false,

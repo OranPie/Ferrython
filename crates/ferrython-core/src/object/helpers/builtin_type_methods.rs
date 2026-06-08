@@ -9,7 +9,7 @@ use super::{
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::object::{call_callable, ClassData};
-use crate::types::{float_as_integer_ratio, hash_key_like_python, py_hash_bigint, HashableKey};
+use crate::types::{float_as_integer_ratio, hash_key_like_python, py_hash_int, HashableKey};
 use compact_str::CompactString;
 use std::cell::RefCell;
 
@@ -1063,7 +1063,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             let value = unwrap_builtin_subclass(&args[0]);
             if let PyObjectPayload::Int(n) = &value.payload {
-                return Ok(PyObject::int(py_hash_bigint(&n.to_bigint())));
+                return Ok(PyObject::int(py_hash_int(n)));
             }
             if let PyObjectPayload::Bool(b) = &value.payload {
                 return Ok(PyObject::int(*b as i64));

@@ -1,8 +1,34 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-07T21:33:27+08:00
+Last updated: 2026-06-08T17:50:41+08:00
 
 ## 性能优化进度
+
+- 2026-06-08 int/str hash 容器路径性能批次：
+  - 小整数 hash 改为无 `BigInt` 分配的快速路径，同时保留 CPython 数值 hash 语义：`-1 -> -2`，大于 `PY_HASH_MODULUS` 的 small int 仍按 modulus 归一化。
+  - `BorrowedIntKey` 与 stored `HashableKey::Int` 使用同一 hash 规则，修复 `-1` 等特殊 small-int 在 borrowed dict lookup fast path 中可能错过命中的一致性问题。
+  - 字符串 hash 改为统一的稳定 FNV-1a + avalanche helper；`HashableKey::Str`、borrowed str lookup 和 `str.__hash__` 共用同一规则，避免重复走 `DefaultHasher` 动态路径。Ferrython 仍不目标匹配 CPython SipHash/PYTHONHASHSEED exact values，现有 unneeded skip 保持不变。
+  - arch probe 关键 before/after（release Ferrython；before 为本批开始前观测）：
+    - `dict_insert_int`: `0.4248s` -> `0.3115s`
+    - `set_add`: `0.9513s` -> `0.4778s`
+    - `set_lookup`: `0.2271s` -> `0.1297s`
+    - `str_hash (via dict)`: `0.7740s` -> `0.7623s`
+  - complex workload before/after：
+    - `int_dict update+miss/hit`: `0.0261s` -> `0.0229s`
+    - `int_set add/discard/membership`: `0.0413s` -> `0.0235s`
+    - `dynamic_str_dict insert+lookup`: `0.0146s` -> `0.0126s`
+    - `custom_set eq/hash membership`: `0.0366s` -> `0.0339s`
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - hash smoke: `hash(2**61 - 1) == 0`, `hash(-1) == -2`, dict/set `-1` and large-int membership, `hash('abc') == 'abc'.__hash__()`
+    - `timeout 120s target/release/ferrython tests/benchmarks/bench_arch_probe.py`
+    - `timeout 90s target/release/ferrython tests/benchmarks/bench_suite.py`
+    - `timeout 120s target/release/ferrython tests/benchmarks/bench_complex_ops.py`
+    - Debug guards: `test_hash test_numeric_tower test_tuple` -> `run=74 pass=53 fail=0 err=0 skip=21`; `test_set` -> `run=561 pass=558 fail=0 err=0 skip=3`; `test_string` -> `run=36 pass=36 fail=0 err=0 skip=0`; `test_functools test_bisect test_operator test_hmac` -> `run=378 pass=303 fail=0 err=0 skip=75`; `test_dict` -> `run=103 pass=92 fail=0 err=0 skip=11`
+    - Release guards: `test_hash test_numeric_tower test_tuple` -> `run=74 pass=53 fail=0 err=0 skip=21`; `test_dict test_set` -> `run=664 pass=650 fail=0 err=0 skip=14`
 
 - 2026-06-07 custom key dunder inline 性能批次：
   - 针对 custom-key dict/set 热点补齐保守 inline：小型 Python `__hash__` 可直接读取实例字段做 `attr * const + attr`，小型 `__eq__` 的 `try: self.a == other.a and self.b == other.b except AttributeError: return False` 形状可在 direct call 与 HashableKey eq dispatch 中跳过 Python frame。
