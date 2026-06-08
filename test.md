@@ -1,8 +1,27 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-08T17:50:41+08:00
+Last updated: 2026-06-08T18:31:48+08:00
 
 ## Current batch
+
+- Performance batch: set iterator snapshot
+  - Scope:
+    - `IteratorData::SetRefs` now snapshots set values at iterator construction.
+    - Consumers use indexed/slice access for `FOR_ITER`, `next()`, `list(iter(set))`, pickle, and map-like batch helpers instead of repeated `HashMap::iter().nth(index)`.
+    - Set iterators still keep the source set and expected length, preserving the existing size-change `RuntimeError` behavior.
+    - GC traversal includes both source set refs and snapshot item refs.
+  - Benchmark coverage:
+    - Added `bench_arch_probe.py` probes: `set_iterate` and `set_iter_to_list`.
+    - Release before/after: `set_iterate 0.4866s -> 0.0254s`; `set_iter_to_list 0.6185s -> 0.0203s`.
+    - Adjacent release probes remained stable: `dict_iterate 0.0315s -> 0.0314s`; `set_lookup 0.1298s -> 0.1245s`.
+  - Guard validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython` (`4m16s` warm rebuild)
+    - Set iterator smoke: 10k set sum, mutation RuntimeError, and `list(iter(set(range(2000))))`.
+    - Debug guards: `test_set test_iter test_dict` `run=718 pass=702 fail=0 err=0 skip=16`; `test_hash test_numeric_tower test_tuple test_functools test_bisect test_operator test_hmac test_string` `run=488 pass=392 fail=0 err=0 skip=96`.
+    - Release guards: `test_set test_iter test_dict` `run=718 pass=702 fail=0 err=0 skip=16`; `test_hash test_numeric_tower test_tuple test_functools test_bisect test_operator test_hmac test_string` `run=488 pass=392 fail=0 err=0 skip=96`.
 
 - Performance batch: int/str hash container paths
   - Scope:

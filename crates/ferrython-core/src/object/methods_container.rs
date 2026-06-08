@@ -279,6 +279,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 IteratorData::Str { chars, index } => Ok(chars.len() - index),
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
@@ -288,7 +289,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                             "Set changed size during iteration",
                         ))
                     } else {
-                        Ok(len.saturating_sub(*index))
+                        Ok(items.len().saturating_sub(*index))
                     }
                 }
                 IteratorData::FrozenSetItems { items, index } => Ok(items.len() - index),
@@ -981,11 +982,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             ))))
         }
         PyObjectPayload::Set(m) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::SetRefs {
-                source: m.clone(),
-                index: 0,
-                expected_len: m.read().len(),
-            }),
+            PyCell::new(IteratorData::set_refs(m)),
         )))),
         PyObjectPayload::FrozenSet(m) => {
             let vals: Vec<PyObjectRef> = m.values().cloned().collect();

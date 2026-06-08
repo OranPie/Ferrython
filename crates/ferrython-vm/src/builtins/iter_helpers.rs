@@ -163,17 +163,17 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
-                    let map = source.read();
-                    if map.len() != *expected_len {
+                    if source.read().len() != *expected_len {
                         return Err(PyException::runtime_error(
                             "Set changed size during iteration",
                         ));
                     }
-                    if *index < map.len() {
-                        let obj = map.iter().nth(*index).unwrap().1.clone();
+                    if *index < items.len() {
+                        let obj = items[*index].clone();
                         *index += 1;
                         Ok(Some((iter_obj.clone(), obj)))
                     } else {
@@ -544,17 +544,17 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 }
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
-                    let map = source.read();
-                    if map.len() != *expected_len {
+                    if source.read().len() != *expected_len {
                         return Err(PyException::runtime_error(
                             "Set changed size during iteration",
                         ));
                     }
-                    if *index < map.len() {
-                        let obj = map.iter().nth(*index).unwrap().1.clone();
+                    if *index < items.len() {
+                        let obj = items[*index].clone();
                         *index += 1;
                         Ok(Some(obj))
                     } else {

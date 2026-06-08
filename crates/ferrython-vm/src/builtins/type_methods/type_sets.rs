@@ -269,11 +269,7 @@ pub(crate) fn call_set_method(
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
         "__bool__" => Ok(PyObject::bool_val(!m.read().is_empty())),
         "__iter__" => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::SetRefs {
-                source: m.clone(),
-                index: 0,
-                expected_len: m.read().len(),
-            }),
+            PyCell::new(IteratorData::set_refs(m)),
         )))),
         "__hash__" => Err(PyException::type_error("unhashable type: 'set'")),
         _ => Err(PyException::attribute_error(format!(

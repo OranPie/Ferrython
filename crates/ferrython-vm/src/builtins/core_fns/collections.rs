@@ -256,11 +256,7 @@ pub(crate) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             ))))
         }
         PyObjectPayload::Set(m) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(
-            PyCell::new(IteratorData::SetRefs {
-                source: m.clone(),
-                index: 0,
-                expected_len: m.read().len(),
-            }),
+            PyCell::new(IteratorData::set_refs(m)),
         )))),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => Ok(PyObject::wrap(
             PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::DictKeyRefs {

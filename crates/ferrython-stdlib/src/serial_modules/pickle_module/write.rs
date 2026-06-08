@@ -634,19 +634,16 @@ pub(super) fn pickle_serialize_p0(
                 } => remaining_dict_key_refs(source, *index, *expected_len, *expected_version)?,
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
-                    let map = source.read();
-                    if map.len() != *expected_len {
+                    if source.read().len() != *expected_len {
                         return Err(PyException::runtime_error(
                             "Set changed size during iteration",
                         ));
                     }
-                    map.iter()
-                        .skip(*index)
-                        .map(|(_, value)| value.clone())
-                        .collect()
+                    items.iter().skip(*index).cloned().collect()
                 }
                 IteratorData::FrozenSetItems { items, index } => {
                     items.iter().skip(*index).cloned().collect()
@@ -1488,19 +1485,16 @@ pub(super) fn pickle_serialize_p2(
                 } => remaining_dict_key_refs(source, *index, *expected_len, *expected_version)?,
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
-                    let map = source.read();
-                    if map.len() != *expected_len {
+                    if source.read().len() != *expected_len {
                         return Err(PyException::runtime_error(
                             "Set changed size during iteration",
                         ));
                     }
-                    map.iter()
-                        .skip(*index)
-                        .map(|(_, value)| value.clone())
-                        .collect()
+                    items.iter().skip(*index).cloned().collect()
                 }
                 IteratorData::FrozenSetItems { items, index } => {
                     items.iter().skip(*index).cloned().collect()

@@ -251,6 +251,19 @@ def bench_dict_iterate(n):
         for k in d:
             pass
 
+def bench_set_iterate(n):
+    """Iterate set values. Tests set iterator machinery."""
+    s = set(range(1000))
+    for _ in range(n // 1000):
+        for x in s:
+            pass
+
+def bench_set_iter_to_list(n):
+    """Materialize set iterator. Tests bulk iterator collection."""
+    s = set(range(1000))
+    for _ in range(n // 1000):
+        xs = list(iter(s))
+
 def bench_set_add(n):
     """Add to set. Tests hash + set insert."""
     s = set()
@@ -545,6 +558,8 @@ bench("dict_insert_str", bench_dict_insert_str, N)
 bench("dict_lookup_hit", bench_dict_lookup_hit, N)
 bench("dict_lookup_miss", bench_dict_lookup_miss, N)
 bench("dict_iterate", bench_dict_iterate, N)
+bench("set_iterate", bench_set_iterate, N)
+bench("set_iter_to_list", bench_set_iter_to_list, N)
 bench("set_add", bench_set_add, N)
 bench("set_lookup", bench_set_lookup, N)
 bench("tuple_unpack (3)", bench_tuple_unpack, N)

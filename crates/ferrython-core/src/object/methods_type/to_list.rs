@@ -447,25 +447,21 @@ pub(in crate::object) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectR
                 }
                 IteratorData::SetRefs {
                     source,
+                    items,
                     index,
                     expected_len,
                 } => {
-                    let map = source.read();
-                    if map.len() != *expected_len {
+                    if source.read().len() != *expected_len {
                         return Err(PyException::runtime_error(
                             "Set changed size during iteration",
                         ));
                     }
                     guard_eager_allocation(
-                        map.len().saturating_sub(*index),
+                        items.len().saturating_sub(*index),
                         "set iterator -> list",
                     )?;
-                    let result = map
-                        .iter()
-                        .skip(*index)
-                        .map(|(_, value)| value.clone())
-                        .collect();
-                    *index = map.len();
+                    let result = items[*index..].to_vec();
+                    *index = items.len();
                     Ok(result)
                 }
                 IteratorData::FrozenSetItems { items, index } => {

@@ -395,6 +395,7 @@ fn try_store_from_iterator_data(
         }
         IteratorData::SetRefs {
             source,
+            items,
             index,
             expected_len,
         } => {
@@ -403,11 +404,8 @@ fn try_store_from_iterator_data(
                 drop(data);
                 return FastForIterStoreResult::Fallback;
             }
-            let value = {
-                let map = source.read();
-                map.iter().nth(*index).map(|(_, value)| value.clone())
-            };
-            if let Some(value) = value {
+            if *index < items.len() {
+                let value = items[*index].clone();
                 *index += 1;
                 drop(data);
                 if set_local_maybe_finalizer(frame, store_idx, value) {
@@ -708,6 +706,7 @@ fn try_for_iterator_data(
         }
         IteratorData::SetRefs {
             source,
+            items,
             index,
             expected_len,
         } => {
@@ -718,11 +717,8 @@ fn try_for_iterator_data(
                     "Set changed size during iteration",
                 ));
             }
-            let value = {
-                let map = source.read();
-                map.iter().nth(*index).map(|(_, value)| value.clone())
-            };
-            if let Some(value) = value {
+            if *index < items.len() {
+                let value = items[*index].clone();
                 *index += 1;
                 drop(data);
                 push(frame, value);

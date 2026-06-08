@@ -1,8 +1,28 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-08T17:50:41+08:00
+Last updated: 2026-06-08T18:31:48+08:00
 
 ## 性能优化进度
+
+- 2026-06-08 set iterator snapshot 性能批次：
+  - `IteratorData::SetRefs` 现在在 iterator 创建时保存 set values snapshot，同时继续持有原 set 和 `expected_len` 做尺寸变更检测；这去掉了 `for`/`next()`/`list(iter(set))`/pickle/map helpers 中每步 `HashMap::iter().nth(index)` 从头扫描导致的 O(n^2) 行为。
+  - set iterator 的 GC refs 现在同时包含 snapshot items，避免 iterator 持有已从 set 删除的对象时漏追踪。
+  - `tests/benchmarks/bench_arch_probe.py` 增加 `set_iterate` 和 `set_iter_to_list` 两个长期性能探针。
+  - arch probe 关键 before/after（release Ferrython；before 为旧 release 产物跑新增探针，after 为本批 release 重建后）：
+    - `set_iterate`: `0.4866s` -> `0.0254s`
+    - `set_iter_to_list`: `0.6185s` -> `0.0203s`
+    - 相邻指标保持同量级：`dict_iterate` `0.0315s` -> `0.0314s`，`set_lookup` `0.1298s` -> `0.1245s`
+  - 构建耗时观察：
+    - `cargo build --release -p ferrython-cli --bin ferrython` 本批 warm rebuild 用时 `4m16s`，主要时间在 core/vm/stdlib 重编译和 CLI 链接阶段。
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - set iterator smoke: 10k set 求和、size mutation RuntimeError、`list(iter(set(range(2000))))`
+    - Debug guards: `test_set test_iter test_dict` -> `run=718 pass=702 fail=0 err=0 skip=16`; `test_hash test_numeric_tower test_tuple test_functools test_bisect test_operator test_hmac test_string` -> `run=488 pass=392 fail=0 err=0 skip=96`
+    - Release guards: `test_set test_iter test_dict` -> `run=718 pass=702 fail=0 err=0 skip=16`; `test_hash test_numeric_tower test_tuple test_functools test_bisect test_operator test_hmac test_string` -> `run=488 pass=392 fail=0 err=0 skip=96`
+    - `timeout 120s target/release/ferrython tests/benchmarks/bench_arch_probe.py`
 
 - 2026-06-08 int/str hash 容器路径性能批次：
   - 小整数 hash 改为无 `BigInt` 分配的快速路径，同时保留 CPython 数值 hash 语义：`-1 -> -2`，大于 `PY_HASH_MODULUS` 的 small int 仍按 modulus 归一化。

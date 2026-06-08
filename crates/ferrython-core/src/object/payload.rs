@@ -1447,6 +1447,7 @@ pub enum IteratorData {
     },
     SetRefs {
         source: Rc<PyCell<FxHashKeyFlatMap>>,
+        items: Vec<PyObjectRef>,
         index: usize,
         expected_len: usize,
     },
@@ -1459,4 +1460,18 @@ pub enum IteratorData {
         iter: PyObjectRef,
         owner: Option<PyObjectRef>,
     },
+}
+
+impl IteratorData {
+    pub fn set_refs(source: &Rc<PyCell<FxHashKeyFlatMap>>) -> Self {
+        let guard = source.read();
+        let items = guard.values().cloned().collect();
+        let expected_len = guard.len();
+        Self::SetRefs {
+            source: source.clone(),
+            items,
+            index: 0,
+            expected_len,
+        }
+    }
 }
