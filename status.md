@@ -1,8 +1,26 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-08T18:31:48+08:00
+Last updated: 2026-06-08T18:42:27+08:00
 
 ## 性能优化进度
+
+- 2026-06-08 ASCII str index/slice 性能批次：
+  - ASCII `str.__getitem__` 单字符索引现在直接按 byte 返回 cached ASCII char，避免每次 `s[i]` 都收集整串 `Vec<char>`。
+  - ASCII `str` slice 在 `step == 1` 时直接使用 byte slice 构造结果；扩展步长也按 byte 收集。非 ASCII 路径保持原 char-indexed 逻辑。
+  - arch probe 关键 before/after（release Ferrython；before 为上一批 set iterator release benchmark，after 为本批 release 重建后）：
+    - `str_slice`: `0.4081s` -> `0.2685s`
+    - 相邻指标：`str_hash (via dict)` `0.6938s` -> `0.6836s`; `str_split` 本轮噪声偏慢 `0.5873s` -> `0.7008s`，非本批路径。
+  - 构建耗时观察：
+    - `cargo build --release -p ferrython-cli --bin ferrython` 本批 warm rebuild 用时 `4m13s`。
+  - 验证：
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython`
+    - str smoke: ASCII 正/负索引、普通/扩展/反向 slice、越界 `IndexError`、非 ASCII 正/负索引与反向 slice。
+    - Debug guard: `test_string test_slice test_tuple test_list test_iter` -> `run=191 pass=182 fail=0 err=0 skip=9`
+    - Release guard: `test_string test_slice test_tuple test_list test_iter` -> `run=191 pass=182 fail=0 err=0 skip=9`
+    - `timeout 120s target/release/ferrython tests/benchmarks/bench_arch_probe.py`
 
 - 2026-06-08 set iterator snapshot 性能批次：
   - `IteratorData::SetRefs` 现在在 iterator 创建时保存 set values snapshot，同时继续持有原 set 和 `expected_len` 做尺寸变更检测；这去掉了 `for`/`next()`/`list(iter(set))`/pickle/map helpers 中每步 `HashMap::iter().nth(index)` 从头扫描导致的 O(n^2) 行为。

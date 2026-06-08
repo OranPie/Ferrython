@@ -1,8 +1,25 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-08T18:31:48+08:00
+Last updated: 2026-06-08T18:42:27+08:00
 
 ## Current batch
+
+- Performance batch: ASCII str index/slice
+  - Scope:
+    - ASCII string indexing now returns from the byte buffer directly via cached single-char string objects.
+    - ASCII string slicing uses direct byte slices for `step == 1`; stepped ASCII slices collect bytes instead of building a `Vec<char>`.
+    - Non-ASCII string indexing and slicing keep the existing char-indexed path.
+  - Benchmark coverage:
+    - Release `bench_arch_probe.py`: `str_slice 0.4081s -> 0.2685s`.
+    - Adjacent probes: `str_hash (via dict) 0.6938s -> 0.6836s`; `str_split 0.5873s -> 0.7008s` was noisy/slower and is not affected by this patch.
+  - Guard validation:
+    - `cargo fmt --all --check`
+    - `cargo check -p ferrython-vm`
+    - `cargo build -p ferrython-cli --bin ferrython`
+    - `cargo build --release -p ferrython-cli --bin ferrython` (`4m13s` warm rebuild)
+    - String smoke: ASCII index/slice/reverse/out-of-range plus non-ASCII index/slice/reverse.
+    - Debug guard: `test_string test_slice test_tuple test_list test_iter` `run=191 pass=182 fail=0 err=0 skip=9`.
+    - Release guard: `test_string test_slice test_tuple test_list test_iter` `run=191 pass=182 fail=0 err=0 skip=9`.
 
 - Performance batch: set iterator snapshot
   - Scope:

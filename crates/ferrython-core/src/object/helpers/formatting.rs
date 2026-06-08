@@ -985,6 +985,38 @@ pub(in crate::object) fn get_slice_impl(
             Ok(PyObject::tuple(result))
         }
         PyObjectPayload::Str(s) => {
+            if s.as_str().is_ascii() {
+                let len = s.len() as i64;
+                let (sv, ev, step) = resolve_slice(start, stop, step, len)?;
+                if step == 1 {
+                    let start = sv.max(0).min(len) as usize;
+                    let end = ev.max(0).min(len) as usize;
+                    return Ok(PyObject::str_from_utf8_slice(
+                        &s.as_str().as_bytes()[start..end],
+                    ));
+                }
+                let bytes = s.as_str().as_bytes();
+                let mut result = Vec::new();
+                let mut i = sv;
+                if step > 0 {
+                    while i < ev && i < len {
+                        result.push(bytes[i as usize]);
+                        let Some(next) = i.checked_add(step) else {
+                            break;
+                        };
+                        i = next;
+                    }
+                } else if step < 0 {
+                    while i > ev && i >= 0 && i < len {
+                        result.push(bytes[i as usize]);
+                        let Some(next) = i.checked_add(step) else {
+                            break;
+                        };
+                        i = next;
+                    }
+                }
+                return Ok(PyObject::str_from_utf8_slice(&result));
+            }
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i64;
             let (sv, ev, step) = resolve_slice(start, stop, step, len)?;

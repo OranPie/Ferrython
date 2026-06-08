@@ -513,6 +513,14 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                     e
                 }
             })?;
+            if s.as_str().is_ascii() {
+                let len = s.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(PyException::index_error("string index out of range"));
+                }
+                return Ok(PyObject::str_char(s.as_str().as_bytes()[actual as usize]));
+            }
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
