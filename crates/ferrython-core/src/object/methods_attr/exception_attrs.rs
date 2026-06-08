@@ -1,4 +1,4 @@
-use crate::error::{ExceptionKind, PyException};
+use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::object::payload::ExceptionInstanceData;
 use crate::object::ClassData;
 use compact_str::CompactString;
@@ -483,6 +483,18 @@ pub(super) fn exception_instance_attr(
             .get_attrs()
             .and_then(|a| a.read().get(name).cloned())
             .or_else(|| Some(PyObject::none())),
+        "msg" if ei.kind.is_subclass_of(&ExceptionKind::SyntaxError) => ei
+            .get_attrs()
+            .and_then(|a| a.read().get("msg").cloned())
+            .or_else(|| ei.args.first().cloned())
+            .or_else(|| Some(PyObject::none())),
+        "filename" | "lineno" | "offset" | "text" | "print_file_and_line"
+            if ei.kind.is_subclass_of(&ExceptionKind::SyntaxError) =>
+        {
+            ei.get_attrs()
+                .and_then(|a| a.read().get(name).cloned())
+                .or_else(|| Some(PyObject::none()))
+        }
         "__cause__" => ei
             .get_attrs()
             .and_then(|a| a.read().get("__cause__").cloned())
@@ -527,6 +539,11 @@ pub(super) fn exception_instance_attr(
             let obj_ref = obj.clone();
             Some(PyObject::native_closure("with_traceback", move |args| {
                 if !args.is_empty() {
+                    if !is_traceback_or_none(&args[0]) {
+                        return Err(crate::error::PyException::type_error(
+                            "__traceback__ must be a traceback or None",
+                        ));
+                    }
                     if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
                         ei.ensure_attrs()
                             .write()
@@ -536,11 +553,31 @@ pub(super) fn exception_instance_attr(
                 Ok(obj_ref.clone())
             }))
         }
-        // OSError attributes: .errno, .strerror, .filename
-        "errno" | "strerror" | "filename" if ei.kind.is_subclass_of(&ExceptionKind::OSError) => ei
-            .get_attrs()
-            .and_then(|a| a.read().get(name).cloned())
-            .or_else(|| Some(PyObject::none())),
+        "__reduce__" | "__reduce_ex__" => {
+            let obj_ref = obj.clone();
+            Some(PyObject::native_closure(name, move |_args| {
+                let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload else {
+                    return Err(PyException::type_error(
+                        "exception reduce requires an exception instance",
+                    ));
+                };
+                let cls = PyObject::exception_type(ei.kind);
+                let reduce_args = PyObject::tuple(ei.args.clone());
+                if let Some(state) = import_error_reduce_state(ei) {
+                    Ok(PyObject::tuple(vec![cls, reduce_args, state]))
+                } else {
+                    Ok(PyObject::tuple(vec![cls, reduce_args]))
+                }
+            }))
+        }
+        // OSError attributes: .errno, .strerror, .filename, .filename2
+        "errno" | "strerror" | "filename" | "filename2"
+            if ei.kind.is_subclass_of(&ExceptionKind::OSError) =>
+        {
+            ei.get_attrs()
+                .and_then(|a| a.read().get(name).cloned())
+                .or_else(|| Some(PyObject::none()))
+        }
         "characters_written" if ei.kind == ExceptionKind::BlockingIOError => {
             ei.get_attrs().and_then(|a| a.read().get(name).cloned())
         }
@@ -548,6 +585,27 @@ pub(super) fn exception_instance_attr(
             // Check user-set attrs (e.g., __cause__)
             ei.get_attrs().and_then(|a| a.read().get(name).cloned())
         }
+    }
+}
+
+fn import_error_reduce_state(ei: &ExceptionInstanceData) -> Option<PyObjectRef> {
+    if !ei.kind.is_subclass_of(&ExceptionKind::ImportError) {
+        return None;
+    }
+    let attrs = ei.get_attrs()?;
+    let attrs = attrs.read();
+    let mut pairs = Vec::new();
+    for key in ["name", "path"] {
+        if let Some(value) = attrs.get(key) {
+            if !matches!(value.payload, PyObjectPayload::None) {
+                pairs.push((PyObject::str_val(CompactString::from(key)), value.clone()));
+            }
+        }
+    }
+    if pairs.is_empty() {
+        None
+    } else {
+        Some(PyObject::dict_from_pairs(pairs))
     }
 }
 
@@ -703,6 +761,11 @@ pub(super) fn resolve_exception_type_method(
             let inst = instance.clone();
             Some(PyObject::native_closure("with_traceback", move |args| {
                 if !args.is_empty() {
+                    if !is_traceback_or_none(&args[0]) {
+                        return Err(PyException::type_error(
+                            "__traceback__ must be a traceback or None",
+                        ));
+                    }
                     if let PyObjectPayload::Instance(idata) = &inst.payload {
                         idata
                             .attrs
@@ -718,5 +781,56 @@ pub(super) fn resolve_exception_type_method(
             }))
         }
         _ => None,
+    }
+}
+
+pub fn is_traceback_or_none(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload, PyObjectPayload::None)
+        || matches!(
+            &obj.payload,
+            PyObjectPayload::Instance(inst)
+                if matches!(&inst.class.payload, PyObjectPayload::BuiltinType(name) if name.as_str() == "traceback")
+        )
+}
+
+pub fn validate_exception_attr_set(name: &str, value: &PyObjectRef) -> PyResult<()> {
+    match name {
+        "__cause__" | "__context__" => {
+            if matches!(&value.payload, PyObjectPayload::None)
+                || matches!(&value.payload, PyObjectPayload::ExceptionInstance(_))
+                || matches!(
+                    &value.payload,
+                    PyObjectPayload::Instance(inst)
+                        if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                )
+            {
+                Ok(())
+            } else {
+                Err(PyException::type_error(format!(
+                    "{} must be an exception or None",
+                    name
+                )))
+            }
+        }
+        "__traceback__" => {
+            if is_traceback_or_none(value) {
+                Ok(())
+            } else {
+                Err(PyException::type_error(
+                    "__traceback__ must be a traceback or None",
+                ))
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+pub fn validate_exception_attr_delete(name: &str) -> PyResult<()> {
+    match name {
+        "__cause__" | "__context__" => Err(PyException::type_error(format!(
+            "{} may not be deleted",
+            name
+        ))),
+        _ => Ok(()),
     }
 }

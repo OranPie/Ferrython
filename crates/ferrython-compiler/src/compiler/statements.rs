@@ -320,6 +320,9 @@ impl Compiler {
                     self.emit_op(Opcode::WithCleanupFinish);
                     self.emit_op(Opcode::EndFinally);
                 }
+                CleanupContext::ExceptHandler => {
+                    self.emit_op(Opcode::PopExcept);
+                }
                 CleanupContext::TryFinally => {
                     needs_finally_jump = true;
                 }
@@ -538,7 +541,11 @@ impl Compiler {
                 self.emit_op(Opcode::PopTop);
 
                 // Compile handler body BEFORE PopExcept (matches CPython order)
+                self.current_unit_mut()
+                    .cleanup_stack
+                    .push(CleanupContext::ExceptHandler);
                 self.compile_body(&handler.body)?;
+                self.current_unit_mut().cleanup_stack.pop();
 
                 // Clean up: store None into handler var then delete it (prevents
                 // exception→traceback reference cycles, matching CPython behavior)
@@ -564,7 +571,11 @@ impl Compiler {
                 self.emit_op(Opcode::PopTop);
 
                 // Compile handler body BEFORE PopExcept (matches CPython order)
+                self.current_unit_mut()
+                    .cleanup_stack
+                    .push(CleanupContext::ExceptHandler);
                 self.compile_body(&handler.body)?;
+                self.current_unit_mut().cleanup_stack.pop();
 
                 // Clean up handler variable (same as typed except path)
                 if handler.name.is_some() {

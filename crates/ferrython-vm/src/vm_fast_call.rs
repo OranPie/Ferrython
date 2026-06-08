@@ -30,6 +30,7 @@ pub(crate) enum FastExceptionFlowResult {
 pub(crate) enum FastDerefResult {
     Loaded,
     Stored,
+    StoredNeedsDrain,
     Fallback,
 }
 
@@ -103,8 +104,13 @@ pub(crate) fn try_fast_load_deref(frame: &mut Frame, idx: usize) -> FastDerefRes
 #[inline(always)]
 pub(crate) fn fast_store_deref(frame: &mut Frame, idx: usize) -> FastDerefResult {
     let value = frame.stack.pop().expect("stack underflow");
-    unsafe { *frame.cells[idx].data_ptr() = Some(value) };
-    FastDerefResult::Stored
+    let old = unsafe { (*frame.cells[idx].data_ptr()).replace(value) };
+    drop(old);
+    if ferrython_core::error::has_pending_finalizers() {
+        FastDerefResult::StoredNeedsDrain
+    } else {
+        FastDerefResult::Stored
+    }
 }
 
 #[inline(always)]
@@ -379,6 +385,19 @@ pub(crate) fn try_fast_simple_class_call(
         }
 
         let instance = PyObject::instance(cls_obj.clone());
+        if cd.is_exception_subclass {
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                let mut args_vec = Vec::with_capacity(arg_count);
+                for i in 0..arg_count {
+                    args_vec.push(unsafe { frame.stack.get_unchecked(func_idx + 1 + i) }.clone());
+                }
+                let mut attrs = inst.attrs.write();
+                if arg_count == 1 {
+                    attrs.insert(CompactString::from("message"), args_vec[0].clone());
+                }
+                attrs.insert(CompactString::from("args"), PyObject::tuple(args_vec));
+            }
+        }
         let mut new_frame = Frame::new_from_pool(
             Rc::clone(&pf.code),
             pf.globals.clone(),

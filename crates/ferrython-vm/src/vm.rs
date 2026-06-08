@@ -700,6 +700,9 @@ impl VirtualMachine {
                         }
                         crate::vm_fast_call::FastBlockResult::PopExcept => {
                             self.restore_previous_exception();
+                            if ferrython_core::error::has_pending_finalizers() {
+                                self.drain_pending_finalizers();
+                            }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_call::FastBlockResult::Fallback => unreachable!(),
@@ -763,13 +766,18 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         crate::vm_fast_call::FastDerefResult::Fallback => self.execute_one(instr),
-                        crate::vm_fast_call::FastDerefResult::Stored => unreachable!(),
+                        crate::vm_fast_call::FastDerefResult::Stored
+                        | crate::vm_fast_call::FastDerefResult::StoredNeedsDrain => unreachable!(),
                     }
                 }
                 // StoreDeref: lock-free write closure var
                 Opcode::StoreDeref => {
                     match crate::vm_fast_call::fast_store_deref(frame, instr.arg as usize) {
                         crate::vm_fast_call::FastDerefResult::Stored => {
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        crate::vm_fast_call::FastDerefResult::StoredNeedsDrain => {
+                            self.drain_pending_finalizers();
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => unreachable!(),

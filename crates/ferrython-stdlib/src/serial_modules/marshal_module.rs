@@ -90,7 +90,7 @@ pub fn create_marshal_module() -> PyObjectRef {
         };
         fn marshal_decode(data: &[u8], pos: &mut usize) -> PyResult<PyObjectRef> {
             if *pos >= data.len() {
-                return Err(PyException::value_error("marshal: truncated data"));
+                return Err(PyException::eof_error("EOF read where object expected"));
             }
             let tag = data[*pos];
             *pos += 1;

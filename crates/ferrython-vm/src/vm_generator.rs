@@ -132,12 +132,17 @@ impl VirtualMachine {
     ) -> GeneratorExceptionContext {
         let mut gen = gen_arc.write();
         let saved = gen.suspended_exception.take();
-        let saved_stack: Vec<_> = gen.suspended_exception_stack.drain(..).collect();
+        let mut saved_stack: Vec<_> = gen.suspended_exception_stack.drain(..).collect();
         drop(gen);
         let restored_generator_state = saved.is_some() || !saved_stack.is_empty();
         let caller_exception = self.active_exception.clone();
         let caller_stack = self.exception_state_stack.clone();
         if restored_generator_state {
+            if let Some(slot) = saved_stack.first_mut() {
+                if slot.is_none() {
+                    *slot = caller_exception.clone();
+                }
+            }
             self.exception_state_stack.clear();
             self.exception_state_stack.extend(saved_stack);
             self.active_exception = saved;
@@ -616,6 +621,8 @@ impl VirtualMachine {
             };
         let tb = PyObject::none();
 
+        let generator_exception_ctx = self.enter_generator_exception_state(gen_arc);
+
         // Try to find an exception handler in the generator's frame
         if let Some(handler_ip) = self.unwind_except() {
             let mut active = PyException::new(active_kind, active_msg);
@@ -670,7 +677,7 @@ impl VirtualMachine {
                 }
                 gen.set_frame_ptr(buf as *mut u8);
                 drop(gen);
-                self.restore_previous_exception();
+                self.restore_generator_caller_exception_state(generator_exception_ctx);
                 result
             } else {
                 gen.finished = true;
@@ -678,7 +685,7 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 frame.recycle(&mut self.frame_pool);
                 drop(gen);
-                self.restore_previous_exception();
+                self.restore_generator_caller_exception_state(generator_exception_ctx);
                 if let Err(e) = result {
                     return Err(e);
                 }
@@ -695,7 +702,7 @@ impl VirtualMachine {
             gen.finished = true;
             gen.clear_frame();
             drop(gen);
-            self.restore_previous_exception();
+            self.restore_generator_caller_exception_state(generator_exception_ctx);
             match exc_result {
                 Err(e) => Err(Self::wrap_generator_stop_iteration(e)),
                 Ok(value) => Ok(value),

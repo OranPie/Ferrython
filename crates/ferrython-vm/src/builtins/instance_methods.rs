@@ -524,6 +524,13 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
         inst.attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
     } else if let PyObjectPayload::ExceptionInstance(ei) = &obj.payload {
+        ferrython_core::object::validate_exception_attr_set(name.as_str(), &value)?;
+        if name == "__cause__" {
+            ei.ensure_attrs().write().insert(
+                CompactString::from("__suppress_context__"),
+                PyObject::bool_val(true),
+            );
+        }
         ei.ensure_attrs()
             .write()
             .insert(CompactString::from(name), value);
@@ -566,6 +573,18 @@ pub(super) fn builtin_object_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
                 name
             )))
         }
+    } else if let PyObjectPayload::ExceptionInstance(ei) = &obj.payload {
+        ferrython_core::object::validate_exception_attr_delete(name.as_str())?;
+        if let Some(attrs) = ei.get_attrs() {
+            if attrs.write().swap_remove(name.as_str()).is_some() {
+                return Ok(PyObject::none());
+            }
+        }
+        Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'",
+            obj.type_name(),
+            name
+        )))
     } else {
         Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute deletion",

@@ -55,7 +55,7 @@ impl Compiler {
             }
             _ => {
                 return Err(CompileError::InvalidAssignTarget {
-                    location: target.location,
+                    location: target.outer_location,
                 });
             }
         }
@@ -144,7 +144,7 @@ impl Compiler {
             }
             _ => {
                 return Err(CompileError::InvalidAssignTarget {
-                    location: target.location,
+                    location: target.outer_location,
                 });
             }
         }

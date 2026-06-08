@@ -149,6 +149,23 @@ impl VirtualMachine {
         Self::store_exc_attr(exc_value, "__context__", PyObject::none());
     }
 
+    pub(crate) fn sync_active_exception_attr_set(&mut self, exc_value: &PyObjectRef, name: &str) {
+        let Some(active) = self.active_exception.as_mut() else {
+            return;
+        };
+        let Some(original) = active.original.as_ref() else {
+            return;
+        };
+        if !PyObjectRef::ptr_eq(original, exc_value) {
+            return;
+        }
+        match name {
+            "__context__" => active.context = None,
+            "__cause__" => active.cause = None,
+            _ => {}
+        }
+    }
+
     pub(crate) fn same_exception_object(a: &PyException, b: &PyException) -> bool {
         match (&a.original, &b.original) {
             (Some(left), Some(right)) => PyObjectRef::ptr_eq(left, right),

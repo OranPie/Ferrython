@@ -356,10 +356,15 @@ pub(super) fn pickle_serialize_p0(
             buf.extend_from_slice(&p0_escape_unicode(s));
             buf.push(b'\n');
         }
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+        PyObjectPayload::Bytes(b) => {
             buf.push(b'S');
             buf.extend_from_slice(&p0_escape_bytes(b));
             buf.push(b'\n');
+        }
+        PyObjectPayload::ByteArray(b) => {
+            buf.extend_from_slice(b"cbuiltins\nbytearray\n(");
+            pickle_serialize_p0(&PyObject::bytes((**b).clone()), buf, memo)?;
+            buf.extend_from_slice(b"tR");
         }
         PyObjectPayload::Function(func) => {
             if let Some((module, name)) = pickle_global_function_parts(obj, func) {
@@ -487,7 +492,8 @@ pub(super) fn pickle_serialize_p0(
                 pickle_serialize_defaultdict_p0(&factory, &items, buf, memo)?;
                 return Ok(());
             }
-            let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            let (module_name, class_name, reduce_args, data_pairs) =
+                pickle_extract_instance(obj, inst)?;
             if let Some((items, attrs)) = ordered_dict_pickle_parts(inst) {
                 pickle_serialize_ordered_dict_p0(
                     &module_name,
@@ -505,7 +511,13 @@ pub(super) fn pickle_serialize_p0(
             buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
-            buf.extend_from_slice(b"(tR");
+            buf.push(b'(');
+            if let PyObjectPayload::Tuple(items) = &reduce_args.payload {
+                for item in items.iter() {
+                    pickle_serialize_p0(item, buf, memo)?;
+                }
+            }
+            buf.extend_from_slice(b"tR");
             p0_emit_put_obj(obj, buf, memo);
             let state = instance_state_dict(&data_pairs);
             pickle_serialize_p0(&state, buf, memo)?;
@@ -762,17 +774,8 @@ pub(super) fn pickle_serialize_p0(
             buf.extend_from_slice(type_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
-            if ei.args.is_empty() {
-                // Use the message as the sole arg
-                pickle_serialize_p0(
-                    &PyObject::str_val(CompactString::from(ei.message.as_str())),
-                    buf,
-                    memo,
-                )?;
-            } else {
-                for arg in &ei.args {
-                    pickle_serialize_p0(arg, buf, memo)?;
-                }
+            for arg in &ei.args {
+                pickle_serialize_p0(arg, buf, memo)?;
             }
             buf.extend_from_slice(b"tR");
             if let Some(state) = exception_pickle_state(ei) {
@@ -806,7 +809,16 @@ pub(super) fn pickle_serialize_p0(
 fn pickle_extract_instance(
     obj: &PyObjectRef,
     inst: &ferrython_core::object::InstanceData,
-) -> PyResult<(String, String, Vec<(CompactString, PyObjectRef)>)> {
+) -> PyResult<(
+    String,
+    String,
+    PyObjectRef,
+    Vec<(CompactString, PyObjectRef)>,
+)> {
+    let is_exception_subclass = matches!(
+        &inst.class.payload,
+        PyObjectPayload::Class(cd) if cd.is_exception_subclass
+    );
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
         inst.class
             .get_attr("__qualname__")
@@ -883,6 +895,15 @@ fn pickle_extract_instance(
             }
         }
     }
+    let reduce_args = if is_exception_subclass {
+        obj.get_attr("args")
+            .unwrap_or_else(|| PyObject::tuple(vec![]))
+    } else {
+        PyObject::tuple(vec![])
+    };
+    if is_exception_subclass {
+        data_pairs.retain(|(key, _)| key.as_str() != "args");
+    }
     if is_namedtuple {
         data_pairs.push((
             CompactString::from("__namedtuple__"),
@@ -898,7 +919,7 @@ fn pickle_extract_instance(
             data_pairs.push((CompactString::from("__module__"), module));
         }
     }
-    Ok((module_name, class_name, data_pairs))
+    Ok((module_name, class_name, reduce_args, data_pairs))
 }
 
 fn defaultdict_pickle_parts(
@@ -1160,10 +1181,17 @@ pub(super) fn pickle_serialize_p2(
             buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(bytes);
         }
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+        PyObjectPayload::Bytes(b) => {
             buf.push(b'B');
             buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
             buf.extend_from_slice(b);
+        }
+        PyObjectPayload::ByteArray(b) => {
+            buf.extend_from_slice(b"cbuiltins\nbytearray\n");
+            buf.push(b'B');
+            buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            buf.extend_from_slice(b);
+            buf.extend_from_slice(b"\x85R");
         }
         PyObjectPayload::Function(func) => {
             if let Some((module, name)) = pickle_global_function_parts(obj, func) {
@@ -1305,7 +1333,8 @@ pub(super) fn pickle_serialize_p2(
                 pickle_serialize_defaultdict_p2(&factory, &items, buf, memo)?;
                 return Ok(());
             }
-            let (module_name, class_name, data_pairs) = pickle_extract_instance(obj, inst)?;
+            let (module_name, class_name, reduce_args, data_pairs) =
+                pickle_extract_instance(obj, inst)?;
             if let Some((items, attrs)) = ordered_dict_pickle_parts(inst) {
                 pickle_serialize_ordered_dict_p2(
                     &module_name,
@@ -1323,7 +1352,7 @@ pub(super) fn pickle_serialize_p2(
             buf.push(b'\n');
             buf.extend_from_slice(class_name.as_bytes());
             buf.push(b'\n');
-            pickle_serialize_p2(&PyObject::tuple(vec![]), buf, memo)?;
+            pickle_serialize_p2(&reduce_args, buf, memo)?;
             buf.push(b'R');
             p2_emit_put_obj(obj, buf, memo);
             let state = instance_state_dict(&data_pairs);
@@ -1652,16 +1681,8 @@ pub(super) fn pickle_serialize_p2(
             buf.extend_from_slice(type_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
-            if ei.args.is_empty() {
-                pickle_serialize_p2(
-                    &PyObject::str_val(CompactString::from(ei.message.as_str())),
-                    buf,
-                    memo,
-                )?;
-            } else {
-                for arg in &ei.args {
-                    pickle_serialize_p2(arg, buf, memo)?;
-                }
+            for arg in &ei.args {
+                pickle_serialize_p2(arg, buf, memo)?;
             }
             buf.extend_from_slice(b"tR");
             if let Some(state) = exception_pickle_state(ei) {

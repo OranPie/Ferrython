@@ -322,7 +322,11 @@ impl VirtualMachine {
                 Opcode::StoreDeref => {
                     let value = frame.pop();
                     let idx = instr.arg as usize;
-                    *frame.cells[idx].write() = Some(value);
+                    let old = frame.cells[idx].write().replace(value);
+                    drop(old);
+                    if ferrython_core::error::has_pending_finalizers() {
+                        self.drain_pending_finalizers();
+                    }
                 }
                 Opcode::DeleteDeref => {
                     let idx = instr.arg as usize;
@@ -1167,6 +1171,21 @@ impl VirtualMachine {
                     }
                     return Ok(None);
                 }
+                if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                {
+                    ferrython_core::object::validate_exception_attr_set(name.as_str(), &value)?;
+                    if name.as_str() == "__cause__" {
+                        inst.attrs.write().insert(
+                            CompactString::from("__suppress_context__"),
+                            PyObject::bool_val(true),
+                        );
+                    }
+                    if matches!(name.as_str(), "__context__" | "__cause__")
+                        && matches!(&value.payload, PyObjectPayload::None)
+                    {
+                        self.sync_active_exception_attr_set(&obj, name.as_str());
+                    }
+                }
                 // Check __slots__ restriction via ClassData.slots field
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     if let Some(allowed) = cd.collect_all_slots() {
@@ -1214,6 +1233,21 @@ impl VirtualMachine {
             }
             PyObjectPayload::Module(md) => {
                 md.attrs.write().insert(name.clone(), value);
+            }
+            PyObjectPayload::ExceptionInstance(ei) => {
+                ferrython_core::object::validate_exception_attr_set(name.as_str(), &value)?;
+                if name.as_str() == "__cause__" {
+                    ei.ensure_attrs().write().insert(
+                        CompactString::from("__suppress_context__"),
+                        PyObject::bool_val(true),
+                    );
+                }
+                if matches!(name.as_str(), "__context__" | "__cause__")
+                    && matches!(&value.payload, PyObjectPayload::None)
+                {
+                    self.sync_active_exception_attr_set(&obj, name.as_str());
+                }
+                ei.ensure_attrs().write().insert(name.clone(), value);
             }
             PyObjectPayload::BoundMethod { .. } => {
                 if name.as_str() == "__class__" {
@@ -1324,9 +1358,6 @@ impl VirtualMachine {
             | PyObjectPayload::BuiltinFunction(_) => {
                 // No persistent storage, but don't error — many decorators set __wrapped__ etc.
             }
-            PyObjectPayload::ExceptionInstance(ei) => {
-                ei.ensure_attrs().write().insert(name.clone(), value);
-            }
             _ => {
                 return Err(PyException::attribute_error(format!(
                     "'{}' object does not support attribute assignment",
@@ -1378,6 +1409,10 @@ impl VirtualMachine {
                 *cell.write() = None;
             }
             PyObjectPayload::Instance(inst) => {
+                if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                {
+                    ferrython_core::object::validate_exception_attr_delete(name.as_str())?;
+                }
                 // Check for descriptor with __delete__ or property fdel first
                 if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
                     if ferrython_core::object::is_property_like(&class_attr) {
@@ -1496,6 +1531,7 @@ impl VirtualMachine {
                 md.attrs.write().shift_remove(name.as_str());
             }
             PyObjectPayload::ExceptionInstance(ei) => {
+                ferrython_core::object::validate_exception_attr_delete(name.as_str())?;
                 if let Some(attrs) = ei.get_attrs() {
                     if attrs.write().shift_remove(name.as_str()).is_none() {
                         return Err(PyException::attribute_error(format!(

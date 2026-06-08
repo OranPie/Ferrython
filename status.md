@@ -1,6 +1,6 @@
 # Ferrython 修复状态
 
-Last updated: 2026-06-08T20:07:49+08:00
+Last updated: 2026-06-09T02:42:50+08:00
 
 ## 性能优化进度
 
@@ -2412,6 +2412,30 @@ Last updated: 2026-06-08T20:07:49+08:00
   - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_string test_slice test_tuple test_list test_iter`: `run=191 pass=182 fail=0 err=0 skip=9`
   - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`: `run=417 pass=326 fail=0 err=0 skip=91`
   - Broad pass-baseline rerun：所有原 pass-baseline 模块（除 `test_decimal`）独立 `timeout 30s` 无失败；`test_decimal` 独立 `timeout 60s` 保持 `run=161 pass=157 fail=0 err=0 skip=4`。
+
+## 2026-06-09 exception compatibility completion batch
+
+- 新增绿色模块：
+  - `test_exceptions`: 从 `TEST_BASELINE.md` 旧记录的 `run=55 pass=24 fail=16 err=5 skip=10` 收口到 `run=55 pass=45 fail=0 err=0 skip=10`，并加入 pass baseline。
+- 通用异常 / 语法兼容修复：
+  - lexer 增加 alternate indentation stack，按 CPython 行为识别 tab/space 混用并抛 `TabError`。
+  - `SyntaxError`/`IndentationError`/`TabError` 构造补齐 `filename`、`lineno`、UTF-8 字符 offset 和源码 `text`；`exec()`/`eval()`/`compile()` 路径统一走结构化 syntax exception helper。
+  - `compile()` bytes source 支持 `cp1251` 和 `iso-8859-7`，`bytes.decode()` 同步补齐这些编码。
+  - symbol/compile 诊断补齐 future import 位置、重复参数、global/nonlocal 冲突、函数内 import-star、generator expression 括号、非法赋值 target offset 等 CPython 兼容错误。
+  - generator 在 `throw()` / nested `try/except` / `yield` 组合下保存并恢复自己的 exception state，避免 caller `sys.exc_info()` 泄漏或覆盖 generator 内部异常。
+  - exception handler 清理路径在 `break` / `continue` 离开 `except` 时发射 `PopExcept`，`StoreDeref` / `PopExcept` drain pending finalizers，避免异常链和 finalizer 状态滞留。
+  - exception subclass instance 的 `StoreAttr` fast path 会回退到通用属性逻辑；Python 层设置 `__context__` / `__cause__ = None` 会同步 VM active exception 状态。
+- Baseline 更新：
+  - `TEST_BASELINE.md` 从 106 个零失败/零错误模块更新到 107 个；执行至少一个测试的模块从 100 个更新到 101 个，zero-test pass 仍为 6 个。
+- 验证：
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_exceptions`: `run=55 pass=45 fail=0 err=0 skip=10`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_int test_userstring test_exception_hierarchy test_ordered_dict`: `run=370 pass=323 fail=0 err=0 skip=47`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`: `run=417 pass=326 fail=0 err=0 skip=91`
+  - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal`: `run=161 pass=157 fail=0 err=0 skip=4`
 
 ## 后续修复队列
 

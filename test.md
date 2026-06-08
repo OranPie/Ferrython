@@ -1,6 +1,6 @@
 # Focused CPython Test Notes
 
-Last updated: 2026-06-08T20:07:49+08:00
+Last updated: 2026-06-09T02:42:50+08:00
 
 ## Current batch
 
@@ -911,3 +911,25 @@ Last updated: 2026-06-08T20:07:49+08:00
 - Guard validation
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_funcattrs`: `run=31 pass=31 fail=0 err=0 skip=0`.
   - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -q test_exception_hierarchy test_ordered_dict test_functools test_string test_bisect test_hmac test_operator`: `run=695 pass=587 fail=0 err=0 skip=108`.
+
+## 2026-06-09 exception compatibility completion batch
+
+- `test_exceptions`
+  - Previous baseline-table state: `run=55 pass=24 fail=16 err=5 skip=10`.
+  - Current result: `run=55 pass=45 fail=0 err=0 skip=10`.
+  - Fixed traits: structured syntax exception attrs/source text/offsets, TabError detection for ambiguous indentation, bytes-source encoding support for CPython compile tests, future/global/nonlocal/import-star diagnostic compatibility, invalid assignment target locations, generator exception-state restoration, exception-context cleanup, and finalizer draining around exception-handler exit.
+
+- Baseline guard
+  - `test_int test_userstring test_exception_hierarchy test_ordered_dict`: `run=370 pass=323 fail=0 err=0 skip=47`.
+  - `test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`: `run=417 pass=326 fail=0 err=0 skip=91`.
+  - `test_decimal`: `run=161 pass=157 fail=0 err=0 skip=4`.
+
+- Commands used in this batch
+  - `cargo fmt --all`
+  - `cargo check -p ferrython-vm`
+  - `cargo build -p ferrython-cli --bin ferrython`
+  - `git diff --check`
+  - `timeout 30s target/debug/ferrython tools/run_cpython_tests.py -v test_exceptions`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_int test_userstring test_exception_hierarchy test_ordered_dict`
+  - `timeout 45s target/debug/ferrython tools/run_cpython_tests.py -q test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower`
+  - `timeout 60s target/debug/ferrython tools/run_cpython_tests.py -q test_decimal`

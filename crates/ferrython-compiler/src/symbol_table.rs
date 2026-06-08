@@ -5,7 +5,7 @@
 
 use crate::error::CompileError;
 use ferrython_ast::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 mod model;
 mod resolver;
@@ -28,6 +28,8 @@ pub fn analyze(module: &Module) -> Result<SymbolTable, CompileError> {
 
 struct Analyzer {
     scope_stack: Vec<Scope>,
+    scope_locations: Vec<SourceLocation>,
+    decl_locations: Vec<FxHashMap<String, SourceLocation>>,
     errors: Vec<CompileError>,
 }
 
@@ -289,12 +291,30 @@ impl Analyzer {
     fn new() -> Self {
         Self {
             scope_stack: Vec::new(),
+            scope_locations: Vec::new(),
+            decl_locations: Vec::new(),
             errors: Vec::new(),
         }
     }
 
     fn current_scope(&mut self) -> &mut Scope {
         self.scope_stack.last_mut().expect("no scope on stack")
+    }
+
+    fn current_scope_location(&self) -> SourceLocation {
+        self.scope_locations.last().copied().unwrap_or_default()
+    }
+
+    fn explicit_decl_location(&self, name: &str) -> Option<SourceLocation> {
+        self.decl_locations
+            .last()
+            .and_then(|locations| locations.get(name).copied())
+    }
+
+    fn set_explicit_decl_location(&mut self, name: &str, location: SourceLocation) {
+        if let Some(locations) = self.decl_locations.last_mut() {
+            locations.insert(name.to_string(), location);
+        }
     }
 
     /// True if the current scope is a function directly inside a class scope.
@@ -318,16 +338,35 @@ impl Analyzer {
         false
     }
 
-    fn push_scope(&mut self, name: impl Into<String>, scope_type: ScopeType) {
+    fn push_scope(
+        &mut self,
+        name: impl Into<String>,
+        scope_type: ScopeType,
+        location: SourceLocation,
+    ) {
         self.scope_stack.push(Scope::new(name, scope_type));
+        self.scope_locations.push(location);
+        self.decl_locations.push(FxHashMap::default());
     }
 
     fn pop_scope(&mut self) -> Scope {
+        self.scope_locations
+            .pop()
+            .expect("scope location stack underflow");
+        self.decl_locations
+            .pop()
+            .expect("declaration location stack underflow");
         self.scope_stack.pop().expect("scope stack underflow")
     }
 
     fn finish(mut self) -> Scope {
         assert_eq!(self.scope_stack.len(), 1, "scope stack not balanced");
+        self.scope_locations
+            .pop()
+            .expect("scope location stack underflow");
+        self.decl_locations
+            .pop()
+            .expect("declaration location stack underflow");
         self.scope_stack.pop().unwrap()
     }
 
@@ -456,9 +495,10 @@ impl Analyzer {
     }
 
     fn analyze_module(&mut self, module: &Module) {
-        self.push_scope("<module>", ScopeType::Module);
+        self.push_scope("<module>", ScopeType::Module, SourceLocation::default());
         match module {
             Module::Module { body, .. } | Module::Interactive { body } => {
+                self.validate_future_imports(body);
                 for stmt in body {
                     self.analyze_statement(stmt);
                 }
@@ -466,6 +506,54 @@ impl Analyzer {
             Module::Expression { body } => {
                 self.analyze_expression(body);
             }
+        }
+    }
+
+    fn validate_future_imports(&mut self, body: &[Statement]) {
+        let mut future_region = true;
+        for stmt in body {
+            let is_docstring = matches!(
+                &stmt.node,
+                StatementKind::Expr { value }
+                    if matches!(
+                        value.node,
+                        ExpressionKind::Constant {
+                            value: Constant::Str(_)
+                        }
+                    )
+            );
+            if is_docstring && future_region {
+                continue;
+            }
+            if let StatementKind::ImportFrom {
+                module: Some(module),
+                names,
+                ..
+            } = &stmt.node
+            {
+                if module == "__future__" {
+                    if !future_region {
+                        self.syntax_error(
+                            "from __future__ imports must occur at the beginning of the file",
+                            stmt.location,
+                        );
+                    }
+                    for alias in names {
+                        match alias.name.as_str() {
+                            "absolute_import" | "annotations" | "barry_as_FLUFL" | "division"
+                            | "generator_stop" | "generators" | "nested_scopes"
+                            | "print_function" | "unicode_literals" | "with_statement" => {}
+                            "braces" => self.syntax_error("not a chance", stmt.location),
+                            name => self.syntax_error(
+                                format!("future feature {} is not defined", name),
+                                stmt.location,
+                            ),
+                        }
+                    }
+                    continue;
+                }
+            }
+            future_region = false;
         }
     }
 
@@ -510,7 +598,7 @@ impl Analyzer {
                     }
                 }
                 // Push function scope
-                self.push_scope(name.as_str(), ScopeType::Function);
+                self.push_scope(name.as_str(), ScopeType::Function, stmt.location);
                 self.analyze_arguments(args);
                 for s in body {
                     self.analyze_statement(s);
@@ -536,7 +624,7 @@ impl Analyzer {
                 for kw in keywords {
                     self.analyze_expression(&kw.value);
                 }
-                self.push_scope(name.as_str(), ScopeType::Class);
+                self.push_scope(name.as_str(), ScopeType::Class, stmt.location);
                 // Implicitly bind __class__ so methods can use super() without args
                 self.current_scope().mark_assigned("__class__");
                 for s in body {
@@ -720,7 +808,7 @@ impl Analyzer {
                         if self.current_scope().scope_type != ScopeType::Module {
                             self.errors.push(CompileError::syntax(
                                 "import * only allowed at module level",
-                                alias.location,
+                                self.current_scope_location(),
                             ));
                         }
                         continue;
@@ -749,17 +837,31 @@ impl Analyzer {
                         }
                     }
                     self.current_scope().add_symbol(name, SymbolScope::Global);
+                    self.set_explicit_decl_location(name, stmt.location);
                 }
             }
 
             StatementKind::Nonlocal { names } => {
                 for name in names {
-                    if self.current_scope().scope_type == ScopeType::Function {
+                    if self.current_scope().scope_type == ScopeType::Module {
+                        self.errors.push(CompileError::syntax(
+                            "nonlocal declaration not allowed at module level",
+                            stmt.location,
+                        ));
+                    } else if self.current_scope().scope_type == ScopeType::Function {
+                        let explicit_global_location = self.explicit_decl_location(name);
                         if let Some(sym) = self.current_scope().symbols.get(name.as_str()) {
                             if sym.is_parameter {
                                 self.errors.push(CompileError::syntax(
                                     format!("name '{}' is parameter and nonlocal", name),
                                     stmt.location,
+                                ));
+                            } else if sym.scope == SymbolScope::Global
+                                && sym.is_explicit_global_or_nonlocal
+                            {
+                                self.errors.push(CompileError::syntax(
+                                    format!("name '{}' is nonlocal and global", name),
+                                    explicit_global_location.unwrap_or(stmt.location),
                                 ));
                             } else if sym.is_assigned || sym.is_referenced {
                                 self.errors.push(CompileError::syntax(
@@ -773,6 +875,7 @@ impl Analyzer {
                         }
                     }
                     self.current_scope().add_symbol(name, SymbolScope::Nonlocal);
+                    self.set_explicit_decl_location(name, stmt.location);
                 }
             }
 
@@ -892,7 +995,7 @@ impl Analyzer {
                 for default in args.kw_defaults.iter().flatten() {
                     self.analyze_expression(default);
                 }
-                self.push_scope("<lambda>", ScopeType::Function);
+                self.push_scope("<lambda>", ScopeType::Function, expr.location);
                 self.analyze_arguments(args);
                 self.analyze_expression(body);
                 let child = self.pop_scope();
@@ -929,7 +1032,7 @@ impl Analyzer {
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
                 }
-                self.push_scope("<comprehension>", ScopeType::Comprehension);
+                self.push_scope("<comprehension>", ScopeType::Comprehension, expr.location);
                 // First generator: only target + conditions (iter already analyzed above)
                 if let Some(first) = generators.first() {
                     self.analyze_target(&first.target);
@@ -955,7 +1058,7 @@ impl Analyzer {
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
                 }
-                self.push_scope("<comprehension>", ScopeType::Comprehension);
+                self.push_scope("<comprehension>", ScopeType::Comprehension, expr.location);
                 if let Some(first) = generators.first() {
                     self.analyze_target(&first.target);
                     for cond in &first.ifs {
@@ -976,7 +1079,7 @@ impl Analyzer {
                 if let Some(first) = generators.first() {
                     self.analyze_expression(&first.iter);
                 }
-                self.push_scope("<genexpr>", ScopeType::Comprehension);
+                self.push_scope("<genexpr>", ScopeType::Comprehension, expr.location);
                 if let Some(first) = generators.first() {
                     self.analyze_target(&first.target);
                     for cond in &first.ifs {

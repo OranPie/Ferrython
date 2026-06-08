@@ -141,6 +141,9 @@ impl VirtualMachine {
             Opcode::PopExcept => {
                 self.vm_frame().pop_block();
                 self.restore_previous_exception();
+                if ferrython_core::error::has_pending_finalizers() {
+                    self.drain_pending_finalizers();
+                }
             }
             Opcode::EndFinally => {
                 return self.exec_end_finally();

@@ -289,6 +289,14 @@ pub(crate) fn call_bytes_method(
                     let s: String = b.iter().map(|&x| x as char).collect();
                     Ok(PyObject::str_val(CompactString::from(s)))
                 }
+                "cp1251" | "windows-1251" | "windows1251" => {
+                    let s: String = b.iter().map(|&x| decode_cp1251_byte(x)).collect();
+                    Ok(PyObject::str_val(CompactString::from(s)))
+                }
+                "iso-8859-7" | "iso8859-7" | "iso_8859_7" | "greek" => {
+                    let s: String = b.iter().map(|&x| decode_iso_8859_7_byte(x)).collect();
+                    Ok(PyObject::str_val(CompactString::from(s)))
+                }
                 "utf-16" | "utf16" => {
                     // Auto-detect BOM
                     if b.len() >= 2 && b[0] == 0xFF && b[1] == 0xFE {
@@ -1133,6 +1141,110 @@ pub(crate) fn call_bytes_method(
             "'bytes' object has no attribute '{}'",
             method
         ))),
+    }
+}
+
+fn decode_cp1251_byte(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{0402}',
+        0x81 => '\u{0403}',
+        0x82 => '\u{201A}',
+        0x83 => '\u{0453}',
+        0x84 => '\u{201E}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{20AC}',
+        0x89 => '\u{2030}',
+        0x8A => '\u{0409}',
+        0x8B => '\u{2039}',
+        0x8C => '\u{040A}',
+        0x8D => '\u{040C}',
+        0x8E => '\u{040B}',
+        0x8F => '\u{040F}',
+        0x90 => '\u{0452}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x99 => '\u{2122}',
+        0x9A => '\u{0459}',
+        0x9B => '\u{203A}',
+        0x9C => '\u{045A}',
+        0x9D => '\u{045C}',
+        0x9E => '\u{045B}',
+        0x9F => '\u{045F}',
+        0xA1 => '\u{040E}',
+        0xA2 => '\u{045E}',
+        0xA3 => '\u{0408}',
+        0xA5 => '\u{0490}',
+        0xA8 => '\u{0401}',
+        0xAA => '\u{0404}',
+        0xAF => '\u{0407}',
+        0xB2 => '\u{0406}',
+        0xB3 => '\u{0456}',
+        0xB4 => '\u{0491}',
+        0xB8 => '\u{0451}',
+        0xBA => '\u{0454}',
+        0xBF => '\u{0457}',
+        0xC0..=0xDF => char::from_u32(0x0410 + (byte as u32 - 0xC0)).unwrap(),
+        0xE0..=0xFF => char::from_u32(0x0430 + (byte as u32 - 0xE0)).unwrap(),
+        _ => char::from(byte),
+    }
+}
+
+fn decode_iso_8859_7_byte(byte: u8) -> char {
+    match byte {
+        0xA1 => '\u{2018}',
+        0xA2 => '\u{2019}',
+        0xA3 => '\u{00A3}',
+        0xA4 => '\u{20AC}',
+        0xA5 => '\u{20AF}',
+        0xA6 => '\u{00A6}',
+        0xA7 => '\u{00A7}',
+        0xA8 => '\u{00A8}',
+        0xA9 => '\u{00A9}',
+        0xAA => '\u{037A}',
+        0xAB => '\u{00AB}',
+        0xAC => '\u{00AC}',
+        0xAD => '\u{00AD}',
+        0xAF => '\u{2015}',
+        0xB0 => '\u{00B0}',
+        0xB1 => '\u{00B1}',
+        0xB2 => '\u{00B2}',
+        0xB3 => '\u{00B3}',
+        0xB4 => '\u{0384}',
+        0xB5 => '\u{0385}',
+        0xB6 => '\u{0386}',
+        0xB7 => '\u{00B7}',
+        0xB8 => '\u{0388}',
+        0xB9 => '\u{0389}',
+        0xBA => '\u{038A}',
+        0xBB => '\u{00BB}',
+        0xBC => '\u{038C}',
+        0xBE => '\u{038E}',
+        0xBF => '\u{038F}',
+        0xC0 => '\u{0390}',
+        0xC1..=0xD1 => char::from_u32(0x0391 + (byte as u32 - 0xC1)).unwrap(),
+        0xD3..=0xDA => char::from_u32(0x03A3 + (byte as u32 - 0xD3)).unwrap(),
+        0xDB => '\u{03AA}',
+        0xDC => '\u{03AB}',
+        0xDD => '\u{03AC}',
+        0xDE => '\u{03AD}',
+        0xDF => '\u{03AE}',
+        0xE0 => '\u{03AF}',
+        0xE1..=0xF1 => char::from_u32(0x03B1 + (byte as u32 - 0xE1)).unwrap(),
+        0xF2 => '\u{03C2}',
+        0xF3..=0xFA => char::from_u32(0x03C3 + (byte as u32 - 0xF3)).unwrap(),
+        0xFB => '\u{03CA}',
+        0xFC => '\u{03CB}',
+        0xFD => '\u{03CC}',
+        0xFE => '\u{03CD}',
+        0xFF => '\u{03CE}',
+        _ => char::from(byte),
     }
 }
 

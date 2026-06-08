@@ -1,6 +1,6 @@
 # CPython Test Baseline
 
-Last updated: 2026-06-08T20:07:49+08:00
+Last updated: 2026-06-09T02:42:50+08:00
 
 This file records the current module-level CPython compatibility baseline for `target/debug/ferrython`. Future fixes should not regress modules listed in the pass baseline unless the baseline is intentionally refreshed with a clear reason.
 
@@ -53,6 +53,7 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_enumerate | 85 | 71 | 0 | 0 | 14 | 0s |
 | test_extcall | 0 | 0 | 0 | 0 | 0 | 0s |
 | test_exception_hierarchy | 16 | 15 | 0 | 0 | 1 | 0s |
+| test_exceptions | 55 | 45 | 0 | 0 | 10 | 0s |
 | test_fnmatch | 12 | 12 | 0 | 0 | 0 | 0s |
 | test_format | 9 | 7 | 0 | 0 | 2 | 0s |
 | test_fractions | 31 | 31 | 0 | 0 | 0 | 1s |
@@ -124,9 +125,9 @@ Each module was run independently with a 30 second timeout, so crashes/timeouts 
 | test_with | 49 | 49 | 0 | 0 | 0 | 0s |
 | test_yield_from | 33 | 33 | 0 | 0 | 0 | 0s |
 
-Pass baseline summary: 106 modules have zero failures/errors. Of those, 100 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
+Pass baseline summary: 107 modules have zero failures/errors. Of those, 101 modules execute at least one test and 6 modules are current load-only/zero-test passes (`test_extcall`, `test_genexps`, `test_listcomps`, `test_setcomps`, `test_unpack`, `test_unpack_ex`).
 
-Latest guard: on 2026-06-08T20:07:49+08:00, all 104 pre-existing pass-baseline modules except `test_decimal` were rerun independently with `timeout 30s` and produced `baseline failures: 0`; `test_decimal` was rerun separately with `timeout 60s` and kept `run=161 pass=157 fail=0 err=0 skip=4`; new baseline module `test_int` passed with `run=35 pass=23 fail=0 err=0 skip=12`.
+Latest guard: on 2026-06-09T02:42:50+08:00, new baseline module `test_exceptions` passed with `run=55 pass=45 fail=0 err=0 skip=10`; focused baseline guards kept `test_int test_userstring test_exception_hierarchy test_ordered_dict` green with `run=370 pass=323 fail=0 err=0 skip=47`, `test_functools test_bisect test_operator test_hmac test_hash test_numeric_tower` green with `run=417 pass=326 fail=0 err=0 skip=91`, and `test_decimal` green with `run=161 pass=157 fail=0 err=0 skip=4`.
 
 ## Current Non-Baseline Modules
 
@@ -139,7 +140,6 @@ These modules are not protected as passing gates yet.
 | test_coroutines | FAIL | 89 | 10 | 11 | 68 | 0 | 0s |
 | test_dataclasses | FAIL | 173 | 48 | 82 | 43 | 0 | 0s |
 | test_descr | FAIL | 145 | 37 | 56 | 42 | 10 | 0s |
-| test_exceptions | FAIL | 55 | 24 | 16 | 5 | 10 | 1s |
 | test_float | FAIL | 42 | 10 | 17 | 10 | 5 | 1s |
 | test_fstring | FAIL | 58 | 27 | 27 | 4 | 0 | 0s |
 | test_gc | TIMEOUT | 0 | 0 | 0 | 0 | 0 | 30s |

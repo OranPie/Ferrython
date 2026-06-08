@@ -27,6 +27,7 @@ impl Parser {
             }
 
             if self.check(TokenKind::Star) {
+                let star_span = self.peek().span;
                 self.advance();
                 seen_star = true;
                 if self.check(TokenKind::Comma) || self.check(TokenKind::Colon) {
@@ -34,7 +35,7 @@ impl Parser {
                 } else if self.check(TokenKind::RightParen) {
                     return Err(ParseError::new(
                         ParseErrorKind::InvalidSyntax("named arguments must follow bare *".into()),
-                        self.peek().span,
+                        star_span,
                     ));
                 } else {
                     let location = self.current_location();
@@ -157,7 +158,7 @@ impl Parser {
                         "duplicate argument '{}' in function definition",
                         name
                     )),
-                    Self::span_from_location(arg.location),
+                    Span::point(arg.location.line, 0),
                 ));
             }
             seen.push(name);
@@ -262,6 +263,14 @@ impl Parser {
                 // Check for generator expression: func(expr for x in iter)
                 if self.check(TokenKind::For) && args.is_empty() && keywords.is_empty() {
                     let generators = self.parse_comp_for()?;
+                    if self.check(TokenKind::Comma) {
+                        return Err(ParseError::new(
+                            ParseErrorKind::SyntaxErrorMessage(
+                                "Generator expression must be parenthesized".into(),
+                            ),
+                            Self::span_from_location(Self::expression_outer_location(&expr)),
+                        ));
+                    }
                     let loc = Self::with_end_location(
                         open_location,
                         generators
@@ -323,7 +332,13 @@ impl Parser {
                         });
                         has_keyword = true;
                     } else {
-                        args.push(expr);
+                        return Err(ParseError::new(
+                            ParseErrorKind::SyntaxErrorMessage(
+                                "expression cannot contain assignment, perhaps you meant \"==\"?"
+                                    .into(),
+                            ),
+                            Self::span_from_location(expr.location),
+                        ));
                     }
                 } else {
                     if has_kwarg_unpacking {

@@ -17,6 +17,7 @@ use std::rc::Rc;
 fn validate_single_input(
     module: &AstModule,
     filename: &str,
+    source: &str,
     source_ends_with_newline: bool,
 ) -> PyResult<()> {
     fn is_compound_statement(stmt: &Statement) -> bool {
@@ -46,6 +47,7 @@ fn validate_single_input(
             ExceptionKind::SyntaxError,
             "multiple statements found while compiling a single statement",
             filename,
+            source,
             first_line as i64,
             first.location.column as i64 + 1,
         ));
@@ -58,6 +60,7 @@ fn validate_single_input(
             ExceptionKind::SyntaxError,
             "invalid syntax",
             filename,
+            source,
             first_line as i64,
             first.location.column as i64,
         ));
@@ -125,6 +128,7 @@ fn warn_invalid_escape(vm: &mut VirtualMachine, filename: &str, escape: char) ->
             ExceptionKind::SyntaxError,
             &format!("invalid escape sequence \\{}", escape),
             filename,
+            "",
             1,
             1,
         )),
@@ -157,6 +161,7 @@ fn warn_identity_literal(vm: &mut VirtualMachine, filename: &str) -> PyResult<()
             ExceptionKind::SyntaxError,
             "\"is\" with a literal. Did you mean \"==\"?",
             filename,
+            "",
             1,
             1,
         )),
@@ -180,7 +185,7 @@ fn parse_with_compile_warnings(
     } else {
         ferrython_parser::parse(source, filename)
     };
-    let module = parsed.map_err(|e| parse_error_to_syntax_exc(filename, e))?;
+    let module = parsed.map_err(|e| parse_error_to_syntax_exc(filename, source, e))?;
     if module_has_identity_literal(&module) {
         warn_identity_literal(vm, filename)?;
     }
@@ -598,12 +603,16 @@ fn decode_source_bytes(bytes: &[u8], filename: &str) -> PyResult<String> {
         "utf-8" | "utf8" => std::str::from_utf8(bytes)
             .map(|s| s.to_string())
             .map_err(|_| {
+                let lossy = String::from_utf8_lossy(bytes).into_owned();
                 build_syntax_exception(
                     ExceptionKind::SyntaxError,
                     "invalid or missing encoding declaration",
                     filename,
+                    &lossy,
                     1,
-                    0,
+                    source_line(&lossy, 1)
+                        .map(|line| line.chars().count() as i64 + 1)
+                        .unwrap_or(0),
                 )
             }),
         "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
@@ -612,10 +621,15 @@ fn decode_source_bytes(bytes: &[u8], filename: &str) -> PyResult<String> {
         "iso-8859-15" | "iso8859-15" | "iso_8859_15" | "latin-9" | "latin9" => {
             Ok(bytes.iter().map(|b| decode_iso_8859_15_byte(*b)).collect())
         }
+        "cp1251" | "windows-1251" => Ok(bytes.iter().map(|b| decode_cp1251_byte(*b)).collect()),
+        "iso-8859-7" | "iso8859-7" | "iso-8859_7" | "iso_8859-7" | "greek" => {
+            Ok(bytes.iter().map(|b| decode_iso_8859_7_byte(*b)).collect())
+        }
         _ => Err(build_syntax_exception(
             ExceptionKind::SyntaxError,
             &format!("unknown encoding: {}", encoding),
             filename,
+            "",
             0,
             0,
         )),
@@ -690,6 +704,110 @@ fn decode_iso_8859_15_byte(byte: u8) -> char {
     }
 }
 
+fn decode_cp1251_byte(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{0402}',
+        0x81 => '\u{0403}',
+        0x82 => '\u{201A}',
+        0x83 => '\u{0453}',
+        0x84 => '\u{201E}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{20AC}',
+        0x89 => '\u{2030}',
+        0x8A => '\u{0409}',
+        0x8B => '\u{2039}',
+        0x8C => '\u{040A}',
+        0x8D => '\u{040C}',
+        0x8E => '\u{040B}',
+        0x8F => '\u{040F}',
+        0x90 => '\u{0452}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x99 => '\u{2122}',
+        0x9A => '\u{0459}',
+        0x9B => '\u{203A}',
+        0x9C => '\u{045A}',
+        0x9D => '\u{045C}',
+        0x9E => '\u{045B}',
+        0x9F => '\u{045F}',
+        0xA1 => '\u{040E}',
+        0xA2 => '\u{045E}',
+        0xA3 => '\u{0408}',
+        0xA5 => '\u{0490}',
+        0xA8 => '\u{0401}',
+        0xAA => '\u{0404}',
+        0xAF => '\u{0407}',
+        0xB2 => '\u{0406}',
+        0xB3 => '\u{0456}',
+        0xB4 => '\u{0491}',
+        0xB8 => '\u{0451}',
+        0xBA => '\u{0454}',
+        0xBF => '\u{0457}',
+        0xC0..=0xDF => char::from_u32(0x0410 + (byte as u32 - 0xC0)).unwrap(),
+        0xE0..=0xFF => char::from_u32(0x0430 + (byte as u32 - 0xE0)).unwrap(),
+        _ => char::from(byte),
+    }
+}
+
+fn decode_iso_8859_7_byte(byte: u8) -> char {
+    match byte {
+        0xA1 => '\u{2018}',
+        0xA2 => '\u{2019}',
+        0xA3 => '\u{00A3}',
+        0xA4 => '\u{20AC}',
+        0xA5 => '\u{20AF}',
+        0xA6 => '\u{00A6}',
+        0xA7 => '\u{00A7}',
+        0xA8 => '\u{00A8}',
+        0xA9 => '\u{00A9}',
+        0xAA => '\u{037A}',
+        0xAB => '\u{00AB}',
+        0xAC => '\u{00AC}',
+        0xAD => '\u{00AD}',
+        0xAF => '\u{2015}',
+        0xB0 => '\u{00B0}',
+        0xB1 => '\u{00B1}',
+        0xB2 => '\u{00B2}',
+        0xB3 => '\u{00B3}',
+        0xB4 => '\u{0384}',
+        0xB5 => '\u{0385}',
+        0xB6 => '\u{0386}',
+        0xB7 => '\u{00B7}',
+        0xB8 => '\u{0388}',
+        0xB9 => '\u{0389}',
+        0xBA => '\u{038A}',
+        0xBB => '\u{00BB}',
+        0xBC => '\u{038C}',
+        0xBE => '\u{038E}',
+        0xBF => '\u{038F}',
+        0xC0 => '\u{0390}',
+        0xC1..=0xD1 => char::from_u32(0x0391 + (byte as u32 - 0xC1)).unwrap(),
+        0xD3..=0xDA => char::from_u32(0x03A3 + (byte as u32 - 0xD3)).unwrap(),
+        0xDB => '\u{03AA}',
+        0xDC => '\u{03AB}',
+        0xDD => '\u{03AC}',
+        0xDE => '\u{03AD}',
+        0xDF => '\u{03AE}',
+        0xE0 => '\u{03AF}',
+        0xE1..=0xF1 => char::from_u32(0x03B1 + (byte as u32 - 0xE1)).unwrap(),
+        0xF2 => '\u{03C2}',
+        0xF3..=0xFA => char::from_u32(0x03C3 + (byte as u32 - 0xF3)).unwrap(),
+        0xFB => '\u{03CA}',
+        0xFC => '\u{03CB}',
+        0xFD => '\u{03CC}',
+        0xFE => '\u{03CD}',
+        0xFF => '\u{03CE}',
+        _ => char::from(byte),
+    }
+}
+
 impl VirtualMachine {
     // ── exec/eval/compile helpers (moved from vm_call.rs) ──
 
@@ -730,10 +848,10 @@ impl VirtualMachine {
                 "exec() arg 1 must be a string, bytes or code object",
             )?;
             let module = ferrython_parser::parse(&code_str, "<string>")
-                .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
+                .map_err(|e| parse_error_to_syntax_exc("<string>", &code_str, e))?;
             Rc::new(
                 ferrython_compiler::compile(&module, "<string>")
-                    .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?,
+                    .map_err(|e| compile_error_to_syntax_exc("<string>", &code_str, e))?,
             )
         };
         if matches!(&args[0].payload, PyObjectPayload::Code(_)) && !code.freevars.is_empty() {
@@ -1031,7 +1149,7 @@ impl VirtualMachine {
             let module = parse_with_compile_warnings(self, &wrapped, "<string>", false)?;
             Rc::new(
                 ferrython_compiler::compile(&module, "<string>")
-                    .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?,
+                    .map_err(|e| compile_error_to_syntax_exc("<string>", &wrapped, e))?,
             )
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
@@ -1222,7 +1340,7 @@ impl VirtualMachine {
                 Ok(module) => {
                     validate_ast_compile_mode(&module, &mode)?;
                     let code = ferrython_compiler::compile(&module, &filename)
-                        .map_err(|e| compile_ast_error_to_value_exc(&filename, e))?;
+                        .map_err(|e| compile_ast_error_to_value_exc(&filename, "", e))?;
                     return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
                         code,
                     ))));
@@ -1252,7 +1370,7 @@ impl VirtualMachine {
                     .map(|module| ferrython_stdlib::module_ast_to_pyobject(&module)),
                 "single" => {
                     let module = parse_with_compile_warnings(self, &source, &filename, false)?;
-                    validate_single_input(&module, &filename, source_ends_with_newline)?;
+                    validate_single_input(&module, &filename, &source, source_ends_with_newline)?;
                     Ok(match module {
                         ferrython_ast::Module::Module { body, .. } => {
                             ferrython_stdlib::module_ast_to_pyobject(
@@ -1282,7 +1400,12 @@ impl VirtualMachine {
         };
         let module = parse_with_compile_warnings(self, &effective_source, &filename, false)?;
         let module = if mode == "single" {
-            validate_single_input(&module, &filename, source_ends_with_newline)?;
+            validate_single_input(
+                &module,
+                &filename,
+                &effective_source,
+                source_ends_with_newline,
+            )?;
             match module {
                 ferrython_ast::Module::Module { body, .. } => {
                     ferrython_ast::Module::Interactive { body }
@@ -1293,7 +1416,7 @@ impl VirtualMachine {
             module
         };
         let code = ferrython_compiler::compile(&module, &filename)
-            .map_err(|e| compile_error_to_syntax_exc(&filename, e))?;
+            .map_err(|e| compile_error_to_syntax_exc(&filename, &effective_source, e))?;
         Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(
             code,
         ))))
@@ -1304,6 +1427,7 @@ impl VirtualMachine {
 /// `PyException` carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
 pub(crate) fn parse_error_to_syntax_exc(
     filename: &str,
+    source: &str,
     e: ferrython_parser::ParseError,
 ) -> PyException {
     let (kind, msg) = match &e.kind {
@@ -1317,14 +1441,26 @@ pub(crate) fn parse_error_to_syntax_exc(
         _ => (ExceptionKind::SyntaxError, format!("{}", e.kind)),
     };
     let lineno = e.span.start_line as i64;
-    let offset = (e.span.start_col as i64) + 1;
-    build_syntax_exception(kind, &msg, filename, lineno, offset)
+    let raw_offset = match &e.kind {
+        ferrython_parser::ParseErrorKind::UnterminatedString => e.span.end_col as i64 + 1,
+        ferrython_parser::ParseErrorKind::IndentationError(msg)
+            if msg.starts_with("unindent does not match") =>
+        {
+            source_line(source, lineno)
+                .map(|line| line.len() as i64 + 1)
+                .unwrap_or(e.span.start_col as i64 + 1)
+        }
+        _ => e.span.start_col as i64 + 1,
+    };
+    let offset = source_char_offset(source, lineno, raw_offset);
+    build_syntax_exception(kind, &msg, filename, source, lineno, offset)
 }
 
 /// Convert a compiler `CompileError` into a `SyntaxError` `PyException`
 /// carrying `.filename`, `.lineno`, `.offset`, `.msg` attributes.
 pub(crate) fn compile_error_to_syntax_exc(
     filename: &str,
+    source: &str,
     e: ferrython_compiler::CompileError,
 ) -> PyException {
     use ferrython_compiler::CompileError;
@@ -1369,18 +1505,36 @@ pub(crate) fn compile_error_to_syntax_exc(
         CompileError::NameError { message } => (message.clone(), None),
         CompileError::Internal(s) => (s.clone(), None),
         CompileError::InvalidAst { message } => {
-            return build_syntax_exception(ExceptionKind::ValueError, message, filename, 1, 0);
+            return build_syntax_exception(
+                ExceptionKind::ValueError,
+                message,
+                filename,
+                source,
+                1,
+                0,
+            );
         }
     };
     let (lineno, offset) = match loc {
-        Some(l) => (l.line as i64, (l.column as i64) + 1),
+        Some(l) => (
+            l.line as i64,
+            source_char_offset(source, l.line as i64, l.column as i64 + 1),
+        ),
         None => (1, 0),
     };
-    build_syntax_exception(ExceptionKind::SyntaxError, &msg, filename, lineno, offset)
+    build_syntax_exception(
+        ExceptionKind::SyntaxError,
+        &msg,
+        filename,
+        source,
+        lineno,
+        offset,
+    )
 }
 
 pub(crate) fn compile_ast_error_to_value_exc(
     filename: &str,
+    source: &str,
     e: ferrython_compiler::CompileError,
 ) -> PyException {
     use ferrython_compiler::CompileError;
@@ -1389,20 +1543,41 @@ pub(crate) fn compile_ast_error_to_value_exc(
             ExceptionKind::ValueError,
             "expression which can't be assigned to in Store context",
             filename,
+            source,
             1,
             0,
         ),
         CompileError::InvalidAst { message } => {
-            build_syntax_exception(ExceptionKind::ValueError, message, filename, 1, 0)
+            build_syntax_exception(ExceptionKind::ValueError, message, filename, source, 1, 0)
         }
-        _ => compile_error_to_syntax_exc(filename, e),
+        _ => compile_error_to_syntax_exc(filename, source, e),
     }
+}
+
+fn source_line(source: &str, lineno: i64) -> Option<&str> {
+    if lineno <= 0 {
+        return None;
+    }
+    source.lines().nth((lineno - 1) as usize)
+}
+
+fn source_char_offset(source: &str, lineno: i64, byte_offset_1based: i64) -> i64 {
+    if byte_offset_1based <= 1 {
+        return byte_offset_1based;
+    }
+    let Some(line) = source_line(source, lineno) else {
+        return byte_offset_1based;
+    };
+    let byte_index = (byte_offset_1based - 1).max(0) as usize;
+    let byte_prefix = byte_index.min(line.len());
+    line[..byte_prefix].chars().count() as i64 + 1
 }
 
 fn build_syntax_exception(
     kind: ExceptionKind,
     msg: &str,
     filename: &str,
+    source: &str,
     lineno: i64,
     offset: i64,
 ) -> PyException {
@@ -1419,7 +1594,10 @@ fn build_syntax_exception(
             CompactString::from("msg"),
             PyObject::str_val(CompactString::from(msg)),
         );
-        w.insert(CompactString::from("text"), PyObject::none());
+        let text = source_line(source, lineno)
+            .map(|line| PyObject::str_val(CompactString::from(line)))
+            .unwrap_or_else(PyObject::none);
+        w.insert(CompactString::from("text"), text);
     }
     PyException::with_original(kind, CompactString::from(msg), instance)
 }

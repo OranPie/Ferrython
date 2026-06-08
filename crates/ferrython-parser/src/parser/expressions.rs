@@ -755,6 +755,8 @@ impl Parser {
                     expr.location = outer_loc;
                     expr.outer_location = outer_loc;
                     Ok(expr)
+                } else if parenthesized_yield {
+                    Ok(expr.with_outer_location(outer_loc))
                 } else {
                     Ok(expr.with_outer_location(outer_loc))
                 }
@@ -775,6 +777,14 @@ impl Parser {
                 let first = self.parse_test_or_star()?;
                 // List comprehension? (including async)
                 if self.check(TokenKind::For) || self.check(TokenKind::Async) {
+                    if matches!(first.node, ExpressionKind::Starred { .. }) {
+                        return Err(ParseError::new(
+                            ParseErrorKind::SyntaxErrorMessage(
+                                "iterable unpacking cannot be used in comprehension".into(),
+                            ),
+                            Self::span_from_location(first.location),
+                        ));
+                    }
                     let generators = self.parse_comp_for()?;
                     let rbracket_span = self.expect(TokenKind::RightBracket)?.span;
                     let list_loc = Self::with_end_span(loc, rbracket_span);

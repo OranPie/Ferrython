@@ -13,8 +13,8 @@ pub(super) fn os_listdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].py_to_string()
     };
-    let entries = std::fs::read_dir(&path)
-        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    let entries =
+        std::fs::read_dir(&path).map_err(|e| PyException::from_io_error(&e, Some(&path)))?;
     let items: Vec<PyObjectRef> = entries
         .filter_map(|e| e.ok())
         .map(|e| {

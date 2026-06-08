@@ -34,6 +34,36 @@ fn is_unicode_error_kind(kind: ExceptionKind) -> bool {
     )
 }
 
+fn set_syntax_error_attrs(inst: &PyObjectRef, kind: ExceptionKind, args: &[PyObjectRef]) {
+    if !kind.is_subclass_of(&ExceptionKind::SyntaxError) {
+        return;
+    }
+    let PyObjectPayload::ExceptionInstance(ei) = &inst.payload else {
+        return;
+    };
+    let mut attrs = ei.ensure_attrs().write();
+    attrs.insert(
+        CompactString::from("msg"),
+        args.first().cloned().unwrap_or_else(PyObject::none),
+    );
+    attrs.insert(CompactString::from("filename"), PyObject::none());
+    attrs.insert(CompactString::from("lineno"), PyObject::none());
+    attrs.insert(CompactString::from("offset"), PyObject::none());
+    attrs.insert(CompactString::from("text"), PyObject::none());
+    attrs.insert(CompactString::from("print_file_and_line"), PyObject::none());
+
+    if args.len() == 2 {
+        if let PyObjectPayload::Tuple(items) = &args[1].payload {
+            if items.len() >= 4 {
+                attrs.insert(CompactString::from("filename"), items[0].clone());
+                attrs.insert(CompactString::from("lineno"), items[1].clone());
+                attrs.insert(CompactString::from("offset"), items[2].clone());
+                attrs.insert(CompactString::from("text"), items[3].clone());
+            }
+        }
+    }
+}
+
 fn os_error_kind_for_errno(errno: i64) -> ExceptionKind {
     match errno {
         11 | 114 | 115 => ExceptionKind::BlockingIOError,
@@ -63,7 +93,15 @@ fn set_unicode_error_attrs(inst: &PyObjectRef, kind: ExceptionKind, args: &[PyOb
         ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeDecodeError => {
             if args.len() >= 5 {
                 attrs.insert(CompactString::from("encoding"), args[0].clone());
-                attrs.insert(CompactString::from("object"), args[1].clone());
+                let object = if kind == ExceptionKind::UnicodeDecodeError {
+                    match &args[1].payload {
+                        PyObjectPayload::ByteArray(bytes) => PyObject::bytes((**bytes).clone()),
+                        _ => args[1].clone(),
+                    }
+                } else {
+                    args[1].clone()
+                };
+                attrs.insert(CompactString::from("object"), object);
                 attrs.insert(CompactString::from("start"), args[2].clone());
                 attrs.insert(CompactString::from("end"), args[3].clone());
                 attrs.insert(CompactString::from("reason"), args[4].clone());
@@ -86,6 +124,13 @@ pub(crate) fn build_builtin_exception_instance(
     args: Vec<PyObjectRef>,
     kwargs: &[(CompactString, PyObjectRef)],
 ) -> PyResult<PyObjectRef> {
+    if !kind.is_subclass_of(&ExceptionKind::ImportError) && !kwargs.is_empty() {
+        let (key, _) = &kwargs[0];
+        return Err(PyException::type_error(format!(
+            "'{}' is an invalid keyword argument for {}",
+            key, kind
+        )));
+    }
     if kind.is_subclass_of(&ExceptionKind::ImportError) {
         for (key, _) in kwargs {
             if key.as_str() != "name" && key.as_str() != "path" {
@@ -110,6 +155,7 @@ pub(crate) fn build_builtin_exception_instance(
     ) || (kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2)
         || (kind == ExceptionKind::SystemExit && !args.is_empty())
         || kind.is_subclass_of(&ExceptionKind::ImportError)
+        || kind.is_subclass_of(&ExceptionKind::SyntaxError)
         || is_unicode_error_kind(kind);
 
     if !needs_post {
@@ -140,15 +186,28 @@ pub(crate) fn build_builtin_exception_instance(
         }
     }
 
+    set_syntax_error_attrs(&inst, kind, &args);
+
     if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
         if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
             let mut a = ei.ensure_attrs().write();
+            if args.len() >= 3 {
+                a.insert(
+                    CompactString::from("args"),
+                    PyObject::tuple(vec![args[0].clone(), args[1].clone()]),
+                );
+            }
             a.insert(CompactString::from("errno"), args[0].clone());
             a.insert(CompactString::from("strerror"), args[1].clone());
             if args.len() >= 3 {
                 a.insert(CompactString::from("filename"), args[2].clone());
             } else {
                 a.insert(CompactString::from("filename"), PyObject::none());
+            }
+            if args.len() >= 5 {
+                a.insert(CompactString::from("filename2"), args[4].clone());
+            } else {
+                a.insert(CompactString::from("filename2"), PyObject::none());
             }
             if kind == ExceptionKind::BlockingIOError
                 && args.len() >= 3

@@ -1,6 +1,7 @@
 //! Attribute lookup methods and descriptor protocol helpers.
 
 use crate::error::PyException;
+use crate::object::ClassData;
 use crate::types::HashableKey;
 use compact_str::CompactString;
 
@@ -16,6 +17,24 @@ mod class_attrs;
 mod exception_attrs;
 mod non_instance_attrs;
 mod super_attrs;
+
+pub use exception_attrs::{validate_exception_attr_delete, validate_exception_attr_set};
+
+fn exception_base_method_for_instance(
+    obj: &PyObjectRef,
+    cd: &ClassData,
+    name: &str,
+) -> Option<PyObjectRef> {
+    if !cd.is_exception_subclass {
+        return None;
+    }
+    for base in cd.bases.iter().chain(cd.mro.iter()) {
+        if matches!(&base.payload, PyObjectPayload::ExceptionType(_)) {
+            return exception_attrs::resolve_exception_type_method(name, obj);
+        }
+    }
+    None
+}
 
 /// Check if an attribute exists without cloning its value.
 /// Used by hasattr() to avoid unnecessary Rc clone+drop cycles.
@@ -294,6 +313,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = lookup_in_class_mro(&inst.class, name) {
                     return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    if let Some(method) = exception_base_method_for_instance(obj, cd, name) {
+                        return Some(method);
+                    }
+                }
                 // 2b. Builtin base type methods (list.append, tuple.__len__, etc.)
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     if let Some(ref bt_name) = cd.builtin_base_name {
@@ -512,6 +536,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = lookup_in_class_mro(&effective_class, name) {
                     return Some(wrap_class_attr_for_instance(obj, inst, name, v));
                 }
+                if let PyObjectPayload::Class(cd) = &effective_class.payload {
+                    if let Some(method) = exception_base_method_for_instance(obj, cd, name) {
+                        return Some(method);
+                    }
+                }
             } else {
                 // ── FULL DESCRIPTOR PROTOCOL ──
                 // 1. Data descriptors from class MRO take priority
@@ -538,6 +567,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 // 3. Non-data descriptors and other class attrs
                 if let Some(v) = class_attr {
                     return Some(wrap_class_attr_for_instance(obj, inst, name, v));
+                }
+                if let PyObjectPayload::Class(cd) = &effective_class.payload {
+                    if let Some(method) = exception_base_method_for_instance(obj, cd, name) {
+                        return Some(method);
+                    }
                 }
             }
 

@@ -557,6 +557,34 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                 "__builtin__" | "builtins",
                 "int" | "float" | "str" | "list" | "dict" | "tuple" | "bool",
             ) => Ok(PyObject::builtin_type(CompactString::from(name.as_str()))),
+            ("__builtin__" | "builtins", "bytes") => {
+                if let Some(first) = arg_list.first() {
+                    match &first.payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                            Ok(PyObject::bytes((**b).clone()))
+                        }
+                        PyObjectPayload::Str(s) => Ok(PyObject::bytes(s.as_bytes().to_vec())),
+                        _ => Ok(PyObject::bytes(first.py_to_string().as_bytes().to_vec())),
+                    }
+                } else {
+                    Ok(PyObject::bytes(vec![]))
+                }
+            }
+            ("__builtin__" | "builtins", "bytearray") => {
+                if let Some(first) = arg_list.first() {
+                    match &first.payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                            Ok(PyObject::bytearray((**b).clone()))
+                        }
+                        PyObjectPayload::Str(s) => Ok(PyObject::bytearray(s.as_bytes().to_vec())),
+                        _ => Ok(PyObject::bytearray(
+                            first.py_to_string().as_bytes().to_vec(),
+                        )),
+                    }
+                } else {
+                    Ok(PyObject::bytearray(vec![]))
+                }
+            }
             ("__builtin__" | "builtins", "slice") => {
                 if arg_list.is_empty() || arg_list.len() > 3 {
                     return Err(PyException::type_error("slice expected 1 to 3 arguments"));
@@ -1108,6 +1136,22 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                     }
                 }
                 let result = PyObject::instance(cls);
+                if matches!(
+                    &result.payload,
+                    PyObjectPayload::Instance(inst)
+                        if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                ) {
+                    if let PyObjectPayload::Instance(inst) = &result.payload {
+                        let mut attrs = inst.attrs.write();
+                        if arg_list.len() == 1 {
+                            attrs.insert(CompactString::from("message"), arg_list[0].clone());
+                        }
+                        attrs.insert(
+                            CompactString::from("args"),
+                            PyObject::tuple(arg_list.clone()),
+                        );
+                    }
+                }
                 pkl_fill_dict_storage_from_args(&result, &arg_list)?;
                 Ok(result)
             }

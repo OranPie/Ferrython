@@ -691,7 +691,18 @@ impl Parser {
         let body = self.parse_block()?;
         let mut handlers = Vec::new();
         while self.check(TokenKind::Except) {
-            handlers.push(self.parse_except_handler()?);
+            let handler = self.parse_except_handler()?;
+            if handlers.iter().any(|h: &ExceptHandler| h.typ.is_none()) {
+                let err_span = body
+                    .first()
+                    .map(|stmt| Self::span_from_location(stmt.location))
+                    .unwrap_or_else(|| Self::span_from_location(handler.location));
+                return Err(ParseError::new(
+                    ParseErrorKind::SyntaxErrorMessage("default 'except:' must be last".into()),
+                    err_span,
+                ));
+            }
+            handlers.push(handler);
         }
         let orelse = if self.check(TokenKind::Else) {
             self.advance();

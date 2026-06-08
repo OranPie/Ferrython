@@ -421,6 +421,19 @@ pub(super) fn super_attr(
                         let attr_name = args[0].py_to_string();
                         let value = args[1].clone();
                         if let PyObjectPayload::Instance(data) = &inst.payload {
+                            if matches!(&data.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                            {
+                                super::exception_attrs::validate_exception_attr_set(
+                                    attr_name.as_str(),
+                                    &value,
+                                )?;
+                                if attr_name == "__cause__" {
+                                    data.attrs.write().insert(
+                                        CompactString::from("__suppress_context__"),
+                                        PyObject::bool_val(true),
+                                    );
+                                }
+                            }
                             data.attrs
                                 .write()
                                 .insert(CompactString::from(attr_name.as_str()), value);
@@ -442,6 +455,12 @@ pub(super) fn super_attr(
                         }
                         let attr_name = args[0].py_to_string();
                         if let PyObjectPayload::Instance(data) = &inst.payload {
+                            if matches!(&data.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
+                            {
+                                super::exception_attrs::validate_exception_attr_delete(
+                                    attr_name.as_str(),
+                                )?;
+                            }
                             let removed = data.attrs.write().shift_remove(attr_name.as_str());
                             if removed.is_none() {
                                 return Err(PyException::attribute_error(format!(

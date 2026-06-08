@@ -335,6 +335,13 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 .insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::ExceptionInstance(ei) => {
+            ferrython_core::object::validate_exception_attr_set(name.as_str(), &args[2])?;
+            if name == "__cause__" {
+                ei.ensure_attrs().write().insert(
+                    CompactString::from("__suppress_context__"),
+                    PyObject::bool_val(true),
+                );
+            }
             ei.ensure_attrs()
                 .write()
                 .insert(CompactString::from(name), args[2].clone());
@@ -448,6 +455,7 @@ pub(super) fn builtin_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             md.attrs.write().shift_remove(name.as_str());
         }
         PyObjectPayload::ExceptionInstance(ei) => {
+            ferrython_core::object::validate_exception_attr_delete(name.as_str())?;
             if let Some(attrs) = ei.get_attrs() {
                 if attrs.write().shift_remove(name.as_str()).is_none() {
                     return Err(PyException::attribute_error(format!(

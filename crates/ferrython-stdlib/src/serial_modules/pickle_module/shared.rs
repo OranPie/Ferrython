@@ -179,6 +179,92 @@ pub(super) fn pickle_exception_instance(
         .unwrap_or_else(|| CompactString::from(""));
     let inst = PyObject::exception_instance_with_args(kind, message, args.clone());
 
+    if kind.is_subclass_of(&ExceptionKind::SyntaxError) {
+        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+            let mut attrs = ei.ensure_attrs().write();
+            attrs.insert(
+                CompactString::from("msg"),
+                args.first().cloned().unwrap_or_else(PyObject::none),
+            );
+            attrs.insert(CompactString::from("filename"), PyObject::none());
+            attrs.insert(CompactString::from("lineno"), PyObject::none());
+            attrs.insert(CompactString::from("offset"), PyObject::none());
+            attrs.insert(CompactString::from("text"), PyObject::none());
+            attrs.insert(CompactString::from("print_file_and_line"), PyObject::none());
+            if args.len() == 2 {
+                if let PyObjectPayload::Tuple(items) = &args[1].payload {
+                    if items.len() >= 4 {
+                        attrs.insert(CompactString::from("filename"), items[0].clone());
+                        attrs.insert(CompactString::from("lineno"), items[1].clone());
+                        attrs.insert(CompactString::from("offset"), items[2].clone());
+                        attrs.insert(CompactString::from("text"), items[3].clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
+        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+            let mut attrs = ei.ensure_attrs().write();
+            if args.len() >= 3 {
+                attrs.insert(
+                    CompactString::from("args"),
+                    PyObject::tuple(vec![args[0].clone(), args[1].clone()]),
+                );
+            }
+            attrs.insert(CompactString::from("errno"), args[0].clone());
+            attrs.insert(CompactString::from("strerror"), args[1].clone());
+            attrs.insert(
+                CompactString::from("filename"),
+                args.get(2).cloned().unwrap_or_else(PyObject::none),
+            );
+            attrs.insert(
+                CompactString::from("filename2"),
+                args.get(4).cloned().unwrap_or_else(PyObject::none),
+            );
+            if kind == ExceptionKind::BlockingIOError
+                && args.len() >= 3
+                && args[2].as_int().is_some()
+            {
+                attrs.insert(CompactString::from("characters_written"), args[2].clone());
+            }
+        }
+    }
+
+    match kind {
+        ExceptionKind::UnicodeEncodeError | ExceptionKind::UnicodeDecodeError
+            if args.len() >= 5 =>
+        {
+            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                let mut attrs = ei.ensure_attrs().write();
+                attrs.insert(CompactString::from("encoding"), args[0].clone());
+                let object = if kind == ExceptionKind::UnicodeDecodeError {
+                    match &args[1].payload {
+                        PyObjectPayload::ByteArray(bytes) => PyObject::bytes((**bytes).clone()),
+                        _ => args[1].clone(),
+                    }
+                } else {
+                    args[1].clone()
+                };
+                attrs.insert(CompactString::from("object"), object);
+                attrs.insert(CompactString::from("start"), args[2].clone());
+                attrs.insert(CompactString::from("end"), args[3].clone());
+                attrs.insert(CompactString::from("reason"), args[4].clone());
+            }
+        }
+        ExceptionKind::UnicodeTranslateError if args.len() >= 4 => {
+            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                let mut attrs = ei.ensure_attrs().write();
+                attrs.insert(CompactString::from("object"), args[0].clone());
+                attrs.insert(CompactString::from("start"), args[1].clone());
+                attrs.insert(CompactString::from("end"), args[2].clone());
+                attrs.insert(CompactString::from("reason"), args[3].clone());
+            }
+        }
+        _ => {}
+    }
+
     if kind.is_subclass_of(&ExceptionKind::ImportError) {
         if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
             let mut attrs = ei.ensure_attrs().write();

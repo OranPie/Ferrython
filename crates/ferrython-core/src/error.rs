@@ -383,6 +383,9 @@ impl PyException {
     pub fn value_error(msg: impl Into<CompactString>) -> Self {
         Self::new(ExceptionKind::ValueError, msg)
     }
+    pub fn eof_error(msg: impl Into<CompactString>) -> Self {
+        Self::new(ExceptionKind::EOFError, msg)
+    }
     pub fn lookup_error(msg: impl Into<CompactString>) -> Self {
         Self::new(ExceptionKind::LookupError, msg)
     }
@@ -442,6 +445,8 @@ impl PyException {
             ErrorKind::PermissionDenied => ExceptionKind::PermissionError,
             ErrorKind::AlreadyExists => ExceptionKind::FileExistsError,
             ErrorKind::TimedOut => ExceptionKind::TimeoutError,
+            _ if errno == 20 => ExceptionKind::NotADirectoryError,
+            _ if errno == 21 => ExceptionKind::IsADirectoryError,
             _ => ExceptionKind::OSError,
         };
         let msg = if let Some(fname) = filename {

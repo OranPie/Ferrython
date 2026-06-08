@@ -83,6 +83,7 @@ fn try_store_attr(frame: &mut Frame, name_idx: usize) -> FastAttrResult {
             inst.class_flags
                 & (CLASS_FLAG_HAS_SETATTR | CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_SLOTS)
                 == 0
+                && !matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.is_exception_subclass)
                 && !(name.as_str() == "__callback__"
                     && inst.attrs.read().contains_key("__weakref_ref__"))
                 && !inst.attrs.read().contains_key("__weakref_target__")

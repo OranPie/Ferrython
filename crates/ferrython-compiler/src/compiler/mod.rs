@@ -35,6 +35,7 @@ pub(super) struct LoopContext {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum CleanupContext {
     With,
+    ExceptHandler,
     TryFinally,
     FinallyBody,
 }

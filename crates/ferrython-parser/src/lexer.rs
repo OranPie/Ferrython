@@ -17,6 +17,8 @@ pub struct Lexer<'src> {
     col: u32,
     /// Indentation stack (number of spaces per level).
     indent_stack: Vec<u32>,
+    /// Alternate indentation stack with tabs counted as one column.
+    alt_indent_stack: Vec<u32>,
     /// Pending tokens (for INDENT/DEDENT generation).
     pending: Vec<Token>,
     /// Nesting level of parentheses, brackets, braces (for implicit line joining).
@@ -36,6 +38,7 @@ impl<'src> Lexer<'src> {
             line: 1,
             col: 0,
             indent_stack: vec![0],
+            alt_indent_stack: vec![0],
             pending: Vec::new(),
             nesting: 0,
             at_line_start: true,
@@ -148,26 +151,31 @@ impl<'src> Lexer<'src> {
     fn handle_indentation(&mut self) -> Result<Token, ParseError> {
         // Measure indentation at start of line
         let mut indent: u32 = 0;
+        let mut alt_indent: u32 = 0;
         while !self.is_at_end() {
             match self.peek_char() {
                 ' ' => {
                     indent += 1;
+                    alt_indent += 1;
                     self.advance();
                 }
                 '\t' => {
                     // Tab stops at every 8 spaces (like CPython)
                     indent = (indent / 8 + 1) * 8;
+                    alt_indent += 1;
                     self.advance();
                 }
                 '\n' | '\r' => {
                     // Blank line — skip it entirely
                     self.handle_newline_raw();
                     indent = 0;
+                    alt_indent = 0;
                     continue;
                 }
                 '\x0c' => {
                     // Form feed — treated as whitespace, resets indent (CPython behavior)
                     indent = 0;
+                    alt_indent = 0;
                     self.advance();
                 }
                 '#' => {
@@ -177,6 +185,7 @@ impl<'src> Lexer<'src> {
                         self.handle_newline_raw();
                     }
                     indent = 0;
+                    alt_indent = 0;
                     continue;
                 }
                 _ => break,
@@ -188,10 +197,15 @@ impl<'src> Lexer<'src> {
         }
 
         let current_indent = *self.indent_stack.last().unwrap();
+        let current_alt_indent = *self.alt_indent_stack.last().unwrap();
         let span = self.span_here();
 
         if indent > current_indent {
+            if alt_indent <= current_alt_indent {
+                return Err(ParseError::new(ParseErrorKind::TabError, span));
+            }
             self.indent_stack.push(indent);
+            self.alt_indent_stack.push(alt_indent);
             Ok(Token::new(TokenKind::Indent, span))
         } else if indent < current_indent {
             // Generate DEDENT tokens
@@ -200,6 +214,7 @@ impl<'src> Lexer<'src> {
                     break;
                 }
                 self.indent_stack.pop();
+                self.alt_indent_stack.pop();
                 self.pending.push(Token::new(TokenKind::Dedent, span));
             }
             if *self.indent_stack.last().unwrap() != indent {
@@ -210,6 +225,9 @@ impl<'src> Lexer<'src> {
                     span,
                 ));
             }
+            if *self.alt_indent_stack.last().unwrap() != alt_indent {
+                return Err(ParseError::new(ParseErrorKind::TabError, span));
+            }
             // Return the first DEDENT, rest are pending
             if let Some(tok) = self.pending.pop() {
                 Ok(tok)
@@ -217,6 +235,9 @@ impl<'src> Lexer<'src> {
                 self.next_token()
             }
         } else {
+            if alt_indent != current_alt_indent {
+                return Err(ParseError::new(ParseErrorKind::TabError, span));
+            }
             // Same indentation level — continue to next token
             self.next_token()
         }
@@ -252,6 +273,20 @@ impl<'src> Lexer<'src> {
         ParseError::new(
             ParseErrorKind::SyntaxErrorMessage(msg.into()),
             self.span_from(start),
+        )
+    }
+
+    fn invalid_number_here(&self, msg: impl Into<String>) -> ParseError {
+        ParseError::new(
+            ParseErrorKind::SyntaxErrorMessage(msg.into()),
+            self.span_here(),
+        )
+    }
+
+    fn invalid_number_at_col(&self, msg: impl Into<String>, col: u32) -> ParseError {
+        ParseError::new(
+            ParseErrorKind::SyntaxErrorMessage(msg.into()),
+            Span::new(self.line, col, self.line, col),
         )
     }
 
@@ -335,7 +370,10 @@ impl<'src> Lexer<'src> {
                     return Err(self.invalid_number("invalid decimal literal", start));
                 }
                 if num_str.ends_with('e') || num_str.ends_with("e+") || num_str.ends_with("e-") {
-                    return Err(self.invalid_number("invalid decimal literal", start));
+                    return Err(self.invalid_number_at_col(
+                        "invalid decimal literal",
+                        self.col.saturating_sub(1),
+                    ));
                 }
                 return self.make_float_or_complex(num_str, start);
             } else if next_after_e.is_none()
@@ -348,7 +386,7 @@ impl<'src> Lexer<'src> {
                 invalid.push(self.peek_char());
                 self.advance();
                 let _ = invalid;
-                return Err(self.invalid_number("invalid decimal literal", start));
+                return Err(self.invalid_number_here("invalid decimal literal"));
             }
         }
 
@@ -364,9 +402,13 @@ impl<'src> Lexer<'src> {
         }
 
         if leading_zero_decimal {
-            return Err(self.invalid_number(
+            let first_nonzero = num_str
+                .chars()
+                .position(|ch| matches!(ch, '1'..='9'))
+                .unwrap_or(0) as u32;
+            return Err(self.invalid_number_at_col(
                 "leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers",
-                start,
+                start.1 + first_nonzero + 1,
             ));
         }
         self.make_int_token(num_str, 10, start)
@@ -382,10 +424,10 @@ impl<'src> Lexer<'src> {
                 .is_some_and(|ch| ch.is_ascii_hexdigit());
         let invalid_separator = self.collect_hex_digits(&mut s, allow_leading_underscore);
         if s.is_empty() {
-            return Err(self.invalid_number("invalid hexadecimal literal", start));
+            return Err(self.invalid_number_at_col("invalid hexadecimal literal", start.1 + 1));
         }
         if invalid_separator || self.invalid_separator_after_digits() {
-            return Err(self.invalid_number("invalid hexadecimal literal", start));
+            return Err(self.invalid_number_at_col("invalid hexadecimal literal", start.1 + 1));
         }
         if !self.is_at_end()
             && matches!(
@@ -393,7 +435,7 @@ impl<'src> Lexer<'src> {
                 '.' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
             )
         {
-            return Err(self.invalid_number("invalid hexadecimal literal", start));
+            return Err(self.invalid_number_at_col("invalid hexadecimal literal", start.1 + 1));
         }
         self.make_int_token(s, 16, start)
     }
@@ -418,9 +460,10 @@ impl<'src> Lexer<'src> {
                 continue;
             }
             if c >= '8' {
-                return Err(
-                    self.invalid_number(format!("invalid digit '{}' in octal literal", c), start)
-                );
+                return Err(self.invalid_number_at_col(
+                    format!("invalid digit '{}' in octal literal", c),
+                    start.1 + 1,
+                ));
             }
             s.push(c);
             saw_digit = true;
@@ -428,10 +471,10 @@ impl<'src> Lexer<'src> {
             self.advance();
         }
         if s.is_empty() {
-            return Err(self.invalid_number("invalid octal literal", start));
+            return Err(self.invalid_number_at_col("invalid octal literal", start.1 + 1));
         }
         if invalid_separator || self.invalid_separator_after_digits() {
-            return Err(self.invalid_number("invalid octal literal", start));
+            return Err(self.invalid_number_at_col("invalid octal literal", start.1 + 1));
         }
         if !self.is_at_end()
             && matches!(
@@ -439,7 +482,7 @@ impl<'src> Lexer<'src> {
                 '.' | 'e' | 'E' | 'j' | 'J' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'
             )
         {
-            return Err(self.invalid_number("invalid octal literal", start));
+            return Err(self.invalid_number_at_col("invalid octal literal", start.1 + 1));
         }
         self.make_int_token(s, 8, start)
     }
@@ -471,9 +514,9 @@ impl<'src> Lexer<'src> {
         }
         if s.is_empty() {
             if !self.is_at_end() && matches!(self.peek_char(), '2'..='9') {
-                return Err(self.invalid_number(
+                return Err(self.invalid_number_at_col(
                     format!("invalid digit '{}' in binary literal", self.peek_char()),
-                    start,
+                    start.1 + 1,
                 ));
             }
             return Err(self.invalid_number("invalid binary literal", start));
@@ -488,7 +531,7 @@ impl<'src> Lexer<'src> {
                 '2'..='9' => format!("invalid digit '{}' in binary literal", self.peek_char()),
                 _ => "invalid binary literal".to_string(),
             };
-            return Err(self.invalid_number(msg, start));
+            return Err(self.invalid_number_at_col(msg, start.1 + 1));
         }
         if invalid_separator || self.invalid_separator_after_digits() {
             return Err(self.invalid_number("invalid binary literal", start));
@@ -1228,6 +1271,7 @@ impl<'src> Lexer<'src> {
         self.pending.push(Token::new(TokenKind::Eof, span));
         while self.indent_stack.len() > 1 {
             self.indent_stack.pop();
+            self.alt_indent_stack.pop();
             self.pending.push(Token::new(TokenKind::Dedent, span));
         }
         if !self.at_line_start {

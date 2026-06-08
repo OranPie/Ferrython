@@ -60,6 +60,7 @@ impl VirtualMachine {
                     }
                 };
                 if let Some(init_fn) = init_fn {
+                    seed_exception_args(cd.is_exception_subclass, &instance, pos_args);
                     // Fast path: simple Python function __init__ — inline frame creation
                     let total_args = pos_args.len() + 1; // +1 for self
                     let is_simple_init = if let PyObjectPayload::Function(pf) = &init_fn.payload {
@@ -199,4 +200,18 @@ fn class_inherits_builtin_type(cd: &ferrython_core::object::ClassData, type_name
             }
             _ => false,
         })
+}
+
+fn seed_exception_args(is_exception_subclass: bool, instance: &PyObjectRef, args: &[PyObjectRef]) {
+    if !is_exception_subclass {
+        return;
+    }
+    let PyObjectPayload::Instance(inst) = &instance.payload else {
+        return;
+    };
+    let mut attrs = inst.attrs.write();
+    if args.len() == 1 {
+        attrs.insert(CompactString::from("message"), args[0].clone());
+    }
+    attrs.insert(CompactString::from("args"), PyObject::tuple(args.to_vec()));
 }
